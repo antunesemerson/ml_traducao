@@ -1,0 +1,2 @@
+# No external Python dependencies are required for the current local pipeline.
+# The project uses Python standard library modules only.

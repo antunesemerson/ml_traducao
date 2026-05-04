@@ -1,0 +1,22 @@
+# Local environment
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Runtime data
+memory/*.sqlite
+memory/*.sqlite-*
+memory/backups/
+reports/
+
+# Game localization sources and generated mod output
+source/
+output/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

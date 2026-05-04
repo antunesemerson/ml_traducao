@@ -1,0 +1,8 @@
+{
+  "english_source": "source/english_source",
+  "spanish_source": "source/spanish_source",
+  "spanish_traduzido_old": "source/spanish_old",
+  "output_spanish": "output/spanish",
+  "database_path": "memory/translation_engine.sqlite",
+  "reports_dir": "reports"
+}
