@@ -81,7 +81,7 @@ def suggestion_status(match_type: str, match_score: float, token_state: str) -> 
 
 
 def feedback_decision_status(decision: str | None) -> str | None:
-    if decision in {"accepted", "edited"}:
+    if decision in {"accepted", "edited", "accepted_old"}:
         return "safe"
     if decision == "rejected":
         return "blocked"
@@ -156,7 +156,7 @@ def load_feedback_cache(conn):
             ts.match_type
         FROM suggestion_feedback f
         LEFT JOIN translation_suggestions ts ON ts.id = f.suggestion_id
-        WHERE f.decision IN ('accepted', 'rejected', 'edited')
+        WHERE f.decision IN ('accepted', 'rejected', 'edited', 'accepted_old')
         ORDER BY f.reviewed_at ASC, f.id ASC
         """
     ).fetchall()
@@ -237,7 +237,7 @@ def sync_pending_feedback_queue(conn) -> dict[str, int]:
               SELECT 1
               FROM suggestion_feedback f
               WHERE f.suggestion_id = ts.id
-                AND f.decision IN ('accepted', 'rejected', 'edited')
+                AND f.decision IN ('accepted', 'rejected', 'edited', 'accepted_old')
           )
         """,
         (now, now, now),
@@ -522,6 +522,7 @@ def main() -> None:
 
     with db.connect(settings) as conn:
         db.ensure_database(conn)
+        print("[suggest_translations] Marking previous suggestions as stale")
         conn.execute(
             """
             UPDATE translation_suggestions
@@ -531,6 +532,7 @@ def main() -> None:
             """,
             (db.utc_now(),),
         )
+        print("[suggest_translations] Previous suggestions marked as stale")
         exact_index, fuzzy_index = load_memory_cache(conn)
         feedback_cache = load_feedback_cache(conn)
         placeholders = ", ".join("?" for _ in TARGET_CLASSIFICATIONS)

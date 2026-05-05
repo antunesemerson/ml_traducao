@@ -61,6 +61,14 @@ Aplicar tambem sugestoes `safe` ainda pendentes:
 python pipeline\main.py apply --apply-include-safe-pending
 ```
 
+Primeira criacao do `output/spanish` traduzido a partir de `source/spanish_old`:
+
+```powershell
+python pipeline\main.py apply --bootstrap-old
+```
+
+Esse modo e para o primeiro preenchimento real do mod. Ele escreve `old_text` no `output/spanish` para todos os segmentos possiveis e usa feedback/sugestoes como sobreposicao quando existirem. Depois desse bootstrap, use `apply` sem `--bootstrap-old` para aplicar apenas mudancas incrementais.
+
 ## Ciclo De Aprendizado
 
 1. Rode:
@@ -95,6 +103,16 @@ SET decision = 'edited', corrected_text = 'Texto corrigido'
 WHERE id = ...;
 ```
 
+Quando a sugestao estiver errada, mas o `old_text` ja estiver correto:
+
+```sql
+UPDATE suggestion_feedback
+SET decision = 'accepted_old', reason = 'old_text esta certo'
+WHERE id = ...;
+```
+
+`reason` e apenas informativo. O comportamento do sistema deve depender de `decision`.
+
 3. Rode novamente:
 
 ```powershell
@@ -110,6 +128,18 @@ python pipeline\main.py apply
 ```
 
 Por padrao, `apply` usa apenas sugestoes aprovadas/editadas e cria backup em `memory/backups`.
+
+No primeiro ciclo do projeto, como `output/spanish` ainda e uma copia do espanhol original, rode:
+
+```powershell
+python pipeline\main.py apply --bootstrap-old
+```
+
+Nos ciclos seguintes, use o apply incremental:
+
+```powershell
+python pipeline\main.py apply
+```
 
 ## Scripts
 

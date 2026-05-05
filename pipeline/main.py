@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import io
+import sys
+import traceback
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +21,21 @@ STAGES = {
     "evaluate": "evaluate_suggestions",
     "apply": "apply_safe_output_updates",
 }
+
+
+class Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data: str) -> int:
+        for stream in self.streams:
+            stream.write(data)
+            stream.flush()
+        return len(data)
+
+    def flush(self) -> None:
+        for stream in self.streams:
+            stream.flush()
 
 
 def package_roots(settings: dict) -> dict[str, Path]:
@@ -88,6 +107,23 @@ def run_stage(stage_name: str) -> None:
     module.main()
 
 
+def run_stage_with_log(stage_name: str, captured_lines: list[str]) -> None:
+    buffer = io.StringIO()
+    tee_stdout = Tee(sys.stdout, buffer)
+    tee_stderr = Tee(sys.stderr, buffer)
+    try:
+        with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+            run_stage(stage_name)
+    except Exception:
+        traceback.print_exc(file=buffer)
+        output = buffer.getvalue()
+        captured_lines.extend(output.splitlines())
+        raise
+
+    output = buffer.getvalue()
+    captured_lines.extend(output.splitlines())
+
+
 def write_main_report(settings: dict, mode: str, lines: list[str], started_at: datetime) -> None:
     elapsed = datetime.now() - started_at
     report_lines = [
@@ -126,49 +162,89 @@ def main() -> None:
         action="store_true",
         help="During apply/full, skip output backups.",
     )
+    parser.add_argument(
+        "--bootstrap-old",
+        action="store_true",
+        help="During apply/full, initialize output/spanish from spanish_old before incremental cycles.",
+    )
     args = parser.parse_args()
 
     started_at = datetime.now()
     settings = db.load_settings()
     report_lines: list[str] = []
+    log_lines: list[str] = [
+        "Pipeline execution log",
+        f"Started at: {started_at.isoformat(timespec='seconds')}",
+        f"Mode: {args.mode}",
+        "",
+    ]
 
     print(f"[main] Starting pipeline mode: {args.mode}")
-    run_stage("db")
-    report_lines.append("- db: executed")
+    try:
+        run_stage_with_log("db", log_lines)
+        report_lines.append("- db: executed")
 
-    should_run_index = True
-    if not args.force_index:
-        index_current, changes = source_index_is_current(settings)
-        should_run_index = not index_current
-        if index_current:
-            print("[main] Index is current; skipping index_source")
-            report_lines.append("- index: skipped, file hashes unchanged")
-        else:
-            print(f"[main] Index is stale; detected {len(changes)} change(s)")
-            report_lines.append(f"- index: stale, detected {len(changes)} change(s)")
-            report_lines.extend(f"  - {change}" for change in changes[:20])
+        should_run_index = True
+        if not args.force_index:
+            index_current, changes = source_index_is_current(settings)
+            should_run_index = not index_current
+            if index_current:
+                print("[main] Index is current; skipping index_source")
+                report_lines.append("- index: skipped, file hashes unchanged")
+            else:
+                print(f"[main] Index is stale; detected {len(changes)} change(s)")
+                report_lines.append(f"- index: stale, detected {len(changes)} change(s)")
+                report_lines.extend(f"  - {change}" for change in changes[:20])
 
-    if should_run_index:
-        run_stage("index")
-        report_lines.append("- index: executed")
+        if should_run_index:
+            run_stage_with_log("index", log_lines)
+            report_lines.append("- index: executed")
 
-    if args.mode in {"cycle", "full"}:
-        for stage in ["analyze", "memory", "suggest", "evaluate"]:
-            run_stage(stage)
-            report_lines.append(f"- {stage}: executed")
+        if args.mode in {"cycle", "full"}:
+            for stage in ["analyze", "memory", "suggest", "evaluate"]:
+                run_stage_with_log(stage, log_lines)
+                report_lines.append(f"- {stage}: executed")
 
-    if args.mode in {"apply", "full"}:
-        import apply_safe_output_updates
+        if args.mode in {"apply", "full"}:
+            import apply_safe_output_updates
 
-        print("[main] Running stage: apply (apply_safe_output_updates.py)")
-        apply_safe_output_updates.main(
-            include_safe_pending=args.apply_include_safe_pending,
-            create_backup=not args.apply_no_backup,
-        )
-        report_lines.append("- apply: executed")
+            print("[main] Running stage: apply (apply_safe_output_updates.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    apply_safe_output_updates.main(
+                    include_safe_pending=args.apply_include_safe_pending,
+                    create_backup=not args.apply_no_backup,
+                    bootstrap_old=args.bootstrap_old,
+                )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- apply: executed")
 
-    write_main_report(settings, args.mode, report_lines, started_at)
-    print("[main] Done")
+            index_current, changes = source_index_is_current(settings)
+            if index_current:
+                print("[main] Post-apply index is current; skipping refresh")
+                report_lines.append("- post-apply refresh: skipped, file hashes unchanged")
+            else:
+                print(f"[main] Post-apply refresh detected {len(changes)} changed file(s)")
+                report_lines.append(f"- post-apply refresh: detected {len(changes)} changed file(s)")
+                report_lines.extend(f"  - {change}" for change in changes[:20])
+                for stage in ["index", "analyze", "memory", "suggest", "evaluate"]:
+                    run_stage_with_log(stage, log_lines)
+                    report_lines.append(f"- post-apply {stage}: executed")
+
+        write_main_report(settings, args.mode, report_lines, started_at)
+        print("[main] Done")
+    finally:
+        log_path = db.write_log(settings, f"main_{args.mode}", log_lines)
+        print(f"[main] Log: {log_path}")
 
 
 if __name__ == "__main__":

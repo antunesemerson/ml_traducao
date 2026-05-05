@@ -34,15 +34,16 @@ def main() -> None:
                 ts.origin
             FROM suggestion_feedback f
             LEFT JOIN translation_suggestions ts ON ts.id = f.suggestion_id
-            WHERE f.decision IN ('accepted', 'rejected', 'edited')
+            WHERE f.decision IN ('accepted', 'rejected', 'edited', 'accepted_old')
             """
         ).fetchall()
 
     total = len(rows)
     accepted = sum(1 for row in rows if row["decision"] == "accepted")
+    accepted_old = sum(1 for row in rows if row["decision"] == "accepted_old")
     edited = sum(1 for row in rows if row["decision"] == "edited")
     rejected = sum(1 for row in rows if row["decision"] == "rejected")
-    useful = accepted + edited
+    useful = accepted + accepted_old + edited
 
     by_status = defaultdict(lambda: {"total": 0, "useful": 0, "rejected": 0})
     by_match = defaultdict(lambda: {"total": 0, "useful": 0, "rejected": 0})
@@ -56,7 +57,7 @@ def main() -> None:
             (by_origin, row["origin"] or "unknown"),
         ]:
             bucket[key]["total"] += 1
-            if decision in {"accepted", "edited"}:
+            if decision in {"accepted", "accepted_old", "edited"}:
                 bucket[key]["useful"] += 1
             elif decision == "rejected":
                 bucket[key]["rejected"] += 1
@@ -71,6 +72,7 @@ def main() -> None:
         "Summary:",
         f"- Feedback rows: {total}",
         f"- Accepted: {accepted}",
+        f"- Accepted old text: {accepted_old}",
         f"- Edited: {edited}",
         f"- Rejected: {rejected}",
         f"- Useful precision: {useful}/{total} ({percent(useful, total)})",

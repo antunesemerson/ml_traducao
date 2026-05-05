@@ -9,7 +9,7 @@ from difflib import SequenceMatcher
 import db
 
 
-RULE_VERSION = "segment_quality_v4"
+RULE_VERSION = "segment_quality_v5"
 BATCH_SIZE = 5000
 
 SPANISH_RESIDUE_PATTERNS = [
@@ -192,6 +192,7 @@ def analyze_row(row) -> tuple[float, str, list[dict]]:
     english_text = row["english_text"]
     old_text = row["old_text"]
     portuguese_text = row["portuguese_text"]
+    approved_text = row["approved_text"] if "approved_text" in row.keys() else None
 
     candidate = old_text
     reasons: list[dict] = []
@@ -240,6 +241,21 @@ def analyze_row(row) -> tuple[float, str, list[dict]]:
     human_segment = is_human_translatable_segment(spanish_text)
     short_human_segment = is_short_human_segment(spanish_text)
     proper_name_like = is_proper_name_like(spanish_text)
+
+    if (
+        not is_blank(approved_text)
+        and not is_blank(portuguese_text)
+        and normalize_for_compare(approved_text) == normalize_for_compare(portuguese_text)
+        and source_tokens == output_tokens
+    ):
+        reasons.append(
+            {
+                "rule": "manual_feedback_applied",
+                "weight": 0,
+                "message": "Current output matches accepted or edited human feedback and preserves Spanish source tokens.",
+            }
+        )
+        return 1.0, "trusted", reasons
 
     if old_blank:
         score -= 0.65
@@ -502,7 +518,25 @@ def main() -> None:
                     s.english_text,
                     s.old_text,
                     s.has_english,
-                    o.portuguese_text
+                    o.portuguese_text,
+                    COALESCE(
+                        (
+                            SELECT
+                                CASE
+                                    WHEN f.decision = 'edited' THEN f.corrected_text
+                                    WHEN f.decision = 'accepted_old' THEN s.old_text
+                                    ELSE f.suggested_text
+                                END
+                            FROM suggestion_feedback f
+                            WHERE f.segment_id = s.id
+                              AND (
+                                  f.decision IN ('accepted', 'edited', 'accepted_old')
+                              )
+                            ORDER BY f.updated_at DESC, f.id DESC
+                            LIMIT 1
+                        ),
+                        NULL
+                    ) AS approved_text
                 FROM source_segments s
                 LEFT JOIN output_segments o ON o.segment_id = s.id
                 WHERE s.is_active = 1

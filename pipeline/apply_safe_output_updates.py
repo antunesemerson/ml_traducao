@@ -46,21 +46,25 @@ def load_candidates(conn, include_safe_pending: bool):
                 s.source_line_number,
                 s.source_key,
                 s.spanish_text,
+                s.old_text,
                 o.output_line_number,
                 ts.suggested_text,
                 ts.status,
                 f.decision,
-                f.corrected_text
+                f.corrected_text,
+                f.reason
             FROM translation_suggestions ts
             JOIN source_segments s ON s.id = ts.segment_id
             JOIN output_segments o ON o.segment_id = s.id
             LEFT JOIN suggestion_feedback f
                 ON f.suggestion_id = ts.id
-               AND f.decision IN ('accepted', 'edited')
-            WHERE ts.status = 'safe'
+               AND (
+                   f.decision IN ('accepted', 'edited', 'accepted_old')
+               )
+            WHERE (ts.status = 'safe' OR f.decision = 'accepted_old')
               AND s.is_active = 1
               AND (
-                  f.decision IN ('accepted', 'edited')
+                  f.decision IN ('accepted', 'edited', 'accepted_old')
                   OR NOT EXISTS (
                       SELECT 1
                       FROM suggestion_feedback fx
@@ -80,24 +84,123 @@ def load_candidates(conn, include_safe_pending: bool):
             s.source_line_number,
             s.source_key,
             s.spanish_text,
+            s.old_text,
             o.output_line_number,
             ts.suggested_text,
             ts.status,
             f.decision,
-            f.corrected_text
+            f.corrected_text,
+            f.reason
         FROM suggestion_feedback f
-        JOIN translation_suggestions ts ON ts.id = f.suggestion_id
+        LEFT JOIN translation_suggestions ts ON ts.id = f.suggestion_id
         JOIN source_segments s ON s.id = f.segment_id
         JOIN output_segments o ON o.segment_id = s.id
-        WHERE f.decision IN ('accepted', 'edited')
-          AND ts.status = 'safe'
+        WHERE (
+              f.decision IN ('accepted', 'edited', 'accepted_old')
+          )
+          AND (ts.status = 'safe' OR f.decision = 'accepted_old')
           AND s.is_active = 1
         ORDER BY s.relative_path, o.output_line_number, ts.match_score DESC
         """
     ).fetchall()
 
 
-def apply_updates(include_safe_pending: bool = False, create_backup: bool = True) -> None:
+def load_bootstrap_candidates(conn, include_safe_pending: bool):
+    rows = conn.execute(
+        """
+        SELECT
+            s.id AS segment_id,
+            s.relative_path,
+            s.source_line_number,
+            s.source_key,
+            s.spanish_text,
+            s.old_text,
+            o.output_line_number
+        FROM source_segments s
+        JOIN output_segments o ON o.segment_id = s.id
+        WHERE s.is_active = 1
+          AND s.old_text IS NOT NULL
+        ORDER BY s.relative_path, o.output_line_number
+        """
+    ).fetchall()
+
+    feedback_rows = conn.execute(
+        """
+        SELECT
+            f.segment_id,
+            f.decision,
+            f.corrected_text,
+            ts.suggested_text,
+            ts.status,
+            ts.match_score
+        FROM suggestion_feedback f
+        LEFT JOIN translation_suggestions ts ON ts.id = f.suggestion_id
+        WHERE f.decision IN ('accepted', 'edited', 'accepted_old')
+        ORDER BY f.updated_at ASC, f.id ASC
+        """
+    ).fetchall()
+    feedback_by_segment = {row["segment_id"]: row for row in feedback_rows}
+
+    safe_rows = []
+    if include_safe_pending:
+        safe_rows = conn.execute(
+            """
+            SELECT
+                ts.segment_id,
+                ts.suggested_text,
+                ts.match_score
+            FROM translation_suggestions ts
+            WHERE ts.status = 'safe'
+            ORDER BY ts.match_score ASC, ts.updated_at ASC, ts.id ASC
+            """
+        ).fetchall()
+    safe_by_segment = {row["segment_id"]: row for row in safe_rows}
+
+    candidates = []
+    for row in rows:
+        feedback = feedback_by_segment.get(row["segment_id"])
+        safe = safe_by_segment.get(row["segment_id"])
+        suggested_text = row["old_text"]
+        decision = "bootstrap_old"
+
+        if feedback:
+            if feedback["decision"] == "edited":
+                suggested_text = feedback["corrected_text"]
+                decision = "edited"
+            elif feedback["decision"] == "accepted":
+                suggested_text = feedback["suggested_text"]
+                decision = "accepted"
+            elif feedback["decision"] == "accepted_old":
+                suggested_text = row["old_text"]
+                decision = "accepted_old"
+        elif safe:
+            suggested_text = safe["suggested_text"]
+            decision = "safe_pending"
+
+        candidates.append(
+            {
+                "segment_id": row["segment_id"],
+                "relative_path": row["relative_path"],
+                "source_line_number": row["source_line_number"],
+                "source_key": row["source_key"],
+                "spanish_text": row["spanish_text"],
+                "old_text": row["old_text"],
+                "output_line_number": row["output_line_number"],
+                "suggested_text": suggested_text,
+                "decision": decision,
+                "corrected_text": None,
+                "reason": None,
+            }
+        )
+
+    return candidates
+
+
+def apply_updates(
+    include_safe_pending: bool = False,
+    create_backup: bool = True,
+    bootstrap_old: bool = False,
+) -> None:
     settings = db.load_settings()
     started_at = datetime.now()
     output_root = db.project_path(settings["output_spanish"])
@@ -108,6 +211,7 @@ def apply_updates(include_safe_pending: bool = False, create_backup: bool = True
     print(f"[apply_safe_output_updates] Output root: {output_root}")
     print(f"[apply_safe_output_updates] Include safe pending: {include_safe_pending}")
     print(f"[apply_safe_output_updates] Create backup: {create_backup}")
+    print(f"[apply_safe_output_updates] Bootstrap old: {bootstrap_old}")
 
     applied = 0
     skipped = 0
@@ -117,19 +221,28 @@ def apply_updates(include_safe_pending: bool = False, create_backup: bool = True
 
     with db.connect(settings) as conn:
         db.ensure_database(conn)
-        candidates = load_candidates(conn, include_safe_pending)
+        if bootstrap_old:
+            candidates = load_bootstrap_candidates(conn, include_safe_pending)
+        else:
+            candidates = load_candidates(conn, include_safe_pending)
         candidate_count = len(candidates)
         print(f"[apply_safe_output_updates] Candidates: {candidate_count}")
 
         seen_segments: set[int] = set()
         for row in candidates:
-            if row["segment_id"] in seen_segments:
+            segment_id = row["segment_id"]
+            if segment_id in seen_segments:
                 skipped += 1
                 skip_reasons["duplicate_segment_candidate"] += 1
                 continue
-            seen_segments.add(row["segment_id"])
+            seen_segments.add(segment_id)
 
-            suggested_text = row["corrected_text"] if row["decision"] == "edited" else row["suggested_text"]
+            if row["decision"] == "edited":
+                suggested_text = row["corrected_text"]
+            elif row["decision"] == "accepted_old":
+                suggested_text = row["old_text"]
+            else:
+                suggested_text = row["suggested_text"]
             if suggested_text is None or suggested_text.strip() == "":
                 skipped += 1
                 skip_reasons["empty_suggestion"] += 1
@@ -179,6 +292,7 @@ def apply_updates(include_safe_pending: bool = False, create_backup: bool = True
         f"Rule version: {RULE_VERSION}",
         f"Include safe pending: {include_safe_pending}",
         f"Create backup: {create_backup}",
+        f"Bootstrap old: {bootstrap_old}",
         f"Backup root: {backup_root if create_backup else 'disabled'}",
         "",
         "Summary:",
@@ -199,20 +313,34 @@ def apply_updates(include_safe_pending: bool = False, create_backup: bool = True
     print("[apply_safe_output_updates] Done")
 
 
-def main(include_safe_pending: bool | None = None, create_backup: bool | None = None) -> None:
-    if include_safe_pending is None or create_backup is None:
+def main(
+    include_safe_pending: bool | None = None,
+    create_backup: bool | None = None,
+    bootstrap_old: bool | None = None,
+) -> None:
+    if include_safe_pending is None or create_backup is None or bootstrap_old is None:
         parser = argparse.ArgumentParser(description="Apply safe approved suggestions to output/spanish.")
         parser.add_argument(
             "--include-safe-pending",
             action="store_true",
             help="Also apply safe suggestions that are still pending review.",
         )
+        parser.add_argument(
+            "--bootstrap-old",
+            action="store_true",
+            help="Initial output bootstrap: write spanish_old to output, with reviewed/safe suggestions as overrides.",
+        )
         parser.add_argument("--no-backup", action="store_true", help="Do not create memory/backups copy.")
         args = parser.parse_args()
         include_safe_pending = args.include_safe_pending
         create_backup = not args.no_backup
+        bootstrap_old = args.bootstrap_old
 
-    apply_updates(include_safe_pending=include_safe_pending, create_backup=create_backup)
+    apply_updates(
+        include_safe_pending=include_safe_pending,
+        create_backup=create_backup,
+        bootstrap_old=bootstrap_old,
+    )
 
 
 if __name__ == "__main__":

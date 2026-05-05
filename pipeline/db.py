@@ -33,6 +33,16 @@ def get_database_path(settings: dict | None = None) -> Path:
     return project_path(settings["database_path"])
 
 
+def file_hash(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def connect(settings: dict | None = None) -> sqlite3.Connection:
     database_path = get_database_path(settings)
     database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -68,6 +78,20 @@ def write_report(settings: dict, script_name: str, lines: list[str]) -> Path:
     report_path = reports_dir / f"{timestamp}_{script_name}.txt"
     report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return report_path
+
+
+def get_logs_dir(settings: dict | None = None) -> Path:
+    settings = settings or load_settings()
+    return project_path(settings.get("logs_dir", "logs"))
+
+
+def write_log(settings: dict, script_name: str, lines: list[str]) -> Path:
+    logs_dir = get_logs_dir(settings)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = logs_dir / f"{timestamp}_{script_name}.log"
+    log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return log_path
 
 
 def ensure_database(conn: sqlite3.Connection) -> list[str]:

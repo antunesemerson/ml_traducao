@@ -167,6 +167,68 @@ def upsert_memory_pair(
     return "inserted"
 
 
+def build_feedback_memory(conn) -> dict[str, int]:
+    rows = conn.execute(
+        """
+        SELECT
+            f.segment_id,
+            f.decision,
+            f.corrected_text,
+            s.spanish_text,
+            s.english_text,
+            s.old_text,
+            ts.suggested_text,
+            ts.match_score
+        FROM suggestion_feedback f
+        LEFT JOIN translation_suggestions ts ON ts.id = f.suggestion_id
+        JOIN source_segments s ON s.id = f.segment_id
+        WHERE f.decision IN ('accepted', 'edited', 'accepted_old')
+          AND s.is_active = 1
+        """
+    ).fetchall()
+
+    inserted = 0
+    updated = 0
+    skipped = 0
+    for row in rows:
+        if row["decision"] == "accepted_old":
+            target_text = row["old_text"]
+            decision_origin = "accepted_old"
+        elif row["decision"] == "edited":
+            target_text = row["corrected_text"]
+            decision_origin = "edited"
+        elif row["decision"] == "accepted":
+            target_text = row["suggested_text"]
+            decision_origin = "accepted"
+        if is_blank(target_text):
+            skipped += 1
+            continue
+        confidence = 1.0 if decision_origin in {"edited", "accepted_old"} else max(row["match_score"] or 0.95, 0.95)
+        for source_language, source_text, origin in [
+            ("spanish", row["spanish_text"], f"human_feedback_{decision_origin}_spanish"),
+            ("english", row["english_text"], f"human_feedback_{decision_origin}_english"),
+        ]:
+            skip, _ = should_skip_pair(source_text, target_text, None)
+            if skip:
+                skipped += 1
+                continue
+            result = upsert_memory_pair(
+                conn=conn,
+                source_segment_id=row["segment_id"],
+                source_language=source_language,
+                source_text=source_text,
+                target_text=target_text,
+                confidence_score=confidence,
+                origin=origin,
+            )
+            if result == "inserted":
+                inserted += 1
+            else:
+                updated += 1
+
+    return {"inserted": inserted, "updated": updated, "skipped": skipped}
+
+
 def main() -> None:
     settings = db.load_settings()
     started_at = datetime.now()
@@ -181,6 +243,7 @@ def main() -> None:
     skipped_pairs = 0
     skip_counts: Counter = Counter()
     origin_counts: Counter = Counter()
+    feedback_stats = {"inserted": 0, "updated": 0, "skipped": 0}
 
     with db.connect(settings) as conn:
         db.ensure_database(conn)
@@ -188,7 +251,16 @@ def main() -> None:
             """
             UPDATE translation_memory
             SET usage_count = 0
-            WHERE origin IN ('trusted_spanish_old', 'trusted_english_old')
+            WHERE origin IN (
+                'trusted_spanish_old',
+                'trusted_english_old',
+                'human_feedback_accepted_spanish',
+                'human_feedback_accepted_english',
+                'human_feedback_edited_spanish',
+                'human_feedback_edited_english',
+                'human_feedback_accepted_old_spanish',
+                'human_feedback_accepted_old_english'
+            )
             """
         )
         total = conn.execute(
@@ -273,6 +345,9 @@ def main() -> None:
                     f"({processed_segments / total:.1%})"
                 )
 
+        feedback_stats = build_feedback_memory(conn)
+        conn.commit()
+
     elapsed = datetime.now() - started_at
     report_lines = [
         "Translation memory build report",
@@ -286,6 +361,9 @@ def main() -> None:
         f"- Pairs inserted: {inserted_pairs}",
         f"- Pairs updated: {updated_pairs}",
         f"- Pairs skipped: {skipped_pairs}",
+        f"- Feedback pairs inserted: {feedback_stats['inserted']}",
+        f"- Feedback pairs updated: {feedback_stats['updated']}",
+        f"- Feedback pairs skipped: {feedback_stats['skipped']}",
         "",
         "Origins:",
     ]
@@ -301,6 +379,12 @@ def main() -> None:
     print(f"[build_translation_memory] Pairs inserted: {inserted_pairs}")
     print(f"[build_translation_memory] Pairs updated: {updated_pairs}")
     print(f"[build_translation_memory] Pairs skipped: {skipped_pairs}")
+    print(
+        "[build_translation_memory] Feedback pairs: "
+        f"{feedback_stats['inserted']} inserted, "
+        f"{feedback_stats['updated']} updated, "
+        f"{feedback_stats['skipped']} skipped"
+    )
     print(f"[build_translation_memory] Report: {report_path}")
     print("[build_translation_memory] Done")
 

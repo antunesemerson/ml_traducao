@@ -10,6 +10,8 @@ memory/*.sqlite
 memory/*.sqlite-*
 memory/backups/
 reports/
+logs/
+execute_sql.py
 
 # Game localization sources and generated mod output
 source/
