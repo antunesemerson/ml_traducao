@@ -9,7 +9,7 @@ from difflib import SequenceMatcher
 import db
 
 
-RULE_VERSION = "segment_quality_v5"
+RULE_VERSION = "segment_quality_v8"
 BATCH_SIZE = 5000
 
 SPANISH_RESIDUE_PATTERNS = [
@@ -50,11 +50,33 @@ SPANISH_RESIDUE_PATTERNS = [
     ]
 ]
 
+PERSISTENT_SPANISH_RESIDUES = {
+    "cortesano": "cortes\u00e3o",
+    "cortesanos": "cortes\u00f5es",
+    "gobernante": "governante",
+    "gobernantes": "governantes",
+    "hacendado": "propriet\u00e1rio de terras",
+    "hacendados": "propriet\u00e1rios de terras",
+    "invitado": "convidado",
+    "invitados": "convidados",
+    "nueva": "nova",
+    "nuevas": "novas",
+    "decisiones": "decis\u00f5es",
+    "decisi\u00f3n": "decis\u00e3o",
+    "rechaza": "rejeita",
+    "rechazar": "rejeitar",
+    "situaci\u00f3n": "situa\u00e7\u00e3o",
+    "situaciones": "situa\u00e7\u00f5es",
+}
+
 SPANISH_ACCENT_PATTERN = re.compile(r"[\u00f1\u00bf\u00a1]")
 WORD_PATTERN = re.compile(r"[A-Za-z\u00c0-\u00ff]+", re.UNICODE)
 PROTECTED_TOKEN_PATTERN = re.compile(
     r"\$[^$\s]+\$|\[[^\]]+\]|#[A-Za-z0-9_]+|#!|@[A-Za-z0-9_]+!|\\n"
 )
+STRING_LITERAL_PATTERN = re.compile(r"'[^']*'|\"[^\"]*\"")
+MISSING_SPACE_AFTER_TOKEN_PATTERN = re.compile(r"(\]|\$[A-Za-z0-9_]+\$)(?=[A-Za-z\u00c0-\u00ff])")
+SPANISH_ANGULAR_QUOTE_MARKS = ("«", "»", "Â«", "Â»")
 LOCALIZATION_COMMAND_PATTERN = re.compile(r"\[[A-Za-z0-9_.$|:()'\" /-]+\]")
 MACRO_ONLY_PATTERN = re.compile(r"^[\s$A-Z0-9_|\[\].:#@!\\/-]+$")
 PORTUGUESE_HINT_PATTERN = re.compile(
@@ -89,7 +111,38 @@ def similarity(left: str | None, right: str | None) -> float:
 def protected_tokens(value: str | None) -> Counter:
     if not value:
         return Counter()
-    return Counter(PROTECTED_TOKEN_PATTERN.findall(value))
+    return Counter(normalize_protected_token(token) for token in PROTECTED_TOKEN_PATTERN.findall(value))
+
+
+def normalize_protected_token(token: str) -> str:
+    if not (token.startswith("[") and token.endswith("]")):
+        return token
+
+    command_name = token[1:].split("(", 1)[0].split("|", 1)[0].strip()
+    base_name = command_name.split(".")[-1]
+
+    if base_name == "Concept":
+        seen = 0
+
+        def replace_concept_literal(match: re.Match) -> str:
+            nonlocal seen
+            seen += 1
+            if seen == 1:
+                return match.group(0)
+            return "'<TEXT>'"
+
+        return STRING_LITERAL_PATTERN.sub(replace_concept_literal, token)
+
+    if base_name in {
+        "Select_CString",
+        "SelectLocalization",
+        "LocalPlayerString",
+        "PlayerString",
+        "GetString",
+    } or base_name.startswith("SelectLocalization") or base_name.endswith("String"):
+        return STRING_LITERAL_PATTERN.sub("'<TEXT>'", token)
+
+    return token
 
 
 def strip_protected_tokens(value: str | None) -> str:
@@ -163,6 +216,34 @@ def spanish_marker_count(value: str | None) -> int:
     if SPANISH_ACCENT_PATTERN.search(value):
         count += 2
     return count
+
+
+def persistent_residue_hits(value: str | None) -> list[dict]:
+    if not value:
+        return []
+    hits = []
+    normalized = value.casefold()
+    for spanish_term, portuguese_term in PERSISTENT_SPANISH_RESIDUES.items():
+        if re.search(rf"\b{re.escape(spanish_term)}\b", normalized):
+            hits.append(
+                {
+                    "spanish_term": spanish_term,
+                    "suggested_term": portuguese_term,
+                }
+            )
+    return hits
+
+
+def has_missing_space_after_token(value: str | None) -> bool:
+    if not value:
+        return False
+    return bool(MISSING_SPACE_AFTER_TOKEN_PATTERN.search(value))
+
+
+def has_spanish_angular_quotes(value: str | None) -> bool:
+    if not value:
+        return False
+    return any(mark in value for mark in SPANISH_ANGULAR_QUOTE_MARKS)
 
 
 def text_length_ratio(source: str | None, target: str | None) -> float:
@@ -241,6 +322,10 @@ def analyze_row(row) -> tuple[float, str, list[dict]]:
     human_segment = is_human_translatable_segment(spanish_text)
     short_human_segment = is_short_human_segment(spanish_text)
     proper_name_like = is_proper_name_like(spanish_text)
+    marker_count = spanish_marker_count(candidate)
+    residue_hits = persistent_residue_hits(candidate)
+    missing_space_after_token = has_missing_space_after_token(candidate)
+    spanish_angular_quotes = has_spanish_angular_quotes(candidate)
 
     if (
         not is_blank(approved_text)
@@ -276,7 +361,12 @@ def analyze_row(row) -> tuple[float, str, list[dict]]:
                     "message": "Segment is mostly CK3 syntax, macro, or localization command and protected tokens are preserved.",
                 }
             )
-            if portuguese_text is None or source_tokens == output_tokens:
+            if (
+                not residue_hits
+                and not missing_space_after_token
+                and not spanish_angular_quotes
+                and (portuguese_text is None or source_tokens == output_tokens)
+            ):
                 return 1.0, "trusted", reasons
         else:
             score -= 0.45
@@ -292,13 +382,44 @@ def analyze_row(row) -> tuple[float, str, list[dict]]:
                 }
             )
 
-    marker_count = spanish_marker_count(candidate)
+    if residue_hits:
+        score -= min(0.4, 0.2 * len(residue_hits))
+        reasons.append(
+            {
+                "rule": "persistent_spanish_residue",
+                "weight": -min(0.4, 0.2 * len(residue_hits)),
+                "hits": residue_hits,
+                "message": "Old translation contains known persistent Spanish residue.",
+            }
+        )
+
+    if missing_space_after_token:
+        score -= 0.12
+        reasons.append(
+            {
+                "rule": "missing_space_after_token",
+                "weight": -0.12,
+                "message": "Text appears to be glued to a protected token or localization tag.",
+            }
+        )
+
+    if spanish_angular_quotes:
+        score -= 0.16
+        reasons.append(
+            {
+                "rule": "spanish_angular_quotes",
+                "weight": -0.16,
+                "message": "Old translation contains Spanish-style angular quotation marks that should be removed in pt-BR output.",
+            }
+        )
 
     if (
         candidate
         and short_human_segment
         and source_tokens == old_tokens
         and marker_count == 0
+        and not missing_space_after_token
+        and not spanish_angular_quotes
     ):
         reasons.append(
             {
@@ -314,6 +435,8 @@ def analyze_row(row) -> tuple[float, str, list[dict]]:
         and proper_name_like
         and source_tokens == old_tokens
         and marker_count == 0
+        and not missing_space_after_token
+        and not spanish_angular_quotes
     ):
         reasons.append(
             {

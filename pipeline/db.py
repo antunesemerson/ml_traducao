@@ -274,6 +274,63 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
 
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS api_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            feedback_id INTEGER NOT NULL,
+            suggestion_id INTEGER,
+            segment_id INTEGER NOT NULL,
+            model TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            decision_suggested TEXT NOT NULL,
+            corrected_text TEXT,
+            confidence_score REAL NOT NULL,
+            reason TEXT,
+            detected_issues_json TEXT,
+            token_validation_status TEXT NOT NULL,
+            token_validation_details_json TEXT,
+            api_response_json TEXT,
+            status TEXT NOT NULL DEFAULT 'pending_human',
+            reviewed_by TEXT,
+            human_decision TEXT,
+            created_at TEXT NOT NULL,
+            reviewed_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(feedback_id) REFERENCES suggestion_feedback(id) ON DELETE CASCADE,
+            FOREIGN KEY(suggestion_id) REFERENCES translation_suggestions(id) ON DELETE SET NULL,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(feedback_id, model, prompt_version)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS inline_fragments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER NOT NULL,
+            package_name TEXT NOT NULL,
+            command_name TEXT,
+            argument_index INTEGER NOT NULL,
+            fragment_text TEXT NOT NULL,
+            fragment_hash TEXT,
+            fragment_role TEXT NOT NULL,
+            should_translate INTEGER NOT NULL DEFAULT 0,
+            suggested_text TEXT,
+            confidence_score REAL,
+            status TEXT NOT NULL DEFAULT 'indexed',
+            reasons_json TEXT,
+            indexed_at TEXT NOT NULL,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(segment_id, package_name, command_name, argument_index, fragment_hash)
+        )
+        """
+    )
+
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS glossary (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             term TEXT NOT NULL UNIQUE,
@@ -385,6 +442,57 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
             ],
         )
     )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "api_reviews",
+            [
+                ("feedback_id", "INTEGER"),
+                ("suggestion_id", "INTEGER"),
+                ("segment_id", "INTEGER"),
+                ("model", "TEXT"),
+                ("prompt_version", "TEXT"),
+                ("decision_suggested", "TEXT"),
+                ("corrected_text", "TEXT"),
+                ("confidence_score", "REAL"),
+                ("reason", "TEXT"),
+                ("detected_issues_json", "TEXT"),
+                ("token_validation_status", "TEXT"),
+                ("token_validation_details_json", "TEXT"),
+                ("api_response_json", "TEXT"),
+                ("status", "TEXT NOT NULL DEFAULT 'pending_human'"),
+                ("reviewed_by", "TEXT"),
+                ("human_decision", "TEXT"),
+                ("created_at", "TEXT"),
+                ("reviewed_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "inline_fragments",
+            [
+                ("segment_id", "INTEGER"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("source_line_number", "INTEGER"),
+                ("package_name", "TEXT"),
+                ("command_name", "TEXT"),
+                ("argument_index", "INTEGER"),
+                ("fragment_text", "TEXT"),
+                ("fragment_hash", "TEXT"),
+                ("fragment_role", "TEXT"),
+                ("should_translate", "INTEGER NOT NULL DEFAULT 0"),
+                ("suggested_text", "TEXT"),
+                ("confidence_score", "REAL"),
+                ("status", "TEXT NOT NULL DEFAULT 'indexed'"),
+                ("reasons_json", "TEXT"),
+                ("indexed_at", "TEXT"),
+            ],
+        )
+    )
 
     conn.execute(
         """
@@ -457,6 +565,36 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         CREATE UNIQUE INDEX IF NOT EXISTS idx_suggestion_feedback_pending_unique
         ON suggestion_feedback(suggestion_id)
         WHERE decision = 'pending' AND suggestion_id IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_api_reviews_feedback
+        ON api_reviews(feedback_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_api_reviews_segment
+        ON api_reviews(segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_api_reviews_status
+        ON api_reviews(status)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_inline_fragments_segment
+        ON inline_fragments(segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_inline_fragments_translate
+        ON inline_fragments(should_translate, status)
         """
     )
 

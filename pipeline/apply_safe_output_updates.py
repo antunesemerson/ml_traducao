@@ -9,7 +9,7 @@ from pathlib import Path
 import db
 
 
-RULE_VERSION = "apply_safe_output_updates_v1"
+RULE_VERSION = "apply_safe_output_updates_v3"
 
 
 def protected_tokens(value: str | None) -> Counter:
@@ -18,7 +18,41 @@ def protected_tokens(value: str | None) -> Counter:
     if not value:
         return Counter()
     pattern = re.compile(r"\$[^$\s]+\$|\[[^\]]+\]|#[A-Za-z0-9_]+|#!|@[A-Za-z0-9_]+!|\\n")
-    return Counter(pattern.findall(value))
+    return Counter(normalize_protected_token(token) for token in pattern.findall(value))
+
+
+def normalize_protected_token(token: str) -> str:
+    import re
+
+    if not (token.startswith("[") and token.endswith("]")):
+        return token
+
+    command_name = token[1:].split("(", 1)[0].split("|", 1)[0].strip()
+    base_name = command_name.split(".")[-1]
+    string_literal_pattern = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+    if base_name == "Concept":
+        seen = 0
+
+        def replace_concept_literal(match: re.Match) -> str:
+            nonlocal seen
+            seen += 1
+            if seen == 1:
+                return match.group(0)
+            return "'<TEXT>'"
+
+        return string_literal_pattern.sub(replace_concept_literal, token)
+
+    if base_name in {
+        "Select_CString",
+        "SelectLocalization",
+        "LocalPlayerString",
+        "PlayerString",
+        "GetString",
+    } or base_name.startswith("SelectLocalization") or base_name.endswith("String"):
+        return string_literal_pattern.sub("'<TEXT>'", token)
+
+    return token
 
 
 def replace_quoted_text(raw_line: str, new_text: str) -> str:
@@ -98,7 +132,6 @@ def load_candidates(conn, include_safe_pending: bool):
         WHERE (
               f.decision IN ('accepted', 'edited', 'accepted_old')
           )
-          AND (ts.status = 'safe' OR f.decision = 'accepted_old')
           AND s.is_active = 1
         ORDER BY s.relative_path, o.output_line_number, ts.match_score DESC
         """

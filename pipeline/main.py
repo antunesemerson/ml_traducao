@@ -15,10 +15,13 @@ import db
 STAGES = {
     "db": "db",
     "index": "index_source",
+    "inline": "index_inline_fragments",
     "analyze": "analyze_segments",
     "memory": "build_translation_memory",
     "suggest": "suggest_translations",
     "evaluate": "evaluate_suggestions",
+    "api_validate": "validate_suggestions_api",
+    "api_apply": "apply_api_reviews",
     "apply": "apply_safe_output_updates",
 }
 
@@ -124,6 +127,60 @@ def run_stage_with_log(stage_name: str, captured_lines: list[str]) -> None:
     captured_lines.extend(output.splitlines())
 
 
+def run_cycle_stages(log_lines: list[str], report_lines: list[str]) -> None:
+    for stage in ["analyze", "memory", "suggest", "evaluate"]:
+        run_stage_with_log(stage, log_lines)
+        report_lines.append(f"- {stage}: executed")
+
+
+def run_api_flow_with_log(
+    log_lines: list[str],
+    report_lines: list[str],
+    limit: int,
+    min_confidence: float,
+    concurrency: int,
+) -> None:
+    import apply_api_reviews
+    import validate_suggestions_api
+
+    print("[main] Running stage: api_validate (validate_suggestions_api.py)")
+    buffer = io.StringIO()
+    tee_stdout = Tee(sys.stdout, buffer)
+    tee_stderr = Tee(sys.stderr, buffer)
+    try:
+        with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+            validate_suggestions_api.main(limit=limit, concurrency=concurrency)
+    except Exception:
+        traceback.print_exc(file=buffer)
+        output = buffer.getvalue()
+        log_lines.extend(output.splitlines())
+        raise
+    output = buffer.getvalue()
+    log_lines.extend(output.splitlines())
+    report_lines.append(f"- api_validate: executed, limit {limit}, concurrency {concurrency}")
+
+    print("[main] Running stage: api_apply (apply_api_reviews.py)")
+    buffer = io.StringIO()
+    tee_stdout = Tee(sys.stdout, buffer)
+    tee_stderr = Tee(sys.stderr, buffer)
+    try:
+        with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+            apply_api_reviews.main(
+                min_confidence=min_confidence,
+                include_approved=False,
+                mark_auto_ready=True,
+                reviewer="api_auto",
+            )
+    except Exception:
+        traceback.print_exc(file=buffer)
+        output = buffer.getvalue()
+        log_lines.extend(output.splitlines())
+        raise
+    output = buffer.getvalue()
+    log_lines.extend(output.splitlines())
+    report_lines.append(f"- api_apply: executed, min confidence {min_confidence}")
+
+
 def write_main_report(settings: dict, mode: str, lines: list[str], started_at: datetime) -> None:
     elapsed = datetime.now() - started_at
     report_lines = [
@@ -144,8 +201,8 @@ def main() -> None:
         "mode",
         nargs="?",
         default="cycle",
-        choices=["setup", "cycle", "apply", "full"],
-        help="setup: db+index; cycle: setup+learning+suggestions; apply: rewrite output; full: cycle+apply",
+        choices=["setup", "cycle", "apply", "full", "full-api"],
+        help="setup: db+index; cycle: setup+learning+suggestions; apply: rewrite output; full: cycle+apply; full-api: cycle+api+cycle+apply",
     )
     parser.add_argument(
         "--force-index",
@@ -166,6 +223,29 @@ def main() -> None:
         "--bootstrap-old",
         action="store_true",
         help="During apply/full, initialize output/spanish from spanish_old before incremental cycles.",
+    )
+    parser.add_argument(
+        "--api-limit",
+        type=int,
+        default=200,
+        help="During full-api, maximum pending suggestions reviewed by API.",
+    )
+    parser.add_argument(
+        "--api-min-confidence",
+        type=float,
+        default=None,
+        help="During full-api, minimum API confidence promoted automatically.",
+    )
+    parser.add_argument(
+        "--api-concurrency",
+        type=int,
+        default=None,
+        help="During full-api, number of concurrent API reviews.",
+    )
+    parser.add_argument(
+        "--skip-apply",
+        action="store_true",
+        help="During full/full-api, run learning and API promotion without rewriting output files.",
     )
     args = parser.parse_args()
 
@@ -199,13 +279,39 @@ def main() -> None:
         if should_run_index:
             run_stage_with_log("index", log_lines)
             report_lines.append("- index: executed")
+            run_stage_with_log("inline", log_lines)
+            report_lines.append("- inline: executed")
 
-        if args.mode in {"cycle", "full"}:
-            for stage in ["analyze", "memory", "suggest", "evaluate"]:
-                run_stage_with_log(stage, log_lines)
-                report_lines.append(f"- {stage}: executed")
+        if args.mode in {"cycle", "full", "full-api"}:
+            if not should_run_index:
+                run_stage_with_log("inline", log_lines)
+                report_lines.append("- inline: executed")
+            run_cycle_stages(log_lines, report_lines)
 
-        if args.mode in {"apply", "full"}:
+        if args.mode == "full-api":
+            api_min_confidence = (
+                args.api_min_confidence
+                if args.api_min_confidence is not None
+                else float(settings.get("api_review", {}).get("auto_apply_min_confidence", 0.97))
+            )
+            api_concurrency = (
+                args.api_concurrency
+                if args.api_concurrency is not None
+                else int(settings.get("api_review", {}).get("concurrency", 4))
+            )
+            run_api_flow_with_log(
+                log_lines,
+                report_lines,
+                args.api_limit,
+                api_min_confidence,
+                api_concurrency,
+            )
+            run_cycle_stages(log_lines, report_lines)
+
+        if args.skip_apply and args.mode in {"apply", "full", "full-api"}:
+            print("[main] Apply skipped by --skip-apply")
+            report_lines.append("- apply: skipped by --skip-apply")
+        elif args.mode in {"apply", "full", "full-api"}:
             import apply_safe_output_updates
 
             print("[main] Running stage: apply (apply_safe_output_updates.py)")
@@ -215,10 +321,10 @@ def main() -> None:
             try:
                 with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
                     apply_safe_output_updates.main(
-                    include_safe_pending=args.apply_include_safe_pending,
-                    create_backup=not args.apply_no_backup,
-                    bootstrap_old=args.bootstrap_old,
-                )
+                        include_safe_pending=args.apply_include_safe_pending,
+                        create_backup=not args.apply_no_backup,
+                        bootstrap_old=args.bootstrap_old,
+                    )
             except Exception:
                 traceback.print_exc(file=buffer)
                 output = buffer.getvalue()
@@ -236,7 +342,7 @@ def main() -> None:
                 print(f"[main] Post-apply refresh detected {len(changes)} changed file(s)")
                 report_lines.append(f"- post-apply refresh: detected {len(changes)} changed file(s)")
                 report_lines.extend(f"  - {change}" for change in changes[:20])
-                for stage in ["index", "analyze", "memory", "suggest", "evaluate"]:
+                for stage in ["index", "inline", "analyze", "memory", "suggest", "evaluate"]:
                     run_stage_with_log(stage, log_lines)
                     report_lines.append(f"- post-apply {stage}: executed")
 

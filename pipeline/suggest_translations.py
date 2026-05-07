@@ -10,18 +10,40 @@ from difflib import SequenceMatcher
 import db
 
 
-RULE_VERSION = "translation_suggestions_v2"
+RULE_VERSION = "translation_suggestions_v6"
 BATCH_SIZE = 1000
 TARGET_LANGUAGE = "pt-BR"
 TARGET_CLASSIFICATIONS = ("review_needed", "rejected")
 MIN_FUZZY_SCORE = 0.88
 MAX_FUZZY_CANDIDATES = 500
 LENGTH_BUCKET_SIZE = 20
+REVIEWED_DECISIONS = ("accepted", "rejected", "edited", "accepted_old")
 
 PROTECTED_TOKEN_PATTERN = re.compile(
     r"\$[^$\s]+\$|\[[^\]]+\]|#[A-Za-z0-9_]+|#!|@[A-Za-z0-9_]+!|\\n"
 )
+STRING_LITERAL_PATTERN = re.compile(r"'[^']*'|\"[^\"]*\"")
 WORD_PATTERN = re.compile(r"[A-Za-z\u00c0-\u00ff]+", re.UNICODE)
+PERSISTENT_SPANISH_RESIDUES = {
+    "cortesano": "cortes\u00e3o",
+    "cortesanos": "cortes\u00f5es",
+    "gobernante": "governante",
+    "gobernantes": "governantes",
+    "hacendado": "propriet\u00e1rio de terras",
+    "hacendados": "propriet\u00e1rios de terras",
+    "invitado": "convidado",
+    "invitados": "convidados",
+    "nueva": "nova",
+    "nuevas": "novas",
+    "decisiones": "decis\u00f5es",
+    "decisi\u00f3n": "decis\u00e3o",
+    "rechaza": "rejeita",
+    "rechazar": "rejeitar",
+    "situaci\u00f3n": "situa\u00e7\u00e3o",
+    "situaciones": "situa\u00e7\u00f5es",
+}
+MISSING_SPACE_AFTER_TOKEN_PATTERN = re.compile(r"(\]|\$[A-Za-z0-9_]+\$)(?=[A-Za-z\u00c0-\u00ff])")
+SPANISH_ANGULAR_QUOTE_MARKS = ("«", "»", "Â«", "Â»")
 
 
 def sha256_text(value: str) -> str:
@@ -51,11 +73,90 @@ def is_blank(value: str | None) -> bool:
 def protected_tokens(value: str | None) -> Counter:
     if not value:
         return Counter()
-    return Counter(PROTECTED_TOKEN_PATTERN.findall(value))
+    return Counter(normalize_protected_token(token) for token in PROTECTED_TOKEN_PATTERN.findall(value))
+
+
+def normalize_protected_token(token: str) -> str:
+    if not (token.startswith("[") and token.endswith("]")):
+        return token
+
+    command_name = token[1:].split("(", 1)[0].split("|", 1)[0].strip()
+    base_name = command_name.split(".")[-1]
+
+    if base_name == "Concept":
+        seen = 0
+
+        def replace_concept_literal(match: re.Match) -> str:
+            nonlocal seen
+            seen += 1
+            if seen == 1:
+                return match.group(0)
+            return "'<TEXT>'"
+
+        return STRING_LITERAL_PATTERN.sub(replace_concept_literal, token)
+
+    if base_name in {
+        "Select_CString",
+        "SelectLocalization",
+        "LocalPlayerString",
+        "PlayerString",
+        "GetString",
+    } or base_name.startswith("SelectLocalization") or base_name.endswith("String"):
+        return STRING_LITERAL_PATTERN.sub("'<TEXT>'", token)
+
+    return token
 
 
 def word_count(value: str | None) -> int:
     return len(WORD_PATTERN.findall(value or ""))
+
+
+def apply_persistent_residue_replacements(value: str | None) -> str | None:
+    if value is None:
+        return None
+    updated = value
+    for spanish_term, portuguese_term in PERSISTENT_SPANISH_RESIDUES.items():
+        updated = re.sub(
+            rf"\b{re.escape(spanish_term)}\b",
+            portuguese_term,
+            updated,
+            flags=re.IGNORECASE,
+        )
+    return updated
+
+
+def has_persistent_residue(value: str | None) -> bool:
+    if not value:
+        return False
+    normalized = value.casefold()
+    return any(re.search(rf"\b{re.escape(term)}\b", normalized) for term in PERSISTENT_SPANISH_RESIDUES)
+
+
+def apply_spacing_replacements(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return MISSING_SPACE_AFTER_TOKEN_PATTERN.sub(r"\1 ", value)
+
+
+def has_missing_space_after_token(value: str | None) -> bool:
+    if not value:
+        return False
+    return bool(MISSING_SPACE_AFTER_TOKEN_PATTERN.search(value))
+
+
+def remove_spanish_angular_quotes(value: str | None) -> str | None:
+    if value is None:
+        return None
+    updated = value
+    for mark in SPANISH_ANGULAR_QUOTE_MARKS:
+        updated = updated.replace(mark, "")
+    return updated
+
+
+def has_spanish_angular_quotes(value: str | None) -> bool:
+    if not value:
+        return False
+    return any(mark in value for mark in SPANISH_ANGULAR_QUOTE_MARKS)
 
 
 def token_status(source_text: str | None, suggested_text: str | None) -> tuple[str, dict]:
@@ -92,7 +193,7 @@ def length_bucket(value: str | None) -> int:
     return len(value or "") // LENGTH_BUCKET_SIZE
 
 
-def load_memory_cache(conn):
+def load_memory_cache(conn, enable_fuzzy: bool, max_fuzzy_candidates: int):
     print("[suggest_translations] Loading translation memory cache")
     rows = conn.execute(
         """
@@ -125,17 +226,21 @@ def load_memory_cache(conn):
         }
         exact_key = (entry["source_language"], sha256_text(entry["source_text"]))
         exact_index.setdefault(exact_key, []).append(entry)
-        bucket = length_bucket(entry["source_text"])
-        fuzzy_index.setdefault(entry["source_language"], {}).setdefault(bucket, []).append(entry)
+        if enable_fuzzy:
+            bucket = length_bucket(entry["source_text"])
+            fuzzy_index.setdefault(entry["source_language"], {}).setdefault(bucket, []).append(entry)
 
-    for buckets in fuzzy_index.values():
-        for entries in buckets.values():
-            entries.sort(
-                key=lambda item: (item["usage_count"], item["confidence_score"]),
-                reverse=True,
-            )
+    if enable_fuzzy:
+        for buckets in fuzzy_index.values():
+            for entries in buckets.values():
+                entries.sort(
+                    key=lambda item: (item["usage_count"], item["confidence_score"]),
+                    reverse=True,
+                )
+                del entries[max_fuzzy_candidates:]
 
     print(f"[suggest_translations] Memory cache loaded: {len(rows)} pairs")
+    print(f"[suggest_translations] Fuzzy matching: {'enabled' if enable_fuzzy else 'disabled'}")
     return exact_index, fuzzy_index
 
 
@@ -182,7 +287,8 @@ def load_feedback_cache(conn):
                 row["origin"],
                 row["match_type"],
             )
-            by_signature[signature] = feedback
+            if row["decision"] in {"accepted", "edited", "accepted_old"}:
+                by_signature[signature] = feedback
             if row["decision"] == "rejected":
                 rejected_hashes_by_segment.setdefault(row["segment_id"], set()).add(row["suggested_hash"])
         if row["decision"] == "edited" and not is_blank(row["corrected_text"]):
@@ -199,7 +305,20 @@ def load_feedback_cache(conn):
 
 def sync_pending_feedback_queue(conn) -> dict[str, int]:
     now = db.utc_now()
+    reviewed_placeholders = ", ".join("?" for _ in REVIEWED_DECISIONS)
     deleted = conn.execute(
+        f"""
+        DELETE FROM suggestion_feedback
+        WHERE decision = 'pending'
+          AND segment_id IN (
+              SELECT DISTINCT segment_id
+              FROM suggestion_feedback
+              WHERE decision IN ('accepted', 'edited', 'accepted_old')
+          )
+        """,
+    ).rowcount
+
+    deleted += conn.execute(
         """
         DELETE FROM suggestion_feedback
         WHERE decision = 'pending'
@@ -207,7 +326,7 @@ def sync_pending_feedback_queue(conn) -> dict[str, int]:
     ).rowcount
 
     inserted = conn.execute(
-        """
+        f"""
         INSERT INTO suggestion_feedback (
             suggestion_id,
             segment_id,
@@ -232,15 +351,21 @@ def sync_pending_feedback_queue(conn) -> dict[str, int]:
             ?,
             ?
         FROM translation_suggestions ts
-        WHERE ts.status != 'stale'
+        WHERE ts.status IN ('safe', 'review')
           AND NOT EXISTS (
               SELECT 1
               FROM suggestion_feedback f
               WHERE f.suggestion_id = ts.id
-                AND f.decision IN ('accepted', 'rejected', 'edited', 'accepted_old')
+                AND f.decision IN ({reviewed_placeholders})
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM suggestion_feedback fs
+              WHERE fs.segment_id = ts.segment_id
+                AND fs.decision IN ('accepted', 'edited', 'accepted_old')
           )
         """,
-        (now, now, now),
+        (now, now, now, *REVIEWED_DECISIONS),
     ).rowcount
 
     return {"deleted_pending": deleted, "inserted_pending": inserted}
@@ -252,7 +377,7 @@ def memory_exact(exact_index, source_language: str, source_text: str | None):
     return exact_index.get((source_language, sha256_text(source_text or "")), [])[:10]
 
 
-def memory_fuzzy(fuzzy_index, source_language: str, source_text: str | None):
+def memory_fuzzy(fuzzy_index, source_language: str, source_text: str | None, max_fuzzy_candidates: int):
     if is_blank(source_text) or word_count(source_text) < 4:
         return []
 
@@ -262,12 +387,12 @@ def memory_fuzzy(fuzzy_index, source_language: str, source_text: str | None):
     candidates = []
     buckets = fuzzy_index.get(source_language, {})
     for bucket in range(min_bucket, max_bucket + 1):
-        candidates.extend(buckets.get(bucket, [])[:MAX_FUZZY_CANDIDATES])
+        candidates.extend(buckets.get(bucket, [])[:max_fuzzy_candidates])
     candidates.sort(
         key=lambda item: (item["usage_count"], item["confidence_score"]),
         reverse=True,
     )
-    candidates = candidates[:MAX_FUZZY_CANDIDATES]
+    candidates = candidates[:max_fuzzy_candidates]
 
     scored = []
     for row in candidates:
@@ -418,7 +543,14 @@ def apply_feedback_to_suggestion(
     return status, match_score, reasons
 
 
-def add_suggestion_from_memory(conn, row, memory_row, match_type: str, match_score: float, feedback_cache: dict) -> str:
+def add_suggestion_from_memory(
+    conn,
+    row,
+    memory_row,
+    match_type: str,
+    match_score: float,
+    feedback_cache: dict,
+) -> dict:
     token_state, token_details = token_status(row["spanish_text"], memory_row["target_text"])
     status = suggestion_status(match_type, match_score, token_state)
     reasons = [
@@ -453,7 +585,7 @@ def add_suggestion_from_memory(conn, row, memory_row, match_type: str, match_sco
         feedback_cache=feedback_cache,
     )
 
-    return upsert_suggestion(
+    result = upsert_suggestion(
         conn=conn,
         segment_id=row["id"],
         suggested_text=memory_row["target_text"],
@@ -465,9 +597,10 @@ def add_suggestion_from_memory(conn, row, memory_row, match_type: str, match_sco
         status=status,
         reasons=reasons,
     )
+    return {"result": result, "status": status}
 
 
-def add_corrected_feedback_suggestion(conn, row, feedback: dict) -> str:
+def add_corrected_feedback_suggestion(conn, row, feedback: dict) -> dict:
     suggested_text = feedback["corrected_text"]
     token_state, token_details = token_status(row["spanish_text"], suggested_text)
     status = "safe" if token_state == "ok" else "blocked"
@@ -489,7 +622,7 @@ def add_corrected_feedback_suggestion(conn, row, feedback: dict) -> str:
             }
         )
 
-    return upsert_suggestion(
+    result = upsert_suggestion(
         conn=conn,
         segment_id=row["id"],
         suggested_text=suggested_text,
@@ -501,15 +634,151 @@ def add_corrected_feedback_suggestion(conn, row, feedback: dict) -> str:
         status=status,
         reasons=reasons,
     )
+    return {"result": result, "status": status}
+
+
+def add_persistent_residue_suggestion(conn, row) -> dict | None:
+    base_text = row["old_text"]
+    source_language = "rule"
+    if is_blank(base_text) and has_persistent_residue(row["spanish_text"]):
+        base_text = row["spanish_text"]
+        source_language = "spanish_rule"
+
+    if not has_persistent_residue(base_text):
+        return None
+    suggested_text = apply_persistent_residue_replacements(base_text)
+    if suggested_text == base_text:
+        return None
+    token_state, token_details = token_status(row["spanish_text"], suggested_text)
+    status = "safe" if token_state == "ok" else "blocked"
+    reasons = [
+        {
+            "rule": "persistent_spanish_residue_replacement",
+            "replacements": PERSISTENT_SPANISH_RESIDUES,
+            "message": "Suggestion generated by replacing known persistent Spanish residue in old_text.",
+        }
+    ]
+    if token_details:
+        reasons.append(
+            {
+                "rule": "token_validation",
+                "token_status": token_state,
+                **token_details,
+                "message": "Persistent residue suggestion does not preserve Spanish source protected tokens.",
+            }
+        )
+
+    result = upsert_suggestion(
+        conn=conn,
+        segment_id=row["id"],
+        suggested_text=suggested_text,
+        source_language=source_language,
+        origin="persistent_residue_rule",
+        match_type="persistent_residue",
+        match_score=0.98 if token_state == "ok" else 0.0,
+        token_state=token_state,
+        status=status,
+        reasons=reasons,
+    )
+    return {"result": result, "status": status}
+
+
+def add_spacing_suggestion(conn, row) -> dict | None:
+    if not has_missing_space_after_token(row["old_text"]):
+        return None
+    suggested_text = apply_spacing_replacements(row["old_text"])
+    if suggested_text == row["old_text"]:
+        return None
+    token_state, token_details = token_status(row["spanish_text"], suggested_text)
+    status = "review" if token_state == "ok" else "blocked"
+    reasons = [
+        {
+            "rule": "missing_space_after_token_replacement",
+            "message": "Suggestion generated by adding whitespace after protected tokens glued to text.",
+        }
+    ]
+    if token_details:
+        reasons.append(
+            {
+                "rule": "token_validation",
+                "token_status": token_state,
+                **token_details,
+                "message": "Spacing suggestion does not preserve Spanish source protected tokens.",
+            }
+        )
+
+    result = upsert_suggestion(
+        conn=conn,
+        segment_id=row["id"],
+        suggested_text=suggested_text,
+        source_language="rule",
+        origin="formatting_rule",
+        match_type="missing_space_after_token",
+        match_score=0.86 if token_state == "ok" else 0.0,
+        token_state=token_state,
+        status=status,
+        reasons=reasons,
+    )
+    return {"result": result, "status": status}
+
+
+def add_angular_quotes_suggestion(conn, row) -> dict | None:
+    base_text = row["old_text"]
+    source_language = "rule"
+    if is_blank(base_text) and has_spanish_angular_quotes(row["spanish_text"]):
+        base_text = row["spanish_text"]
+        source_language = "spanish_rule"
+
+    if not has_spanish_angular_quotes(base_text):
+        return None
+    suggested_text = remove_spanish_angular_quotes(base_text)
+    if suggested_text == base_text:
+        return None
+    token_state, token_details = token_status(row["spanish_text"], suggested_text)
+    status = "safe" if token_state == "ok" else "blocked"
+    reasons = [
+        {
+            "rule": "spanish_angular_quotes_replacement",
+            "message": "Suggestion generated by removing Spanish-style angular quotation marks from pt-BR output.",
+        }
+    ]
+    if token_details:
+        reasons.append(
+            {
+                "rule": "token_validation",
+                "token_status": token_state,
+                **token_details,
+                "message": "Angular quote suggestion does not preserve Spanish source protected tokens.",
+            }
+        )
+
+    result = upsert_suggestion(
+        conn=conn,
+        segment_id=row["id"],
+        suggested_text=suggested_text,
+        source_language=source_language,
+        origin="punctuation_rule",
+        match_type="spanish_angular_quotes",
+        match_score=0.96 if token_state == "ok" else 0.0,
+        token_state=token_state,
+        status=status,
+        reasons=reasons,
+    )
+    return {"result": result, "status": status}
 
 
 def main() -> None:
     settings = db.load_settings()
+    suggestion_settings = settings.get("suggestions", {})
+    enable_fuzzy = bool(suggestion_settings.get("enable_fuzzy", False))
+    max_fuzzy_candidates = int(suggestion_settings.get("max_fuzzy_candidates", MAX_FUZZY_CANDIDATES))
     started_at = datetime.now()
     print("[suggest_translations] Starting suggestion generation")
     print(f"[suggest_translations] Rule version: {RULE_VERSION}")
     print(f"[suggest_translations] Database: {db.get_database_path(settings)}")
     print(f"[suggest_translations] Target classifications: {', '.join(TARGET_CLASSIFICATIONS)}")
+    print(f"[suggest_translations] Fuzzy enabled: {enable_fuzzy}")
+    print(f"[suggest_translations] Max fuzzy candidates: {max_fuzzy_candidates}")
 
     processed_segments = 0
     segments_with_suggestions = 0
@@ -533,7 +802,7 @@ def main() -> None:
             (db.utc_now(),),
         )
         print("[suggest_translations] Previous suggestions marked as stale")
-        exact_index, fuzzy_index = load_memory_cache(conn)
+        exact_index, fuzzy_index = load_memory_cache(conn, enable_fuzzy, max_fuzzy_candidates)
         feedback_cache = load_feedback_cache(conn)
         placeholders = ", ".join("?" for _ in TARGET_CLASSIFICATIONS)
         total = conn.execute(
@@ -577,54 +846,102 @@ def main() -> None:
             for row in rows:
                 processed_segments += 1
                 segment_suggestions = 0
+                viable_segment_suggestions = 0
 
                 corrected_feedback = feedback_cache["corrected_by_segment"].get(row["id"])
                 if corrected_feedback:
-                    result = add_corrected_feedback_suggestion(conn, row, corrected_feedback)
+                    suggestion = add_corrected_feedback_suggestion(conn, row, corrected_feedback)
+                    result = suggestion["result"]
                     inserted += 1 if result == "inserted" else 0
                     updated += 1 if result == "updated" else 0
                     segment_suggestions += 1
+                    viable_segment_suggestions += 1 if suggestion["status"] in {"safe", "review"} else 0
                     match_counts["feedback_corrected"] += 1
 
-                for memory_row in memory_exact(exact_index, "spanish", row["spanish_text"]):
-                    result = add_suggestion_from_memory(
-                        conn, row, memory_row, "exact_spanish", 1.0, feedback_cache
-                    )
+                residue_result = add_persistent_residue_suggestion(conn, row)
+                if residue_result:
+                    result = residue_result["result"]
                     inserted += 1 if result == "inserted" else 0
                     updated += 1 if result == "updated" else 0
                     segment_suggestions += 1
+                    viable_segment_suggestions += 1 if residue_result["status"] in {"safe", "review"} else 0
+                    match_counts["persistent_residue"] += 1
+
+                spacing_result = add_spacing_suggestion(conn, row)
+                if spacing_result:
+                    result = spacing_result["result"]
+                    inserted += 1 if result == "inserted" else 0
+                    updated += 1 if result == "updated" else 0
+                    segment_suggestions += 1
+                    viable_segment_suggestions += 1 if spacing_result["status"] in {"safe", "review"} else 0
+                    match_counts["missing_space_after_token"] += 1
+
+                angular_quotes_result = add_angular_quotes_suggestion(conn, row)
+                if angular_quotes_result:
+                    result = angular_quotes_result["result"]
+                    inserted += 1 if result == "inserted" else 0
+                    updated += 1 if result == "updated" else 0
+                    segment_suggestions += 1
+                    viable_segment_suggestions += 1 if angular_quotes_result["status"] in {"safe", "review"} else 0
+                    match_counts["spanish_angular_quotes"] += 1
+
+                for memory_row in memory_exact(exact_index, "spanish", row["spanish_text"]):
+                    suggestion = add_suggestion_from_memory(
+                        conn, row, memory_row, "exact_spanish", 1.0, feedback_cache
+                    )
+                    result = suggestion["result"]
+                    inserted += 1 if result == "inserted" else 0
+                    updated += 1 if result == "updated" else 0
+                    segment_suggestions += 1
+                    viable_segment_suggestions += 1 if suggestion["status"] in {"safe", "review"} else 0
                     match_counts["exact_spanish"] += 1
 
                 for memory_row in memory_exact(exact_index, "english", row["english_text"]):
-                    result = add_suggestion_from_memory(
+                    suggestion = add_suggestion_from_memory(
                         conn, row, memory_row, "exact_english", 1.0, feedback_cache
                     )
+                    result = suggestion["result"]
                     inserted += 1 if result == "inserted" else 0
                     updated += 1 if result == "updated" else 0
                     segment_suggestions += 1
+                    viable_segment_suggestions += 1 if suggestion["status"] in {"safe", "review"} else 0
                     match_counts["exact_english"] += 1
 
-                if segment_suggestions == 0:
-                    for score, memory_row in memory_fuzzy(fuzzy_index, "spanish", row["spanish_text"]):
-                        result = add_suggestion_from_memory(
+                if enable_fuzzy and viable_segment_suggestions == 0:
+                    for score, memory_row in memory_fuzzy(
+                        fuzzy_index,
+                        "spanish",
+                        row["spanish_text"],
+                        max_fuzzy_candidates,
+                    ):
+                        suggestion = add_suggestion_from_memory(
                             conn, row, memory_row, "fuzzy_spanish", score, feedback_cache
                         )
+                        result = suggestion["result"]
                         inserted += 1 if result == "inserted" else 0
                         updated += 1 if result == "updated" else 0
                         segment_suggestions += 1
+                        viable_segment_suggestions += 1 if suggestion["status"] in {"safe", "review"} else 0
                         match_counts["fuzzy_spanish"] += 1
 
-                if segment_suggestions == 0:
-                    for score, memory_row in memory_fuzzy(fuzzy_index, "english", row["english_text"]):
-                        result = add_suggestion_from_memory(
+                if enable_fuzzy and viable_segment_suggestions == 0:
+                    for score, memory_row in memory_fuzzy(
+                        fuzzy_index,
+                        "english",
+                        row["english_text"],
+                        max_fuzzy_candidates,
+                    ):
+                        suggestion = add_suggestion_from_memory(
                             conn, row, memory_row, "fuzzy_english", score, feedback_cache
                         )
+                        result = suggestion["result"]
                         inserted += 1 if result == "inserted" else 0
                         updated += 1 if result == "updated" else 0
                         segment_suggestions += 1
+                        viable_segment_suggestions += 1 if suggestion["status"] in {"safe", "review"} else 0
                         match_counts["fuzzy_english"] += 1
 
-                if segment_suggestions:
+                if viable_segment_suggestions:
                     segments_with_suggestions += 1
                 else:
                     no_match += 1
@@ -669,6 +986,8 @@ def main() -> None:
         f"Started at: {started_at.isoformat(timespec='seconds')}",
         f"Elapsed: {elapsed}",
         f"Rule version: {RULE_VERSION}",
+        f"Fuzzy enabled: {enable_fuzzy}",
+        f"Max fuzzy candidates: {max_fuzzy_candidates}",
         "",
         "Summary:",
         f"- Segments inspected: {processed_segments}",
