@@ -2,17 +2,9 @@
 
 # CK3 PT-BR Localization ML Pipeline
 
-Pipeline local para analisar arquivos de localization do Crusader Kings III, aprender com uma traducao beta em portugues brasileiro e gerar sugestoes seguras para reescrever `output/spanish` como mod que substitui o idioma espanhol.
+Pipeline local para analisar arquivos de localization do Crusader Kings III e gerar um mod que substitui o pacote espanhol por portugues brasileiro.
 
-## Objetivo
-
-- Preservar `source` como entrada somente leitura.
-- Manter `output/spanish` como espelho estrutural de `source/spanish_source`.
-- Classificar segmentos por confiabilidade.
-- Construir memoria de traducao com segmentos confiaveis.
-- Gerar sugestoes, receber feedback humano e melhorar em ciclos.
-- Revisar sugestoes com API externa de forma auditavel, sem aplicar automaticamente por padrao.
-- Aplicar no `output/spanish` somente sugestoes seguras/aprovadas.
+O projeto trabalha com arquivos `.yml`, banco SQLite, memoria de traducao e ciclos de aprendizado local. O foco atual e corrigir residuos de espanhol com alta confiabilidade, sem depender de API externa.
 
 ## Estrutura
 
@@ -22,271 +14,253 @@ pipeline/
 assets/
 memory/
 reports/
+logs/
 source/
 output/spanish/
 ```
 
-`source/` e `output/` ficam fora do Git por conterem arquivos extraidos/gerados do jogo. O banco SQLite e os relatorios tambem sao artefatos locais.
+`source/`, `output/`, `memory/`, `reports/` e `logs/` sao artefatos locais e nao devem ser versionados.
 
-## Pipeline
+Pacotes esperados:
 
-Comando principal:
+- `source/spanish_source`: espanhol original, espelho estrutural.
+- `source/english_source`: ingles original, referencia semantica.
+- `source/spanish_old`: melhor traducao atual usada como base.
+- `output/spanish`: saida final do mod.
 
-```powershell
-python pipeline\main.py cycle
-```
+## Fluxos
 
-Modos:
+### Fluxo Principal
+
+Usado para indexar, analisar, construir memoria, sugerir e aplicar no output.
 
 ```powershell
 python pipeline\main.py setup
 python pipeline\main.py cycle
 python pipeline\main.py apply
 python pipeline\main.py full
-python pipeline\main.py full-api
 ```
 
-- `setup`: cria/atualiza banco e roda indexacao somente se os hashes dos arquivos mudaram.
-- `cycle`: roda `setup`, analise, memoria, sugestoes e avaliacao.
-- `apply`: aplica sugestoes seguras/aprovadas em `output/spanish`.
+- `setup`: cria/atualiza banco e indexa arquivos quando houver mudancas.
+- `cycle`: roda analise, memoria, sugestoes e avaliacao.
+- `apply`: reescreve `output/spanish` com sugestoes aprovadas.
 - `full`: roda `cycle` e depois `apply`.
-- `full-api`: roda `cycle`, revisa ate 200 sugestoes com API, promove respostas com confianca minima configurada, roda novo `cycle` e depois `apply`.
 
-Forcar reindexacao:
-
-```powershell
-python pipeline\main.py cycle --force-index
-```
-
-Aplicar tambem sugestoes `safe` ainda pendentes:
-
-```powershell
-python pipeline\main.py apply --apply-include-safe-pending
-```
-
-Primeira criacao do `output/spanish` traduzido a partir de `source/spanish_old`:
+Primeiro preenchimento completo do output a partir de `source/spanish_old`:
 
 ```powershell
 python pipeline\main.py apply --bootstrap-old
 ```
 
-Esse modo e para o primeiro preenchimento real do mod. Ele escreve `old_text` no `output/spanish` para todos os segmentos possiveis e usa feedback/sugestoes como sobreposicao quando existirem. Depois desse bootstrap, use `apply` sem `--bootstrap-old` para aplicar apenas mudancas incrementais.
+### Aprendizado Local Sem API
 
-## Ciclo De Aprendizado
-
-1. Rode:
+Usado para calibrar confianca em lotes pequenos, sem escrever `output/spanish`.
 
 ```powershell
-python pipeline\main.py cycle
+python pipeline\main.py learn-local --learn-limit 20
 ```
 
-2. Revise alguns registros em `suggestion_feedback`.
+Comecar por exemplos positivos do corpus central:
 
-Decisoes aceitas:
+```powershell
+python pipeline\main.py learn-local --learn-source positive --learn-focus core --learn-limit 20
+```
+
+Revisar pendencias problemáticas, como no fluxo anterior:
+
+```powershell
+python pipeline\main.py learn-local --learn-source pending --learn-focus all --learn-limit 20
+```
+
+Revise os candidatos no banco:
 
 ```sql
-UPDATE suggestion_feedback
-SET decision = 'accepted'
-WHERE id = ...;
+SELECT
+  id,
+  segment_id,
+  english_text,
+  old_text,
+  suggested_text,
+  local_confidence_score,
+  local_status,
+  human_label,
+  reason
+FROM local_learning_candidates
+WHERE run_id = (SELECT MAX(id) FROM local_learning_runs)
+ORDER BY id;
 ```
 
-Decisoes rejeitadas:
+Classifique por categoria:
 
 ```sql
-UPDATE suggestion_feedback
-SET decision = 'rejected', reason = 'contexto errado'
-WHERE id = ...;
+UPDATE local_learning_candidates
+SET human_label = 'structure_error',
+    reason = 'token colado ao texto',
+    reviewer = 'emerson',
+    reviewed_at = datetime('now'),
+    updated_at = datetime('now')
+WHERE id IN (...);
 ```
 
-Correcoes manuais:
-
-```sql
-UPDATE suggestion_feedback
-SET decision = 'edited', corrected_text = 'Texto corrigido'
-WHERE id = ...;
-```
-
-Quando a sugestao estiver errada, mas o `old_text` ja estiver correto:
-
-```sql
-UPDATE suggestion_feedback
-SET decision = 'accepted_old', reason = 'old_text esta certo'
-WHERE id = ...;
-```
-
-`reason` e apenas informativo. O comportamento do sistema deve depender de `decision`.
-
-3. Rode novamente:
+Consumir os rotulos e ajustar pesos:
 
 ```powershell
-python pipeline\main.py cycle
+python pipeline\main.py learn-feedback
 ```
 
-Registros `pending` sao reconstruidos automaticamente e nao contam como aprendizado. Registros `accepted`, `edited` e `accepted_old` fecham o segmento como resolvido. Registros `rejected` descartam aquela sugestao, mas o segmento continua aberto para novas tentativas.
+Esse passo tambem sincroniza confirmacoes por segmento:
 
-4. Quando as sugestoes estiverem boas:
+- `human_confirmed`: revisao humana, fica bloqueada para mudancas automaticas.
+- `auto_confirmed`: revisao automatica, conta como alta confianca, mas pode ser revisada depois.
+
+Consultar a cobertura total:
 
 ```powershell
-python pipeline\main.py apply
+python pipeline\main.py confirmations
 ```
 
-Por padrao, `apply` usa apenas sugestoes aprovadas/editadas e cria backup em `memory/backups`.
-
-No primeiro ciclo do projeto, como `output/spanish` ainda e uma copia do espanhol original, rode:
+Gerar um relatorio conservador de confirmacoes automaticas possiveis:
 
 ```powershell
-python pipeline\main.py apply --bootstrap-old
+python pipeline\main.py auto-validate
 ```
 
-Nos ciclos seguintes, use o apply incremental:
+Por padrao esse comando nao grava nada no banco. Para gravar `auto_confirmed`, use somente depois de revisar o relatorio:
 
 ```powershell
-python pipeline\main.py apply
+python pipeline\main.py auto-validate --auto-apply
 ```
 
-## Scripts
-
-- `pipeline/db.py`: schema e migracoes incrementais.
-- `pipeline/index_source.py`: extrai e alinha segmentos dos pacotes.
-- `pipeline/index_inline_fragments.py`: extrai textos traduziveis dentro de comandos CK3.
-- `pipeline/analyze_segments.py`: classifica confiabilidade.
-- `pipeline/build_translation_memory.py`: monta memoria de traducao.
-- `pipeline/suggest_translations.py`: gera sugestoes e fila de feedback.
-- `pipeline/validate_suggestions_api.py`: cria pareceres de API em `api_reviews`.
-- `pipeline/apply_api_reviews.py`: promove pareceres aprovados/seguros para `suggestion_feedback`.
-- `pipeline/evaluate_suggestions.py`: mede precisao, aprendizado, fila e aplicacao no output.
-- `pipeline/apply_safe_output_updates.py`: reescreve `output/spanish`.
-- `pipeline/main.py`: orquestra o fluxo.
-
-## Revisao Com API
-
-A API funciona como parecer auditavel. Ela grava em `api_reviews` e nao altera `suggestion_feedback` por conta propria.
-
-Configure a chave no ambiente:
+Para nomes proprios e dinastias, use o trilho dedicado. Ele e mais rapido e mais seguro porque so olha `names/` e `dynasties/`, sem misturar textos humanos:
 
 ```powershell
-$env:OPENAI_API_KEY = "..."
+python pipeline\main.py auto-validate-names --auto-limit 5000
 ```
 
-Se existir um `.env` na raiz, `validate_suggestions_api.py` tambem carrega automaticamente:
+Se o relatorio estiver limpo:
+
+```powershell
+python pipeline\main.py auto-validate-names --auto-limit 5000 --auto-apply
+```
+
+Regra inicial desse trilho: `english_text`, `spanish_text` e `old_text` precisam ser iguais apos normalizacao, sem tokens CK3 e com ate 4 palavras visiveis.
+
+Depois rode outro lote:
+
+```powershell
+python pipeline\main.py learn-local --learn-source positive --learn-focus core --learn-limit 20
+```
+
+## Rotulos Locais
+
+Escolha o rotulo pelo principal motivo de a sugestao nao poder ser aplicada como esta. Nao e necessario preencher `corrected_text` na maioria dos casos.
+
+- `correct`: pronto como esta. Tokens, estrutura, sentido e portugues estao bons.
+- `minor_fix`: traducao, tokens e estrutura estao certos; falta apenas limpeza superficial, como `¿`, `¡`, `«`, `»` ou espaco simples.
+- `major_fix`: estrutura aproveitavel e boa parte traduzida, mas ainda precisa reescrita relevante.
+- `residual_spanish`: muito espanhol residual ou texto quase todo em espanhol.
+- `structure_error`: problema de token, comando CK3, literal dentro de comando, macro de genero, tag ou markup.
+- `semantic_error`: portugues fluente, mas sentido errado.
+- `wrong`: sugestao inutil, fora de contexto, igual ao texto antigo ruim ou quase igual.
+- `harmful`: pioraria texto bom ou quebraria estrutura importante.
+
+Regra de desempate:
+
+- Token, comando CK3, literal, macro ou markup: `structure_error`.
+- Espanhol residual dominante: `residual_spanish`.
+- Limpeza superficial sem risco estrutural: `minor_fix`.
+- Pronto para uso: `correct`.
+
+Exemplos de `structure_error`:
 
 ```text
-OPENAI_API_KEY=...
-OPENAI_MODEL=gpt-5.4-mini
+[house.GetBaseName]abandonou
+[taster.Custom('ES_OA')]a
+[Select_CString(...)]fala
+[Select_CString( hosted_child.IsFemale, 'Esta cria', 'Este crio' )]
+[Concept('decision', 'decisiones')|E]
+token removido, token duplicado, #EMP/#! quebrado
 ```
 
-Instale dependencias:
+## Corpus Prioritario
 
-```powershell
-pip install -r requirements.txt
-```
+Para aumentar a confiabilidade do aprendizado, comece validando arquivos centrais do jogo. Eles contem termos que aparecem em menus, tooltips e referencias globais.
 
-Gerar pareceres para sugestoes pendentes:
+Prioridade sugerida:
 
-```powershell
-python pipeline\validate_suggestions_api.py --limit 25
-```
+1. Conceitos, glossario e interface principal.
+2. Titulos, nomes, casas, culturas e religioes.
+3. Menus recorrentes: cortes, situacoes, decisoes, conselheiros, personagens.
+4. Traits, modifiers, buildings, laws e war/interaction.
+5. Eventos narrativos longos.
 
-Politica para comandos CK3: a API deve preservar estrutura e chaves reservadas, mas pode traduzir texto exibido dentro de argumentos. Exemplo:
+Motivo: corrigir primeiro termos como `cortesanos`, `situaciones`, `decisiones`, `rechaza` nos arquivos centrais cria memoria/glossario mais confiavel para o restante da traducao.
+
+Grupos disponiveis no `learn-local`:
 
 ```text
-[Concept('decision', 'decisiones')|E] -> [Concept('decision', 'decisões')|E]
+all
+core
+titles
+world
+ui
+events
 ```
 
-Revisar no banco:
+Use `--learn-source positive` para mapear exemplos bons e `--learn-source pending` para revisar sugestoes de correcao.
 
-```sql
-SELECT *
-FROM api_reviews
-WHERE status = 'pending_human'
-ORDER BY confidence_score DESC;
-```
+## Regras CK3 Importantes
 
-Quando um parecer da API estiver bom, aprove:
+Tokens e comandos normalmente ficam em ingles e devem ser preservados.
 
-```sql
-UPDATE api_reviews
-SET status = 'approved'
-WHERE id = ...;
-```
-
-Promover pareceres aprovados para `suggestion_feedback`:
-
-```powershell
-python pipeline\apply_api_reviews.py --include-approved
-```
-
-Automacao conservadora, apenas para respostas com alta confianca e tokens preservados:
-
-```powershell
-python pipeline\apply_api_reviews.py --mark-auto-ready --min-confidence 0.97
-```
-
-Depois rode o ciclo normal para reconstruir memoria e metricas:
-
-```powershell
-python pipeline\main.py cycle
-```
-
-Fluxo completo com API e output:
-
-```powershell
-python pipeline\main.py full-api
-```
-
-Por padrao, esse modo valida ate 200 sugestoes por ciclo e promove automaticamente apenas pareceres com `confidence_score >= 0.97` e tokens validos. Para ajustar:
-
-```powershell
-python pipeline\main.py full-api --api-limit 200 --api-min-confidence 0.97 --api-concurrency 4
-```
-
-Para testar uma nova confianca de promocao sem reescrever `output/spanish`, use:
-
-```powershell
-python pipeline\main.py full-api --api-limit 200 --api-min-confidence 0.95 --api-concurrency 4 --skip-apply
-```
-
-Para reduzir tempo local, o fuzzy matching de memoria fica desativado por padrao em `config/settings.json`, porque os ciclos recentes mostraram melhor qualidade nas regras, memoria exata, feedback humano e API. Se quiser testar mais cobertura com mais custo:
-
-```json
-"suggestions": {
-  "enable_fuzzy": true,
-  "max_fuzzy_candidates": 150
-}
-```
-
-## Fragmentos Inline CK3
-
-Alguns comandos CK3 tem estrutura protegida, mas contem textos traduziveis dentro de aspas:
+Exemplos com texto interno traduzivel:
 
 ```text
 [Concept('head_of_faith', 'cabeza de tu fe')|E]
+[Concept('decision', 'decisiones')|E]
 [Select_CString( CHARACTER.IsLocalPlayer, 'tu', 'su' )]
 [CHARACTER.LocalPlayerString( 'robaste', 'robo' )]
 ```
 
-`index_inline_fragments.py` cataloga esses fragmentos em `inline_fragments`, separando chaves reservadas de textos traduziveis. A primeira versao e observacional; a proxima evolucao e gerar sugestoes e aplicar correcoes dentro desses comandos preservando a estrutura.
+O identificador tecnico deve ser preservado, mas textos exibidos ao jogador podem precisar traducao.
 
-## Residuos Persistentes
-
-Algumas palavras espanholas recorrentes podem ser tratadas por regra local antes de uma camada com API/LLM. A lista inicial fica em:
-
-- `pipeline/analyze_segments.py`: `PERSISTENT_SPANISH_RESIDUES`
-- `pipeline/suggest_translations.py`: `PERSISTENT_SPANISH_RESIDUES`
-
-Exemplos atuais:
+Pontuacao espanhola deve ser removida no pt-BR:
 
 ```text
-cortesano -> cortesão
-cortesanos -> cortesões
-decisiones -> decisões
-gobernantes -> governantes
-invitados -> convidados
-rechaza -> rejeita
-situación -> situação
-situaciones -> situações
+¿Pergunta? -> Pergunta?
+¡Texto! -> Texto!
+«Texto» -> Texto
 ```
 
-Essas regras aumentam a prioridade de revisao e podem gerar sugestoes seguras quando os tokens do `spanish_source` continuam preservados.
+Macros de genero como `Custom('ES_OA')` ja geram a letra necessaria:
 
-Tambem ha regras conservadoras de formatacao para sugerir revisao quando texto aparece grudado apos tags ou tokens protegidos, e para remover aspas angulares espanholas `«»` da saida pt-BR.
+```text
+enjoad[taster.Custom('ES_OA')]a -> enjoad[taster.Custom('ES_OA')]
+```
+
+## Scripts Principais
+
+- `pipeline/db.py`: banco e migracoes.
+- `pipeline/index_source.py`: extrai segmentos dos pacotes.
+- `pipeline/index_inline_fragments.py`: cataloga textos traduziveis dentro de comandos CK3.
+- `pipeline/analyze_segments.py`: classifica qualidade dos segmentos.
+- `pipeline/build_translation_memory.py`: monta memoria.
+- `pipeline/suggest_translations.py`: gera sugestoes.
+- `pipeline/local_quality_validator.py`: valida residuos, pontuacao, espacos e estrutura.
+- `pipeline/local_learning_cycle.py`: cria fila local de aprendizado.
+- `pipeline/apply_local_learning_feedback.py`: consome rotulos humanos e ajusta pesos.
+- `pipeline/segment_confirmation_report.py`: mede cobertura humana/automatica confirmada.
+- `pipeline/auto_validate_segments.py`: estima e opcionalmente grava confirmacoes automaticas.
+- `pipeline/evaluate_suggestions.py`: gera metricas.
+- `pipeline/apply_safe_output_updates.py`: reescreve `output/spanish`.
+- `pipeline/main.py`: orquestra os fluxos.
+
+## API
+
+O fluxo com API ainda existe como apoio opcional:
+
+```powershell
+python pipeline\main.py full-api --api-limit 200 --api-min-confidence 0.95 --api-concurrency 4
+```
+
+No momento, o foco do projeto e evoluir o aprendizado local para reduzir a dependencia da API.

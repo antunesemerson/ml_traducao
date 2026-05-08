@@ -22,6 +22,16 @@ STAGES = {
     "evaluate": "evaluate_suggestions",
     "api_validate": "validate_suggestions_api",
     "api_apply": "apply_api_reviews",
+    "learn_local": "local_learning_cycle",
+    "learn_feedback": "apply_local_learning_feedback",
+    "confirmations": "segment_confirmation_report",
+    "auto_validate": "auto_validate_segments",
+    "auto_validate_names": "auto_validate_names",
+    "name_rejections": "report_name_rejections",
+    "name_disagreements": "review_name_disagreements",
+    "name_queue": "build_name_equivalence_queue",
+    "name_apply": "apply_name_equivalences",
+    "dynasty_prefixes": "report_dynasty_prefixes",
     "apply": "apply_safe_output_updates",
 }
 
@@ -201,8 +211,21 @@ def main() -> None:
         "mode",
         nargs="?",
         default="cycle",
-        choices=["setup", "cycle", "apply", "full", "full-api"],
-        help="setup: db+index; cycle: setup+learning+suggestions; apply: rewrite output; full: cycle+apply; full-api: cycle+api+cycle+apply",
+        choices=[
+            "setup",
+            "cycle",
+            "learn-local",
+            "learn-feedback",
+            "confirmations",
+            "auto-validate",
+            "auto-validate-names",
+            "name-queue",
+            "name-apply",
+            "apply",
+            "full",
+            "full-api",
+        ],
+        help="setup: db+index; cycle: setup+learning+suggestions; learn-local: cycle+small local review queue; learn-feedback: consume reviewed local labels; confirmations: report confirmation coverage; auto-validate: report or write automatic confirmations; auto-validate-names: safely confirm name/dynasty rows; name-queue: queue historical name equivalences for human review; name-apply: apply human-confirmed name equivalences; apply: rewrite output; full: cycle+apply; full-api: cycle+api+cycle+apply",
     )
     parser.add_argument(
         "--force-index",
@@ -247,6 +270,47 @@ def main() -> None:
         action="store_true",
         help="During full/full-api, run learning and API promotion without rewriting output files.",
     )
+    parser.add_argument(
+        "--learn-limit",
+        type=int,
+        default=None,
+        help="During learn-local, number of local learning candidates to queue.",
+    )
+    parser.add_argument(
+        "--learn-auto-confidence",
+        type=float,
+        default=None,
+        help="During learn-local, confidence threshold used only to mark high-confidence preview rows.",
+    )
+    parser.add_argument(
+        "--learn-source",
+        choices=["pending", "positive"],
+        default=None,
+        help="During learn-local, use pending suggestions or positive source samples.",
+    )
+    parser.add_argument(
+        "--learn-focus",
+        choices=["all", "core", "titles", "world", "ui", "events"],
+        default=None,
+        help="During learn-local, restrict the queue to a priority corpus group.",
+    )
+    parser.add_argument(
+        "--auto-limit",
+        type=int,
+        default=None,
+        help="During auto-validate, maximum candidates inspected per source.",
+    )
+    parser.add_argument(
+        "--auto-min-score",
+        type=float,
+        default=None,
+        help="During auto-validate, minimum score for auto confirmation.",
+    )
+    parser.add_argument(
+        "--auto-apply",
+        action="store_true",
+        help="During auto-validate, write auto_confirmed rows. Default is report only.",
+    )
     args = parser.parse_args()
 
     started_at = datetime.now()
@@ -264,8 +328,16 @@ def main() -> None:
         run_stage_with_log("db", log_lines)
         report_lines.append("- db: executed")
 
-        should_run_index = True
-        if not args.force_index:
+        should_check_index = args.mode not in {
+            "learn-feedback",
+            "confirmations",
+            "auto-validate",
+            "auto-validate-names",
+            "name-queue",
+            "name-apply",
+        }
+        should_run_index = should_check_index
+        if should_check_index and not args.force_index:
             index_current, changes = source_index_is_current(settings)
             should_run_index = not index_current
             if index_current:
@@ -275,6 +347,9 @@ def main() -> None:
                 print(f"[main] Index is stale; detected {len(changes)} change(s)")
                 report_lines.append(f"- index: stale, detected {len(changes)} change(s)")
                 report_lines.extend(f"  - {change}" for change in changes[:20])
+        elif not should_check_index:
+            print(f"[main] Index check skipped for {args.mode}")
+            report_lines.append(f"- index: skipped for {args.mode}")
 
         if should_run_index:
             run_stage_with_log("index", log_lines)
@@ -282,11 +357,126 @@ def main() -> None:
             run_stage_with_log("inline", log_lines)
             report_lines.append("- inline: executed")
 
-        if args.mode in {"cycle", "full", "full-api"}:
+        if args.mode in {"cycle", "learn-local", "full", "full-api"}:
             if not should_run_index:
                 run_stage_with_log("inline", log_lines)
                 report_lines.append("- inline: executed")
             run_cycle_stages(log_lines, report_lines)
+
+        if args.mode == "learn-local":
+            import local_learning_cycle
+
+            print("[main] Running stage: learn_local (local_learning_cycle.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    local_learning_cycle.main(
+                        limit=args.learn_limit,
+                        auto_confidence_threshold=args.learn_auto_confidence,
+                        queue_source=args.learn_source,
+                        focus_group=args.learn_focus,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- learn_local: executed")
+
+        if args.mode == "learn-feedback":
+            run_stage_with_log("learn_feedback", log_lines)
+            report_lines.append("- learn_feedback: executed")
+
+        if args.mode == "confirmations":
+            run_stage_with_log("confirmations", log_lines)
+            report_lines.append("- confirmations: executed")
+
+        if args.mode == "auto-validate":
+            import auto_validate_segments
+
+            print("[main] Running stage: auto_validate (auto_validate_segments.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_validate_segments.main(
+                        limit=args.auto_limit,
+                        min_score=args.auto_min_score,
+                        apply=args.auto_apply,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(f"- auto_validate: executed, apply={args.auto_apply}")
+
+        if args.mode == "auto-validate-names":
+            import auto_validate_names
+
+            print("[main] Running stage: auto_validate_names (auto_validate_names.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_validate_names.main(
+                        limit=args.auto_limit,
+                        apply=args.auto_apply,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(f"- auto_validate_names: executed, apply={args.auto_apply}")
+
+        if args.mode == "name-queue":
+            import build_name_equivalence_queue
+
+            print("[main] Running stage: name_queue (build_name_equivalence_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    build_name_equivalence_queue.main(limit=args.auto_limit)
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- name_queue: executed")
+
+        if args.mode == "name-apply":
+            import apply_name_equivalences
+
+            print("[main] Running stage: name_apply (apply_name_equivalences.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    apply_name_equivalences.main(limit=args.auto_limit, apply=args.auto_apply)
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(f"- name_apply: executed, apply={args.auto_apply}")
 
         if args.mode == "full-api":
             api_min_confidence = (

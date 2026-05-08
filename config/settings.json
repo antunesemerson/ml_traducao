@@ -15,5 +15,15 @@
   "suggestions": {
     "enable_fuzzy": false,
     "max_fuzzy_candidates": 150
+  },
+  "local_learning": {
+    "review_limit": 20,
+    "auto_confidence_threshold": 0.98,
+    "queue_source": "pending",
+    "focus_group": "all"
+  },
+  "auto_validation": {
+    "review_limit": 500,
+    "min_score": 0.98
   }
 }

@@ -343,6 +343,138 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         """
     )
 
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS local_learning_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mode TEXT NOT NULL,
+            limit_count INTEGER NOT NULL,
+            auto_confidence_threshold REAL NOT NULL,
+            candidate_count INTEGER NOT NULL DEFAULT 0,
+            high_confidence_count INTEGER NOT NULL DEFAULT 0,
+            pending_human_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            notes TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS local_learning_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            feedback_id INTEGER,
+            suggestion_id INTEGER,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT,
+            source_key TEXT,
+            source_line_number INTEGER,
+            english_text TEXT,
+            spanish_text TEXT,
+            old_text TEXT,
+            current_output_text TEXT,
+            suggested_text TEXT NOT NULL,
+            suggested_hash TEXT,
+            queue_source TEXT NOT NULL DEFAULT 'pending',
+            focus_group TEXT NOT NULL DEFAULT 'all',
+            source_language TEXT,
+            origin TEXT,
+            match_type TEXT,
+            match_score REAL,
+            token_status TEXT,
+            suggestion_status TEXT,
+            local_confidence_score REAL NOT NULL,
+            local_status TEXT NOT NULL DEFAULT 'pending_human',
+            human_label TEXT NOT NULL DEFAULT 'pending',
+            corrected_text TEXT,
+            reason TEXT,
+            reviewer TEXT,
+            reviewed_at TEXT,
+            reasons_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES local_learning_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(feedback_id) REFERENCES suggestion_feedback(id) ON DELETE SET NULL,
+            FOREIGN KEY(suggestion_id) REFERENCES translation_suggestions(id) ON DELETE SET NULL,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(feedback_id, suggested_hash, run_id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS segment_confirmations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            segment_id INTEGER NOT NULL UNIQUE,
+            confirmation_level TEXT NOT NULL,
+            confirmed_text TEXT NOT NULL,
+            confirmation_source TEXT NOT NULL,
+            confirmation_label TEXT,
+            locked INTEGER NOT NULL DEFAULT 0,
+            confidence_score REAL,
+            candidate_id INTEGER,
+            feedback_id INTEGER,
+            reviewer TEXT,
+            confirmed_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            FOREIGN KEY(candidate_id) REFERENCES local_learning_candidates(id) ON DELETE SET NULL,
+            FOREIGN KEY(feedback_id) REFERENCES suggestion_feedback(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS local_learning_pattern_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pattern_key TEXT NOT NULL UNIQUE,
+            positive_count INTEGER NOT NULL DEFAULT 0,
+            near_positive_count INTEGER NOT NULL DEFAULT 0,
+            partial_count INTEGER NOT NULL DEFAULT 0,
+            negative_count INTEGER NOT NULL DEFAULT 0,
+            harmful_count INTEGER NOT NULL DEFAULT 0,
+            total_count INTEGER NOT NULL DEFAULT 0,
+            weight_adjustment REAL NOT NULL DEFAULT 0,
+            last_label TEXT,
+            last_candidate_id INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(last_candidate_id) REFERENCES local_learning_candidates(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS name_equivalences (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_name TEXT NOT NULL,
+            portuguese_name TEXT NOT NULL,
+            name_family TEXT,
+            source_kind TEXT NOT NULL DEFAULT 'character_name',
+            status TEXT NOT NULL DEFAULT 'pending',
+            confidence_score REAL,
+            evidence_count INTEGER NOT NULL DEFAULT 1,
+            first_segment_id INTEGER,
+            last_segment_id INTEGER,
+            reason TEXT,
+            reviewer TEXT,
+            reviewed_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(first_segment_id) REFERENCES source_segments(id) ON DELETE SET NULL,
+            FOREIGN KEY(last_segment_id) REFERENCES source_segments(id) ON DELETE SET NULL,
+            UNIQUE(source_name, portuguese_name, source_kind)
+        )
+        """
+    )
+
     changes.extend(
         ensure_columns(
             conn,
@@ -493,6 +625,128 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
             ],
         )
     )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "local_learning_runs",
+            [
+                ("mode", "TEXT"),
+                ("limit_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("auto_confidence_threshold", "REAL NOT NULL DEFAULT 0.98"),
+                ("candidate_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("high_confidence_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("pending_human_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("status", "TEXT NOT NULL DEFAULT 'created'"),
+                ("notes", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "local_learning_candidates",
+            [
+                ("run_id", "INTEGER"),
+                ("feedback_id", "INTEGER"),
+                ("suggestion_id", "INTEGER"),
+                ("segment_id", "INTEGER"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("source_line_number", "INTEGER"),
+                ("english_text", "TEXT"),
+                ("spanish_text", "TEXT"),
+                ("old_text", "TEXT"),
+                ("current_output_text", "TEXT"),
+                ("suggested_text", "TEXT"),
+                ("suggested_hash", "TEXT"),
+                ("queue_source", "TEXT NOT NULL DEFAULT 'pending'"),
+                ("focus_group", "TEXT NOT NULL DEFAULT 'all'"),
+                ("source_language", "TEXT"),
+                ("origin", "TEXT"),
+                ("match_type", "TEXT"),
+                ("match_score", "REAL"),
+                ("token_status", "TEXT"),
+                ("suggestion_status", "TEXT"),
+                ("local_confidence_score", "REAL NOT NULL DEFAULT 0"),
+                ("local_status", "TEXT NOT NULL DEFAULT 'pending_human'"),
+                ("human_label", "TEXT NOT NULL DEFAULT 'pending'"),
+                ("corrected_text", "TEXT"),
+                ("reason", "TEXT"),
+                ("reviewer", "TEXT"),
+                ("reviewed_at", "TEXT"),
+                ("learned_at", "TEXT"),
+                ("confirmation_synced_at", "TEXT"),
+                ("reasons_json", "TEXT"),
+                ("created_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "segment_confirmations",
+            [
+                ("segment_id", "INTEGER"),
+                ("confirmation_level", "TEXT"),
+                ("confirmed_text", "TEXT"),
+                ("confirmation_source", "TEXT"),
+                ("confirmation_label", "TEXT"),
+                ("locked", "INTEGER NOT NULL DEFAULT 0"),
+                ("confidence_score", "REAL"),
+                ("candidate_id", "INTEGER"),
+                ("feedback_id", "INTEGER"),
+                ("reviewer", "TEXT"),
+                ("confirmed_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "local_learning_pattern_stats",
+            [
+                ("pattern_key", "TEXT"),
+                ("positive_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("near_positive_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("partial_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("negative_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("harmful_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("total_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("weight_adjustment", "REAL NOT NULL DEFAULT 0"),
+                ("last_label", "TEXT"),
+                ("last_candidate_id", "INTEGER"),
+                ("created_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "name_equivalences",
+            [
+                ("source_name", "TEXT"),
+                ("portuguese_name", "TEXT"),
+                ("name_family", "TEXT"),
+                ("source_kind", "TEXT NOT NULL DEFAULT 'character_name'"),
+                ("status", "TEXT NOT NULL DEFAULT 'pending'"),
+                ("confidence_score", "REAL"),
+                ("evidence_count", "INTEGER NOT NULL DEFAULT 1"),
+                ("first_segment_id", "INTEGER"),
+                ("last_segment_id", "INTEGER"),
+                ("reason", "TEXT"),
+                ("reviewer", "TEXT"),
+                ("reviewed_at", "TEXT"),
+                ("created_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
 
     conn.execute(
         """
@@ -595,6 +849,66 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         """
         CREATE INDEX IF NOT EXISTS idx_inline_fragments_translate
         ON inline_fragments(should_translate, status)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_local_learning_candidates_run
+        ON local_learning_candidates(run_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_local_learning_candidates_segment
+        ON local_learning_candidates(segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_local_learning_candidates_label
+        ON local_learning_candidates(human_label, local_status)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_local_learning_candidates_learned
+        ON local_learning_candidates(human_label, learned_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_local_learning_candidates_confirmation_sync
+        ON local_learning_candidates(human_label, confirmation_synced_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_confirmations_level
+        ON segment_confirmations(confirmation_level, locked)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_confirmations_candidate
+        ON segment_confirmations(candidate_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_local_learning_pattern_stats_weight
+        ON local_learning_pattern_stats(weight_adjustment)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_name_equivalences_status
+        ON name_equivalences(status, source_kind)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_name_equivalences_family
+        ON name_equivalences(name_family, status)
         """
     )
 

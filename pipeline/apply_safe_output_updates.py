@@ -9,7 +9,7 @@ from pathlib import Path
 import db
 
 
-RULE_VERSION = "apply_safe_output_updates_v3"
+RULE_VERSION = "apply_safe_output_updates_v4"
 
 
 def protected_tokens(value: str | None) -> Counter:
@@ -71,8 +71,31 @@ def make_backup(output_root: Path, backup_root: Path, relative_path: str) -> Non
 
 
 def load_candidates(conn, include_safe_pending: bool):
+    confirmed_rows = conn.execute(
+        """
+        SELECT
+            s.id AS segment_id,
+            s.relative_path,
+            s.source_line_number,
+            s.source_key,
+            s.spanish_text,
+            s.old_text,
+            o.output_line_number,
+            sc.confirmed_text AS suggested_text,
+            sc.confirmation_level AS status,
+            sc.confirmation_level AS decision,
+            NULL AS corrected_text,
+            sc.confirmation_label AS reason
+        FROM segment_confirmations sc
+        JOIN source_segments s ON s.id = sc.segment_id
+        JOIN output_segments o ON o.segment_id = s.id
+        WHERE s.is_active = 1
+        ORDER BY sc.locked DESC, sc.updated_at DESC, s.relative_path, o.output_line_number
+        """
+    ).fetchall()
+
     if include_safe_pending:
-        return conn.execute(
+        rows = conn.execute(
             """
             SELECT
                 s.id AS segment_id,
@@ -109,8 +132,9 @@ def load_candidates(conn, include_safe_pending: bool):
             ORDER BY s.relative_path, o.output_line_number, ts.match_score DESC
             """
         ).fetchall()
+        return [*confirmed_rows, *rows]
 
-    return conn.execute(
+    rows = conn.execute(
         """
         SELECT
             s.id AS segment_id,
@@ -136,6 +160,7 @@ def load_candidates(conn, include_safe_pending: bool):
         ORDER BY s.relative_path, o.output_line_number, ts.match_score DESC
         """
     ).fetchall()
+    return [*confirmed_rows, *rows]
 
 
 def load_bootstrap_candidates(conn, include_safe_pending: bool):
@@ -189,14 +214,32 @@ def load_bootstrap_candidates(conn, include_safe_pending: bool):
         ).fetchall()
     safe_by_segment = {row["segment_id"]: row for row in safe_rows}
 
+    confirmed_rows = conn.execute(
+        """
+        SELECT
+            segment_id,
+            confirmed_text,
+            confirmation_level,
+            confirmation_label,
+            updated_at
+        FROM segment_confirmations
+        ORDER BY locked DESC, updated_at DESC, id DESC
+        """
+    ).fetchall()
+    confirmed_by_segment = {row["segment_id"]: row for row in confirmed_rows}
+
     candidates = []
     for row in rows:
+        confirmed = confirmed_by_segment.get(row["segment_id"])
         feedback = feedback_by_segment.get(row["segment_id"])
         safe = safe_by_segment.get(row["segment_id"])
         suggested_text = row["old_text"]
         decision = "bootstrap_old"
 
-        if feedback:
+        if confirmed:
+            suggested_text = confirmed["confirmed_text"]
+            decision = confirmed["confirmation_level"]
+        elif feedback:
             if feedback["decision"] == "edited":
                 suggested_text = feedback["corrected_text"]
                 decision = "edited"
