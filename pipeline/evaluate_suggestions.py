@@ -159,36 +159,6 @@ def main() -> None:
             ORDER BY total DESC, origin
             """
         ).fetchall()
-        api_review_status_rows = conn.execute(
-            """
-            SELECT status AS key, COUNT(*) AS total
-            FROM api_reviews
-            GROUP BY status
-            ORDER BY total DESC, status
-            """
-        ).fetchall()
-        api_review_decision_rows = conn.execute(
-            """
-            SELECT decision_suggested AS key, COUNT(*) AS total
-            FROM api_reviews
-            GROUP BY decision_suggested
-            ORDER BY total DESC, decision_suggested
-            """
-        ).fetchall()
-        api_review_accuracy_rows = conn.execute(
-            """
-            SELECT
-                ar.decision_suggested AS key,
-                COUNT(*) AS total,
-                SUM(CASE WHEN f.decision = ar.decision_suggested THEN 1 ELSE 0 END) AS matched
-            FROM api_reviews ar
-            JOIN suggestion_feedback f ON f.id = ar.feedback_id
-            WHERE f.decision IN ('accepted', 'rejected', 'edited', 'accepted_old')
-              AND ar.status IN ('approved', 'auto_applied', 'rejected')
-            GROUP BY ar.decision_suggested
-            ORDER BY total DESC, ar.decision_suggested
-            """
-        ).fetchall()
         output_application = conn.execute(
             """
             WITH approved AS (
@@ -312,30 +282,6 @@ def main() -> None:
     report_lines.extend(["", "Human feedback memory by origin:"])
     if memory_origin_rows:
         report_lines.extend(count_by(memory_origin_rows))
-    else:
-        report_lines.append("- none: 0")
-
-    report_lines.extend(["", "API review status counts:"])
-    if api_review_status_rows:
-        report_lines.extend(count_by(api_review_status_rows))
-    else:
-        report_lines.append("- none: 0")
-
-    report_lines.extend(["", "API review suggested decisions:"])
-    if api_review_decision_rows:
-        report_lines.extend(count_by(api_review_decision_rows))
-    else:
-        report_lines.append("- none: 0")
-
-    report_lines.extend(["", "API review agreement with final feedback:"])
-    if api_review_accuracy_rows:
-        for row in api_review_accuracy_rows:
-            matched = row["matched"] or 0
-            total_for_decision = row["total"] or 0
-            report_lines.append(
-                f"- {row['key'] or 'unknown'}: {matched}/{total_for_decision} agreement "
-                f"({percent(matched, total_for_decision)})"
-            )
     else:
         report_lines.append("- none: 0")
 

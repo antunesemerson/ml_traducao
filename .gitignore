@@ -9,9 +9,11 @@ __pycache__/
 memory/*.sqlite
 memory/*.sqlite-*
 memory/backups/
+memory/models/
 reports/
 logs/
 execute_sql.py
+execute_sql.sql
 
 # Game localization sources and generated mod output
 source/

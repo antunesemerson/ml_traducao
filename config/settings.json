@@ -5,13 +5,6 @@
   "output_spanish": "output/spanish",
   "database_path": "memory/translation_engine.sqlite",
   "reports_dir": "reports",
-  "api_review": {
-    "model": "gpt-5-mini",
-    "prompt_version": "api_review_v3",
-    "auto_apply_min_confidence": 0.95,
-    "human_review_min_confidence": 0.0,
-    "concurrency": 4
-  },
   "suggestions": {
     "enable_fuzzy": false,
     "max_fuzzy_candidates": 150

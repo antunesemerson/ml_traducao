@@ -141,9 +141,16 @@ def auto_score(row, candidate_text: str, source: str) -> tuple[float, list[str]]
     return max(0.0, min(score, 0.99)), reasons
 
 
-def fetch_old_trusted_candidates(conn, limit: int) -> list[dict]:
+def path_filter_sql(path_like: str | None, table_alias: str = "s") -> tuple[str, tuple[str, ...]]:
+    if not path_like:
+        return "", ()
+    return f"AND {table_alias}.relative_path LIKE ?", (path_like,)
+
+
+def fetch_old_trusted_candidates(conn, limit: int, path_like: str | None = None) -> list[dict]:
+    path_sql, path_params = path_filter_sql(path_like, "s")
     rows = conn.execute(
-        """
+        f"""
         SELECT
             s.id AS segment_id,
             s.relative_path,
@@ -169,10 +176,11 @@ def fetch_old_trusted_candidates(conn, limit: int) -> list[dict]:
           AND a.classification = 'trusted'
           AND COALESCE(a.confidence_score, 0) >= 0.99
           AND sc.segment_id IS NULL
+          {path_sql}
         ORDER BY length(s.old_text) ASC, s.id ASC
         LIMIT ?
         """,
-        (limit * 50,),
+        (*path_params, limit * 50),
     ).fetchall()
     filtered: list[dict] = []
     for row in rows:
@@ -186,9 +194,10 @@ def fetch_old_trusted_candidates(conn, limit: int) -> list[dict]:
     return filtered
 
 
-def fetch_safe_suggestion_candidates(conn, limit: int) -> list[dict]:
+def fetch_safe_suggestion_candidates(conn, limit: int, path_like: str | None = None) -> list[dict]:
+    path_sql, path_params = path_filter_sql(path_like, "s")
     rows = conn.execute(
-        """
+        f"""
         SELECT
             s.id AS segment_id,
             s.relative_path,
@@ -216,10 +225,11 @@ def fetch_safe_suggestion_candidates(conn, limit: int) -> list[dict]:
           AND ts.token_status = 'ok'
           AND COALESCE(ts.match_score, 0) >= 0.98
           AND sc.segment_id IS NULL
+          {path_sql}
         ORDER BY ts.match_score DESC, length(ts.suggested_text) ASC, ts.id ASC
         LIMIT ?
         """,
-        (limit * 50,),
+        (*path_params, limit * 50),
     ).fetchall()
     filtered: list[dict] = []
     for row in rows:
@@ -296,7 +306,12 @@ def upsert_auto_confirmation(conn, item: dict, score: float) -> None:
     )
 
 
-def main(limit: int | None = None, min_score: float | None = None, apply: bool = False) -> None:
+def main(
+    limit: int | None = None,
+    min_score: float | None = None,
+    apply: bool = False,
+    path_like: str | None = None,
+) -> None:
     settings = db.load_settings()
     auto_settings = settings.get("auto_validation", {})
     limit = limit if limit is not None else int(auto_settings.get("review_limit", 500))
@@ -309,13 +324,14 @@ def main(limit: int | None = None, min_score: float | None = None, apply: bool =
     print(f"[auto_validate_segments] Limit per source: {limit}")
     print(f"[auto_validate_segments] Min score: {min_score}")
     print(f"[auto_validate_segments] Apply: {apply}")
+    print(f"[auto_validate_segments] Path filter: {path_like or 'none'}")
     print(f"[auto_validate_segments] Database: {db.get_database_path(settings)}")
 
     with db.connect(settings) as conn:
         db.ensure_database(conn)
         baseline_ok = has_human_baseline(conn)
-        old_rows = fetch_old_trusted_candidates(conn, limit)
-        suggestion_rows = fetch_safe_suggestion_candidates(conn, limit)
+        old_rows = fetch_old_trusted_candidates(conn, limit, path_like=path_like)
+        suggestion_rows = fetch_safe_suggestion_candidates(conn, limit, path_like=path_like)
         candidates = [*old_rows, *suggestion_rows]
 
         accepted: list[tuple[dict, float, list[str]]] = []
@@ -374,6 +390,7 @@ def main(limit: int | None = None, min_score: float | None = None, apply: bool =
         f"Apply: {apply}",
         f"Limit per source: {limit}",
         f"Min score: {min_score}",
+        f"Path filter: {path_like or 'none'}",
         f"Human baseline >= 100: {baseline_ok}",
         "",
         "Summary:",
@@ -415,6 +432,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Validate segments for conservative automatic confirmation.")
     parser.add_argument("--limit", type=int, default=None, help="Maximum candidates per source.")
     parser.add_argument("--min-score", type=float, default=None, help="Minimum score for auto confirmation.")
+    parser.add_argument("--path-like", default=None, help="Optional SQL LIKE filter for source relative_path.")
     parser.add_argument("--apply", action="store_true", help="Write auto_confirmed rows. Default is report only.")
     args = parser.parse_args()
-    main(limit=args.limit, min_score=args.min_score, apply=args.apply)
+    main(limit=args.limit, min_score=args.min_score, apply=args.apply, path_like=args.path_like)

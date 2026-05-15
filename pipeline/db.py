@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -12,7 +12,7 @@ SETTINGS_PATH = PROJECT_ROOT / "config" / "settings.json"
 
 
 def utc_now() -> str:
-    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def load_settings() -> dict:
@@ -274,37 +274,6 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
 
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS api_reviews (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            feedback_id INTEGER NOT NULL,
-            suggestion_id INTEGER,
-            segment_id INTEGER NOT NULL,
-            model TEXT NOT NULL,
-            prompt_version TEXT NOT NULL,
-            decision_suggested TEXT NOT NULL,
-            corrected_text TEXT,
-            confidence_score REAL NOT NULL,
-            reason TEXT,
-            detected_issues_json TEXT,
-            token_validation_status TEXT NOT NULL,
-            token_validation_details_json TEXT,
-            api_response_json TEXT,
-            status TEXT NOT NULL DEFAULT 'pending_human',
-            reviewed_by TEXT,
-            human_decision TEXT,
-            created_at TEXT NOT NULL,
-            reviewed_at TEXT,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(feedback_id) REFERENCES suggestion_feedback(id) ON DELETE CASCADE,
-            FOREIGN KEY(suggestion_id) REFERENCES translation_suggestions(id) ON DELETE SET NULL,
-            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
-            UNIQUE(feedback_id, model, prompt_version)
-        )
-        """
-    )
-
-    conn.execute(
-        """
         CREATE TABLE IF NOT EXISTS inline_fragments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             segment_id INTEGER NOT NULL,
@@ -369,6 +338,7 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
             run_id INTEGER NOT NULL,
             feedback_id INTEGER,
             suggestion_id INTEGER,
+            offline_proposal_id INTEGER,
             segment_id INTEGER NOT NULL,
             relative_path TEXT,
             source_key TEXT,
@@ -400,6 +370,7 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
             FOREIGN KEY(run_id) REFERENCES local_learning_runs(id) ON DELETE CASCADE,
             FOREIGN KEY(feedback_id) REFERENCES suggestion_feedback(id) ON DELETE SET NULL,
             FOREIGN KEY(suggestion_id) REFERENCES translation_suggestions(id) ON DELETE SET NULL,
+            FOREIGN KEY(offline_proposal_id) REFERENCES offline_proposals(id) ON DELETE SET NULL,
             FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
             UNIQUE(feedback_id, suggested_hash, run_id)
         )
@@ -471,6 +442,188 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
             FOREIGN KEY(first_segment_id) REFERENCES source_segments(id) ON DELETE SET NULL,
             FOREIGN KEY(last_segment_id) REFERENCES source_segments(id) ON DELETE SET NULL,
             UNIQUE(source_name, portuguese_name, source_kind)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS learned_validation_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            model_version TEXT,
+            path_filter TEXT,
+            limit_count INTEGER,
+            active_segments INTEGER NOT NULL DEFAULT 0,
+            pending_segments INTEGER NOT NULL DEFAULT 0,
+            auto_safe_count INTEGER NOT NULL DEFAULT 0,
+            auto_safe_audit_count INTEGER NOT NULL DEFAULT 0,
+            needs_autofix_count INTEGER NOT NULL DEFAULT 0,
+            needs_suggestion_count INTEGER NOT NULL DEFAULT 0,
+            needs_human_count INTEGER NOT NULL DEFAULT 0,
+            blocked_structure_count INTEGER NOT NULL DEFAULT 0,
+            notes TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS learned_validation_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            candidate_source TEXT NOT NULL,
+            candidate_text TEXT,
+            action TEXT NOT NULL,
+            risk_class TEXT NOT NULL,
+            confidence_score REAL NOT NULL,
+            issue_count INTEGER NOT NULL DEFAULT 0,
+            high_issue_count INTEGER NOT NULL DEFAULT 0,
+            medium_issue_count INTEGER NOT NULL DEFAULT 0,
+            word_count INTEGER NOT NULL DEFAULT 0,
+            token_status TEXT NOT NULL,
+            reasons_json TEXT,
+            issues_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES learned_validation_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(run_id, segment_id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS title_review_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            segment_id INTEGER NOT NULL UNIQUE,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            english_text TEXT,
+            spanish_text TEXT,
+            old_text TEXT,
+            proposed_text TEXT,
+            corrected_text TEXT,
+            bucket TEXT NOT NULL,
+            recommendation TEXT NOT NULL,
+            confidence_score REAL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reason TEXT,
+            reviewer TEXT,
+            reviewed_at TEXT,
+            applied_at TEXT,
+            apply_result TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS package_focus_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            focus_group TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            priority_score REAL NOT NULL DEFAULT 0,
+            total_segments INTEGER NOT NULL DEFAULT 0,
+            confirmed_segments INTEGER NOT NULL DEFAULT 0,
+            pending_segments INTEGER NOT NULL DEFAULT 0,
+            human_confirmed_segments INTEGER NOT NULL DEFAULT 0,
+            auto_confirmed_segments INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reason TEXT,
+            first_seen_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(focus_group, relative_path)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS finalization_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            segment_id INTEGER NOT NULL UNIQUE,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            closure_bucket TEXT NOT NULL,
+            risk_level TEXT NOT NULL,
+            action_hint TEXT NOT NULL,
+            priority_score REAL NOT NULL DEFAULT 0,
+            text_length INTEGER NOT NULL DEFAULT 0,
+            package_pending INTEGER NOT NULL DEFAULT 0,
+            package_total INTEGER NOT NULL DEFAULT 0,
+            is_high_impact INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'open',
+            reasons_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS offline_proposal_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            model_version TEXT NOT NULL,
+            path_filter TEXT,
+            limit_count INTEGER,
+            candidate_count INTEGER NOT NULL DEFAULT 0,
+            proposed_count INTEGER NOT NULL DEFAULT 0,
+            auto_ready_count INTEGER NOT NULL DEFAULT 0,
+            needs_review_count INTEGER NOT NULL DEFAULT 0,
+            rejected_count INTEGER NOT NULL DEFAULT 0,
+            notes TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS offline_proposals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            candidate_bucket TEXT NOT NULL,
+            proposal_source TEXT NOT NULL,
+            original_text TEXT,
+            proposed_text TEXT NOT NULL,
+            confidence_score REAL NOT NULL,
+            status TEXT NOT NULL,
+            token_status TEXT NOT NULL,
+            issue_count INTEGER NOT NULL DEFAULT 0,
+            high_issue_count INTEGER NOT NULL DEFAULT 0,
+            medium_issue_count INTEGER NOT NULL DEFAULT 0,
+            rules_json TEXT,
+            reasons_json TEXT,
+            issues_json TEXT,
+            applied_at TEXT,
+            apply_result TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES offline_proposal_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(run_id, segment_id)
         )
         """
     )
@@ -569,34 +722,9 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
                 ("reason", "TEXT"),
                 ("reviewer", "TEXT"),
                 ("reviewed_at", "TEXT"),
+                ("applied_at", "TEXT"),
+                ("apply_result", "TEXT"),
                 ("created_at", "TEXT"),
-                ("updated_at", "TEXT"),
-            ],
-        )
-    )
-    changes.extend(
-        ensure_columns(
-            conn,
-            "api_reviews",
-            [
-                ("feedback_id", "INTEGER"),
-                ("suggestion_id", "INTEGER"),
-                ("segment_id", "INTEGER"),
-                ("model", "TEXT"),
-                ("prompt_version", "TEXT"),
-                ("decision_suggested", "TEXT"),
-                ("corrected_text", "TEXT"),
-                ("confidence_score", "REAL"),
-                ("reason", "TEXT"),
-                ("detected_issues_json", "TEXT"),
-                ("token_validation_status", "TEXT"),
-                ("token_validation_details_json", "TEXT"),
-                ("api_response_json", "TEXT"),
-                ("status", "TEXT NOT NULL DEFAULT 'pending_human'"),
-                ("reviewed_by", "TEXT"),
-                ("human_decision", "TEXT"),
-                ("created_at", "TEXT"),
-                ("reviewed_at", "TEXT"),
                 ("updated_at", "TEXT"),
             ],
         )
@@ -652,6 +780,7 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
                 ("run_id", "INTEGER"),
                 ("feedback_id", "INTEGER"),
                 ("suggestion_id", "INTEGER"),
+                ("offline_proposal_id", "INTEGER"),
                 ("segment_id", "INTEGER"),
                 ("relative_path", "TEXT"),
                 ("source_key", "TEXT"),
@@ -742,6 +871,181 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
                 ("reason", "TEXT"),
                 ("reviewer", "TEXT"),
                 ("reviewed_at", "TEXT"),
+                ("applied_at", "TEXT"),
+                ("apply_result", "TEXT"),
+                ("created_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "learned_validation_runs",
+            [
+                ("rule_version", "TEXT"),
+                ("model_version", "TEXT"),
+                ("path_filter", "TEXT"),
+                ("limit_count", "INTEGER"),
+                ("active_segments", "INTEGER NOT NULL DEFAULT 0"),
+                ("pending_segments", "INTEGER NOT NULL DEFAULT 0"),
+                ("auto_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("auto_safe_audit_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_autofix_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_suggestion_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_human_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("blocked_structure_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("notes", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "learned_validation_items",
+            [
+                ("run_id", "INTEGER"),
+                ("segment_id", "INTEGER"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("source_line_number", "INTEGER"),
+                ("candidate_source", "TEXT"),
+                ("candidate_text", "TEXT"),
+                ("action", "TEXT"),
+                ("risk_class", "TEXT"),
+                ("confidence_score", "REAL NOT NULL DEFAULT 0"),
+                ("issue_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("high_issue_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("medium_issue_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("word_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("token_status", "TEXT"),
+                ("reasons_json", "TEXT"),
+                ("issues_json", "TEXT"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "title_review_queue",
+            [
+                ("segment_id", "INTEGER"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("source_line_number", "INTEGER"),
+                ("english_text", "TEXT"),
+                ("spanish_text", "TEXT"),
+                ("old_text", "TEXT"),
+                ("proposed_text", "TEXT"),
+                ("corrected_text", "TEXT"),
+                ("bucket", "TEXT"),
+                ("recommendation", "TEXT"),
+                ("confidence_score", "REAL"),
+                ("status", "TEXT NOT NULL DEFAULT 'pending'"),
+                ("reason", "TEXT"),
+                ("reviewer", "TEXT"),
+                ("reviewed_at", "TEXT"),
+                ("applied_at", "TEXT"),
+                ("apply_result", "TEXT"),
+                ("created_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "package_focus_queue",
+            [
+                ("focus_group", "TEXT"),
+                ("relative_path", "TEXT"),
+                ("priority_score", "REAL NOT NULL DEFAULT 0"),
+                ("total_segments", "INTEGER NOT NULL DEFAULT 0"),
+                ("confirmed_segments", "INTEGER NOT NULL DEFAULT 0"),
+                ("pending_segments", "INTEGER NOT NULL DEFAULT 0"),
+                ("human_confirmed_segments", "INTEGER NOT NULL DEFAULT 0"),
+                ("auto_confirmed_segments", "INTEGER NOT NULL DEFAULT 0"),
+                ("status", "TEXT NOT NULL DEFAULT 'pending'"),
+                ("reason", "TEXT"),
+                ("first_seen_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "finalization_queue",
+            [
+                ("segment_id", "INTEGER"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("source_line_number", "INTEGER"),
+                ("closure_bucket", "TEXT"),
+                ("risk_level", "TEXT"),
+                ("action_hint", "TEXT"),
+                ("priority_score", "REAL NOT NULL DEFAULT 0"),
+                ("text_length", "INTEGER NOT NULL DEFAULT 0"),
+                ("package_pending", "INTEGER NOT NULL DEFAULT 0"),
+                ("package_total", "INTEGER NOT NULL DEFAULT 0"),
+                ("is_high_impact", "INTEGER NOT NULL DEFAULT 0"),
+                ("status", "TEXT NOT NULL DEFAULT 'open'"),
+                ("reasons_json", "TEXT"),
+                ("created_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "offline_proposal_runs",
+            [
+                ("rule_version", "TEXT"),
+                ("model_version", "TEXT"),
+                ("path_filter", "TEXT"),
+                ("limit_count", "INTEGER"),
+                ("candidate_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("proposed_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("auto_ready_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_review_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("rejected_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("notes", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "offline_proposals",
+            [
+                ("run_id", "INTEGER"),
+                ("segment_id", "INTEGER"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("source_line_number", "INTEGER"),
+                ("candidate_bucket", "TEXT"),
+                ("proposal_source", "TEXT"),
+                ("original_text", "TEXT"),
+                ("proposed_text", "TEXT"),
+                ("confidence_score", "REAL NOT NULL DEFAULT 0"),
+                ("status", "TEXT"),
+                ("token_status", "TEXT"),
+                ("issue_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("high_issue_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("medium_issue_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("rules_json", "TEXT"),
+                ("reasons_json", "TEXT"),
+                ("issues_json", "TEXT"),
+                ("applied_at", "TEXT"),
+                ("apply_result", "TEXT"),
                 ("created_at", "TEXT"),
                 ("updated_at", "TEXT"),
             ],
@@ -823,24 +1127,6 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
     )
     conn.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_api_reviews_feedback
-        ON api_reviews(feedback_id)
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_api_reviews_segment
-        ON api_reviews(segment_id)
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_api_reviews_status
-        ON api_reviews(status)
-        """
-    )
-    conn.execute(
-        """
         CREATE INDEX IF NOT EXISTS idx_inline_fragments_segment
         ON inline_fragments(segment_id)
         """
@@ -861,6 +1147,12 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         """
         CREATE INDEX IF NOT EXISTS idx_local_learning_candidates_segment
         ON local_learning_candidates(segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_local_learning_candidates_offline_proposal
+        ON local_learning_candidates(offline_proposal_id)
         """
     )
     conn.execute(
@@ -909,6 +1201,60 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         """
         CREATE INDEX IF NOT EXISTS idx_name_equivalences_family
         ON name_equivalences(name_family, status)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_learned_validation_items_run_action
+        ON learned_validation_items(run_id, action, risk_class)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_learned_validation_items_segment
+        ON learned_validation_items(segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_title_review_queue_status
+        ON title_review_queue(status, bucket)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_title_review_queue_segment
+        ON title_review_queue(segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_package_focus_queue_group_status
+        ON package_focus_queue(focus_group, status, priority_score)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_finalization_queue_bucket_status
+        ON finalization_queue(status, closure_bucket, priority_score)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_finalization_queue_path
+        ON finalization_queue(relative_path, status)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_offline_proposals_run_status
+        ON offline_proposals(run_id, status, candidate_bucket)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_offline_proposals_segment
+        ON offline_proposals(segment_id)
         """
     )
 

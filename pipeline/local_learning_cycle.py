@@ -14,6 +14,28 @@ import local_quality_validator
 
 RULE_VERSION = "local_learning_cycle_v2"
 HUMAN_LETTER_PATTERN = re.compile(r"[A-Za-z\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u00ff]")
+REVIEW_LIGHT_MARKER_PATTERN = re.compile(
+    r"(Concept\(|Select_CString|SelectLocalization|Custom\(\s*['\"]ES_|#help|#weak|¿|¡|«|»)",
+    re.IGNORECASE,
+)
+REVIEW_LIGHT_TERMS = {
+    "cortesanos",
+    "situaciones",
+    "decisiones",
+    "rechaza",
+    "rechazar",
+    "rechazado",
+    "gobernantes",
+    "invitados",
+    "consejo",
+    "consejero",
+    "consejera",
+    "señorío",
+    "señorio",
+    "condados",
+    "heredero",
+    "heredera",
+}
 FOCUS_GROUPS = {
     "all": [],
     "core": [
@@ -163,9 +185,12 @@ def score_candidate(row, pattern_weights: dict[str, float]) -> tuple[float, list
     reasons: list[str] = []
     validation = local_quality_validator.validate_text(row["suggested_text"])
     is_positive_queue = row["queue_source"] == "positive"
-    score = 0.55 if is_positive_queue else 0.25
+    is_review_light_queue = row["queue_source"] == "review-light"
+    score = 0.55 if is_positive_queue else 0.42 if is_review_light_queue else 0.25
     if is_positive_queue:
         reasons.append("queue_source:positive")
+    elif is_review_light_queue:
+        reasons.append("queue_source:review_light")
 
     suggestion_status = row["suggestion_status"] or ""
     if suggestion_status == "safe":
@@ -217,6 +242,9 @@ def score_candidate(row, pattern_weights: dict[str, float]) -> tuple[float, list
     elif is_positive_queue and match_type == "review_light":
         score += 0.05
         reasons.append("analysis_classification:review_light")
+    elif is_review_light_queue and match_type == "review_light":
+        score += 0.08
+        reasons.append("analysis_classification:review_light")
     elif match_type.startswith("exact_"):
         score += 0.08
         reasons.append(f"exact_match:{match_type}")
@@ -237,7 +265,11 @@ def score_candidate(row, pattern_weights: dict[str, float]) -> tuple[float, list
         score += 0.10
         reasons.append("validator_clean")
 
-    if not is_positive_queue and normalize(row["suggested_text"]) == normalize(row["old_text"]):
+    if (
+        not is_positive_queue
+        and not is_review_light_queue
+        and normalize(row["suggested_text"]) == normalize(row["old_text"])
+    ):
         score -= 0.20
         reasons.append("suggestion_same_as_old")
 
@@ -248,6 +280,9 @@ def score_candidate(row, pattern_weights: dict[str, float]) -> tuple[float, list
         reasons.append(f"validator_issues:{','.join(issue_codes)}")
 
     adjustment, learned_reasons = learned_adjustment(row, validation, pattern_weights)
+    if is_review_light_queue and validation["issue_count"] and adjustment > 0:
+        adjustment = 0.0
+        reasons.append("review_light_ignores_positive_learned_adjustment_with_validator_issues")
     if adjustment:
         score += adjustment
         reasons.append(f"learned_adjustment:{adjustment:.3f}")
@@ -389,6 +424,118 @@ def fetch_positive_candidates(conn, limit: int, auto_confidence_threshold: float
     return selected
 
 
+def review_light_priority(item: dict) -> int:
+    text = item["suggested_text"] or ""
+    normalized = normalize(text)
+    validation = local_quality_validator.validate_text(text)
+    marker_hits = len(REVIEW_LIGHT_MARKER_PATTERN.findall(text))
+    term_hits = sum(1 for term in REVIEW_LIGHT_TERMS if term in normalized)
+    words = int(validation["word_count"] or 0)
+
+    priority = 0
+    priority += int(validation["high_issue_count"] or 0) * 12
+    priority += int(validation["medium_issue_count"] or 0) * 6
+    priority += int(validation["issue_count"] or 0) * 2
+    priority += marker_hits * 5
+    priority += term_hits * 8
+
+    if 4 <= words <= 90:
+        priority += 4
+    elif words > 160:
+        priority -= 4
+
+    if item["match_type"] == "review_light":
+        priority += 2
+
+    return priority
+
+
+def fetch_review_light_candidates(
+    conn,
+    limit: int,
+    auto_confidence_threshold: float,
+    focus_group: str,
+) -> list[dict]:
+    focus_sql, focus_params = focus_clause(focus_group, "s")
+    rows = conn.execute(
+        f"""
+        SELECT
+            NULL AS feedback_id,
+            NULL AS suggestion_id,
+            s.id AS segment_id,
+            s.old_text AS suggested_text,
+            NULL AS suggested_hash,
+            'old' AS source_language,
+            'review_light_residue_sample' AS origin,
+            a.classification AS match_type,
+            COALESCE(a.confidence_score, 0.0) AS match_score,
+            'ok' AS token_status,
+            'sample' AS suggestion_status,
+            s.relative_path,
+            s.source_key,
+            s.source_line_number,
+            s.english_text,
+            s.spanish_text,
+            s.old_text,
+            o.portuguese_text AS current_output_text,
+            'review-light' AS queue_source,
+            ? AS focus_group,
+            ? AS auto_confidence_threshold
+        FROM source_segments s
+        JOIN segment_analysis a ON a.segment_id = s.id
+        LEFT JOIN output_segments o ON o.segment_id = s.id
+        LEFT JOIN segment_confirmations sc ON sc.segment_id = s.id
+        WHERE s.is_active = 1
+          AND s.has_old = 1
+          AND s.old_text IS NOT NULL
+          AND trim(s.old_text) != ''
+          AND a.classification = 'review_light'
+          AND sc.segment_id IS NULL
+          {focus_sql}
+        ORDER BY
+            a.confidence_score ASC,
+            length(s.old_text) ASC,
+            s.id ASC
+        LIMIT ?
+        """,
+        (focus_group, auto_confidence_threshold, *focus_params, limit * 300),
+    ).fetchall()
+
+    ranked: list[tuple[int, int, dict]] = []
+    fallback: list[tuple[int, int, dict]] = []
+    for row in rows:
+        item = dict(row)
+        if not is_meaningful_positive_text(item["suggested_text"]):
+            continue
+        item["suggested_hash"] = sha256_text(item["suggested_text"])
+        exists = conn.execute(
+            """
+            SELECT 1
+            FROM local_learning_candidates
+            WHERE segment_id = ?
+              AND suggested_hash = ?
+              AND queue_source = 'review-light'
+              AND focus_group = ?
+            LIMIT 1
+            """,
+            (item["segment_id"], item["suggested_hash"], focus_group),
+        ).fetchone()
+        if exists:
+            continue
+        priority = review_light_priority(item)
+        if priority > 0:
+            ranked.append((priority, -int(item["segment_id"]), item))
+        else:
+            fallback.append((priority, -int(item["segment_id"]), item))
+
+    ranked.sort(reverse=True)
+    fallback.sort(reverse=True)
+    selected = [item for _, _, item in ranked[:limit]]
+    if len(selected) < limit:
+        selected.extend(item for _, _, item in fallback[: limit - len(selected)])
+    return selected[:limit]
+
+
 def create_run(conn, limit: int, auto_confidence_threshold: float, queue_source: str, focus_group: str) -> int:
     timestamp = now()
     cursor = conn.execute(
@@ -493,8 +640,8 @@ def main(
     )
     queue_source = queue_source or str(learning_settings.get("queue_source", "pending"))
     focus_group = focus_group or str(learning_settings.get("focus_group", "all"))
-    if queue_source not in {"pending", "positive"}:
-        raise ValueError("queue_source must be 'pending' or 'positive'")
+    if queue_source not in {"pending", "positive", "review-light"}:
+        raise ValueError("queue_source must be 'pending', 'positive', or 'review-light'")
     if focus_group not in FOCUS_GROUPS:
         raise ValueError(f"Unknown focus_group: {focus_group}")
     started_at = datetime.now()
@@ -513,6 +660,8 @@ def main(
         pattern_weights = load_pattern_weights(conn)
         if queue_source == "positive":
             rows = fetch_positive_candidates(conn, limit, auto_confidence_threshold, focus_group)
+        elif queue_source == "review-light":
+            rows = fetch_review_light_candidates(conn, limit, auto_confidence_threshold, focus_group)
         else:
             rows = fetch_pending_candidates(conn, limit, auto_confidence_threshold, focus_group)
         inserted = 0
@@ -592,7 +741,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create a small local learning review queue.")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--auto-confidence-threshold", type=float, default=None)
-    parser.add_argument("--queue-source", choices=["pending", "positive"], default=None)
+    parser.add_argument("--queue-source", choices=["pending", "positive", "review-light"], default=None)
     parser.add_argument("--focus", choices=sorted(FOCUS_GROUPS), default=None)
     parsed = parser.parse_args()
     main(

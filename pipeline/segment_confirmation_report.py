@@ -5,7 +5,7 @@ from datetime import datetime
 import db
 
 
-RULE_VERSION = "segment_confirmation_report_v1"
+RULE_VERSION = "segment_confirmation_report_v2"
 
 
 def percent(part: int, total: int) -> float:
@@ -65,6 +65,72 @@ def main() -> None:
             LIMIT 15
             """
         ).fetchall()
+        package_stats = conn.execute(
+            """
+            WITH package_totals AS (
+                SELECT
+                    relative_path,
+                    COUNT(*) AS total_segments,
+                    SUM(CASE WHEN sc.segment_id IS NOT NULL THEN 1 ELSE 0 END) AS confirmed_segments,
+                    SUM(
+                        CASE
+                            WHEN sc.confirmation_level = 'human_confirmed'
+                             AND sc.locked = 1
+                            THEN 1
+                            ELSE 0
+                        END
+                    ) AS human_locked_segments
+                FROM source_segments ss
+                LEFT JOIN segment_confirmations sc ON sc.segment_id = ss.id
+                WHERE ss.is_active = 1
+                GROUP BY relative_path
+            )
+            SELECT
+                COUNT(*) AS total_packages,
+                SUM(CASE WHEN confirmed_segments = total_segments THEN 1 ELSE 0 END) AS resolved_packages,
+                SUM(CASE WHEN human_locked_segments = total_segments THEN 1 ELSE 0 END) AS human_locked_packages,
+                SUM(CASE WHEN confirmed_segments < total_segments THEN 1 ELSE 0 END) AS pending_packages
+            FROM package_totals
+            """
+        ).fetchone()
+        pending_packages = conn.execute(
+            """
+            WITH package_totals AS (
+                SELECT
+                    ss.relative_path,
+                    COUNT(*) AS total_segments,
+                    SUM(CASE WHEN sc.segment_id IS NOT NULL THEN 1 ELSE 0 END) AS confirmed_segments
+                FROM source_segments ss
+                LEFT JOIN segment_confirmations sc ON sc.segment_id = ss.id
+                WHERE ss.is_active = 1
+                GROUP BY ss.relative_path
+            )
+            SELECT
+                relative_path,
+                total_segments,
+                confirmed_segments,
+                total_segments - confirmed_segments AS pending_segments
+            FROM package_totals
+            WHERE confirmed_segments < total_segments
+            ORDER BY pending_segments ASC, relative_path
+            LIMIT 15
+            """
+        ).fetchall()
+        focus_stats = conn.execute(
+            """
+            SELECT
+                focus_group,
+                COUNT(*) AS total_packages,
+                SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END) AS resolved_packages,
+                SUM(CASE WHEN status <> 'resolved' THEN 1 ELSE 0 END) AS pending_packages,
+                SUM(total_segments) AS total_segments,
+                SUM(confirmed_segments) AS confirmed_segments,
+                SUM(pending_segments) AS pending_segments
+            FROM package_focus_queue
+            WHERE focus_group = 'high_impact_v1'
+            GROUP BY focus_group
+            """
+        ).fetchone()
 
     human_confirmed = 0
     auto_confirmed = 0
@@ -80,6 +146,16 @@ def main() -> None:
 
     total_confirmed = human_confirmed + auto_confirmed
     pending = max(total_segments - total_confirmed, 0)
+    total_packages = int(package_stats["total_packages"] or 0)
+    resolved_packages = int(package_stats["resolved_packages"] or 0)
+    human_locked_packages = int(package_stats["human_locked_packages"] or 0)
+    package_pending = int(package_stats["pending_packages"] or 0)
+    focus_total = int(focus_stats["total_packages"] or 0) if focus_stats else 0
+    focus_resolved = int(focus_stats["resolved_packages"] or 0) if focus_stats else 0
+    focus_pending = int(focus_stats["pending_packages"] or 0) if focus_stats else 0
+    focus_total_segments = int(focus_stats["total_segments"] or 0) if focus_stats else 0
+    focus_confirmed_segments = int(focus_stats["confirmed_segments"] or 0) if focus_stats else 0
+    focus_pending_segments = int(focus_stats["pending_segments"] or 0) if focus_stats else 0
     elapsed = datetime.now() - started_at
 
     report_lines = [
@@ -95,6 +171,29 @@ def main() -> None:
         f"- Total confirmed: {total_confirmed} ({percent(total_confirmed, total_segments):.4f}%)",
         f"- Human locked: {locked}",
         f"- Pending confirmation: {pending}",
+        "",
+        "Package coverage:",
+        f"- Active packages: {total_packages}",
+        f"- Closed packages: {human_locked_packages} / {total_packages} ({percent(human_locked_packages, total_packages):.4f}%)",
+        f"- Resolved packages: {resolved_packages} ({percent(resolved_packages, total_packages):.4f}%)",
+        f"- Human locked packages: {human_locked_packages} ({percent(human_locked_packages, total_packages):.4f}%)",
+        f"- Packages with pending segments: {package_pending}",
+        "",
+        "High-impact focus:",
+        f"- Focus group: high_impact_v1",
+        f"- Focus packages closed: {focus_resolved} / {focus_total} ({percent(focus_resolved, focus_total):.4f}%)",
+        f"- Focus packages pending: {focus_pending}",
+        f"- Focus segments confirmed: {focus_confirmed_segments} / {focus_total_segments} ({percent(focus_confirmed_segments, focus_total_segments):.4f}%)",
+        f"- Focus segments pending: {focus_pending_segments}",
+        "",
+        "Smallest pending packages:",
+        *[
+            (
+                f"- {row['pending_segments']} pending / {row['total_segments']} total | "
+                f"{row['relative_path']}"
+            )
+            for row in pending_packages
+        ],
         "",
         "By level:",
         *[
@@ -126,9 +225,23 @@ def main() -> None:
         "[segment_confirmation_report] Confirmed: "
         f"{total_confirmed}/{total_segments} ({percent(total_confirmed, total_segments):.4f}%)"
     )
+    print(
+        "[segment_confirmation_report] Closed packages: "
+        f"{human_locked_packages}/{total_packages} ({percent(human_locked_packages, total_packages):.4f}%)"
+    )
     print(f"[segment_confirmation_report] Human confirmed: {human_confirmed}")
     print(f"[segment_confirmation_report] Auto confirmed: {auto_confirmed}")
     print(f"[segment_confirmation_report] Human locked: {locked}")
+    print(
+        "[segment_confirmation_report] Packages resolved: "
+        f"{resolved_packages}/{total_packages} ({percent(resolved_packages, total_packages):.4f}%)"
+    )
+    print(f"[segment_confirmation_report] Human locked packages: {human_locked_packages}")
+    print(f"[segment_confirmation_report] Packages with pending segments: {package_pending}")
+    print(
+        "[segment_confirmation_report] High-impact packages closed: "
+        f"{focus_resolved}/{focus_total} ({percent(focus_resolved, focus_total):.4f}%)"
+    )
     print(f"[segment_confirmation_report] Report: {report_path}")
     print("[segment_confirmation_report] Done")
 
