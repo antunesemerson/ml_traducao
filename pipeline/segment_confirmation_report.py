@@ -5,7 +5,7 @@ from datetime import datetime
 import db
 
 
-RULE_VERSION = "segment_confirmation_report_v2"
+RULE_VERSION = "segment_confirmation_report_v3_active_only"
 
 
 def percent(part: int, total: int) -> float:
@@ -34,18 +34,22 @@ def main() -> None:
         )
         by_level = conn.execute(
             """
-            SELECT confirmation_level, locked, COUNT(*) AS total
-            FROM segment_confirmations
-            GROUP BY confirmation_level, locked
+            SELECT sc.confirmation_level, sc.locked, COUNT(*) AS total
+            FROM source_segments ss
+            JOIN segment_confirmations sc ON sc.segment_id = ss.id
+            WHERE ss.is_active = 1
+            GROUP BY sc.confirmation_level, sc.locked
             ORDER BY confirmation_level, locked
             """
         ).fetchall()
         by_source = conn.execute(
             """
-            SELECT confirmation_source, confirmation_label, COUNT(*) AS total
-            FROM segment_confirmations
-            GROUP BY confirmation_source, confirmation_label
-            ORDER BY total DESC, confirmation_source, confirmation_label
+            SELECT sc.confirmation_source, sc.confirmation_label, COUNT(*) AS total
+            FROM source_segments ss
+            JOIN segment_confirmations sc ON sc.segment_id = ss.id
+            WHERE ss.is_active = 1
+            GROUP BY sc.confirmation_source, sc.confirmation_label
+            ORDER BY total DESC, sc.confirmation_source, sc.confirmation_label
             """
         ).fetchall()
         recent = conn.execute(

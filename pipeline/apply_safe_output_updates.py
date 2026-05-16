@@ -55,12 +55,34 @@ def normalize_protected_token(token: str) -> str:
     return token
 
 
+def escape_localization_value(new_text: str) -> str:
+    escaped = []
+    backslashes = 0
+    for char in new_text:
+        if char == "\n":
+            escaped.append("\\n")
+            backslashes = 0
+            continue
+        if char == "\r":
+            continue
+        if char == "\\":
+            escaped.append(char)
+            backslashes += 1
+            continue
+        if char == '"' and backslashes % 2 == 0:
+            escaped.append('\\"')
+        else:
+            escaped.append(char)
+        backslashes = 0
+    return "".join(escaped)
+
+
 def replace_quoted_text(raw_line: str, new_text: str) -> str:
     first_quote = raw_line.find('"')
     last_quote = raw_line.rfind('"')
     if first_quote < 0 or last_quote <= first_quote:
         raise ValueError("line does not contain a quoted localization value")
-    return raw_line[: first_quote + 1] + new_text + raw_line[last_quote:]
+    return raw_line[: first_quote + 1] + escape_localization_value(new_text) + raw_line[last_quote:]
 
 
 def make_backup(output_root: Path, backup_root: Path, relative_path: str) -> None:
@@ -84,6 +106,7 @@ def load_candidates(conn, include_safe_pending: bool):
             sc.confirmed_text AS suggested_text,
             sc.confirmation_level AS status,
             sc.confirmation_level AS decision,
+            sc.locked,
             NULL AS corrected_text,
             sc.confirmation_label AS reason
         FROM segment_confirmations sc
@@ -108,6 +131,7 @@ def load_candidates(conn, include_safe_pending: bool):
                 ts.suggested_text,
                 ts.status,
                 f.decision,
+                0 AS locked,
                 f.corrected_text,
                 f.reason
             FROM translation_suggestions ts
@@ -147,6 +171,7 @@ def load_candidates(conn, include_safe_pending: bool):
             ts.suggested_text,
             ts.status,
             f.decision,
+            0 AS locked,
             f.corrected_text,
             f.reason
         FROM suggestion_feedback f
@@ -163,7 +188,7 @@ def load_candidates(conn, include_safe_pending: bool):
     return [*confirmed_rows, *rows]
 
 
-def load_bootstrap_candidates(conn, include_safe_pending: bool):
+def load_bootstrap_candidates(conn, include_safe_pending: bool, only_locked_human: bool = False):
     rows = conn.execute(
         """
         SELECT
@@ -197,10 +222,10 @@ def load_bootstrap_candidates(conn, include_safe_pending: bool):
         ORDER BY f.updated_at ASC, f.id ASC
         """
     ).fetchall()
-    feedback_by_segment = {row["segment_id"]: row for row in feedback_rows}
+    feedback_by_segment = {} if only_locked_human else {row["segment_id"]: row for row in feedback_rows}
 
     safe_rows = []
-    if include_safe_pending:
+    if include_safe_pending and not only_locked_human:
         safe_rows = conn.execute(
             """
             SELECT
@@ -221,10 +246,14 @@ def load_bootstrap_candidates(conn, include_safe_pending: bool):
             confirmed_text,
             confirmation_level,
             confirmation_label,
+            locked,
             updated_at
         FROM segment_confirmations
+        WHERE (? = 0 OR (confirmation_level = 'human_confirmed' AND locked = 1))
         ORDER BY locked DESC, updated_at DESC, id DESC
         """
+        ,
+        (1 if only_locked_human else 0,),
     ).fetchall()
     confirmed_by_segment = {row["segment_id"]: row for row in confirmed_rows}
 
@@ -264,6 +293,7 @@ def load_bootstrap_candidates(conn, include_safe_pending: bool):
                 "output_line_number": row["output_line_number"],
                 "suggested_text": suggested_text,
                 "decision": decision,
+                "locked": int(confirmed["locked"] or 0) if confirmed else 0,
                 "corrected_text": None,
                 "reason": None,
             }
@@ -276,6 +306,7 @@ def apply_updates(
     include_safe_pending: bool = False,
     create_backup: bool = True,
     bootstrap_old: bool = False,
+    only_locked_human: bool = False,
 ) -> None:
     settings = db.load_settings()
     started_at = datetime.now()
@@ -288,6 +319,7 @@ def apply_updates(
     print(f"[apply_safe_output_updates] Include safe pending: {include_safe_pending}")
     print(f"[apply_safe_output_updates] Create backup: {create_backup}")
     print(f"[apply_safe_output_updates] Bootstrap old: {bootstrap_old}")
+    print(f"[apply_safe_output_updates] Only locked human: {only_locked_human}")
 
     applied = 0
     skipped = 0
@@ -298,7 +330,7 @@ def apply_updates(
     with db.connect(settings) as conn:
         db.ensure_database(conn)
         if bootstrap_old:
-            candidates = load_bootstrap_candidates(conn, include_safe_pending)
+            candidates = load_bootstrap_candidates(conn, include_safe_pending, only_locked_human)
         else:
             candidates = load_candidates(conn, include_safe_pending)
         candidate_count = len(candidates)
@@ -327,10 +359,14 @@ def apply_updates(
                 skipped += 1
                 skip_reasons["missing_output_line"] += 1
                 continue
-            if protected_tokens(row["spanish_text"]) != protected_tokens(suggested_text):
+            token_mismatch = protected_tokens(row["spanish_text"]) != protected_tokens(suggested_text)
+            human_locked_override = row["decision"] == "human_confirmed" and int(row["locked"] or 0) == 1
+            if token_mismatch and not human_locked_override:
                 skipped += 1
                 skip_reasons["token_mismatch"] += 1
                 continue
+            if token_mismatch and human_locked_override:
+                skip_reasons["token_mismatch_human_locked_override"] += 1
             updates_by_file[row["relative_path"]][row["output_line_number"]] = suggested_text
 
     for relative_path, line_updates in updates_by_file.items():
@@ -369,6 +405,7 @@ def apply_updates(
         f"Include safe pending: {include_safe_pending}",
         f"Create backup: {create_backup}",
         f"Bootstrap old: {bootstrap_old}",
+        f"Only locked human: {only_locked_human}",
         f"Backup root: {backup_root if create_backup else 'disabled'}",
         "",
         "Summary:",
@@ -393,8 +430,9 @@ def main(
     include_safe_pending: bool | None = None,
     create_backup: bool | None = None,
     bootstrap_old: bool | None = None,
+    only_locked_human: bool | None = None,
 ) -> None:
-    if include_safe_pending is None or create_backup is None or bootstrap_old is None:
+    if include_safe_pending is None or create_backup is None or bootstrap_old is None or only_locked_human is None:
         parser = argparse.ArgumentParser(description="Apply safe approved suggestions to output/spanish.")
         parser.add_argument(
             "--include-safe-pending",
@@ -406,16 +444,23 @@ def main(
             action="store_true",
             help="Initial output bootstrap: write spanish_old to output, with reviewed/safe suggestions as overrides.",
         )
+        parser.add_argument(
+            "--only-locked-human",
+            action="store_true",
+            help="During bootstrap, use spanish_old as base and only apply locked human confirmations as overrides.",
+        )
         parser.add_argument("--no-backup", action="store_true", help="Do not create memory/backups copy.")
         args = parser.parse_args()
         include_safe_pending = args.include_safe_pending
         create_backup = not args.no_backup
         bootstrap_old = args.bootstrap_old
+        only_locked_human = args.only_locked_human
 
     apply_updates(
         include_safe_pending=include_safe_pending,
         create_backup=create_backup,
         bootstrap_old=bootstrap_old,
+        only_locked_human=only_locked_human,
     )
 
 

@@ -576,6 +576,35 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
 
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS mojibake_context_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            segment_id INTEGER NOT NULL UNIQUE,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            fragment_summary TEXT NOT NULL,
+            fragment_count INTEGER NOT NULL DEFAULT 0,
+            residue_kind TEXT NOT NULL,
+            priority_score REAL NOT NULL DEFAULT 0,
+            text_length INTEGER NOT NULL DEFAULT 0,
+            english_text TEXT,
+            spanish_text TEXT,
+            old_text TEXT,
+            confirmed_text TEXT NOT NULL,
+            confirmation_level TEXT,
+            confirmation_source TEXT,
+            locked INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'open',
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS offline_proposal_runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             rule_version TEXT NOT NULL,
@@ -1003,6 +1032,34 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
     changes.extend(
         ensure_columns(
             conn,
+            "mojibake_context_queue",
+            [
+                ("segment_id", "INTEGER"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("source_line_number", "INTEGER"),
+                ("fragment_summary", "TEXT"),
+                ("fragment_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("residue_kind", "TEXT"),
+                ("priority_score", "REAL NOT NULL DEFAULT 0"),
+                ("text_length", "INTEGER NOT NULL DEFAULT 0"),
+                ("english_text", "TEXT"),
+                ("spanish_text", "TEXT"),
+                ("old_text", "TEXT"),
+                ("confirmed_text", "TEXT"),
+                ("confirmation_level", "TEXT"),
+                ("confirmation_source", "TEXT"),
+                ("locked", "INTEGER NOT NULL DEFAULT 0"),
+                ("status", "TEXT NOT NULL DEFAULT 'open'"),
+                ("notes", "TEXT"),
+                ("created_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
             "offline_proposal_runs",
             [
                 ("rule_version", "TEXT"),
@@ -1243,6 +1300,18 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         """
         CREATE INDEX IF NOT EXISTS idx_finalization_queue_path
         ON finalization_queue(relative_path, status)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_mojibake_context_queue_kind
+        ON mojibake_context_queue(status, residue_kind, priority_score)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_mojibake_context_queue_path
+        ON mojibake_context_queue(relative_path, status)
         """
     )
     conn.execute(

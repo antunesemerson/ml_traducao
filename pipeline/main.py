@@ -28,6 +28,7 @@ STAGES = {
     "learned_apply": "apply_learned_validation",
     "learned_autofix": "apply_learned_autofix",
     "mojibake_audit": "audit_mojibake_confirmations",
+    "mojibake_context": "build_mojibake_context_queue",
     "auto_validate_names": "auto_validate_names",
     "visual_rules": "apply_visual_residue_rules",
     "triage_positive_core": "triage_positive_core",
@@ -191,6 +192,7 @@ def main() -> None:
             "learned-apply",
             "learned-autofix",
             "mojibake-audit",
+            "mojibake-context",
             "inline-literals",
             "auto-validate-names",
             "visual-rules",
@@ -343,6 +345,11 @@ def main() -> None:
         help="During closure-queue, filter the top segment preview to one closure bucket.",
     )
     parser.add_argument(
+        "--mojibake-kind",
+        default=None,
+        help="During mojibake-context, filter preview by residue kind.",
+    )
+    parser.add_argument(
         "--learned-run-id",
         type=int,
         default=None,
@@ -453,6 +460,7 @@ def main() -> None:
             "learned-apply",
             "learned-autofix",
             "mojibake-audit",
+            "mojibake-context",
             "inline-literals",
             "auto-validate",
             "auto-validate-names",
@@ -535,6 +543,28 @@ def main() -> None:
         if args.mode == "confirmations":
             run_stage_with_log("confirmations", log_lines)
             report_lines.append("- confirmations: executed")
+
+        if args.mode == "mojibake-context":
+            import build_mojibake_context_queue
+
+            print("[main] Running stage: mojibake_context (build_mojibake_context_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    build_mojibake_context_queue.main(
+                        limit=args.auto_limit or 80,
+                        kind=args.mojibake_kind,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- mojibake_context: executed")
 
         if args.mode == "learned-report":
             import learned_validation_report
@@ -1257,6 +1287,7 @@ def main() -> None:
                         include_safe_pending=args.apply_include_safe_pending,
                         create_backup=not args.apply_no_backup,
                         bootstrap_old=args.bootstrap_old,
+                        only_locked_human=False,
                     )
             except Exception:
                 traceback.print_exc(file=buffer)
