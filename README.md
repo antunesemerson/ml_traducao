@@ -1,4 +1,4 @@
-![CK3 PT-BR localization pipeline](assets/cover.png)
+![CK3 PT-BR localization pipeline](assets/cover.jpg)
 
 # CK3 PT-BR Localization Pipeline
 
