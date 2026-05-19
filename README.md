@@ -17,6 +17,7 @@ output/spanish          saída final do mod
 config/settings.json    caminhos e limites padrão
 memory/                 banco SQLite e modelos locais
 pipeline/               scripts da pipeline
+docs/                   notas de regras e decisões linguísticas
 reports/                relatórios de execução
 logs/                   logs completos por execução
 ```
@@ -138,6 +139,18 @@ Problemas recorrentes:
 texto#EMP -> texto #EMP
 enjoad[taster.Custom('ES_OA')]a -> enjoad[taster.Custom('ES_OA')]
 ```
+
+### Gênero gramatical PT-BR
+
+Alguns trechos podem fugir do espelho literal do espanhol quando isso melhora a renderização no jogo e preserva a estrutura CK3:
+
+```text
+vizinho[winner.Custom('ES_OA')] -> [Select_CString( winner.IsFemale, 'Sua vizinha', 'Seu vizinho' )]
+o/a Tímid[CHARACTER.Custom('ES_OA')] -> [Select_CString( CHARACTER.IsFemale, 'a Tímida', 'o Tímido' )]
+conquistado[target.Custom('ES_OA')] -> conquistad[target.Custom('ES_OA')]
+```
+
+A regra detalhada fica em `docs/gender_tokens_ptbr.md`.
 
 ## Versionamento
 
