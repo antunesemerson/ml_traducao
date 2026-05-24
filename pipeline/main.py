@@ -20,6 +20,24 @@ STAGES = {
     "memory": "build_translation_memory",
     "suggest": "suggest_translations",
     "evaluate": "evaluate_suggestions",
+    "ml_baseline": "ml_baseline_report",
+    "ml_dataset": "ml_build_dataset",
+    "ml_train_risk": "ml_train_risk",
+    "ml_promote_model": "ml_promote_model",
+    "ml_export_model": "ml_export_model",
+    "ml_coverage_scan": "ml_coverage_scan",
+    "ml_group_candidate_queue": "ml_group_candidate_queue",
+    "ml_group_threshold_policy": "ml_group_threshold_policy",
+    "ml_policy_audit_queue": "ml_policy_audit_queue",
+    "ml_contrast_review_queue": "ml_contrast_review_queue",
+    "ml_holdout_eval": "ml_holdout_eval",
+    "ml_holdout_review_queue": "ml_holdout_review_queue",
+    "ml_progress": "ml_progress_report",
+    "ml_threshold_sweep": "ml_threshold_sweep",
+    "ml_score": "ml_score_segments",
+    "ml_score_audit": "ml_score_audit",
+    "ml_score_regression_queue": "ml_score_regression_queue",
+    "ml_specialist_score": "ml_specialist_score",
     "learn_local": "local_learning_cycle",
     "learn_feedback": "apply_local_learning_feedback",
     "confirmations": "segment_confirmation_report",
@@ -28,6 +46,8 @@ STAGES = {
     "learned_apply": "apply_learned_validation",
     "learned_autofix": "apply_learned_autofix",
     "mojibake_audit": "audit_mojibake_confirmations",
+    "gender_token_audit": "audit_gender_tokens",
+    "micro_review_queue": "build_micro_review_queue",
     "mojibake_context": "build_mojibake_context_queue",
     "auto_validate_names": "auto_validate_names",
     "visual_rules": "apply_visual_residue_rules",
@@ -135,7 +155,12 @@ def run_stage(stage_name: str) -> None:
     module_name = STAGES[stage_name]
     print(f"[main] Running stage: {stage_name} ({module_name}.py)")
     module = importlib.import_module(module_name)
-    module.main()
+    previous_argv = sys.argv[:]
+    try:
+        sys.argv = [f"{module_name}.py"]
+        module.main()
+    finally:
+        sys.argv = previous_argv
 
 
 def run_stage_with_log(stage_name: str, captured_lines: list[str]) -> None:
@@ -187,11 +212,33 @@ def main() -> None:
             "learn-local",
             "learn-feedback",
             "confirmations",
+            "ml-baseline",
+            "ml-dataset",
+            "ml-train-risk",
+            "ml-promote-model",
+            "ml-export-model",
+            "ml-coverage-scan",
+            "ml-group-candidate-queue",
+            "ml-group-threshold-policy",
+            "ml-policy-audit-queue",
+            "ml-contrast-review-queue",
+            "ml-holdout-eval",
+            "ml-holdout-review-queue",
+            "ml-progress",
+            "ml-threshold-sweep",
+            "ml-specialist-models",
+            "ml-specialist-auditor",
+            "ml-specialist-score",
+            "ml-score",
+            "ml-score-audit",
+            "ml-score-regression-queue",
             "auto-validate",
             "learned-report",
             "learned-apply",
             "learned-autofix",
             "mojibake-audit",
+            "gender-token-audit",
+            "micro-review-queue",
             "mojibake-context",
             "inline-literals",
             "auto-validate-names",
@@ -435,6 +482,98 @@ def main() -> None:
         default=30,
         help="During bulk-confirm-likely, maximum visible word count to auto-confirm.",
     )
+    parser.add_argument(
+        "--ml-include-locked",
+        action="store_true",
+        help="During ml-score, include locked human confirmations in the scoring sample.",
+    )
+    parser.add_argument(
+        "--ml-feature-set",
+        choices=["legacy_v1", "structural_v2", "structural_v3", "language_v4"],
+        default="legacy_v1",
+        help="During ML train/holdout experiments, choose the feature extraction version.",
+    )
+    parser.add_argument(
+        "--ml-train-strategy",
+        choices=["balanced_v1", "dedup_weighted_v2"],
+        default="balanced_v1",
+        help="During ML train/holdout experiments, choose sampling and weighting strategy.",
+    )
+    parser.add_argument(
+        "--ml-safe-multiplier",
+        type=int,
+        default=5,
+        help="During ML train/holdout experiments, positive-to-risky sampling multiplier.",
+    )
+    parser.add_argument(
+        "--ml-thresholds",
+        default=None,
+        help="During ml-threshold-sweep, comma-separated thresholds, for example 0.90,0.92,0.95.",
+    )
+    parser.add_argument(
+        "--ml-split-mode",
+        choices=["file", "stratified"],
+        default="file",
+        help="During ml-threshold-sweep, choose file holdout or stratified example holdout.",
+    )
+    parser.add_argument(
+        "--ml-specialist",
+        choices=[
+            "all",
+            "titles",
+            "religion",
+            "title_subspecialists",
+            "title_promising_subspecialists",
+            "all_with_title_subspecialists",
+            "title_names",
+            "title_adjectives",
+            "title_cultural_names",
+            "culture_title_labels",
+        ],
+        default="all",
+        help="During ml-specialist-models, choose which specialist to train.",
+    )
+    parser.add_argument(
+        "--ml-groups",
+        default=None,
+        help="During ml-coverage-scan, comma-separated name=SQLLIKE groups.",
+    )
+    parser.add_argument(
+        "--policy-audit-focus",
+        choices=["all", "new_safe", "demoted_safe"],
+        default="all",
+        help="During ml-policy-audit-queue, choose policy rows to queue.",
+    )
+    parser.add_argument(
+        "--ml-score-batch-size",
+        type=int,
+        default=5000,
+        help="During ml-score, process and commit this many segments per batch.",
+    )
+    parser.add_argument(
+        "--ml-model-run-id",
+        type=int,
+        default=None,
+        help="During compatible ML modes, evaluate a specific model run id instead of the active model.",
+    )
+    parser.add_argument(
+        "--ml-active-score-run-id",
+        type=int,
+        default=None,
+        help="During ml-score-regression-queue, compare against this active score run id.",
+    )
+    parser.add_argument(
+        "--ml-candidate-score-run-id",
+        type=int,
+        default=None,
+        help="During ml-score-regression-queue, review regressions from this candidate score run id.",
+    )
+    parser.add_argument(
+        "--ml-per-path-limit",
+        type=int,
+        default=20,
+        help="During ml-score-regression-queue, cap selected rows per localization file.",
+    )
     args = parser.parse_args()
 
     started_at = datetime.now()
@@ -456,10 +595,32 @@ def main() -> None:
             "learn-feedback",
             "learn-local",
             "confirmations",
+            "ml-baseline",
+            "ml-dataset",
+            "ml-train-risk",
+            "ml-promote-model",
+            "ml-export-model",
+            "ml-coverage-scan",
+            "ml-group-candidate-queue",
+            "ml-group-threshold-policy",
+            "ml-policy-audit-queue",
+            "ml-contrast-review-queue",
+            "ml-holdout-eval",
+            "ml-holdout-review-queue",
+            "ml-progress",
+            "ml-threshold-sweep",
+            "ml-specialist-models",
+            "ml-specialist-auditor",
+            "ml-specialist-score",
+            "ml-score",
+            "ml-score-audit",
+            "ml-score-regression-queue",
             "learned-report",
             "learned-apply",
             "learned-autofix",
             "mojibake-audit",
+            "gender-token-audit",
+            "micro-review-queue",
             "mojibake-context",
             "inline-literals",
             "auto-validate",
@@ -543,6 +704,430 @@ def main() -> None:
         if args.mode == "confirmations":
             run_stage_with_log("confirmations", log_lines)
             report_lines.append("- confirmations: executed")
+
+        if args.mode == "ml-baseline":
+            run_stage_with_log("ml_baseline", log_lines)
+            report_lines.append("- ml_baseline: executed")
+
+        if args.mode == "ml-dataset":
+            import ml_build_dataset
+
+            print("[main] Running stage: ml_dataset (ml_build_dataset.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_build_dataset.main(limit=args.auto_limit)
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_dataset: executed")
+
+        if args.mode == "ml-train-risk":
+            import ml_train_risk
+
+            print("[main] Running stage: ml_train_risk (ml_train_risk.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_train_risk.main(
+                        safe_threshold=args.auto_min_score or 0.90,
+                        safe_multiplier=args.ml_safe_multiplier,
+                        max_examples=args.auto_limit,
+                        feature_set=args.ml_feature_set,
+                        train_strategy=args.ml_train_strategy,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_train_risk: executed")
+
+        if args.mode == "ml-promote-model":
+            import ml_promote_model
+
+            print("[main] Running stage: ml_promote_model (ml_promote_model.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_promote_model.main(
+                        model_run_id=args.ml_model_run_id,
+                        apply=args.auto_apply,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(f"- ml_promote_model: executed, apply={args.auto_apply}")
+
+        if args.mode == "ml-export-model":
+            import ml_export_model
+
+            print("[main] Running stage: ml_export_model (ml_export_model.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_export_model.main()
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_export_model: executed")
+
+        if args.mode == "ml-coverage-scan":
+            import ml_coverage_scan
+
+            print("[main] Running stage: ml_coverage_scan (ml_coverage_scan.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_coverage_scan.main(
+                        limit_per_group=args.auto_limit or 1000,
+                        threshold=args.auto_min_score,
+                        include_locked=args.ml_include_locked,
+                        groups_value=args.ml_groups,
+                        model_run_id=args.ml_model_run_id,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_coverage_scan: executed")
+
+        if args.mode == "ml-group-candidate-queue":
+            import ml_group_candidate_queue
+
+            print("[main] Running stage: ml_group_candidate_queue (ml_group_candidate_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_group_candidate_queue.main(
+                        proposed_threshold=args.auto_min_score or 0.93,
+                        limit_per_group=args.auto_limit or 2000,
+                        groups_value=args.ml_groups,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_group_candidate_queue: executed")
+
+        if args.mode == "ml-group-threshold-policy":
+            import ml_group_threshold_policy
+
+            print("[main] Running stage: ml_group_threshold_policy (ml_group_threshold_policy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_group_threshold_policy.main(sample_limit=args.auto_limit or 60)
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_group_threshold_policy: executed")
+
+        if args.mode == "ml-policy-audit-queue":
+            import ml_policy_audit_queue
+
+            print("[main] Running stage: ml_policy_audit_queue (ml_policy_audit_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_policy_audit_queue.main(
+                        focus=args.policy_audit_focus,
+                        groups_value=args.ml_groups,
+                        limit=args.auto_limit or 200,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_policy_audit_queue: executed")
+
+        if args.mode == "ml-contrast-review-queue":
+            import ml_contrast_review_queue
+
+            print("[main] Running stage: ml_contrast_review_queue (ml_contrast_review_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_contrast_review_queue.main(
+                        limit=args.auto_limit or 40,
+                        batch_size=args.triage_batch_size or 20,
+                        mode=args.ml_groups or "risk",
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_contrast_review_queue: executed")
+
+        if args.mode == "ml-holdout-eval":
+            import ml_holdout_eval
+
+            print("[main] Running stage: ml_holdout_eval (ml_holdout_eval.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_holdout_eval.main(
+                        safe_threshold=args.auto_min_score or 0.90,
+                        safe_multiplier=args.ml_safe_multiplier,
+                        sample_limit=args.auto_limit or 20,
+                        feature_set=args.ml_feature_set,
+                        train_strategy=args.ml_train_strategy,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_holdout_eval: executed")
+
+        if args.mode == "ml-holdout-review-queue":
+            import ml_holdout_review_queue
+
+            print("[main] Running stage: ml_holdout_review_queue (ml_holdout_review_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_holdout_review_queue.main(
+                        safe_threshold=args.auto_min_score or 0.90,
+                        safe_multiplier=args.ml_safe_multiplier,
+                        sample_limit=args.auto_limit or 40,
+                        feature_set=args.ml_feature_set,
+                        train_strategy=args.ml_train_strategy,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_holdout_review_queue: executed")
+
+        if args.mode == "ml-progress":
+            run_stage_with_log("ml_progress", log_lines)
+            report_lines.append("- ml_progress: executed")
+
+        if args.mode == "ml-threshold-sweep":
+            import ml_threshold_sweep
+
+            print("[main] Running stage: ml_threshold_sweep (ml_threshold_sweep.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_threshold_sweep.main(
+                        thresholds_value=args.ml_thresholds,
+                        feature_set=args.ml_feature_set,
+                        safe_multiplier=args.ml_safe_multiplier,
+                        train_strategy=args.ml_train_strategy,
+                        split_mode=args.ml_split_mode,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_threshold_sweep: executed")
+
+        if args.mode == "ml-specialist-models":
+            import ml_specialist_models
+
+            print("[main] Running stage: ml_specialist_models (ml_specialist_models.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_specialist_models.main(
+                        specialist=args.ml_specialist,
+                        safe_threshold=args.auto_min_score,
+                        safe_multiplier=None if args.ml_safe_multiplier == 5 else args.ml_safe_multiplier,
+                        feature_set=None if args.ml_feature_set == "legacy_v1" else args.ml_feature_set,
+                        train_strategy=None if args.ml_train_strategy == "balanced_v1" else args.ml_train_strategy,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_specialist_models: executed")
+
+        if args.mode == "ml-specialist-auditor":
+            import ml_specialist_auditor
+
+            print("[main] Running stage: ml_specialist_auditor (ml_specialist_auditor.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_specialist_auditor.main(
+                        general_score_run_id=args.ml_active_score_run_id,
+                        specialist_score_run_id=args.ml_candidate_score_run_id,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_specialist_auditor: executed")
+
+        if args.mode == "ml-specialist-score":
+            import ml_specialist_score
+
+            print("[main] Running stage: ml_specialist_score (ml_specialist_score.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_specialist_score.main(
+                        specialist=args.ml_specialist,
+                        model_run_id=args.ml_model_run_id,
+                        limit=args.auto_limit,
+                        batch_size=args.ml_score_batch_size,
+                        include_locked=args.ml_include_locked,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_specialist_score: executed")
+
+        if args.mode == "ml-score":
+            import ml_score_segments
+
+            print("[main] Running stage: ml_score (ml_score_segments.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_score_segments.main(
+                        limit=args.auto_limit,
+                        path_like=args.auto_path_like,
+                        safe_threshold=args.auto_min_score,
+                        include_locked=args.ml_include_locked,
+                        batch_size=args.ml_score_batch_size,
+                        model_run_id=args.ml_model_run_id,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_score: executed")
+
+        if args.mode == "ml-score-audit":
+            import ml_score_audit
+
+            print("[main] Running stage: ml_score_audit (ml_score_audit.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_score_audit.main(sample_limit=args.auto_limit or 25)
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_score_audit: executed")
+
+        if args.mode == "ml-score-regression-queue":
+            import ml_score_regression_queue
+
+            print("[main] Running stage: ml_score_regression_queue (ml_score_regression_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_score_regression_queue.main(
+                        active_score_run_id=args.ml_active_score_run_id,
+                        candidate_score_run_id=args.ml_candidate_score_run_id,
+                        limit=args.auto_limit or 120,
+                        per_path_limit=args.ml_per_path_limit,
+                        batch_size=args.triage_batch_size or 20,
+                        clean_only=True,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_score_regression_queue: executed")
 
         if args.mode == "mojibake-context":
             import build_mojibake_context_queue
@@ -664,6 +1249,14 @@ def main() -> None:
             output = buffer.getvalue()
             log_lines.extend(output.splitlines())
             report_lines.append(f"- mojibake_audit: executed, apply={args.auto_apply}")
+
+        if args.mode == "gender-token-audit":
+            run_stage_with_log("gender_token_audit", log_lines)
+            report_lines.append("- gender_token_audit: executed")
+
+        if args.mode == "micro-review-queue":
+            run_stage_with_log("micro_review_queue", log_lines)
+            report_lines.append("- micro_review_queue: executed")
 
         if args.mode == "inline-literals":
             import apply_inline_literal_fixes

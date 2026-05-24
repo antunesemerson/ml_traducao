@@ -1,0 +1,225 @@
+# Guia De Comandos
+
+Este arquivo reúne os principais comandos do projeto CK3 PT-BR.
+
+Os comandos devem ser executados na raiz do projeto:
+
+```powershell
+cd "C:\Users\Emerson\OneDrive\Área de Trabalho\Projetos\0001 - ML Tradução"
+```
+
+## Setup E Ciclo Base
+
+Preparar banco, schema e índices:
+
+```powershell
+python pipeline\main.py setup
+```
+
+Rodar ciclo base de análise, memória e sugestões:
+
+```powershell
+python pipeline\main.py cycle
+```
+
+Ver relatório de confirmações e cobertura:
+
+```powershell
+python pipeline\main.py confirmations
+```
+
+## Aplicação Do Output
+
+Gerar output inicial a partir de `source/spanish_old`:
+
+```powershell
+python pipeline\main.py apply --bootstrap-old
+```
+
+Aplicar atualizações seguras no output:
+
+```powershell
+python pipeline\main.py apply
+```
+
+Rodar ciclo completo e aplicação:
+
+```powershell
+python pipeline\main.py full
+```
+
+Use aplicação com cuidado. Experimentos de ML, score, holdout e filas de revisão não precisam alterar `output/spanish`.
+
+## Aprendizado Local
+
+Absorver feedback humano/local já revisado:
+
+```powershell
+python pipeline\main.py learn-feedback
+```
+
+Gerar baseline estatístico:
+
+```powershell
+python pipeline\main.py ml-baseline
+```
+
+Construir dataset supervisionado:
+
+```powershell
+python pipeline\main.py ml-dataset
+```
+
+Treinar classificador local:
+
+```powershell
+python pipeline\main.py ml-train-risk
+```
+
+Treinar com feature set/estratégia específicos:
+
+```powershell
+python pipeline\main.py ml-train-risk --ml-feature-set language_v4 --ml-train-strategy dedup_weighted_v2
+```
+
+## Avaliação ML
+
+Avaliar holdout por arquivo/pacote:
+
+```powershell
+python pipeline\main.py ml-holdout-eval
+```
+
+Gerar fila de revisão para falsos seguros do holdout:
+
+```powershell
+python pipeline\main.py ml-holdout-review-queue
+```
+
+Pontuar corpus real com modelo específico:
+
+```powershell
+python pipeline\main.py ml-score --ml-model-run-id 128 --ml-score-batch-size 10000
+```
+
+Auditar score:
+
+```powershell
+python pipeline\main.py ml-score-audit --auto-limit 25
+```
+
+Criar fila de regressão entre modelo ativo e candidato:
+
+```powershell
+python pipeline\main.py ml-score-regression-queue --ml-active-score-run-id 36 --ml-candidate-score-run-id 78 --auto-limit 120 --ml-per-path-limit 8
+```
+
+Comparar/promover modelo em dry-run:
+
+```powershell
+python pipeline\main.py ml-promote-model --ml-active-score-run-id 36 --ml-candidate-score-run-id 78
+```
+
+Promover modelo somente se a política aprovar e a aplicação for intencional:
+
+```powershell
+python pipeline\main.py ml-promote-model --ml-active-score-run-id 36 --ml-candidate-score-run-id 78 --auto-apply
+```
+
+Exportar modelo ativo para backup:
+
+```powershell
+python pipeline\main.py ml-export-model
+```
+
+## Política Por Grupo
+
+Simular política por grupo sobre um score:
+
+```powershell
+python pipeline\main.py ml-group-threshold-policy --ml-active-score-run-id 78
+```
+
+Gerar fila de auditoria de novos seguros da política:
+
+```powershell
+python pipeline\main.py ml-policy-audit-queue --policy-audit-focus new_safe --auto-limit 100
+```
+
+Gerar fila filtrada por grupos:
+
+```powershell
+python pipeline\main.py ml-policy-audit-queue --policy-audit-focus new_safe --ml-groups religion_possessive_lowercase,title_directional_north --auto-limit 90
+```
+
+## Revisão Paralela
+
+Preparar lote de revisão de política:
+
+```powershell
+python pipeline\parallel_review_loop.py prepare-policy --batches 3 --batch-size 30 --queue reports\NOME_DA_FILA.csv
+```
+
+Aplicar decisões estruturadas de política:
+
+```powershell
+python pipeline\parallel_review_loop.py apply-policy-jsonl reports\decisions.jsonl --source-report reports\NOME_DA_FILA.csv
+```
+
+Aplicar template JSON de revisão:
+
+```powershell
+python pipeline\parallel_review_loop.py apply reports\decisions.json
+```
+
+Depois de aplicar revisões, rode:
+
+```powershell
+python pipeline\main.py learn-feedback
+python pipeline\main.py ml-dataset
+```
+
+Treine novamente apenas quando houver volume relevante de novos exemplos ou uma hipótese clara para testar.
+
+## Progresso E Dashboard
+
+Gerar relatório consolidado de progresso:
+
+```powershell
+python pipeline\main.py ml-progress
+```
+
+O dashboard deve ignorar runs incompletos:
+
+```sql
+WHERE finished_at IS NOT NULL
+```
+
+## Utilidades
+
+Compilar scripts alterados:
+
+```powershell
+python -m py_compile pipeline\main.py pipeline\ml_train_risk.py
+```
+
+Auditar tokens de gênero:
+
+```powershell
+python pipeline\main.py gender-token-audit
+```
+
+Gerar fila micro de revisão:
+
+```powershell
+python pipeline\main.py micro-review-queue
+```
+
+## Lembretes
+
+- `ml-score` pode demorar vários minutos.
+- Runs com `finished_at IS NULL` são parciais.
+- `reports/`, `logs/`, `memory/`, `source/`, `output/` e `prompts/` são ignorados no Git.
+- Não altere `output/spanish` durante experimentos de ML.
+- Falso seguro zero é mais importante que cobertura alta nesta fase.
+

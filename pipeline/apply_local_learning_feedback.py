@@ -10,9 +10,9 @@ import db
 RULE_VERSION = "apply_local_learning_feedback_v1"
 
 POSITIVE_LABELS = {"correct"}
-NEAR_POSITIVE_LABELS = {"minor_fix"}
+NEAR_POSITIVE_LABELS = {"minor_fix", "contextual_exception"}
 PARTIAL_LABELS = {"major_fix"}
-NEGATIVE_LABELS = {"residual_spanish", "structure_error", "semantic_error", "wrong"}
+NEGATIVE_LABELS = {"residual_spanish", "structure_error", "semantic_error", "wrong", "rejected", "rejected_suggestion", "token_mismatch"}
 HARMFUL_LABELS = {"harmful"}
 LEARNABLE_LABELS = POSITIVE_LABELS | NEAR_POSITIVE_LABELS | PARTIAL_LABELS | NEGATIVE_LABELS | HARMFUL_LABELS
 CONFIRMABLE_LABELS = POSITIVE_LABELS | NEAR_POSITIVE_LABELS | PARTIAL_LABELS
@@ -301,31 +301,32 @@ def fetch_confirmation_metrics(conn) -> dict[str, int | float]:
         ).fetchone()[0]
         or 0
     )
-    rows = conn.execute(
+    row = conn.execute(
         """
-        SELECT confirmation_level, locked, COUNT(*) AS total
-        FROM segment_confirmations
-        GROUP BY confirmation_level, locked
+        SELECT
+            COUNT(DISTINCT sc.segment_id) AS total_confirmed,
+            COUNT(DISTINCT CASE
+                WHEN sc.confirmation_level IN ('human_confirmed', 'human') THEN sc.segment_id
+            END) AS human_confirmed,
+            COUNT(DISTINCT CASE
+                WHEN sc.confirmation_level = 'auto_confirmed' THEN sc.segment_id
+            END) AS auto_confirmed,
+            COUNT(DISTINCT CASE
+                WHEN sc.locked = 1 THEN sc.segment_id
+            END) AS locked
+        FROM segment_confirmations sc
+        JOIN source_segments s ON s.id = sc.segment_id
+        WHERE s.is_active = 1
         """
-    ).fetchall()
-    human = 0
-    auto = 0
-    locked = 0
-    for row in rows:
-        total = int(row["total"] or 0)
-        if row["confirmation_level"] == "human_confirmed":
-            human += total
-        elif row["confirmation_level"] == "auto_confirmed":
-            auto += total
-        if int(row["locked"] or 0) == 1:
-            locked += total
+    ).fetchone()
+    total_confirmed = int(row["total_confirmed"] or 0)
     return {
         "total_segments": total_segments,
-        "human_confirmed": human,
-        "auto_confirmed": auto,
-        "locked": locked,
-        "total_confirmed": human + auto,
-        "pending_confirmation": max(total_segments - human - auto, 0),
+        "human_confirmed": int(row["human_confirmed"] or 0),
+        "auto_confirmed": int(row["auto_confirmed"] or 0),
+        "locked": int(row["locked"] or 0),
+        "total_confirmed": total_confirmed,
+        "pending_confirmation": max(total_segments - total_confirmed, 0),
     }
 
 

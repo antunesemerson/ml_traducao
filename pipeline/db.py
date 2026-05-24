@@ -657,6 +657,239 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         """
     )
 
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_dataset_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            dataset_version TEXT NOT NULL,
+            source_scope TEXT NOT NULL,
+            limit_count INTEGER,
+            positive_count INTEGER NOT NULL DEFAULT 0,
+            negative_count INTEGER NOT NULL DEFAULT 0,
+            neutral_count INTEGER NOT NULL DEFAULT 0,
+            total_count INTEGER NOT NULL DEFAULT 0,
+            strong_positive_count INTEGER NOT NULL DEFAULT 0,
+            strong_negative_count INTEGER NOT NULL DEFAULT 0,
+            notes TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_training_examples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            english_text TEXT,
+            spanish_text TEXT,
+            old_text TEXT,
+            output_text TEXT,
+            candidate_text TEXT,
+            final_text TEXT,
+            label TEXT NOT NULL,
+            action_label TEXT NOT NULL,
+            issue_label TEXT,
+            trust_level INTEGER NOT NULL DEFAULT 0,
+            evidence_source TEXT NOT NULL,
+            evidence_id INTEGER,
+            confidence_score REAL,
+            locked INTEGER NOT NULL DEFAULT 0,
+            token_count INTEGER NOT NULL DEFAULT 0,
+            has_english INTEGER NOT NULL DEFAULT 0,
+            has_old INTEGER NOT NULL DEFAULT 0,
+            text_length INTEGER NOT NULL DEFAULT 0,
+            reasons_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES ml_dataset_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(run_id, evidence_source, evidence_id, segment_id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_model_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            model_version TEXT NOT NULL,
+            model_kind TEXT NOT NULL,
+            dataset_run_id INTEGER NOT NULL,
+            model_path TEXT,
+            training_examples INTEGER NOT NULL DEFAULT 0,
+            test_examples INTEGER NOT NULL DEFAULT 0,
+            safe_threshold REAL NOT NULL DEFAULT 0.90,
+            accuracy REAL,
+            macro_f1 REAL,
+            predicted_safe_count INTEGER NOT NULL DEFAULT 0,
+            false_safe_count INTEGER NOT NULL DEFAULT 0,
+            false_safe_rate REAL,
+            safe_precision REAL,
+            safe_recall REAL,
+            metrics_json TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(dataset_run_id) REFERENCES ml_dataset_runs(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_score_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            model_run_id INTEGER NOT NULL,
+            model_version TEXT NOT NULL,
+            path_filter TEXT,
+            limit_count INTEGER,
+            scored_count INTEGER NOT NULL DEFAULT 0,
+            model_auto_safe_count INTEGER NOT NULL DEFAULT 0,
+            final_auto_safe_count INTEGER NOT NULL DEFAULT 0,
+            needs_human_count INTEGER NOT NULL DEFAULT 0,
+            needs_autofix_count INTEGER NOT NULL DEFAULT 0,
+            blocked_structure_count INTEGER NOT NULL DEFAULT 0,
+            deterministic_block_count INTEGER NOT NULL DEFAULT 0,
+            notes TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(model_run_id) REFERENCES ml_model_runs(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_score_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            candidate_text TEXT,
+            model_action TEXT NOT NULL,
+            final_action TEXT NOT NULL,
+            risk_class TEXT NOT NULL,
+            model_safe_probability REAL,
+            model_confidence REAL,
+            token_status TEXT NOT NULL,
+            issue_count INTEGER NOT NULL DEFAULT 0,
+            high_issue_count INTEGER NOT NULL DEFAULT 0,
+            medium_issue_count INTEGER NOT NULL DEFAULT 0,
+            word_count INTEGER NOT NULL DEFAULT 0,
+            deterministic_blocked INTEGER NOT NULL DEFAULT 0,
+            confirmation_level TEXT,
+            locked INTEGER NOT NULL DEFAULT 0,
+            reasons_json TEXT,
+            issues_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES ml_score_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(run_id, segment_id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_model_registry (
+            model_kind TEXT PRIMARY KEY,
+            active_model_run_id INTEGER NOT NULL,
+            active_model_version TEXT NOT NULL,
+            policy_version TEXT NOT NULL,
+            promoted_at TEXT NOT NULL,
+            promoted_by TEXT,
+            reason TEXT,
+            metrics_json TEXT,
+            FOREIGN KEY(active_model_run_id) REFERENCES ml_model_runs(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_model_promotions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_kind TEXT NOT NULL,
+            candidate_model_run_id INTEGER NOT NULL,
+            previous_model_run_id INTEGER,
+            decision TEXT NOT NULL,
+            policy_version TEXT NOT NULL,
+            reason TEXT,
+            metrics_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(candidate_model_run_id) REFERENCES ml_model_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(previous_model_run_id) REFERENCES ml_model_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_policy_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            score_run_id INTEGER NOT NULL,
+            model_run_id INTEGER NOT NULL,
+            model_version TEXT NOT NULL,
+            scored_count INTEGER NOT NULL DEFAULT 0,
+            active_auto_safe_count INTEGER NOT NULL DEFAULT 0,
+            policy_auto_safe_count INTEGER NOT NULL DEFAULT 0,
+            new_safe_count INTEGER NOT NULL DEFAULT 0,
+            demoted_safe_count INTEGER NOT NULL DEFAULT 0,
+            protect_active_safe INTEGER NOT NULL DEFAULT 1,
+            notes TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(score_run_id) REFERENCES ml_score_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(model_run_id) REFERENCES ml_model_runs(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_policy_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            score_item_id INTEGER NOT NULL,
+            score_run_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            policy_group TEXT NOT NULL,
+            policy_threshold REAL NOT NULL,
+            policy_require_learned_positive INTEGER NOT NULL DEFAULT 0,
+            score_final_action TEXT NOT NULL,
+            policy_action TEXT NOT NULL,
+            new_safe INTEGER NOT NULL DEFAULT 0,
+            demoted_safe INTEGER NOT NULL DEFAULT 0,
+            learned_positive INTEGER NOT NULL DEFAULT 0,
+            learned_negative INTEGER NOT NULL DEFAULT 0,
+            model_safe_probability REAL,
+            reasons_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES ml_policy_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(score_item_id) REFERENCES ml_score_items(id) ON DELETE CASCADE,
+            FOREIGN KEY(score_run_id) REFERENCES ml_score_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(run_id, segment_id)
+        )
+        """
+    )
+
     changes.extend(
         ensure_columns(
             conn,
@@ -1108,6 +1341,222 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
             ],
         )
     )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_dataset_runs",
+            [
+                ("rule_version", "TEXT"),
+                ("dataset_version", "TEXT"),
+                ("source_scope", "TEXT"),
+                ("limit_count", "INTEGER"),
+                ("positive_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("negative_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("neutral_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("total_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("strong_positive_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("strong_negative_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("notes", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_training_examples",
+            [
+                ("run_id", "INTEGER"),
+                ("segment_id", "INTEGER"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("source_line_number", "INTEGER"),
+                ("english_text", "TEXT"),
+                ("spanish_text", "TEXT"),
+                ("old_text", "TEXT"),
+                ("output_text", "TEXT"),
+                ("candidate_text", "TEXT"),
+                ("final_text", "TEXT"),
+                ("label", "TEXT"),
+                ("action_label", "TEXT"),
+                ("issue_label", "TEXT"),
+                ("trust_level", "INTEGER NOT NULL DEFAULT 0"),
+                ("evidence_source", "TEXT"),
+                ("evidence_id", "INTEGER"),
+                ("confidence_score", "REAL"),
+                ("locked", "INTEGER NOT NULL DEFAULT 0"),
+                ("token_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("has_english", "INTEGER NOT NULL DEFAULT 0"),
+                ("has_old", "INTEGER NOT NULL DEFAULT 0"),
+                ("text_length", "INTEGER NOT NULL DEFAULT 0"),
+                ("reasons_json", "TEXT"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_model_runs",
+            [
+                ("rule_version", "TEXT"),
+                ("model_version", "TEXT"),
+                ("model_kind", "TEXT"),
+                ("dataset_run_id", "INTEGER"),
+                ("model_path", "TEXT"),
+                ("training_examples", "INTEGER NOT NULL DEFAULT 0"),
+                ("test_examples", "INTEGER NOT NULL DEFAULT 0"),
+                ("safe_threshold", "REAL NOT NULL DEFAULT 0.90"),
+                ("accuracy", "REAL"),
+                ("macro_f1", "REAL"),
+                ("predicted_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("false_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("false_safe_rate", "REAL"),
+                ("safe_precision", "REAL"),
+                ("safe_recall", "REAL"),
+                ("metrics_json", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_score_runs",
+            [
+                ("rule_version", "TEXT"),
+                ("model_run_id", "INTEGER"),
+                ("model_version", "TEXT"),
+                ("path_filter", "TEXT"),
+                ("limit_count", "INTEGER"),
+                ("scored_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("model_auto_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("final_auto_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_human_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_autofix_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("blocked_structure_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("deterministic_block_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("notes", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_score_items",
+            [
+                ("run_id", "INTEGER"),
+                ("segment_id", "INTEGER"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("source_line_number", "INTEGER"),
+                ("candidate_text", "TEXT"),
+                ("model_action", "TEXT"),
+                ("final_action", "TEXT"),
+                ("risk_class", "TEXT"),
+                ("model_safe_probability", "REAL"),
+                ("model_confidence", "REAL"),
+                ("token_status", "TEXT"),
+                ("issue_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("high_issue_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("medium_issue_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("word_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("deterministic_blocked", "INTEGER NOT NULL DEFAULT 0"),
+                ("confirmation_level", "TEXT"),
+                ("locked", "INTEGER NOT NULL DEFAULT 0"),
+                ("reasons_json", "TEXT"),
+                ("issues_json", "TEXT"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_model_registry",
+            [
+                ("model_kind", "TEXT"),
+                ("active_model_run_id", "INTEGER"),
+                ("active_model_version", "TEXT"),
+                ("policy_version", "TEXT"),
+                ("promoted_at", "TEXT"),
+                ("promoted_by", "TEXT"),
+                ("reason", "TEXT"),
+                ("metrics_json", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_model_promotions",
+            [
+                ("model_kind", "TEXT"),
+                ("candidate_model_run_id", "INTEGER"),
+                ("previous_model_run_id", "INTEGER"),
+                ("decision", "TEXT"),
+                ("policy_version", "TEXT"),
+                ("reason", "TEXT"),
+                ("metrics_json", "TEXT"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_policy_runs",
+            [
+                ("rule_version", "TEXT"),
+                ("score_run_id", "INTEGER"),
+                ("model_run_id", "INTEGER"),
+                ("model_version", "TEXT"),
+                ("scored_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("active_auto_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("policy_auto_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("new_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("demoted_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("protect_active_safe", "INTEGER NOT NULL DEFAULT 1"),
+                ("notes", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_policy_items",
+            [
+                ("run_id", "INTEGER"),
+                ("score_item_id", "INTEGER"),
+                ("score_run_id", "INTEGER"),
+                ("segment_id", "INTEGER"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("policy_group", "TEXT"),
+                ("policy_threshold", "REAL"),
+                ("policy_require_learned_positive", "INTEGER NOT NULL DEFAULT 0"),
+                ("score_final_action", "TEXT"),
+                ("policy_action", "TEXT"),
+                ("new_safe", "INTEGER NOT NULL DEFAULT 0"),
+                ("demoted_safe", "INTEGER NOT NULL DEFAULT 0"),
+                ("learned_positive", "INTEGER NOT NULL DEFAULT 0"),
+                ("learned_negative", "INTEGER NOT NULL DEFAULT 0"),
+                ("model_safe_probability", "REAL"),
+                ("reasons_json", "TEXT"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
 
     conn.execute(
         """
@@ -1324,6 +1773,66 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         """
         CREATE INDEX IF NOT EXISTS idx_offline_proposals_segment
         ON offline_proposals(segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_training_examples_run_label
+        ON ml_training_examples(run_id, label, action_label)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_training_examples_segment
+        ON ml_training_examples(segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_training_examples_evidence
+        ON ml_training_examples(evidence_source, evidence_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_model_runs_dataset
+        ON ml_model_runs(dataset_run_id, model_kind)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_score_items_run_action
+        ON ml_score_items(run_id, final_action, risk_class)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_score_items_segment
+        ON ml_score_items(segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_policy_runs_score
+        ON ml_policy_runs(score_run_id, rule_version)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_policy_items_run_action
+        ON ml_policy_items(run_id, policy_action, policy_group)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_policy_items_segment
+        ON ml_policy_items(segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_model_promotions_kind_created
+        ON ml_model_promotions(model_kind, created_at)
         """
     )
 

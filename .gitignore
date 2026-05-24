@@ -9,11 +9,15 @@ __pycache__/
 memory/*.sqlite
 memory/*.sqlite-*
 memory/backups/
+memory/backups*/
+memory/bkp*/
 memory/models/
+memory/model_exports/
 reports/
 logs/
 execute_sql.py
 execute_sql.sql
+prompts/
 
 # Game localization sources and generated mod output
 source/
@@ -24,3 +28,7 @@ output/
 Thumbs.db
 .idea/
 .vscode/
+
+# Dashboard frontend dependencies/build
+dashboard/node_modules/
+dashboard/dist/
