@@ -57,6 +57,14 @@ SPANISH_TITLE_ADJECTIVE_PATTERN = re.compile(
 )
 SAFE_FORMATTED_PT_WORDS = {"alto", "baixa", "baixo", "igual", "invertida", "lenta", "r\u00e1pida", "total"}
 SPANISH_FORMATTED_WORDS = {"baja", "bajo", "media", "medio", "muy"}
+KNOWN_TITLE_ADJECTIVE_UNSAFE_TEXT_BY_KEY = {
+    ("titles_l_spanish.yml", "c_karabaigal_adj"): {"karabaigalio"},
+    ("titles_l_spanish.yml", "c_constanta_adj"): {"constantiano"},
+    ("titles_l_spanish.yml", "c_skopje_adj"): {"eskopiense"},
+    ("titles_l_spanish.yml", "c_trencin_adj"): {"trencíniano"},
+    ("titles_l_spanish.yml", "d_qyzylsaryarka_adj"): {"quizylsaryarkano"},
+    ("titles_l_spanish.yml", "k_outer_ajuraan_adj"): {"ajuraani exeterior"},
+}
 ENGLISH_UI_WORDS = {
     "battlefield",
     "claim",
@@ -109,6 +117,8 @@ LANGUAGE_BLOCKING_FEATURES = {
     "RISK_SPANISH_FORMATTED_LITERAL",
     "RISK_STRUCTURAL_LEADING_SPACE_LOSS",
     "RISK_TITLE_ADJECTIVE_SPANISH_FORM",
+    "RISK_TITLE_ADJECTIVE_KNOWN_UNSAFE_TEXT",
+    "RISK_TITLE_PREFIX_CAPITALIZATION_STYLE",
     "RISK_TITLE_SPANISH_GEOGRAPHIC_TERMS",
     "RISK_STANDALONE_DOUBLE_DOT",
     "RISK_STRUCTURAL_EMPTY_VISIBLE_TEXT",
@@ -457,6 +467,17 @@ def language_features(row: dict[str, Any]) -> list[str]:
         and SPANISH_TITLE_ADJECTIVE_PATTERN.search(candidate or "")
     ):
         features.append("RISK_TITLE_ADJECTIVE_SPANISH_FORM")
+    blocked_title_adjectives = KNOWN_TITLE_ADJECTIVE_UNSAFE_TEXT_BY_KEY.get((relative_path, source_key), set())
+    if source_key.endswith("_adj") and normalize_compare(candidate) in {
+        normalize_compare(value) for value in blocked_title_adjectives
+    }:
+        features.append("RISK_TITLE_ADJECTIVE_KNOWN_UNSAFE_TEXT")
+    if (
+        relative_path == "titles_l_spanish.yml"
+        and source_key.endswith("_pre")
+        and candidate_display[:1].isupper()
+    ):
+        features.append("RISK_TITLE_PREFIX_CAPITALIZATION_STYLE")
     if "Loc_ES_" in (candidate or "") or "Custom('ES_" in (candidate or ""):
         features.append("RISK_SPANISH_LOCALIZATION_HELPER")
     if formatted & SPANISH_FORMATTED_WORDS:

@@ -30,6 +30,60 @@ python pipeline\main.py confirmations
 
 ## Aplicação Do Output
 
+Aplicar apenas confirmacoes humanas ja consolidadas no output:
+
+```powershell
+python pipeline\main.py segment-apply --auto-limit 500 --auto-apply
+```
+
+Gerar fila bruta de confirmacoes humanas bloqueadas por diferenca de token:
+
+```powershell
+python pipeline\main.py segment-token-queue
+```
+
+Classificar esses bloqueios em buckets de politica:
+
+```powershell
+python pipeline\main.py segment-token-policy
+```
+
+Auditar limpeza estrita dos textos confirmados com mojibake no gate:
+
+```powershell
+python pipeline\main.py mojibake-strict
+```
+
+Gerar uma fila balanceada para revisar excecoes de token por bucket:
+
+```powershell
+python pipeline\main.py segment-token-policy-queue --token-policy-per-bucket 25
+```
+
+Ingerir decisoes humanas de uma fila de politica de token, sem aplicar output:
+
+```powershell
+python pipeline\main.py segment-token-policy-decisions --token-policy-run-id 6 --token-policy-decisions reports\decisions_token_policy.jsonl --token-policy-source-report reports\FILA_ORIGINAL.csv
+```
+
+Corrigir `confirmed_text` a partir de decisoes `fix_confirmed_text`, sem aplicar output:
+
+```powershell
+python pipeline\main.py segment-token-confirmation-fixes --token-policy-run-id 6 --auto-apply
+```
+
+Aplicar somente excecoes de token ja aprovadas por decisao humana:
+
+```powershell
+python pipeline\main.py segment-apply --segment-require-token-policy-decision --token-policy-run-id 6 --auto-apply
+```
+
+Gerar fila focada em uma familia de risco:
+
+```powershell
+python pipeline\main.py segment-token-policy-queue --token-policy-buckets review_gender_token_change --token-policy-per-bucket 40
+```
+
 Gerar output inicial a partir de `source/spanish_old`:
 
 ```powershell
@@ -222,4 +276,3 @@ python pipeline\main.py micro-review-queue
 - `reports/`, `logs/`, `memory/`, `source/`, `output/` e `prompts/` são ignorados no Git.
 - Não altere `output/spanish` durante experimentos de ML.
 - Falso seguro zero é mais importante que cobertura alta nesta fase.
-

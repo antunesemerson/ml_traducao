@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 
-RULE_VERSION = "local_quality_validator_v2"
+RULE_VERSION = "local_quality_validator_v4"
 
 WORD_PATTERN = re.compile(r"[A-Za-z\u00c0-\u00ff]+", re.UNICODE)
 PROTECTED_TOKEN_PATTERN = re.compile(
@@ -16,7 +16,18 @@ QUESTION_MARK_MOJIBAKE_PATTERN = re.compile(
     r"[A-Za-z\u00c0-\u00ff]\?[A-Za-z\u00c0-\u00ff]|"
     r"\b(?:Voc|voc|n|N|pr|Pr|dom|Dom|imp|Imp|m|M|f|F|s|S|cora|Cora|"
     r"pol|Pol|hist|Hist|vit|Vit|posi|Posi|for|For|futuras|gera)\?"
-    r"|\b(?:conseguir|poder|custar|ficar|receber|ter|dar|tomar|ecoar|curvar|ir)\?"
+    r"|\b[jJ]\?(?=\s|[,.;:])"
+    r"|\b[Hh]\?(?=\s+[A-Za-z\u00c0-\u00ff#\[])"
+    r"|\b(?:ajud|aparecer|cuidar|continuar|intrometer|lev|pagar|pensar|precisar|"
+    r"prorrog|questionar|suceder|tentar|ver)\?(?=(?:-[A-Za-z\u00c0-\u00ff]+|[,.;:]|\s+[a-z\u00c0-\u00ff#\[]))"
+    r"|(?:(?<!\S)|(?<=[\"'(\[]))\?(?=\s+(?:a\s+lealdade|a\s+minha|com\s+o|"
+    r"o\s+qu[aã]o|um|uma|minha|meu|sua|seu|viagem|ordem|hora|fundamental|"
+    r"obtido|obtida|claro|longo|curto|respeitad[oa]|poss[ií]vel)\b)"
+    r"|\b(?:conseguir|poder|custar|ficar|receber|ter|dar|tomar|ecoar|curvar|ir)\?(?=\s+[a-z\u00e0-\u00ff#\[])"
+)
+GENDER_SUFFIX_QUESTION_PATTERN = re.compile(
+    r"\[[^\]]*Custom\(\s*['\"]ES_(?:OA|AO|XA)['\"]\s*\)\]$",
+    re.IGNORECASE,
 )
 
 SPANISH_PUNCTUATION = (
@@ -1129,7 +1140,15 @@ def validate_text(value: str | None) -> dict:
             }
         )
 
-    mojibake_matches = sorted(set(QUESTION_MARK_MOJIBAKE_PATTERN.findall(text)))
+    mojibake_matches = []
+    for match in QUESTION_MARK_MOJIBAKE_PATTERN.finditer(text):
+        value = match.group(0)
+        if value == "s?":
+            prefix = text[max(0, match.start() - 120) : match.start()]
+            if GENDER_SUFFIX_QUESTION_PATTERN.search(prefix):
+                continue
+        mojibake_matches.append(value)
+    mojibake_matches = sorted(set(mojibake_matches))
     if mojibake_matches:
         issues.append(
             {

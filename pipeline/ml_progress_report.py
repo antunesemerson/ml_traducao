@@ -10,6 +10,8 @@ import db
 
 
 RULE_VERSION = "ml_progress_report_v2"
+CONFIRMABLE_LABELS = ("correct", "contextual_exception", "major_fix", "minor_fix")
+CORRECTION_CONFIRMABLE_LABELS = ("residual_spanish", "semantic_error")
 
 
 def percent(part: int, total: int) -> str:
@@ -230,6 +232,44 @@ def latest_score_for_model(conn, model_run_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def score_attribution(conn, score_run_id: int | None) -> dict[str, int]:
+    if score_run_id is None:
+        return {}
+    row = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS scored,
+            SUM(CASE WHEN model_action = 'auto_safe' THEN 1 ELSE 0 END) AS model_auto_safe,
+            SUM(CASE WHEN model_action = 'auto_safe' AND final_action = 'auto_safe' THEN 1 ELSE 0 END) AS model_direct_auto_safe,
+            SUM(CASE WHEN model_action <> 'auto_safe' AND final_action = 'auto_safe' THEN 1 ELSE 0 END) AS deterministic_promoted_auto_safe,
+            SUM(CASE WHEN model_action = 'auto_safe' AND final_action <> 'auto_safe' THEN 1 ELSE 0 END) AS deterministic_demoted_auto_safe
+        FROM ml_score_items
+        WHERE run_id = ?
+        """,
+        (score_run_id,),
+    ).fetchone()
+    if row is None:
+        return {}
+    return {
+        "scored": int(row["scored"] or 0),
+        "model_auto_safe": int(row["model_auto_safe"] or 0),
+        "model_direct_auto_safe": int(row["model_direct_auto_safe"] or 0),
+        "deterministic_promoted_auto_safe": int(row["deterministic_promoted_auto_safe"] or 0),
+        "deterministic_demoted_auto_safe": int(row["deterministic_demoted_auto_safe"] or 0),
+    }
+
+
+def attribution_lines(attr: dict[str, int], total: int, indent: str = "- ") -> list[str]:
+    if not attr:
+        return [f"{indent}Auto-safe attribution: unavailable"]
+    return [
+        f"{indent}Model auto_safe before gates: {attr['model_auto_safe']} ({percent(attr['model_auto_safe'], total)})",
+        f"{indent}Model direct auto_safe after gates: {attr['model_direct_auto_safe']} ({percent(attr['model_direct_auto_safe'], total)})",
+        f"{indent}Deterministic promoted to auto_safe: {attr['deterministic_promoted_auto_safe']} ({percent(attr['deterministic_promoted_auto_safe'], total)})",
+        f"{indent}Model auto_safe demoted by gates: {attr['deterministic_demoted_auto_safe']} ({percent(attr['deterministic_demoted_auto_safe'], total)})",
+    ]
+
+
 def main() -> None:
     settings = db.load_settings()
     started_at = datetime.now()
@@ -277,12 +317,21 @@ def main() -> None:
         )
         unsynced_confirmations = scalar(
             conn,
-            """
+            f"""
             SELECT COUNT(*)
             FROM local_learning_candidates
             WHERE local_status = 'reviewed_human'
               AND confirmation_synced_at IS NULL
+              AND (
+                  human_label IN ({",".join("?" for _ in CONFIRMABLE_LABELS)})
+                  OR (
+                      human_label IN ({",".join("?" for _ in CORRECTION_CONFIRMABLE_LABELS)})
+                      AND corrected_text IS NOT NULL
+                      AND trim(corrected_text) != ''
+                  )
+              )
             """,
+            (*CONFIRMABLE_LABELS, *CORRECTION_CONFIRMABLE_LABELS),
         )
         learning_labels = count_rows(
             conn,
@@ -321,11 +370,14 @@ def main() -> None:
         ).fetchone()
         active_model = dict(active_model_row) if active_model_row else None
         latest_score = latest_full_score_for_kind(conn, "risk_action_classifier")
-        specialist_scores = [
-            (model, latest_score_for_model(conn, int(model["id"])))
-            for model in specialist_models
-        ]
+        latest_score_attr = score_attribution(conn, int(latest_score["id"])) if latest_score else {}
+        specialist_scores = []
+        for model in specialist_models:
+            score = latest_score_for_model(conn, int(model["id"]))
+            attr = score_attribution(conn, int(score["id"])) if score else {}
+            specialist_scores.append((model, score, attr))
         active_score = latest_full_score_for_model(conn, int(active_model["id"])) if active_model else None
+        active_score_attr = score_attribution(conn, int(active_score["id"])) if active_score else {}
         latest_policy = latest_row(conn, "ml_policy_runs", "scored_count > 0")
         latest_promotion = latest_row(conn, "ml_model_promotions")
         dataset_labels = []
@@ -366,7 +418,7 @@ def main() -> None:
         f"- Reviewed local candidates: {human_reviewed}",
         f"- Holdout false-safe reviews: {holdout_reviewed}",
         f"- Reviewed rows not yet learned: {unsynced_learning}",
-        f"- Reviewed rows not yet confirmation-synced: {unsynced_confirmations}",
+        f"- Reviewed confirmable rows not yet confirmation-synced: {unsynced_confirmations}",
         "",
         "Human labels:",
         *format_count_rows(learning_labels),
@@ -437,6 +489,7 @@ def main() -> None:
                 f"- Needs autofix: {latest_score['needs_autofix_count']} ({percent(int(latest_score['needs_autofix_count'] or 0), scored)})",
                 f"- Blocked structure: {latest_score['blocked_structure_count']} ({percent(int(latest_score['blocked_structure_count'] or 0), scored)})",
                 f"- Deterministic blocks: {latest_score['deterministic_block_count']}",
+                *attribution_lines(latest_score_attr, scored),
             ]
         )
     else:
@@ -460,6 +513,7 @@ def main() -> None:
                 f"- Needs autofix: {active_score['needs_autofix_count']} ({percent(int(active_score['needs_autofix_count'] or 0), active_scored)})",
                 f"- Blocked structure: {active_score['blocked_structure_count']} ({percent(int(active_score['blocked_structure_count'] or 0), active_scored)})",
                 f"- Is latest score run: {latest_is_active}",
+                *attribution_lines(active_score_attr, active_scored),
             ]
         )
     else:
@@ -471,7 +525,7 @@ def main() -> None:
         ]
     )
     if specialist_scores:
-        for model, score in specialist_scores:
+        for model, score, attr in specialist_scores:
             if not score:
                 lines.append(f"- {model['model_kind']}: no score yet")
                 continue
@@ -485,6 +539,7 @@ def main() -> None:
                     f"  Final auto safe: {score['final_auto_safe_count']} ({percent(int(score['final_auto_safe_count'] or 0), specialist_scored)})",
                     f"  Needs human: {score['needs_human_count']} ({percent(int(score['needs_human_count'] or 0), specialist_scored)})",
                     f"  Deterministic blocks: {score['deterministic_block_count']}",
+                    *attribution_lines(attr, specialist_scored, indent="  "),
                 ]
             )
     else:

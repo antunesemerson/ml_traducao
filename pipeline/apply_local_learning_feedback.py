@@ -15,7 +15,8 @@ PARTIAL_LABELS = {"major_fix"}
 NEGATIVE_LABELS = {"residual_spanish", "structure_error", "semantic_error", "wrong", "rejected", "rejected_suggestion", "token_mismatch"}
 HARMFUL_LABELS = {"harmful"}
 LEARNABLE_LABELS = POSITIVE_LABELS | NEAR_POSITIVE_LABELS | PARTIAL_LABELS | NEGATIVE_LABELS | HARMFUL_LABELS
-CONFIRMABLE_LABELS = POSITIVE_LABELS | NEAR_POSITIVE_LABELS | PARTIAL_LABELS
+CORRECTION_CONFIRMABLE_LABELS = {"residual_spanish", "semantic_error"}
+CONFIRMABLE_LABELS = POSITIVE_LABELS | NEAR_POSITIVE_LABELS | PARTIAL_LABELS | CORRECTION_CONFIRMABLE_LABELS
 
 
 def now() -> str:
@@ -204,6 +205,8 @@ def confirmation_text(row) -> str | None:
         return row["suggested_text"]
     corrected = (row["corrected_text"] or "").strip()
     if label in {"minor_fix", "major_fix"} and corrected:
+        return row["corrected_text"]
+    if label in CORRECTION_CONFIRMABLE_LABELS and corrected:
         return row["corrected_text"]
     return None
 
@@ -403,23 +406,31 @@ def main() -> None:
             FROM local_learning_candidates
             WHERE human_label IN ({labels})
               AND confirmation_synced_at IS NULL
+              AND (
+                  human_label NOT IN ({correction_labels})
+                  OR (corrected_text IS NOT NULL AND trim(corrected_text) != '')
+              )
             ORDER BY reviewed_at ASC, id ASC
-            """.format(labels=",".join("?" for _ in sorted(CONFIRMABLE_LABELS))),
-            tuple(sorted(CONFIRMABLE_LABELS)),
+            """.format(
+                labels=",".join("?" for _ in sorted(CONFIRMABLE_LABELS)),
+                correction_labels=",".join("?" for _ in sorted(CORRECTION_CONFIRMABLE_LABELS)),
+            ),
+            (*tuple(sorted(CONFIRMABLE_LABELS)), *tuple(sorted(CORRECTION_CONFIRMABLE_LABELS))),
         ).fetchall()
 
         confirmation_counts: Counter[str] = Counter()
         for row in confirmation_rows:
             result = sync_human_confirmation(conn, row, timestamp)
             confirmation_counts[result] += 1
-            conn.execute(
-                """
-                UPDATE local_learning_candidates
-                SET confirmation_synced_at = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (timestamp, timestamp, row["id"]),
-            )
+            if result != "skipped_missing_text":
+                conn.execute(
+                    """
+                    UPDATE local_learning_candidates
+                    SET confirmation_synced_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (timestamp, timestamp, row["id"]),
+                )
 
         conn.commit()
 

@@ -107,9 +107,13 @@ def is_exact_token_only_passthrough(row: dict[str, Any]) -> bool:
 def is_safe_dynasty_family_title(row: dict[str, Any]) -> bool:
     relative_path = row.get("relative_path") or ""
     source_key = row.get("source_key") or ""
-    if relative_path != "titles_l_spanish.yml":
+    if relative_path == "titles_l_spanish.yml":
+        allowed_prefixes = ("c_nf_", "d_nf_")
+    elif relative_path == "dlc/tgp/dlc_tgp_other_titles_l_spanish.yml":
+        allowed_prefixes = ("b_nf_", "c_nf_", "d_nf_", "k_nf_", "e_nf_")
+    else:
         return False
-    if not source_key.startswith(("c_nf_", "d_nf_")):
+    if not source_key.startswith(allowed_prefixes):
         return False
 
     candidate = row.get("candidate_text") or ""
@@ -172,7 +176,11 @@ def is_safe_religion_old_adjective(row: dict[str, Any]) -> bool:
     return bool(re.fullmatch(r"\$[A-Za-z0-9_]+_adj\$ antiga", candidate))
 
 
-def is_safe_contextual_taxonomy(row: dict[str, Any], safe_probability: float) -> bool:
+def is_safe_contextual_taxonomy(
+    row: dict[str, Any],
+    safe_probability: float,
+    safe_threshold: float,
+) -> bool:
     if candidate_differs_from_output(row):
         return False
     if has_blocked_spanish_geography_terms(row):
@@ -203,8 +211,11 @@ def is_safe_contextual_taxonomy(row: dict[str, Any], safe_probability: float) ->
         return source_key.startswith("cn_")
 
     if relative_path == "titles_l_spanish.yml":
-        if source_key.startswith(("b_", "c_", "d_", "k_", "e_")) and (
-            source_key.endswith("_adj") or source_key.startswith("b_")
+        title_threshold = max(0.80, safe_threshold)
+        if (
+            safe_probability >= title_threshold
+            and source_key.startswith(("b_", "c_", "d_", "k_", "e_"))
+            and (source_key.endswith("_adj") or source_key.startswith("b_"))
         ):
             return True
 
@@ -446,6 +457,7 @@ def final_decision(
     safe_probability: float,
     model_confidence: float,
     probability_by_class: dict[str, float],
+    safe_threshold: float,
 ) -> dict[str, Any]:
     candidate_text = row.get("candidate_text") or ""
     validation = local_quality_validator.validate_text(candidate_text)
@@ -456,6 +468,7 @@ def final_decision(
     reasons = [
         f"model_action:{model_action}",
         f"safe_probability:{safe_probability:.4f}",
+        f"safe_threshold:{safe_threshold:.4f}",
         f"model_confidence:{model_confidence:.4f}",
     ]
     deterministic_blocked = 0
@@ -569,7 +582,7 @@ def final_decision(
         and final_action != "auto_safe"
         and status == "ok"
         and validation["issue_count"] == 0
-        and is_safe_contextual_taxonomy(row, safe_probability)
+        and is_safe_contextual_taxonomy(row, safe_probability, safe_threshold)
     ):
         final_action = "auto_safe"
         risk_class = "low"
@@ -760,11 +773,22 @@ def update_run_summary(conn, run_id: int, finished_at: str | None = None) -> Cou
     final_counts: Counter[str] = Counter()
     model_counts: Counter[str] = Counter()
     deterministic_blocks = 0
+    model_direct_auto_safe_count = 0
+    deterministic_promoted_auto_safe_count = 0
+    deterministic_demoted_auto_safe_count = 0
     for row in rows:
         total = int(row["total"] or 0)
-        final_counts[row["final_action"]] += total
-        model_counts[row["model_action"]] += total
+        final_action = row["final_action"]
+        model_action = row["model_action"]
+        final_counts[final_action] += total
+        model_counts[model_action] += total
         deterministic_blocks += int(row["deterministic_blocks"] or 0)
+        if model_action == "auto_safe" and final_action == "auto_safe":
+            model_direct_auto_safe_count += total
+        elif model_action != "auto_safe" and final_action == "auto_safe":
+            deterministic_promoted_auto_safe_count += total
+        elif model_action == "auto_safe" and final_action != "auto_safe":
+            deterministic_demoted_auto_safe_count += total
     scored_count = sum(final_counts.values())
     finished_sql = "finished_at = ?, updated_at = ?"
     timestamp_params: tuple[Any, ...] = (finished_at, finished_at) if finished_at else (now(),)
@@ -775,6 +799,9 @@ def update_run_summary(conn, run_id: int, finished_at: str | None = None) -> Cou
         UPDATE ml_score_runs
         SET scored_count = ?,
             model_auto_safe_count = ?,
+            model_direct_auto_safe_count = ?,
+            deterministic_promoted_auto_safe_count = ?,
+            deterministic_demoted_auto_safe_count = ?,
             final_auto_safe_count = ?,
             needs_human_count = ?,
             needs_autofix_count = ?,
@@ -786,6 +813,9 @@ def update_run_summary(conn, run_id: int, finished_at: str | None = None) -> Cou
         (
             scored_count,
             model_counts["auto_safe"],
+            model_direct_auto_safe_count,
+            deterministic_promoted_auto_safe_count,
+            deterministic_demoted_auto_safe_count,
             final_counts["auto_safe"],
             final_counts["needs_human"],
             final_counts["needs_autofix"],
@@ -866,6 +896,7 @@ def main(
                         safe_probability,
                         model_confidence,
                         probabilities,
+                        threshold,
                     )
                 )
             insert_items(conn, score_run_id, items, started_at)
@@ -926,13 +957,26 @@ def main(
         ).fetchall()
         run_summary = conn.execute(
             """
-            SELECT deterministic_block_count
+            SELECT
+                deterministic_block_count,
+                model_auto_safe_count,
+                model_direct_auto_safe_count,
+                deterministic_promoted_auto_safe_count,
+                deterministic_demoted_auto_safe_count
             FROM ml_score_runs
             WHERE id = ?
             """,
             (score_run_id,),
         ).fetchone()
         deterministic_blocks = int(run_summary["deterministic_block_count"] or 0) if run_summary else 0
+        model_auto_safe_count = int(run_summary["model_auto_safe_count"] or 0) if run_summary else 0
+        model_direct_auto_safe_count = int(run_summary["model_direct_auto_safe_count"] or 0) if run_summary else 0
+        deterministic_promoted_auto_safe_count = (
+            int(run_summary["deterministic_promoted_auto_safe_count"] or 0) if run_summary else 0
+        )
+        deterministic_demoted_auto_safe_count = (
+            int(run_summary["deterministic_demoted_auto_safe_count"] or 0) if run_summary else 0
+        )
         review_samples = conn.execute(
             """
             SELECT
@@ -984,6 +1028,12 @@ def main(
         f"- Needs autofix: {final_counts['needs_autofix']} ({percent(final_counts['needs_autofix'], total)})",
         f"- Blocked structure: {final_counts['blocked_structure']} ({percent(final_counts['blocked_structure'], total)})",
         f"- Deterministic blocks/overrides: {deterministic_blocks}",
+        "",
+        "Auto-safe attribution:",
+        f"- Model auto_safe before gates: {model_auto_safe_count} ({percent(model_auto_safe_count, total)})",
+        f"- Model direct auto_safe after gates: {model_direct_auto_safe_count} ({percent(model_direct_auto_safe_count, total)})",
+        f"- Deterministic promoted to auto_safe: {deterministic_promoted_auto_safe_count} ({percent(deterministic_promoted_auto_safe_count, total)})",
+        f"- Model auto_safe demoted by gates: {deterministic_demoted_auto_safe_count} ({percent(deterministic_demoted_auto_safe_count, total)})",
         "",
         "Model action counts:",
         *format_rows(model_action_rows),

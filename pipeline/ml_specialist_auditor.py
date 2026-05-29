@@ -91,11 +91,25 @@ def compare_rows(conn, general_score_run_id: int, specialist_score_run_id: int) 
             g.issue_count AS general_issue_count,
             s.issue_count AS specialist_issue_count,
             g.reasons_json AS general_reasons_json,
-            s.reasons_json AS specialist_reasons_json
+            s.reasons_json AS specialist_reasons_json,
+            COALESCE(r.reviewed_count, 0) AS reviewed_count,
+            r.reviewed_labels,
+            r.latest_reviewed_at
         FROM ml_score_items s
         JOIN ml_score_items g
           ON g.segment_id = s.segment_id
          AND g.run_id = ?
+        LEFT JOIN (
+            SELECT
+                segment_id,
+                COUNT(*) AS reviewed_count,
+                GROUP_CONCAT(DISTINCT human_label) AS reviewed_labels,
+                MAX(reviewed_at) AS latest_reviewed_at
+            FROM local_learning_candidates
+            WHERE queue_source = 'ml_specialist_auditor'
+              AND local_status = 'reviewed_human'
+            GROUP BY segment_id
+        ) r ON r.segment_id = s.segment_id
         WHERE s.run_id = ?
         ORDER BY
             CASE
@@ -113,6 +127,7 @@ def compare_rows(conn, general_score_run_id: int, specialist_score_run_id: int) 
     for row in rows:
         item = dict(row)
         action, requires_review = auditor_action(item["general_action"], item["specialist_action"])
+        already_reviewed = int(item.get("reviewed_count") or 0) > 0
         reasons = [
             f"general_action:{item['general_action']}",
             f"specialist_action:{item['specialist_action']}",
@@ -121,17 +136,30 @@ def compare_rows(conn, general_score_run_id: int, specialist_score_run_id: int) 
         ]
         if requires_review:
             reasons.append("auditor:divergence_requires_human_review")
+        if already_reviewed:
+            reasons.append("auditor:already_reviewed_human")
         item["auditor_action"] = action
-        item["requires_human_review"] = int(requires_review)
+        item["divergence_requires_review"] = int(requires_review)
+        item["already_reviewed"] = int(already_reviewed)
+        item["requires_human_review"] = int(requires_review and not already_reviewed)
         item["auditor_reasons_json"] = json.dumps(reasons, ensure_ascii=False)
         results.append(item)
     return results
 
 
-def write_csv(settings: dict[str, Any], rows: list[dict[str, Any]], started_at: datetime) -> Path:
+def write_csv(
+    settings: dict[str, Any],
+    rows: list[dict[str, Any]],
+    started_at: datetime,
+    general_score_run_id: int,
+    specialist_score_run_id: int,
+) -> Path:
     reports_dir = db.project_path(settings.get("reports_dir", "reports"))
     reports_dir.mkdir(parents=True, exist_ok=True)
-    path = reports_dir / f"{started_at.strftime('%Y%m%d_%H%M%S')}_ml_specialist_auditor.csv"
+    path = (
+        reports_dir
+        / f"{started_at.strftime('%Y%m%d_%H%M%S')}_ml_specialist_auditor_g{general_score_run_id}_s{specialist_score_run_id}.csv"
+    )
     fieldnames = [
         "segment_id",
         "relative_path",
@@ -140,7 +168,12 @@ def write_csv(settings: dict[str, Any], rows: list[dict[str, Any]], started_at: 
         "general_action",
         "specialist_action",
         "auditor_action",
+        "divergence_requires_review",
+        "already_reviewed",
         "requires_human_review",
+        "reviewed_count",
+        "reviewed_labels",
+        "latest_reviewed_at",
         "general_safe_probability",
         "specialist_safe_probability",
         "general_token_status",
@@ -156,8 +189,15 @@ def write_csv(settings: dict[str, Any], rows: list[dict[str, Any]], started_at: 
     return path
 
 
-def sample_lines(rows: list[dict[str, Any]], action: str, limit: int = 12) -> list[str]:
+def sample_lines(
+    rows: list[dict[str, Any]],
+    action: str,
+    limit: int = 12,
+    pending_only: bool = True,
+) -> list[str]:
     selected = [row for row in rows if row["auditor_action"] == action]
+    if pending_only:
+        selected = [row for row in selected if int(row.get("requires_human_review") or 0)]
     if not selected:
         return ["- none"]
     lines = []
@@ -195,10 +235,16 @@ def main(
         specialist_info = score_run_info(conn, specialist_score_run_id)
         rows = compare_rows(conn, general_score_run_id, specialist_score_run_id)
 
-    csv_path = write_csv(settings, rows, started_at)
+    csv_path = write_csv(settings, rows, started_at, general_score_run_id, specialist_score_run_id)
     counts = Counter(row["auditor_action"] for row in rows)
     pair_counts = Counter((row["general_action"], row["specialist_action"]) for row in rows)
     review_count = sum(int(row["requires_human_review"]) for row in rows)
+    divergent_count = sum(int(row["divergence_requires_review"]) for row in rows)
+    already_reviewed_count = sum(
+        1
+        for row in rows
+        if int(row["divergence_requires_review"]) and int(row["already_reviewed"])
+    )
     elapsed = datetime.now() - started_at
     total = len(rows)
     report_lines = [
@@ -214,6 +260,8 @@ def main(
         "",
         "Summary:",
         f"- Compared segments: {total}",
+        f"- Divergent rows: {divergent_count} ({percent(divergent_count, total)})",
+        f"- Already reviewed divergences: {already_reviewed_count} ({percent(already_reviewed_count, total)})",
         f"- Requires human review: {review_count} ({percent(review_count, total)})",
         f"- CSV: {csv_path}",
         "",
@@ -223,19 +271,26 @@ def main(
         "General vs specialist action pairs:",
         *[f"- {general} / {specialist}: {count}" for (general, specialist), count in pair_counts.most_common()],
         "",
-        "Specialist new-safe review samples:",
-        *sample_lines(rows, "specialist_new_safe_review"),
+        "Pending specialist new-safe review samples:",
+        *sample_lines(rows, "specialist_new_safe_review", pending_only=True),
         "",
-        "Specialist demoted review samples:",
-        *sample_lines(rows, "specialist_demoted_review"),
+        "Pending specialist demoted review samples:",
+        *sample_lines(rows, "specialist_demoted_review", pending_only=True),
         "",
         "Interpretation:",
         "- This is a dry-run auditor; it does not change output or confirmations.",
         "- New-safe and demoted-safe disagreements should become human review queues before any promotion.",
+        "- Already reviewed divergences are counted separately so old general-score disagreements do not stay pending forever.",
         "- Deterministic validators still dominate over model votes.",
     ]
-    report_path = db.write_report(settings, "ml_specialist_auditor", report_lines)
+    report_path = db.write_report(
+        settings,
+        f"ml_specialist_auditor_g{general_score_run_id}_s{specialist_score_run_id}",
+        report_lines,
+    )
     print(f"[ml_specialist_auditor] Compared segments: {total}")
+    print(f"[ml_specialist_auditor] Divergent rows: {divergent_count}")
+    print(f"[ml_specialist_auditor] Already reviewed divergences: {already_reviewed_count}")
     print(f"[ml_specialist_auditor] Requires human review: {review_count}")
     print(f"[ml_specialist_auditor] CSV: {csv_path}")
     print(f"[ml_specialist_auditor] Report: {report_path}")

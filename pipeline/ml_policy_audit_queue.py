@@ -132,9 +132,15 @@ def fetch_rows(
     return result
 
 
-def group_summary(conn, policy_run_id: int) -> list[dict[str, Any]]:
+def group_summary(conn, policy_run_id: int, focus: str, groups: set[str]) -> list[dict[str, Any]]:
+    where = ["run_id = ?", focus_clause(focus).replace("mpi.", "")]
+    params: list[Any] = [policy_run_id]
+    if groups:
+        placeholders = ",".join("?" for _ in groups)
+        where.append(f"policy_group IN ({placeholders})")
+        params.extend(sorted(groups))
     rows = conn.execute(
-        """
+        f"""
         SELECT
             policy_group,
             COUNT(*) AS total_review_targets,
@@ -143,12 +149,11 @@ def group_summary(conn, policy_run_id: int) -> list[dict[str, Any]]:
             SUM(CASE WHEN new_safe = 1 AND learned_positive = 1 THEN 1 ELSE 0 END) AS new_safe_learned_positive,
             SUM(CASE WHEN learned_negative = 1 THEN 1 ELSE 0 END) AS learned_negative
         FROM ml_policy_items
-        WHERE run_id = ?
-          AND (new_safe = 1 OR demoted_safe = 1)
+        WHERE {" AND ".join(where)}
         GROUP BY policy_group
         ORDER BY new_safe DESC, demoted_safe DESC, policy_group
         """,
-        (policy_run_id,),
+        tuple(params),
     ).fetchall()
     return [dict(row) for row in rows]
 
@@ -250,7 +255,7 @@ def main(
         policy_run_id = policy_run_id or latest_policy_run_id(conn)
         policy_run = load_policy_run(conn, policy_run_id)
         rows = fetch_rows(conn, policy_run_id, focus, groups, limit)
-        summaries = group_summary(conn, policy_run_id)
+        summaries = group_summary(conn, policy_run_id, focus, groups)
 
     csv_path = write_csv(settings, rows)
     counts = Counter(row["audit_kind"] for row in rows)

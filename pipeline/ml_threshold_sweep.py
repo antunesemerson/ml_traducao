@@ -9,13 +9,14 @@ from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import train_test_split
 
 import db
-from ml_holdout_eval import count_labels, select_holdout_paths
+from ml_holdout_eval import apply_holdout_safety_gates, count_labels, select_holdout_paths
 from ml_train_risk import (
     DEFAULT_FEATURE_SET,
     DEFAULT_TRAIN_STRATEGY,
     FEATURE_SETS,
     RANDOM_SEED,
     create_model,
+    deduplicate_examples,
     false_safe_stats,
     fetch_examples,
     fit_model,
@@ -137,6 +138,9 @@ def main(
         dataset_run_id = dataset_run_id or latest_dataset_run_id(conn)
         examples = fetch_examples(conn, dataset_run_id)
 
+    if train_strategy == "dedup_weighted_v2":
+        examples = deduplicate_examples(examples)
+
     if len(count_labels(examples)) < 2:
         raise RuntimeError("Need at least two risk labels to evaluate thresholds.")
 
@@ -191,7 +195,10 @@ def main(
 
     results = []
     for threshold in thresholds:
-        predictions = threshold_predictions(model, x_holdout, threshold, holdout_examples)
+        predictions = apply_holdout_safety_gates(
+            holdout_examples,
+            threshold_predictions(model, x_holdout, threshold, holdout_examples),
+        )
         row = score_threshold(holdout_examples, y_true, predictions)
         row["threshold"] = threshold
         results.append(row)
@@ -272,7 +279,7 @@ def main(
             "- If no threshold gives useful predicted_safe with acceptable false_safe, improve features or add rules before promotion.",
         ]
     )
-    report_path = db.write_report(settings, "ml_threshold_sweep", report_lines)
+    report_path = db.write_report(settings, f"ml_threshold_sweep_d{dataset_run_id}_{train_strategy}", report_lines)
     print(f"[ml_threshold_sweep] Dataset run id: {dataset_run_id}")
     if recommendation:
         print(

@@ -46,9 +46,16 @@ def file_hash(path: Path) -> str:
 def connect(settings: dict | None = None) -> sqlite3.Connection:
     database_path = get_database_path(settings)
     database_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(database_path)
+    conn = sqlite3.connect(database_path, timeout=300)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 300000")
+    try:
+        conn.execute("PRAGMA journal_mode = WAL")
+    except sqlite3.OperationalError:
+        # Dashboard readers can briefly hold the database before WAL is active.
+        # The longer busy timeout above still protects long pipeline writes.
+        pass
     return conn
 
 
@@ -754,6 +761,9 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
             limit_count INTEGER,
             scored_count INTEGER NOT NULL DEFAULT 0,
             model_auto_safe_count INTEGER NOT NULL DEFAULT 0,
+            model_direct_auto_safe_count INTEGER NOT NULL DEFAULT 0,
+            deterministic_promoted_auto_safe_count INTEGER NOT NULL DEFAULT 0,
+            deterministic_demoted_auto_safe_count INTEGER NOT NULL DEFAULT 0,
             final_auto_safe_count INTEGER NOT NULL DEFAULT 0,
             needs_human_count INTEGER NOT NULL DEFAULT 0,
             needs_autofix_count INTEGER NOT NULL DEFAULT 0,
@@ -886,6 +896,882 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
             FOREIGN KEY(score_run_id) REFERENCES ml_score_runs(id) ON DELETE CASCADE,
             FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
             UNIQUE(run_id, segment_id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_specialist_policy_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            general_score_run_id INTEGER,
+            specialist_key TEXT NOT NULL,
+            model_kind TEXT NOT NULL,
+            model_run_id INTEGER,
+            model_version TEXT,
+            dataset_run_id INTEGER,
+            score_run_id INTEGER,
+            operational_threshold REAL,
+            policy_min_threshold REAL,
+            threshold_below_policy INTEGER NOT NULL DEFAULT 0,
+            scope_description TEXT,
+            scope_sql TEXT,
+            scope_active_count INTEGER NOT NULL DEFAULT 0,
+            scored_count INTEGER NOT NULL DEFAULT 0,
+            compared_count INTEGER NOT NULL DEFAULT 0,
+            scope_delta_count INTEGER NOT NULL DEFAULT 0,
+            scope_coverage_rate REAL,
+            final_auto_safe_count INTEGER NOT NULL DEFAULT 0,
+            needs_human_count INTEGER NOT NULL DEFAULT 0,
+            needs_autofix_count INTEGER NOT NULL DEFAULT 0,
+            blocked_structure_count INTEGER NOT NULL DEFAULT 0,
+            model_direct_auto_safe_count INTEGER NOT NULL DEFAULT 0,
+            deterministic_promoted_auto_safe_count INTEGER NOT NULL DEFAULT 0,
+            deterministic_demoted_auto_safe_count INTEGER NOT NULL DEFAULT 0,
+            final_auto_safe_rate REAL,
+            model_direct_auto_safe_rate REAL,
+            specialist_new_safe_count INTEGER NOT NULL DEFAULT 0,
+            specialist_demoted_count INTEGER NOT NULL DEFAULT 0,
+            pending_new_safe_count INTEGER NOT NULL DEFAULT 0,
+            pending_demoted_count INTEGER NOT NULL DEFAULT 0,
+            reviewed_new_safe_count INTEGER NOT NULL DEFAULT 0,
+            reviewed_demoted_count INTEGER NOT NULL DEFAULT 0,
+            divergent_count INTEGER NOT NULL DEFAULT 0,
+            reviewed_divergent_count INTEGER NOT NULL DEFAULT 0,
+            pending_real_count INTEGER NOT NULL DEFAULT 0,
+            missing_general_count INTEGER NOT NULL DEFAULT 0,
+            divergence_rate REAL,
+            pending_real_rate REAL,
+            status TEXT NOT NULL,
+            recommended_action TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(general_score_run_id) REFERENCES ml_score_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(model_run_id) REFERENCES ml_model_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(score_run_id) REFERENCES ml_score_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(dataset_run_id) REFERENCES ml_dataset_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_agent_registry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_key TEXT NOT NULL UNIQUE,
+            agent_type TEXT NOT NULL,
+            parent_agent_key TEXT,
+            model_kind TEXT,
+            status TEXT NOT NULL DEFAULT 'planned',
+            operational_state TEXT NOT NULL DEFAULT 'experimental',
+            decision_role TEXT NOT NULL DEFAULT 'vote',
+            scope_group TEXT,
+            scope_sql TEXT,
+            scope_description TEXT,
+            default_threshold REAL,
+            priority INTEGER NOT NULL DEFAULT 100,
+            dashboard_group TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            notes_json TEXT
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_agent_routing_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            general_score_run_id INTEGER,
+            policy_run_id INTEGER,
+            coordinator_key TEXT NOT NULL,
+            agents_considered_count INTEGER NOT NULL DEFAULT 0,
+            segments_scanned_count INTEGER NOT NULL DEFAULT 0,
+            routed_count INTEGER NOT NULL DEFAULT 0,
+            active_agent_covered_count INTEGER NOT NULL DEFAULT 0,
+            planned_agent_covered_count INTEGER NOT NULL DEFAULT 0,
+            missing_agent_count INTEGER NOT NULL DEFAULT 0,
+            conflict_count INTEGER NOT NULL DEFAULT 0,
+            recommendation_count INTEGER NOT NULL DEFAULT 0,
+            notes_json TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(general_score_run_id) REFERENCES ml_score_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(policy_run_id) REFERENCES ml_policy_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_agent_routing_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT,
+            source_key TEXT,
+            route_agent_key TEXT,
+            route_agent_type TEXT,
+            route_status TEXT NOT NULL DEFAULT 'candidate',
+            route_confidence REAL,
+            route_reason TEXT,
+            issue_family TEXT,
+            general_action TEXT,
+            policy_action TEXT,
+            specialist_action TEXT,
+            recommendation_key TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES ml_agent_routing_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(run_id, segment_id, route_agent_key)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_agent_recommendations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER,
+            proposed_agent_key TEXT NOT NULL,
+            parent_agent_key TEXT,
+            recommendation_type TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'proposed',
+            reason TEXT,
+            evidence_count INTEGER NOT NULL DEFAULT 0,
+            positive_count INTEGER NOT NULL DEFAULT 0,
+            negative_count INTEGER NOT NULL DEFAULT 0,
+            corrected_count INTEGER NOT NULL DEFAULT 0,
+            sample_segments_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES ml_agent_routing_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS segment_state_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            active_score_run_id INTEGER,
+            candidate_score_run_id INTEGER,
+            policy_run_id INTEGER,
+            total_segments INTEGER NOT NULL DEFAULT 0,
+            closed_count INTEGER NOT NULL DEFAULT 0,
+            pending_count INTEGER NOT NULL DEFAULT 0,
+            output_apply_pending_count INTEGER NOT NULL DEFAULT 0,
+            blank_valid_count INTEGER NOT NULL DEFAULT 0,
+            experimental_watch_count INTEGER NOT NULL DEFAULT 0,
+            reopen_count INTEGER NOT NULL DEFAULT 0,
+            notes_json TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(active_score_run_id) REFERENCES ml_score_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(candidate_score_run_id) REFERENCES ml_score_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(policy_run_id) REFERENCES ml_policy_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS segment_state_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            final_state TEXT NOT NULL,
+            state_group TEXT NOT NULL,
+            output_state TEXT NOT NULL,
+            review_state TEXT NOT NULL,
+            apply_state TEXT NOT NULL,
+            active_action TEXT,
+            candidate_action TEXT,
+            policy_action TEXT,
+            confirmation_level TEXT,
+            confirmation_label TEXT,
+            locked INTEGER NOT NULL DEFAULT 0,
+            has_output INTEGER NOT NULL DEFAULT 0,
+            source_blank INTEGER NOT NULL DEFAULT 0,
+            confirmed_matches_output INTEGER NOT NULL DEFAULT 0,
+            needs_human INTEGER NOT NULL DEFAULT 0,
+            needs_output_apply INTEGER NOT NULL DEFAULT 0,
+            needs_reopen INTEGER NOT NULL DEFAULT 0,
+            is_closed INTEGER NOT NULL DEFAULT 0,
+            priority_score REAL NOT NULL DEFAULT 0,
+            reasons_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES segment_state_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(run_id, segment_id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS segment_output_apply_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            state_run_id INTEGER,
+            apply INTEGER NOT NULL DEFAULT 0,
+            limit_count INTEGER,
+            path_filter TEXT,
+            review_states TEXT,
+            include_auto_confirmed INTEGER NOT NULL DEFAULT 0,
+            allow_locked_token_override INTEGER NOT NULL DEFAULT 0,
+            require_token_policy_decision INTEGER NOT NULL DEFAULT 0,
+            token_policy_run_id INTEGER,
+            candidates_inspected INTEGER NOT NULL DEFAULT 0,
+            ready_count INTEGER NOT NULL DEFAULT 0,
+            applied_count INTEGER NOT NULL DEFAULT 0,
+            skipped_count INTEGER NOT NULL DEFAULT 0,
+            token_mismatch_count INTEGER NOT NULL DEFAULT 0,
+            files_touched_count INTEGER NOT NULL DEFAULT 0,
+            backup_root TEXT,
+            report_path TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(state_run_id) REFERENCES segment_state_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS segment_output_apply_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            state_run_id INTEGER,
+            state_item_id INTEGER,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            output_line_number INTEGER,
+            final_state TEXT,
+            review_state TEXT,
+            result_status TEXT NOT NULL,
+            applied INTEGER NOT NULL DEFAULT 0,
+            token_mismatch INTEGER NOT NULL DEFAULT 0,
+            previous_text_hash TEXT,
+            confirmed_text_hash TEXT,
+            reasons_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES segment_output_apply_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(state_run_id) REFERENCES segment_state_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(state_item_id) REFERENCES segment_state_items(id) ON DELETE SET NULL,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS segment_token_policy_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            state_run_id INTEGER,
+            total_candidates INTEGER NOT NULL DEFAULT 0,
+            critical_count INTEGER NOT NULL DEFAULT 0,
+            high_count INTEGER NOT NULL DEFAULT 0,
+            medium_count INTEGER NOT NULL DEFAULT 0,
+            low_count INTEGER NOT NULL DEFAULT 0,
+            manual_review_count INTEGER NOT NULL DEFAULT 0,
+            policy_candidate_count INTEGER NOT NULL DEFAULT 0,
+            blocked_count INTEGER NOT NULL DEFAULT 0,
+            report_path TEXT,
+            csv_path TEXT,
+            jsonl_path TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(state_run_id) REFERENCES segment_state_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS segment_token_policy_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            state_run_id INTEGER,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            review_state TEXT,
+            diff_kind TEXT NOT NULL,
+            policy_bucket TEXT NOT NULL,
+            risk_level TEXT NOT NULL,
+            recommendation TEXT NOT NULL,
+            auto_apply_allowed INTEGER NOT NULL DEFAULT 0,
+            needs_human_review INTEGER NOT NULL DEFAULT 1,
+            missing_tokens_json TEXT,
+            extra_tokens_json TEXT,
+            issue_flags_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES segment_token_policy_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(state_run_id) REFERENCES segment_state_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS segment_token_policy_decision_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            policy_run_id INTEGER,
+            source_report TEXT,
+            decisions_path TEXT,
+            total_decisions INTEGER NOT NULL DEFAULT 0,
+            approved_count INTEGER NOT NULL DEFAULT 0,
+            rejected_count INTEGER NOT NULL DEFAULT 0,
+            fix_count INTEGER NOT NULL DEFAULT 0,
+            skipped_count INTEGER NOT NULL DEFAULT 0,
+            report_path TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(policy_run_id) REFERENCES segment_token_policy_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS segment_token_policy_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            policy_run_id INTEGER NOT NULL,
+            policy_item_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            policy_bucket TEXT NOT NULL,
+            risk_level TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            approved_for_apply INTEGER NOT NULL DEFAULT 0,
+            corrected_text TEXT,
+            notes TEXT,
+            reviewer TEXT,
+            confirmed_text_hash TEXT,
+            output_text_hash TEXT,
+            reasons_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES segment_token_policy_decision_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(policy_run_id) REFERENCES segment_token_policy_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(policy_item_id) REFERENCES segment_token_policy_items(id) ON DELETE CASCADE,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(policy_run_id, policy_item_id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS segment_token_policy_overlay_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            source_policy_run_id INTEGER NOT NULL,
+            source_state_run_id INTEGER,
+            source_rule_version TEXT,
+            overlay_name TEXT NOT NULL,
+            min_evidence INTEGER NOT NULL DEFAULT 0,
+            total_candidates INTEGER NOT NULL DEFAULT 0,
+            original_critical_count INTEGER NOT NULL DEFAULT 0,
+            overlay_critical_count INTEGER NOT NULL DEFAULT 0,
+            released_critical_count INTEGER NOT NULL DEFAULT 0,
+            remaining_blocked_count INTEGER NOT NULL DEFAULT 0,
+            enabled_rule_count INTEGER NOT NULL DEFAULT 0,
+            apply_allowed_count INTEGER NOT NULL DEFAULT 0,
+            report_path TEXT,
+            csv_path TEXT,
+            jsonl_path TEXT,
+            notes_json TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(source_policy_run_id) REFERENCES segment_token_policy_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(source_state_run_id) REFERENCES segment_state_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS segment_token_policy_overlay_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            source_policy_run_id INTEGER NOT NULL,
+            source_policy_item_id INTEGER NOT NULL,
+            state_run_id INTEGER,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            original_policy_bucket TEXT NOT NULL,
+            original_risk_level TEXT NOT NULL,
+            overlay_policy_bucket TEXT NOT NULL,
+            overlay_risk_level TEXT NOT NULL,
+            overlay_action TEXT NOT NULL,
+            overlay_agent_key TEXT,
+            would_release_critical INTEGER NOT NULL DEFAULT 0,
+            apply_allowed INTEGER NOT NULL DEFAULT 0,
+            decision TEXT,
+            rule_key TEXT,
+            reasons_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES segment_token_policy_overlay_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(source_policy_run_id) REFERENCES segment_token_policy_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(source_policy_item_id) REFERENCES segment_token_policy_items(id) ON DELETE CASCADE,
+            FOREIGN KEY(state_run_id) REFERENCES segment_state_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(run_id, source_policy_item_id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_composite_checkpoints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            checkpoint_name TEXT NOT NULL,
+            checkpoint_scope TEXT NOT NULL,
+            coordinator_key TEXT NOT NULL,
+            source_policy_run_id INTEGER,
+            overlay_run_id INTEGER,
+            source_state_run_id INTEGER,
+            total_candidates INTEGER NOT NULL DEFAULT 0,
+            base_critical_count INTEGER NOT NULL DEFAULT 0,
+            overlay_critical_count INTEGER NOT NULL DEFAULT 0,
+            released_critical_count INTEGER NOT NULL DEFAULT 0,
+            critical_queue_count INTEGER NOT NULL DEFAULT 0,
+            high_count INTEGER NOT NULL DEFAULT 0,
+            medium_count INTEGER NOT NULL DEFAULT 0,
+            low_count INTEGER NOT NULL DEFAULT 0,
+            enabled_rule_count INTEGER NOT NULL DEFAULT 0,
+            apply_allowed_count INTEGER NOT NULL DEFAULT 0,
+            active_agent_count INTEGER NOT NULL DEFAULT 0,
+            operational_agent_count INTEGER NOT NULL DEFAULT 0,
+            experimental_agent_count INTEGER NOT NULL DEFAULT 0,
+            planned_agent_count INTEGER NOT NULL DEFAULT 0,
+            promotion_status TEXT NOT NULL,
+            recommended_action TEXT NOT NULL,
+            blockers_json TEXT,
+            warnings_json TEXT,
+            metrics_json TEXT,
+            report_path TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(source_policy_run_id) REFERENCES segment_token_policy_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(overlay_run_id) REFERENCES segment_token_policy_overlay_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(source_state_run_id) REFERENCES segment_state_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_composite_gate_registry (
+            gate_key TEXT PRIMARY KEY,
+            coordinator_key TEXT NOT NULL,
+            active_checkpoint_id INTEGER NOT NULL,
+            active_guarded_checkpoint_id INTEGER,
+            active_overlay_run_id INTEGER NOT NULL,
+            active_policy_run_id INTEGER NOT NULL,
+            operational_state TEXT NOT NULL,
+            active_promotion_kind TEXT,
+            auto_apply_allowed INTEGER NOT NULL DEFAULT 0,
+            promoted_at TEXT NOT NULL,
+            promoted_by TEXT,
+            reason TEXT,
+            metrics_json TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(active_checkpoint_id) REFERENCES ml_composite_checkpoints(id) ON DELETE CASCADE,
+            FOREIGN KEY(active_guarded_checkpoint_id) REFERENCES ml_composite_guarded_overlay_checkpoints(id) ON DELETE SET NULL,
+            FOREIGN KEY(active_overlay_run_id) REFERENCES segment_token_policy_overlay_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(active_policy_run_id) REFERENCES segment_token_policy_runs(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_composite_gate_promotions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            gate_key TEXT NOT NULL,
+            checkpoint_id INTEGER NOT NULL,
+            guarded_checkpoint_id INTEGER,
+            overlay_run_id INTEGER NOT NULL,
+            source_policy_run_id INTEGER NOT NULL,
+            previous_checkpoint_id INTEGER,
+            previous_overlay_run_id INTEGER,
+            decision TEXT NOT NULL,
+            policy_version TEXT NOT NULL,
+            promotion_kind TEXT,
+            auto_apply_allowed INTEGER NOT NULL DEFAULT 0,
+            reason TEXT,
+            blockers_json TEXT,
+            warnings_json TEXT,
+            metrics_json TEXT,
+            promoted_by TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(checkpoint_id) REFERENCES ml_composite_checkpoints(id) ON DELETE CASCADE,
+            FOREIGN KEY(guarded_checkpoint_id) REFERENCES ml_composite_guarded_overlay_checkpoints(id) ON DELETE SET NULL,
+            FOREIGN KEY(overlay_run_id) REFERENCES segment_token_policy_overlay_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(source_policy_run_id) REFERENCES segment_token_policy_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(previous_checkpoint_id) REFERENCES ml_composite_checkpoints(id) ON DELETE SET NULL,
+            FOREIGN KEY(previous_overlay_run_id) REFERENCES segment_token_policy_overlay_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_composite_gate_queue_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            gate_key TEXT NOT NULL,
+            checkpoint_id INTEGER NOT NULL,
+            overlay_run_id INTEGER NOT NULL,
+            source_policy_run_id INTEGER,
+            guarded_checkpoint_id INTEGER,
+            source_mode TEXT NOT NULL,
+            shadow_queue_kind TEXT,
+            route_filter_csv TEXT,
+            risk_filter_csv TEXT,
+            critical_only INTEGER NOT NULL DEFAULT 1,
+            limit_count INTEGER,
+            total_rows INTEGER NOT NULL DEFAULT 0,
+            critical_rows INTEGER NOT NULL DEFAULT 0,
+            high_rows INTEGER NOT NULL DEFAULT 0,
+            medium_rows INTEGER NOT NULL DEFAULT 0,
+            low_rows INTEGER NOT NULL DEFAULT 0,
+            route_counts_json TEXT,
+            bucket_counts_json TEXT,
+            priority_counts_json TEXT,
+            report_path TEXT,
+            csv_path TEXT,
+            jsonl_path TEXT,
+            decisions_template_path TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(checkpoint_id) REFERENCES ml_composite_checkpoints(id) ON DELETE CASCADE,
+            FOREIGN KEY(guarded_checkpoint_id) REFERENCES ml_composite_guarded_overlay_checkpoints(id) ON DELETE SET NULL,
+            FOREIGN KEY(overlay_run_id) REFERENCES segment_token_policy_overlay_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(source_policy_run_id) REFERENCES segment_token_policy_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_composite_gate_queue_routes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            queue_run_id INTEGER NOT NULL,
+            suggested_route TEXT NOT NULL,
+            overlay_policy_bucket TEXT NOT NULL,
+            overlay_risk_level TEXT NOT NULL,
+            total INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(queue_run_id) REFERENCES ml_composite_gate_queue_runs(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_composite_gate_queue_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            queue_run_id INTEGER NOT NULL,
+            gate_key TEXT NOT NULL,
+            checkpoint_id INTEGER NOT NULL,
+            overlay_run_id INTEGER NOT NULL,
+            source_policy_run_id INTEGER,
+            guarded_checkpoint_id INTEGER,
+            policy_item_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            suggested_route TEXT NOT NULL,
+            overlay_policy_bucket TEXT NOT NULL,
+            overlay_risk_level TEXT NOT NULL,
+            priority_bucket TEXT,
+            rule_key TEXT,
+            hygiene_flags_json TEXT,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(queue_run_id) REFERENCES ml_composite_gate_queue_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(guarded_checkpoint_id) REFERENCES ml_composite_guarded_overlay_checkpoints(id) ON DELETE SET NULL,
+            FOREIGN KEY(policy_item_id) REFERENCES segment_token_policy_items(id) ON DELETE CASCADE,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(queue_run_id, policy_item_id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_composite_gate_review_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            gate_key TEXT NOT NULL,
+            checkpoint_id INTEGER NOT NULL,
+            overlay_run_id INTEGER NOT NULL,
+            source_policy_run_id INTEGER NOT NULL,
+            total_items INTEGER NOT NULL DEFAULT 0,
+            queued_items INTEGER NOT NULL DEFAULT 0,
+            unqueued_items INTEGER NOT NULL DEFAULT 0,
+            reviewed_items INTEGER NOT NULL DEFAULT 0,
+            pending_items INTEGER NOT NULL DEFAULT 0,
+            approved_for_apply_count INTEGER NOT NULL DEFAULT 0,
+            rejected_count INTEGER NOT NULL DEFAULT 0,
+            fix_count INTEGER NOT NULL DEFAULT 0,
+            needs_subpolicy_count INTEGER NOT NULL DEFAULT 0,
+            manual_exception_count INTEGER NOT NULL DEFAULT 0,
+            review_coverage_pct REAL NOT NULL DEFAULT 0,
+            queue_coverage_pct REAL NOT NULL DEFAULT 0,
+            report_path TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(checkpoint_id) REFERENCES ml_composite_checkpoints(id) ON DELETE CASCADE,
+            FOREIGN KEY(overlay_run_id) REFERENCES segment_token_policy_overlay_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(source_policy_run_id) REFERENCES segment_token_policy_runs(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_composite_gate_review_route_status (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id INTEGER NOT NULL,
+            suggested_route TEXT NOT NULL,
+            overlay_policy_bucket TEXT NOT NULL,
+            overlay_risk_level TEXT NOT NULL,
+            total_items INTEGER NOT NULL DEFAULT 0,
+            queued_items INTEGER NOT NULL DEFAULT 0,
+            unqueued_items INTEGER NOT NULL DEFAULT 0,
+            reviewed_items INTEGER NOT NULL DEFAULT 0,
+            pending_items INTEGER NOT NULL DEFAULT 0,
+            approved_for_apply_count INTEGER NOT NULL DEFAULT 0,
+            rejected_count INTEGER NOT NULL DEFAULT 0,
+            fix_count INTEGER NOT NULL DEFAULT 0,
+            needs_subpolicy_count INTEGER NOT NULL DEFAULT 0,
+            manual_exception_count INTEGER NOT NULL DEFAULT 0,
+            review_coverage_pct REAL NOT NULL DEFAULT 0,
+            queue_coverage_pct REAL NOT NULL DEFAULT 0,
+            latest_queue_run_id INTEGER,
+            latest_queue_total_rows INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(snapshot_id) REFERENCES ml_composite_gate_review_snapshots(id) ON DELETE CASCADE,
+            FOREIGN KEY(latest_queue_run_id) REFERENCES ml_composite_gate_queue_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_composite_subpolicy_diagnostic_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            gate_key TEXT NOT NULL,
+            checkpoint_id INTEGER NOT NULL,
+            overlay_run_id INTEGER NOT NULL,
+            source_policy_run_id INTEGER NOT NULL,
+            total_items INTEGER NOT NULL DEFAULT 0,
+            reviewed_items INTEGER NOT NULL DEFAULT 0,
+            pending_items INTEGER NOT NULL DEFAULT 0,
+            grouped_subpolicies INTEGER NOT NULL DEFAULT 0,
+            design_candidate_count INTEGER NOT NULL DEFAULT 0,
+            policy_candidate_count INTEGER NOT NULL DEFAULT 0,
+            needs_more_review_count INTEGER NOT NULL DEFAULT 0,
+            queue_review_candidate_count INTEGER NOT NULL DEFAULT 0,
+            report_path TEXT,
+            csv_path TEXT,
+            json_path TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(checkpoint_id) REFERENCES ml_composite_checkpoints(id) ON DELETE CASCADE,
+            FOREIGN KEY(overlay_run_id) REFERENCES segment_token_policy_overlay_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(source_policy_run_id) REFERENCES segment_token_policy_runs(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_composite_subpolicy_diagnostic_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            suggested_route TEXT NOT NULL,
+            token_subtype TEXT NOT NULL,
+            overlay_policy_bucket TEXT NOT NULL,
+            overlay_risk_level TEXT NOT NULL,
+            total_items INTEGER NOT NULL DEFAULT 0,
+            queued_items INTEGER NOT NULL DEFAULT 0,
+            unqueued_items INTEGER NOT NULL DEFAULT 0,
+            reviewed_items INTEGER NOT NULL DEFAULT 0,
+            pending_items INTEGER NOT NULL DEFAULT 0,
+            approved_for_apply_count INTEGER NOT NULL DEFAULT 0,
+            accept_count INTEGER NOT NULL DEFAULT 0,
+            keep_manual_exception_count INTEGER NOT NULL DEFAULT 0,
+            reject_count INTEGER NOT NULL DEFAULT 0,
+            needs_subpolicy_count INTEGER NOT NULL DEFAULT 0,
+            fix_count INTEGER NOT NULL DEFAULT 0,
+            review_coverage_pct REAL NOT NULL DEFAULT 0,
+            queue_coverage_pct REAL NOT NULL DEFAULT 0,
+            maturity_status TEXT NOT NULL,
+            confidence_band TEXT NOT NULL,
+            recommended_action TEXT NOT NULL,
+            sample_policy_item_ids_json TEXT,
+            sample_paths_json TEXT,
+            token_families_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES ml_composite_subpolicy_diagnostic_runs(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_composite_subpolicy_promotion_audit_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            gate_key TEXT NOT NULL,
+            checkpoint_id INTEGER NOT NULL,
+            overlay_run_id INTEGER NOT NULL,
+            source_policy_run_id INTEGER NOT NULL,
+            diagnostic_run_id INTEGER NOT NULL,
+            candidate_group_count INTEGER NOT NULL DEFAULT 0,
+            rule_family_count INTEGER NOT NULL DEFAULT 0,
+            ready_rule_count INTEGER NOT NULL DEFAULT 0,
+            collect_more_count INTEGER NOT NULL DEFAULT 0,
+            manual_boundary_count INTEGER NOT NULL DEFAULT 0,
+            split_required_count INTEGER NOT NULL DEFAULT 0,
+            not_promotable_count INTEGER NOT NULL DEFAULT 0,
+            pending_only_count INTEGER NOT NULL DEFAULT 0,
+            report_path TEXT,
+            csv_path TEXT,
+            jsonl_path TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(checkpoint_id) REFERENCES ml_composite_checkpoints(id) ON DELETE CASCADE,
+            FOREIGN KEY(overlay_run_id) REFERENCES segment_token_policy_overlay_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(source_policy_run_id) REFERENCES segment_token_policy_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(diagnostic_run_id) REFERENCES ml_composite_subpolicy_diagnostic_runs(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_composite_subpolicy_promotion_audit_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            suggested_route TEXT NOT NULL,
+            token_subtype TEXT NOT NULL,
+            rule_key TEXT NOT NULL,
+            total_items INTEGER NOT NULL DEFAULT 0,
+            reviewed_items INTEGER NOT NULL DEFAULT 0,
+            pending_items INTEGER NOT NULL DEFAULT 0,
+            accept_count INTEGER NOT NULL DEFAULT 0,
+            keep_manual_exception_count INTEGER NOT NULL DEFAULT 0,
+            reject_count INTEGER NOT NULL DEFAULT 0,
+            needs_subpolicy_count INTEGER NOT NULL DEFAULT 0,
+            fix_count INTEGER NOT NULL DEFAULT 0,
+            text_cleanup_block_count INTEGER NOT NULL DEFAULT 0,
+            approved_for_apply_count INTEGER NOT NULL DEFAULT 0,
+            promotion_status TEXT NOT NULL,
+            confidence_band TEXT NOT NULL,
+            recommended_action TEXT NOT NULL,
+            sample_policy_item_ids_json TEXT,
+            sample_paths_json TEXT,
+            token_signature_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES ml_composite_subpolicy_promotion_audit_runs(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_composite_guarded_overlay_checkpoints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            checkpoint_name TEXT NOT NULL,
+            gate_key TEXT NOT NULL,
+            overlay_run_id INTEGER NOT NULL,
+            parent_overlay_run_id INTEGER,
+            source_policy_run_id INTEGER NOT NULL,
+            promotion_audit_run_id INTEGER,
+            ready_rule_count INTEGER NOT NULL DEFAULT 0,
+            total_candidates INTEGER NOT NULL DEFAULT 0,
+            guarded_release_count INTEGER NOT NULL DEFAULT 0,
+            release_rate_pct REAL NOT NULL DEFAULT 0,
+            medium_to_low_count INTEGER NOT NULL DEFAULT 0,
+            invalid_release_count INTEGER NOT NULL DEFAULT 0,
+            apply_allowed_count INTEGER NOT NULL DEFAULT 0,
+            active_gate_overlay_run_id INTEGER,
+            active_gate_unchanged INTEGER NOT NULL DEFAULT 0,
+            promotion_status TEXT NOT NULL,
+            recommended_action TEXT NOT NULL,
+            blockers_json TEXT,
+            warnings_json TEXT,
+            metrics_json TEXT,
+            report_path TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(overlay_run_id) REFERENCES segment_token_policy_overlay_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(parent_overlay_run_id) REFERENCES segment_token_policy_overlay_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(source_policy_run_id) REFERENCES segment_token_policy_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(promotion_audit_run_id) REFERENCES ml_composite_subpolicy_promotion_audit_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(active_gate_overlay_run_id) REFERENCES segment_token_policy_overlay_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_composite_guarded_overlay_checkpoint_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            checkpoint_id INTEGER NOT NULL,
+            suggested_route TEXT NOT NULL,
+            token_subtype TEXT NOT NULL,
+            rule_key TEXT NOT NULL,
+            release_count INTEGER NOT NULL DEFAULT 0,
+            reviewed_items INTEGER NOT NULL DEFAULT 0,
+            pending_items INTEGER NOT NULL DEFAULT 0,
+            accept_count INTEGER NOT NULL DEFAULT 0,
+            keep_manual_exception_count INTEGER NOT NULL DEFAULT 0,
+            reject_count INTEGER NOT NULL DEFAULT 0,
+            needs_subpolicy_count INTEGER NOT NULL DEFAULT 0,
+            promotion_status TEXT NOT NULL,
+            sample_policy_item_ids_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(checkpoint_id) REFERENCES ml_composite_guarded_overlay_checkpoints(id) ON DELETE CASCADE
         )
         """
     )
@@ -1435,6 +2321,9 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
                 ("limit_count", "INTEGER"),
                 ("scored_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("model_auto_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("model_direct_auto_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("deterministic_promoted_auto_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("deterministic_demoted_auto_safe_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("final_auto_safe_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("needs_human_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("needs_autofix_count", "INTEGER NOT NULL DEFAULT 0"),
@@ -1557,6 +2446,801 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
             ],
         )
     )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_specialist_policy_snapshots",
+            [
+                ("rule_version", "TEXT"),
+                ("general_score_run_id", "INTEGER"),
+                ("specialist_key", "TEXT"),
+                ("model_kind", "TEXT"),
+                ("model_run_id", "INTEGER"),
+                ("model_version", "TEXT"),
+                ("dataset_run_id", "INTEGER"),
+                ("score_run_id", "INTEGER"),
+                ("operational_threshold", "REAL"),
+                ("policy_min_threshold", "REAL"),
+                ("threshold_below_policy", "INTEGER NOT NULL DEFAULT 0"),
+                ("scope_description", "TEXT"),
+                ("scope_sql", "TEXT"),
+                ("scope_active_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("scored_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("compared_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("scope_delta_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("scope_coverage_rate", "REAL"),
+                ("final_auto_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_human_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_autofix_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("blocked_structure_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("model_direct_auto_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("deterministic_promoted_auto_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("deterministic_demoted_auto_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("final_auto_safe_rate", "REAL"),
+                ("model_direct_auto_safe_rate", "REAL"),
+                ("specialist_new_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("specialist_demoted_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("pending_new_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("pending_demoted_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("reviewed_new_safe_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("reviewed_demoted_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("divergent_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("reviewed_divergent_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("pending_real_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("missing_general_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("divergence_rate", "REAL"),
+                ("pending_real_rate", "REAL"),
+                ("status", "TEXT"),
+                ("recommended_action", "TEXT"),
+                ("notes", "TEXT"),
+                ("created_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_agent_registry",
+            [
+                ("agent_key", "TEXT"),
+                ("agent_type", "TEXT"),
+                ("parent_agent_key", "TEXT"),
+                ("model_kind", "TEXT"),
+                ("status", "TEXT NOT NULL DEFAULT 'planned'"),
+                ("operational_state", "TEXT NOT NULL DEFAULT 'experimental'"),
+                ("decision_role", "TEXT NOT NULL DEFAULT 'vote'"),
+                ("scope_group", "TEXT"),
+                ("scope_sql", "TEXT"),
+                ("scope_description", "TEXT"),
+                ("default_threshold", "REAL"),
+                ("priority", "INTEGER NOT NULL DEFAULT 100"),
+                ("dashboard_group", "TEXT"),
+                ("created_at", "TEXT"),
+                ("updated_at", "TEXT"),
+                ("notes_json", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_agent_routing_runs",
+            [
+                ("rule_version", "TEXT"),
+                ("general_score_run_id", "INTEGER"),
+                ("policy_run_id", "INTEGER"),
+                ("coordinator_key", "TEXT"),
+                ("agents_considered_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("segments_scanned_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("routed_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("active_agent_covered_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("planned_agent_covered_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("missing_agent_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("conflict_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("recommendation_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("notes_json", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_agent_routing_items",
+            [
+                ("run_id", "INTEGER"),
+                ("segment_id", "INTEGER"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("route_agent_key", "TEXT"),
+                ("route_agent_type", "TEXT"),
+                ("route_status", "TEXT NOT NULL DEFAULT 'candidate'"),
+                ("route_confidence", "REAL"),
+                ("route_reason", "TEXT"),
+                ("issue_family", "TEXT"),
+                ("general_action", "TEXT"),
+                ("policy_action", "TEXT"),
+                ("specialist_action", "TEXT"),
+                ("recommendation_key", "TEXT"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_agent_recommendations",
+            [
+                ("run_id", "INTEGER"),
+                ("proposed_agent_key", "TEXT"),
+                ("parent_agent_key", "TEXT"),
+                ("recommendation_type", "TEXT"),
+                ("status", "TEXT NOT NULL DEFAULT 'proposed'"),
+                ("reason", "TEXT"),
+                ("evidence_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("positive_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("negative_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("corrected_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("sample_segments_json", "TEXT"),
+                ("created_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "segment_state_runs",
+            [
+                ("rule_version", "TEXT"),
+                ("active_score_run_id", "INTEGER"),
+                ("candidate_score_run_id", "INTEGER"),
+                ("policy_run_id", "INTEGER"),
+                ("total_segments", "INTEGER NOT NULL DEFAULT 0"),
+                ("closed_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("pending_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("output_apply_pending_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("blank_valid_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("experimental_watch_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("reopen_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("notes_json", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "segment_state_items",
+            [
+                ("run_id", "INTEGER"),
+                ("segment_id", "INTEGER"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("source_line_number", "INTEGER"),
+                ("final_state", "TEXT"),
+                ("state_group", "TEXT"),
+                ("output_state", "TEXT"),
+                ("review_state", "TEXT"),
+                ("apply_state", "TEXT"),
+                ("active_action", "TEXT"),
+                ("candidate_action", "TEXT"),
+                ("policy_action", "TEXT"),
+                ("confirmation_level", "TEXT"),
+                ("confirmation_label", "TEXT"),
+                ("locked", "INTEGER NOT NULL DEFAULT 0"),
+                ("has_output", "INTEGER NOT NULL DEFAULT 0"),
+                ("source_blank", "INTEGER NOT NULL DEFAULT 0"),
+                ("confirmed_matches_output", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_human", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_output_apply", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_reopen", "INTEGER NOT NULL DEFAULT 0"),
+                ("is_closed", "INTEGER NOT NULL DEFAULT 0"),
+                ("priority_score", "REAL NOT NULL DEFAULT 0"),
+                ("reasons_json", "TEXT"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "segment_output_apply_runs",
+            [
+                ("rule_version", "TEXT"),
+                ("state_run_id", "INTEGER"),
+                ("apply", "INTEGER NOT NULL DEFAULT 0"),
+                ("limit_count", "INTEGER"),
+                ("path_filter", "TEXT"),
+                ("review_states", "TEXT"),
+                ("include_auto_confirmed", "INTEGER NOT NULL DEFAULT 0"),
+                ("allow_locked_token_override", "INTEGER NOT NULL DEFAULT 0"),
+                ("require_token_policy_decision", "INTEGER NOT NULL DEFAULT 0"),
+                ("token_policy_run_id", "INTEGER"),
+                ("candidates_inspected", "INTEGER NOT NULL DEFAULT 0"),
+                ("ready_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("applied_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("skipped_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("token_mismatch_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("files_touched_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("backup_root", "TEXT"),
+                ("report_path", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "segment_output_apply_items",
+            [
+                ("run_id", "INTEGER"),
+                ("state_run_id", "INTEGER"),
+                ("state_item_id", "INTEGER"),
+                ("segment_id", "INTEGER"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("source_line_number", "INTEGER"),
+                ("output_line_number", "INTEGER"),
+                ("final_state", "TEXT"),
+                ("review_state", "TEXT"),
+                ("result_status", "TEXT"),
+                ("applied", "INTEGER NOT NULL DEFAULT 0"),
+                ("token_mismatch", "INTEGER NOT NULL DEFAULT 0"),
+                ("previous_text_hash", "TEXT"),
+                ("confirmed_text_hash", "TEXT"),
+                ("reasons_json", "TEXT"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "segment_token_policy_runs",
+            [
+                ("rule_version", "TEXT"),
+                ("state_run_id", "INTEGER"),
+                ("total_candidates", "INTEGER NOT NULL DEFAULT 0"),
+                ("critical_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("high_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("medium_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("low_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("manual_review_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("policy_candidate_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("blocked_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("report_path", "TEXT"),
+                ("csv_path", "TEXT"),
+                ("jsonl_path", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "segment_token_policy_items",
+            [
+                ("run_id", "INTEGER"),
+                ("state_run_id", "INTEGER"),
+                ("segment_id", "INTEGER"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("source_line_number", "INTEGER"),
+                ("review_state", "TEXT"),
+                ("diff_kind", "TEXT"),
+                ("policy_bucket", "TEXT"),
+                ("risk_level", "TEXT"),
+                ("recommendation", "TEXT"),
+                ("auto_apply_allowed", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_human_review", "INTEGER NOT NULL DEFAULT 1"),
+                ("missing_tokens_json", "TEXT"),
+                ("extra_tokens_json", "TEXT"),
+                ("issue_flags_json", "TEXT"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "segment_token_policy_decision_runs",
+            [
+                ("rule_version", "TEXT"),
+                ("policy_run_id", "INTEGER"),
+                ("source_report", "TEXT"),
+                ("decisions_path", "TEXT"),
+                ("total_decisions", "INTEGER NOT NULL DEFAULT 0"),
+                ("approved_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("rejected_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("fix_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("skipped_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("report_path", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "segment_token_policy_decisions",
+            [
+                ("run_id", "INTEGER"),
+                ("policy_run_id", "INTEGER"),
+                ("policy_item_id", "INTEGER"),
+                ("segment_id", "INTEGER"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("policy_bucket", "TEXT"),
+                ("risk_level", "TEXT"),
+                ("decision", "TEXT"),
+                ("approved_for_apply", "INTEGER NOT NULL DEFAULT 0"),
+                ("corrected_text", "TEXT"),
+                ("notes", "TEXT"),
+                ("reviewer", "TEXT"),
+                ("confirmed_text_hash", "TEXT"),
+                ("output_text_hash", "TEXT"),
+                ("reasons_json", "TEXT"),
+                ("created_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "segment_token_policy_overlay_runs",
+            [
+                ("rule_version", "TEXT"),
+                ("source_policy_run_id", "INTEGER"),
+                ("source_state_run_id", "INTEGER"),
+                ("source_rule_version", "TEXT"),
+                ("overlay_name", "TEXT"),
+                ("min_evidence", "INTEGER NOT NULL DEFAULT 0"),
+                ("total_candidates", "INTEGER NOT NULL DEFAULT 0"),
+                ("original_critical_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("overlay_critical_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("released_critical_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("remaining_blocked_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("enabled_rule_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("apply_allowed_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("report_path", "TEXT"),
+                ("csv_path", "TEXT"),
+                ("jsonl_path", "TEXT"),
+                ("notes_json", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "segment_token_policy_overlay_items",
+            [
+                ("run_id", "INTEGER"),
+                ("source_policy_run_id", "INTEGER"),
+                ("source_policy_item_id", "INTEGER"),
+                ("state_run_id", "INTEGER"),
+                ("segment_id", "INTEGER"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("source_line_number", "INTEGER"),
+                ("original_policy_bucket", "TEXT"),
+                ("original_risk_level", "TEXT"),
+                ("overlay_policy_bucket", "TEXT"),
+                ("overlay_risk_level", "TEXT"),
+                ("overlay_action", "TEXT"),
+                ("overlay_agent_key", "TEXT"),
+                ("would_release_critical", "INTEGER NOT NULL DEFAULT 0"),
+                ("apply_allowed", "INTEGER NOT NULL DEFAULT 0"),
+                ("decision", "TEXT"),
+                ("rule_key", "TEXT"),
+                ("reasons_json", "TEXT"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_composite_checkpoints",
+            [
+                ("rule_version", "TEXT"),
+                ("checkpoint_name", "TEXT"),
+                ("checkpoint_scope", "TEXT"),
+                ("coordinator_key", "TEXT"),
+                ("source_policy_run_id", "INTEGER"),
+                ("overlay_run_id", "INTEGER"),
+                ("source_state_run_id", "INTEGER"),
+                ("total_candidates", "INTEGER NOT NULL DEFAULT 0"),
+                ("base_critical_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("overlay_critical_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("released_critical_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("critical_queue_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("high_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("medium_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("low_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("enabled_rule_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("apply_allowed_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("active_agent_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("operational_agent_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("experimental_agent_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("planned_agent_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("promotion_status", "TEXT"),
+                ("recommended_action", "TEXT"),
+                ("blockers_json", "TEXT"),
+                ("warnings_json", "TEXT"),
+                ("metrics_json", "TEXT"),
+                ("report_path", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_composite_gate_registry",
+            [
+                ("gate_key", "TEXT"),
+                ("coordinator_key", "TEXT"),
+                ("active_checkpoint_id", "INTEGER"),
+                ("active_guarded_checkpoint_id", "INTEGER"),
+                ("active_overlay_run_id", "INTEGER"),
+                ("active_policy_run_id", "INTEGER"),
+                ("operational_state", "TEXT"),
+                ("active_promotion_kind", "TEXT"),
+                ("auto_apply_allowed", "INTEGER NOT NULL DEFAULT 0"),
+                ("promoted_at", "TEXT"),
+                ("promoted_by", "TEXT"),
+                ("reason", "TEXT"),
+                ("metrics_json", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_composite_gate_promotions",
+            [
+                ("gate_key", "TEXT"),
+                ("checkpoint_id", "INTEGER"),
+                ("guarded_checkpoint_id", "INTEGER"),
+                ("overlay_run_id", "INTEGER"),
+                ("source_policy_run_id", "INTEGER"),
+                ("previous_checkpoint_id", "INTEGER"),
+                ("previous_overlay_run_id", "INTEGER"),
+                ("decision", "TEXT"),
+                ("policy_version", "TEXT"),
+                ("promotion_kind", "TEXT"),
+                ("auto_apply_allowed", "INTEGER NOT NULL DEFAULT 0"),
+                ("reason", "TEXT"),
+                ("blockers_json", "TEXT"),
+                ("warnings_json", "TEXT"),
+                ("metrics_json", "TEXT"),
+                ("promoted_by", "TEXT"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_composite_gate_queue_runs",
+            [
+                ("rule_version", "TEXT"),
+                ("gate_key", "TEXT"),
+                ("checkpoint_id", "INTEGER"),
+                ("overlay_run_id", "INTEGER"),
+                ("source_policy_run_id", "INTEGER"),
+                ("guarded_checkpoint_id", "INTEGER"),
+                ("source_mode", "TEXT"),
+                ("shadow_queue_kind", "TEXT"),
+                ("route_filter_csv", "TEXT"),
+                ("risk_filter_csv", "TEXT"),
+                ("critical_only", "INTEGER NOT NULL DEFAULT 1"),
+                ("limit_count", "INTEGER"),
+                ("total_rows", "INTEGER NOT NULL DEFAULT 0"),
+                ("critical_rows", "INTEGER NOT NULL DEFAULT 0"),
+                ("high_rows", "INTEGER NOT NULL DEFAULT 0"),
+                ("medium_rows", "INTEGER NOT NULL DEFAULT 0"),
+                ("low_rows", "INTEGER NOT NULL DEFAULT 0"),
+                ("route_counts_json", "TEXT"),
+                ("bucket_counts_json", "TEXT"),
+                ("priority_counts_json", "TEXT"),
+                ("report_path", "TEXT"),
+                ("csv_path", "TEXT"),
+                ("jsonl_path", "TEXT"),
+                ("decisions_template_path", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_composite_gate_queue_routes",
+            [
+                ("queue_run_id", "INTEGER"),
+                ("suggested_route", "TEXT"),
+                ("overlay_policy_bucket", "TEXT"),
+                ("overlay_risk_level", "TEXT"),
+                ("total", "INTEGER NOT NULL DEFAULT 0"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_composite_gate_queue_items",
+            [
+                ("queue_run_id", "INTEGER"),
+                ("gate_key", "TEXT"),
+                ("checkpoint_id", "INTEGER"),
+                ("overlay_run_id", "INTEGER"),
+                ("source_policy_run_id", "INTEGER"),
+                ("guarded_checkpoint_id", "INTEGER"),
+                ("policy_item_id", "INTEGER"),
+                ("segment_id", "INTEGER"),
+                ("suggested_route", "TEXT"),
+                ("overlay_policy_bucket", "TEXT"),
+                ("overlay_risk_level", "TEXT"),
+                ("priority_bucket", "TEXT"),
+                ("rule_key", "TEXT"),
+                ("hygiene_flags_json", "TEXT"),
+                ("relative_path", "TEXT"),
+                ("source_key", "TEXT"),
+                ("source_line_number", "INTEGER"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_composite_gate_review_snapshots",
+            [
+                ("rule_version", "TEXT"),
+                ("gate_key", "TEXT"),
+                ("checkpoint_id", "INTEGER"),
+                ("overlay_run_id", "INTEGER"),
+                ("source_policy_run_id", "INTEGER"),
+                ("total_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("queued_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("unqueued_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("reviewed_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("pending_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("approved_for_apply_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("rejected_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("fix_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_subpolicy_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("manual_exception_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("review_coverage_pct", "REAL NOT NULL DEFAULT 0"),
+                ("queue_coverage_pct", "REAL NOT NULL DEFAULT 0"),
+                ("report_path", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_composite_gate_review_route_status",
+            [
+                ("snapshot_id", "INTEGER"),
+                ("suggested_route", "TEXT"),
+                ("overlay_policy_bucket", "TEXT"),
+                ("overlay_risk_level", "TEXT"),
+                ("total_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("queued_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("unqueued_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("reviewed_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("pending_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("approved_for_apply_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("rejected_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("fix_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_subpolicy_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("manual_exception_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("review_coverage_pct", "REAL NOT NULL DEFAULT 0"),
+                ("queue_coverage_pct", "REAL NOT NULL DEFAULT 0"),
+                ("latest_queue_run_id", "INTEGER"),
+                ("latest_queue_total_rows", "INTEGER NOT NULL DEFAULT 0"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_composite_subpolicy_diagnostic_runs",
+            [
+                ("rule_version", "TEXT"),
+                ("gate_key", "TEXT"),
+                ("checkpoint_id", "INTEGER"),
+                ("overlay_run_id", "INTEGER"),
+                ("source_policy_run_id", "INTEGER"),
+                ("total_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("reviewed_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("pending_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("grouped_subpolicies", "INTEGER NOT NULL DEFAULT 0"),
+                ("design_candidate_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("policy_candidate_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_more_review_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("queue_review_candidate_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("report_path", "TEXT"),
+                ("csv_path", "TEXT"),
+                ("json_path", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_composite_subpolicy_diagnostic_items",
+            [
+                ("run_id", "INTEGER"),
+                ("suggested_route", "TEXT"),
+                ("token_subtype", "TEXT"),
+                ("overlay_policy_bucket", "TEXT"),
+                ("overlay_risk_level", "TEXT"),
+                ("total_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("queued_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("unqueued_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("reviewed_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("pending_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("approved_for_apply_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("accept_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("keep_manual_exception_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("reject_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_subpolicy_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("fix_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("review_coverage_pct", "REAL NOT NULL DEFAULT 0"),
+                ("queue_coverage_pct", "REAL NOT NULL DEFAULT 0"),
+                ("maturity_status", "TEXT"),
+                ("confidence_band", "TEXT"),
+                ("recommended_action", "TEXT"),
+                ("sample_policy_item_ids_json", "TEXT"),
+                ("sample_paths_json", "TEXT"),
+                ("token_families_json", "TEXT"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_composite_subpolicy_promotion_audit_runs",
+            [
+                ("rule_version", "TEXT"),
+                ("gate_key", "TEXT"),
+                ("checkpoint_id", "INTEGER"),
+                ("overlay_run_id", "INTEGER"),
+                ("source_policy_run_id", "INTEGER"),
+                ("diagnostic_run_id", "INTEGER"),
+                ("candidate_group_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("rule_family_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("ready_rule_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("collect_more_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("manual_boundary_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("split_required_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("not_promotable_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("pending_only_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("report_path", "TEXT"),
+                ("csv_path", "TEXT"),
+                ("jsonl_path", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_composite_subpolicy_promotion_audit_items",
+            [
+                ("run_id", "INTEGER"),
+                ("suggested_route", "TEXT"),
+                ("token_subtype", "TEXT"),
+                ("rule_key", "TEXT"),
+                ("total_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("reviewed_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("pending_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("accept_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("keep_manual_exception_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("reject_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_subpolicy_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("fix_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("text_cleanup_block_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("approved_for_apply_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("promotion_status", "TEXT"),
+                ("confidence_band", "TEXT"),
+                ("recommended_action", "TEXT"),
+                ("sample_policy_item_ids_json", "TEXT"),
+                ("sample_paths_json", "TEXT"),
+                ("token_signature_json", "TEXT"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_composite_guarded_overlay_checkpoints",
+            [
+                ("rule_version", "TEXT"),
+                ("checkpoint_name", "TEXT"),
+                ("gate_key", "TEXT"),
+                ("overlay_run_id", "INTEGER"),
+                ("parent_overlay_run_id", "INTEGER"),
+                ("source_policy_run_id", "INTEGER"),
+                ("promotion_audit_run_id", "INTEGER"),
+                ("ready_rule_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("total_candidates", "INTEGER NOT NULL DEFAULT 0"),
+                ("guarded_release_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("release_rate_pct", "REAL NOT NULL DEFAULT 0"),
+                ("medium_to_low_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("invalid_release_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("apply_allowed_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("active_gate_overlay_run_id", "INTEGER"),
+                ("active_gate_unchanged", "INTEGER NOT NULL DEFAULT 0"),
+                ("promotion_status", "TEXT"),
+                ("recommended_action", "TEXT"),
+                ("blockers_json", "TEXT"),
+                ("warnings_json", "TEXT"),
+                ("metrics_json", "TEXT"),
+                ("report_path", "TEXT"),
+                ("started_at", "TEXT"),
+                ("finished_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_composite_guarded_overlay_checkpoint_rules",
+            [
+                ("checkpoint_id", "INTEGER"),
+                ("suggested_route", "TEXT"),
+                ("token_subtype", "TEXT"),
+                ("rule_key", "TEXT"),
+                ("release_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("reviewed_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("pending_items", "INTEGER NOT NULL DEFAULT 0"),
+                ("accept_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("keep_manual_exception_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("reject_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("needs_subpolicy_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("promotion_status", "TEXT"),
+                ("sample_policy_item_ids_json", "TEXT"),
+                ("created_at", "TEXT"),
+            ],
+        )
+    )
 
     conn.execute(
         """
@@ -1626,6 +3310,24 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
     )
     conn.execute(
         """
+        CREATE INDEX IF NOT EXISTS idx_suggestion_feedback_segment_decision
+        ON suggestion_feedback(segment_id, decision)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_suggestion_feedback_suggestion_decision
+        ON suggestion_feedback(suggestion_id, decision)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_translation_suggestions_status_segment
+        ON translation_suggestions(status, segment_id)
+        """
+    )
+    conn.execute(
+        """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_suggestion_feedback_pending_unique
         ON suggestion_feedback(suggestion_id)
         WHERE decision = 'pending' AND suggestion_id IS NOT NULL
@@ -1653,6 +3355,18 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         """
         CREATE INDEX IF NOT EXISTS idx_local_learning_candidates_segment
         ON local_learning_candidates(segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_local_learning_candidates_feedback
+        ON local_learning_candidates(feedback_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_local_learning_candidates_suggestion
+        ON local_learning_candidates(suggestion_id)
         """
     )
     conn.execute(
@@ -1689,6 +3403,12 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         """
         CREATE INDEX IF NOT EXISTS idx_segment_confirmations_candidate
         ON segment_confirmations(candidate_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_confirmations_feedback
+        ON segment_confirmations(feedback_id)
         """
     )
     conn.execute(
@@ -1833,6 +3553,252 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         """
         CREATE INDEX IF NOT EXISTS idx_ml_model_promotions_kind_created
         ON ml_model_promotions(model_kind, created_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_specialist_policy_created
+        ON ml_specialist_policy_snapshots(created_at, specialist_key)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_specialist_policy_status
+        ON ml_specialist_policy_snapshots(status, pending_real_count)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_agent_registry_status
+        ON ml_agent_registry(status, operational_state, agent_type)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_agent_registry_parent
+        ON ml_agent_registry(parent_agent_key, agent_key)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_agent_routing_runs_created
+        ON ml_agent_routing_runs(started_at, coordinator_key)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_agent_routing_items_run_agent
+        ON ml_agent_routing_items(run_id, route_agent_key, route_status)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_agent_routing_items_segment
+        ON ml_agent_routing_items(segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_agent_recommendations_run_status
+        ON ml_agent_recommendations(run_id, status, proposed_agent_key)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_state_runs_created
+        ON segment_state_runs(started_at, rule_version)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_state_items_run_state
+        ON segment_state_items(run_id, state_group, final_state)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_state_items_run_apply
+        ON segment_state_items(run_id, apply_state, needs_output_apply)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_state_items_segment
+        ON segment_state_items(segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_output_apply_runs_created
+        ON segment_output_apply_runs(started_at, apply)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_output_apply_items_run_status
+        ON segment_output_apply_items(run_id, result_status, applied)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_output_apply_items_segment
+        ON segment_output_apply_items(segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_output_apply_items_path
+        ON segment_output_apply_items(relative_path, review_state)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_token_policy_runs_created
+        ON segment_token_policy_runs(started_at, state_run_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_token_policy_items_run_bucket
+        ON segment_token_policy_items(run_id, policy_bucket, risk_level)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_token_policy_items_segment
+        ON segment_token_policy_items(segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_token_policy_decision_runs_policy
+        ON segment_token_policy_decision_runs(policy_run_id, started_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_token_policy_decisions_segment
+        ON segment_token_policy_decisions(segment_id, approved_for_apply)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_token_policy_decisions_policy_bucket
+        ON segment_token_policy_decisions(policy_run_id, policy_bucket, approved_for_apply)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_token_policy_overlay_runs_source
+        ON segment_token_policy_overlay_runs(source_policy_run_id, started_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_token_policy_overlay_items_run_action
+        ON segment_token_policy_overlay_items(run_id, overlay_action, overlay_risk_level)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_segment_token_policy_overlay_items_segment
+        ON segment_token_policy_overlay_items(segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_composite_checkpoints_created
+        ON ml_composite_checkpoints(started_at, checkpoint_scope, promotion_status)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_composite_gate_promotions_created
+        ON ml_composite_gate_promotions(created_at, gate_key, decision)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_composite_gate_queue_runs_created
+        ON ml_composite_gate_queue_runs(started_at, gate_key, overlay_run_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_composite_gate_queue_routes_run
+        ON ml_composite_gate_queue_routes(queue_run_id, suggested_route)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_composite_gate_queue_items_policy
+        ON ml_composite_gate_queue_items(gate_key, overlay_run_id, policy_item_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_composite_gate_queue_items_route
+        ON ml_composite_gate_queue_items(gate_key, overlay_run_id, suggested_route)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_composite_gate_queue_runs_guarded_checkpoint
+        ON ml_composite_gate_queue_runs(guarded_checkpoint_id, shadow_queue_kind, started_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_composite_gate_queue_items_guarded_checkpoint
+        ON ml_composite_gate_queue_items(guarded_checkpoint_id, priority_bucket, rule_key)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_composite_gate_review_snapshots_created
+        ON ml_composite_gate_review_snapshots(started_at, gate_key, overlay_run_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_composite_gate_review_route_status_snapshot
+        ON ml_composite_gate_review_route_status(snapshot_id, suggested_route)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_composite_subpolicy_diag_runs_created
+        ON ml_composite_subpolicy_diagnostic_runs(started_at, gate_key, overlay_run_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_composite_subpolicy_diag_items_run
+        ON ml_composite_subpolicy_diagnostic_items(run_id, maturity_status, suggested_route)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_composite_subpolicy_promotion_runs_created
+        ON ml_composite_subpolicy_promotion_audit_runs(started_at, gate_key, overlay_run_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_composite_subpolicy_promotion_items_run
+        ON ml_composite_subpolicy_promotion_audit_items(run_id, promotion_status, suggested_route)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_composite_guarded_overlay_checkpoints_created
+        ON ml_composite_guarded_overlay_checkpoints(started_at, gate_key, overlay_run_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_composite_guarded_overlay_checkpoint_rules_checkpoint
+        ON ml_composite_guarded_overlay_checkpoint_rules(checkpoint_id, rule_key)
         """
     )
 

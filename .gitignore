@@ -6,6 +6,7 @@ __pycache__/
 *.py[cod]
 
 # Runtime data
+memory/
 memory/*.sqlite
 memory/*.sqlite-*
 memory/backups/

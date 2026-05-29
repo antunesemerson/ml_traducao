@@ -61,7 +61,8 @@ SPECIALISTS: dict[str, SpecialistConfig] = {
         ),
         scope_sql=(
             "relative_path = 'titles_l_spanish.yml' "
-            "AND source_key NOT LIKE '%\\_adj' ESCAPE '\\' "
+            "AND source_key NOT LIKE '%\\_adj%' ESCAPE '\\' "
+            "AND source_key NOT LIKE '%\\_pre' ESCAPE '\\' "
             "AND ("
             "source_key LIKE 'b\\_%' ESCAPE '\\' OR "
             "source_key LIKE 'c\\_%' ESCAPE '\\' OR "
@@ -81,13 +82,104 @@ SPECIALISTS: dict[str, SpecialistConfig] = {
         description="Landed-title adjective keys, including demonyms and contextual adjective forms.",
         scope_sql=(
             "relative_path = 'titles_l_spanish.yml' "
-            "AND source_key LIKE '%\\_adj' ESCAPE '\\'"
+            "AND source_key LIKE '%\\_adj%' ESCAPE '\\'"
         ),
         default_feature_set=LANGUAGE_FEATURE_SET,
         default_train_strategy=DEFAULT_TRAIN_STRATEGY,
         default_safe_threshold=0.90,
         default_safe_multiplier=5,
         holdout_min_negative=10,
+    ),
+    "title_prefixes": SpecialistConfig(
+        name="specialist_title_prefixes",
+        description=(
+            "Landed-title prefix/demonym forms ending in _pre, such as Afro, Franco, "
+            "oesteeslavo, and similar pre-title cultural modifiers."
+        ),
+        scope_sql=(
+            "relative_path = 'titles_l_spanish.yml' "
+            "AND source_key LIKE '%\\_pre' ESCAPE '\\'"
+        ),
+        default_feature_set=LANGUAGE_FEATURE_SET,
+        default_train_strategy=DEFAULT_TRAIN_STRATEGY,
+        default_safe_threshold=0.95,
+        default_safe_multiplier=5,
+        holdout_min_negative=5,
+    ),
+    "title_baronies": SpecialistConfig(
+        name="specialist_title_baronies",
+        description="Landed-title proper names with b_ keys, mostly barony/local holding names.",
+        scope_sql=(
+            "relative_path = 'titles_l_spanish.yml' "
+            "AND instr(source_key, '_adj') = 0 "
+            "AND substr(source_key, -4) != '_pre' "
+            "AND substr(source_key, 1, 2) = 'b_'"
+        ),
+        default_feature_set=LANGUAGE_FEATURE_SET,
+        default_train_strategy=DEFAULT_TRAIN_STRATEGY,
+        default_safe_threshold=0.93,
+        default_safe_multiplier=5,
+        holdout_min_negative=10,
+    ),
+    "title_counties": SpecialistConfig(
+        name="specialist_title_counties",
+        description="Landed-title proper names with c_ keys, mostly county/local region names.",
+        scope_sql=(
+            "relative_path = 'titles_l_spanish.yml' "
+            "AND instr(source_key, '_adj') = 0 "
+            "AND substr(source_key, -4) != '_pre' "
+            "AND substr(source_key, 1, 2) = 'c_'"
+        ),
+        default_feature_set=LANGUAGE_FEATURE_SET,
+        default_train_strategy=DEFAULT_TRAIN_STRATEGY,
+        default_safe_threshold=0.93,
+        default_safe_multiplier=5,
+        holdout_min_negative=10,
+    ),
+    "title_duchies": SpecialistConfig(
+        name="specialist_title_duchies",
+        description="Landed-title proper names with d_ keys, duchy-level names and regional exceptions.",
+        scope_sql=(
+            "relative_path = 'titles_l_spanish.yml' "
+            "AND instr(source_key, '_adj') = 0 "
+            "AND substr(source_key, -4) != '_pre' "
+            "AND substr(source_key, 1, 2) = 'd_'"
+        ),
+        default_feature_set=LANGUAGE_FEATURE_SET,
+        default_train_strategy=DEFAULT_TRAIN_STRATEGY,
+        default_safe_threshold=0.95,
+        default_safe_multiplier=5,
+        holdout_min_negative=10,
+    ),
+    "title_kingdoms": SpecialistConfig(
+        name="specialist_title_kingdoms",
+        description="Landed-title proper names with k_ keys, kingdom-level names with higher localization ambiguity.",
+        scope_sql=(
+            "relative_path = 'titles_l_spanish.yml' "
+            "AND instr(source_key, '_adj') = 0 "
+            "AND substr(source_key, -4) != '_pre' "
+            "AND substr(source_key, 1, 2) = 'k_'"
+        ),
+        default_feature_set=LANGUAGE_FEATURE_SET,
+        default_train_strategy=DEFAULT_TRAIN_STRATEGY,
+        default_safe_threshold=0.97,
+        default_safe_multiplier=5,
+        holdout_min_negative=5,
+    ),
+    "title_empires": SpecialistConfig(
+        name="specialist_title_empires",
+        description="Landed-title proper names with e_ keys, empire-level names and major contextual exceptions.",
+        scope_sql=(
+            "relative_path = 'titles_l_spanish.yml' "
+            "AND instr(source_key, '_adj') = 0 "
+            "AND substr(source_key, -4) != '_pre' "
+            "AND substr(source_key, 1, 2) = 'e_'"
+        ),
+        default_feature_set=LANGUAGE_FEATURE_SET,
+        default_train_strategy=DEFAULT_TRAIN_STRATEGY,
+        default_safe_threshold=0.97,
+        default_safe_multiplier=5,
+        holdout_min_negative=5,
     ),
     "title_cultural_names": SpecialistConfig(
         name="specialist_title_cultural_names",
@@ -119,6 +211,64 @@ SPECIALISTS: dict[str, SpecialistConfig] = {
         default_safe_multiplier=5,
         holdout_min_negative=5,
     ),
+    "religion_bosnian_terms": SpecialistConfig(
+        name="specialist_religion_bosnian_terms",
+        description="Bosnian Church terms that often preserve original religious titles.",
+        scope_sql=(
+            "relative_path = 'religion/religion_christianity_l_spanish.yml' "
+            "AND source_key LIKE 'bosnian_%'"
+        ),
+        default_feature_set=LANGUAGE_FEATURE_SET,
+        default_train_strategy=DEFAULT_TRAIN_STRATEGY,
+        default_safe_threshold=0.97,
+        default_safe_multiplier=5,
+        holdout_min_negative=3,
+    ),
+    "religion_sufri": SpecialistConfig(
+        name="specialist_religion_sufri",
+        description="Sufri/Sufrism labels and descriptions, distinct from Sufi/Sufism.",
+        scope_sql="relative_path = 'religion/religion_islam_l_spanish.yml' AND source_key LIKE 'sufri_%'",
+        default_feature_set=LANGUAGE_FEATURE_SET,
+        default_train_strategy=DEFAULT_TRAIN_STRATEGY,
+        default_safe_threshold=0.97,
+        default_safe_multiplier=5,
+        holdout_min_negative=2,
+    ),
+    "religion_possessive_gods": SpecialistConfig(
+        name="specialist_religion_possessive_gods",
+        description="Religious possessive name fields that need safe PT-BR prepositions.",
+        scope_sql=(
+            "relative_path LIKE 'religion/%' AND ("
+            "source_key LIKE '%_god_name_possessive' OR "
+            "source_key LIKE '%_deity_name_possessive' OR "
+            "source_key LIKE '%_devil_name_possessive' OR "
+            "source_key LIKE '%_death_deity_%' OR "
+            "source_key LIKE '%_name_possessive'"
+            ")"
+        ),
+        default_feature_set=LANGUAGE_FEATURE_SET,
+        default_train_strategy=DEFAULT_TRAIN_STRATEGY,
+        default_safe_threshold=0.96,
+        default_safe_multiplier=5,
+        holdout_min_negative=5,
+    ),
+    "religion_preserved_terms": SpecialistConfig(
+        name="specialist_religion_preserved_terms",
+        description="Small religion-specific terms that may be preserved instead of translated.",
+        scope_sql=(
+            "relative_path LIKE 'religion/%' AND ("
+            "source_key LIKE 'dab_qhuas_%' OR "
+            "source_key LIKE 'tolotang_%' OR "
+            "source_key LIKE '%_priest' OR "
+            "source_key LIKE '%_afterlife'"
+            ")"
+        ),
+        default_feature_set=LANGUAGE_FEATURE_SET,
+        default_train_strategy=DEFAULT_TRAIN_STRATEGY,
+        default_safe_threshold=0.97,
+        default_safe_multiplier=5,
+        holdout_min_negative=5,
+    ),
 }
 
 
@@ -127,21 +277,62 @@ SPECIALIST_GROUPS: dict[str, list[str]] = {
     "title_subspecialists": [
         "title_names",
         "title_adjectives",
+        "title_prefixes",
         "title_cultural_names",
         "culture_title_labels",
+    ],
+    "title_rank_subspecialists": [
+        "title_baronies",
+        "title_counties",
+        "title_duchies",
+        "title_kingdoms",
+        "title_empires",
     ],
     "title_promising_subspecialists": [
         "title_names",
         "title_adjectives",
         "culture_title_labels",
     ],
+    "religion_subspecialists": [
+        "religion_bosnian_terms",
+        "religion_sufri",
+        "religion_possessive_gods",
+        "religion_preserved_terms",
+    ],
+    "religion_promising_subspecialists": [
+        "religion_bosnian_terms",
+        "religion_possessive_gods",
+        "religion_preserved_terms",
+    ],
     "all_with_title_subspecialists": [
         "titles",
         "religion",
         "title_names",
         "title_adjectives",
+        "title_prefixes",
         "title_cultural_names",
         "culture_title_labels",
+    ],
+    "all_with_religion_subspecialists": [
+        "titles",
+        "religion",
+        "religion_bosnian_terms",
+        "religion_sufri",
+        "religion_possessive_gods",
+        "religion_preserved_terms",
+    ],
+    "operational_title_religion_v1": [
+        "religion",
+        "title_names",
+        "title_adjectives",
+        "title_prefixes",
+        "title_cultural_names",
+        "culture_title_labels",
+        "title_baronies",
+        "title_counties",
+        "title_duchies",
+        "title_kingdoms",
+        "title_empires",
     ],
 }
 
@@ -322,6 +513,7 @@ def build_dataset(
     base_dataset_run_id: int,
     binary_risk: bool,
     started_at: str,
+    require_two_labels: bool = True,
 ) -> tuple[int, dict[str, int], list[dict[str, Any]]]:
     source_rows = specialist_rows(conn, base_dataset_run_id, config)
     if not source_rows:
@@ -331,7 +523,7 @@ def build_dataset(
         for row in source_rows
     ]
     risk_counts = count_risk_labels(rows)
-    if len(risk_counts) < 2:
+    if require_two_labels and len(risk_counts) < 2:
         raise RuntimeError(f"{config.name} needs at least two risk labels; got {dict(risk_counts)}.")
 
     run_id = insert_dataset_run(conn, config, base_dataset_run_id, binary_risk, started_at)
@@ -348,6 +540,7 @@ def run_specialist(
     feature_set: str | None,
     train_strategy: str | None,
     binary_risk: bool,
+    dataset_only: bool = False,
 ) -> dict[str, Any]:
     settings = db.load_settings()
     started_at_dt = datetime.now()
@@ -372,8 +565,59 @@ def run_specialist(
             base_dataset_run_id,
             binary_risk=binary_risk,
             started_at=started_at,
+            require_two_labels=not dataset_only,
         )
         conn.commit()
+
+    if dataset_only:
+        risk_counts = count_risk_labels(rows)
+        elapsed = datetime.now() - started_at_dt
+        report_lines = [
+            "ML specialist dataset report",
+            f"Started at: {started_at}",
+            f"Elapsed: {elapsed}",
+            f"Rule version: {RULE_VERSION}",
+            f"Specialist: {config.name}",
+            f"Description: {config.description}",
+            f"Base dataset run id: {base_dataset_run_id}",
+            f"Specialist dataset run id: {dataset_run_id}",
+            "",
+            "Dataset:",
+            f"- Total examples: {counts['total']}",
+            f"- Positive examples: {counts['positive']} ({percent(counts['positive'], counts['total'])})",
+            f"- Negative examples: {counts['negative']} ({percent(counts['negative'], counts['total'])})",
+            f"- Strong positives: {counts['strong_positive']}",
+            f"- Strong negatives: {counts['strong_negative']}",
+            f"- Binary risk normalization: {binary_risk}",
+            "",
+            "Risk labels after specialist normalization:",
+            *[f"- {label}: {risk_counts[label]}" for label in sorted(risk_counts)],
+            "",
+            "Top paths:",
+            *top_counts(rows, "relative_path"),
+            "",
+            "Top action labels:",
+            *top_counts(rows, "action_label"),
+            "",
+            "Top issue labels:",
+            *top_counts(rows, "issue_label"),
+            "",
+            "Interpretation:",
+            "- This command only builds the specialist dataset; it does not train, score, promote, or write output.",
+            "- Run ml-threshold-sweep on this dataset before training the next specialist candidate.",
+        ]
+        report_path = db.write_report(settings, f"ml_specialist_dataset_{config.name}", report_lines)
+        print(f"[ml_specialist_models] Dataset run id: {dataset_run_id}")
+        print(f"[ml_specialist_models] Dataset-only report: {report_path}")
+        print(f"[ml_specialist_models] Done {config.name}")
+        return {
+            "specialist": config.name,
+            "dataset_run_id": dataset_run_id,
+            "model_run_id": None,
+            "report_path": str(report_path),
+            "holdout_error": "dataset_only",
+            "risk_counts": dict(risk_counts),
+        }
 
     model_run_id = ml_train_risk.main(
         dataset_run_id=dataset_run_id,
@@ -446,7 +690,7 @@ def run_specialist(
         "- Existing deterministic validators and human memory remain stronger than specialist votes.",
         "- Next step is selective specialist scoring plus an auditor dry-run.",
     ]
-    report_path = db.write_report(settings, "ml_specialist_models", report_lines)
+    report_path = db.write_report(settings, f"ml_specialist_models_{config.name}", report_lines)
     print(f"[ml_specialist_models] Dataset run id: {dataset_run_id}")
     print(f"[ml_specialist_models] Model run id: {model_run_id}")
     print(f"[ml_specialist_models] Report: {report_path}")
@@ -469,6 +713,7 @@ def main(
     feature_set: str | None = None,
     train_strategy: str | None = None,
     binary_risk: bool = True,
+    dataset_only: bool = False,
 ) -> None:
     specialist_keys = SPECIALIST_GROUPS.get(specialist, [specialist])
     configs = [SPECIALISTS[key] for key in specialist_keys]
@@ -484,6 +729,7 @@ def main(
                 feature_set=feature_set,
                 train_strategy=train_strategy,
                 binary_risk=binary_risk,
+                dataset_only=dataset_only,
             )
         )
 
@@ -519,6 +765,7 @@ if __name__ == "__main__":
     parser.add_argument("--feature-set", default=None)
     parser.add_argument("--train-strategy", default=None)
     parser.add_argument("--multi-risk", action="store_true", help="Keep original risk actions instead of binary review/safe.")
+    parser.add_argument("--dataset-only", action="store_true", help="Build specialist dataset(s) without training models.")
     args = parser.parse_args()
     main(
         specialist=args.specialist,
@@ -528,4 +775,5 @@ if __name__ == "__main__":
         feature_set=args.feature_set,
         train_strategy=args.train_strategy,
         binary_risk=not args.multi_risk,
+        dataset_only=args.dataset_only,
     )

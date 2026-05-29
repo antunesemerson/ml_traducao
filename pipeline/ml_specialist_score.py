@@ -54,6 +54,7 @@ def score_specialist(
     limit: int | None,
     batch_size: int,
     include_locked: bool,
+    safe_threshold: float | None,
 ) -> dict[str, Any]:
     settings = db.load_settings()
     with db.connect(settings) as conn:
@@ -64,7 +65,7 @@ def score_specialist(
     score_run_id = ml_score_segments.main(
         limit=limit,
         path_like=None,
-        safe_threshold=None,
+        safe_threshold=safe_threshold,
         include_locked=include_locked,
         batch_size=batch_size,
         model_run_id=resolved_model_run_id,
@@ -97,6 +98,7 @@ def main(
     limit: int | None = None,
     batch_size: int = 5000,
     include_locked: bool = False,
+    safe_threshold: float | None = None,
 ) -> None:
     if model_run_id is not None and specialist in SPECIALIST_GROUPS:
         raise ValueError("--model-run-id can only be used with a single specialist.")
@@ -110,6 +112,7 @@ def main(
             limit=limit,
             batch_size=batch_size,
             include_locked=include_locked,
+            safe_threshold=safe_threshold,
         )
         for config in resolve_specialists(specialist)
     ]
@@ -121,6 +124,7 @@ def main(
         f"Rule version: {RULE_VERSION}",
         f"Requested specialist: {specialist}",
         f"Include locked: {include_locked}",
+        f"Safe threshold override: {safe_threshold if safe_threshold is not None else 'model default'}",
         "",
         "Results:",
     ]
@@ -153,6 +157,7 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=5000)
     parser.add_argument("--include-locked", action="store_true")
+    parser.add_argument("--safe-threshold", type=float, default=None)
     args = parser.parse_args()
     main(
         specialist=args.specialist,
@@ -160,4 +165,5 @@ if __name__ == "__main__":
         limit=args.limit,
         batch_size=args.batch_size,
         include_locked=args.include_locked,
+        safe_threshold=args.safe_threshold,
     )

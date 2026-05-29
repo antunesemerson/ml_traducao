@@ -37,7 +37,29 @@ STAGES = {
     "ml_score": "ml_score_segments",
     "ml_score_audit": "ml_score_audit",
     "ml_score_regression_queue": "ml_score_regression_queue",
+    "ml_specialist_policy": "ml_specialist_policy",
     "ml_specialist_score": "ml_specialist_score",
+    "ml_specialist_ensemble_policy": "ml_specialist_ensemble_policy",
+    "ml_agent_architecture": "ml_agent_architecture",
+    "ml_agent_audit_queue": "ml_agent_audit_queue",
+    "ml_composite_review_progress": "ml_composite_review_progress",
+    "ml_composite_review_ingest": "ml_composite_review_ingest",
+    "ml_composite_queue_backfill": "ml_composite_queue_backfill",
+    "ml_composite_next_queue_cycle": "ml_composite_next_queue_cycle",
+    "ml_composite_subpolicy_diagnostic": "ml_composite_subpolicy_diagnostic",
+    "ml_composite_subpolicy_evidence_queue": "ml_composite_subpolicy_evidence_queue",
+    "ml_composite_subpolicy_promotion_audit": "ml_composite_subpolicy_promotion_audit",
+    "ml_composite_subpolicy_promotion_queue": "ml_composite_subpolicy_promotion_queue",
+    "ml_composite_subpolicy_guarded_overlay": "ml_composite_subpolicy_guarded_overlay",
+    "ml_composite_guarded_overlay_checkpoint": "ml_composite_guarded_overlay_checkpoint",
+    "ml_composite_guarded_overlay_shadow_queue": "ml_composite_guarded_overlay_shadow_queue",
+    "ml_composite_guarded_overlay_shadow_decisions": "ml_composite_guarded_overlay_shadow_decisions",
+    "segment_state": "segment_state_snapshot",
+    "segment_apply": "apply_segment_state_updates",
+    "segment_token_queue": "segment_token_mismatch_queue",
+    "segment_token_policy": "segment_token_policy",
+    "segment_token_policy_decisions": "segment_token_policy_decisions",
+    "segment_token_policy_decision_rebase": "segment_token_policy_decision_rebase",
     "learn_local": "local_learning_cycle",
     "learn_feedback": "apply_local_learning_feedback",
     "confirmations": "segment_confirmation_report",
@@ -228,7 +250,42 @@ def main() -> None:
             "ml-threshold-sweep",
             "ml-specialist-models",
             "ml-specialist-auditor",
+            "ml-specialist-policy",
             "ml-specialist-score",
+            "ml-specialist-ensemble-policy",
+            "ml-specialist-frontier-queue",
+            "ml-agent-architecture",
+            "ml-agent-audit-queue",
+            "ml-composite-checkpoint",
+            "ml-composite-promote",
+            "ml-composite-review-progress",
+            "ml-composite-review-ingest",
+            "ml-composite-queue-backfill",
+            "ml-composite-next-queue-cycle",
+            "ml-composite-subpolicy-diagnostic",
+            "ml-composite-subpolicy-evidence-queue",
+            "ml-composite-subpolicy-promotion-audit",
+            "ml-composite-subpolicy-promotion-queue",
+            "ml-composite-subpolicy-guarded-overlay",
+            "ml-composite-guarded-overlay-checkpoint",
+            "ml-composite-guarded-overlay-promote",
+            "ml-composite-guarded-overlay-shadow-queue",
+            "ml-composite-guarded-overlay-shadow-decisions",
+            "segment-state",
+            "segment-apply",
+            "segment-token-queue",
+            "segment-token-policy",
+            "segment-token-tutorial-concept-policy",
+            "segment-token-tutorial-concept-promotion",
+            "segment-token-tutorial-concept-candidate-policy",
+            "segment-token-policy-overlay",
+            "segment-token-overlay-queue",
+            "segment-token-overlay-text-decisions",
+            "segment-token-overlay-structural-decisions",
+            "segment-token-policy-queue",
+            "segment-token-policy-decisions",
+            "segment-token-policy-decision-rebase",
+            "segment-token-confirmation-fixes",
             "ml-score",
             "ml-score-audit",
             "ml-score-regression-queue",
@@ -237,6 +294,8 @@ def main() -> None:
             "learned-apply",
             "learned-autofix",
             "mojibake-audit",
+            "mojibake-strict",
+            "mojibake-curated-decisions",
             "gender-token-audit",
             "micro-review-queue",
             "mojibake-context",
@@ -285,6 +344,31 @@ def main() -> None:
         "--apply-no-backup",
         action="store_true",
         help="During apply/full, skip output backups.",
+    )
+    parser.add_argument(
+        "--segment-review-states",
+        default=None,
+        help="During segment-apply, comma-separated review states. Default: human_locked,human_confirmed.",
+    )
+    parser.add_argument(
+        "--segment-include-auto-confirmed",
+        action="store_true",
+        help="During segment-apply, also inspect auto_confirmed pending apply rows.",
+    )
+    parser.add_argument(
+        "--segment-include-intentional-blank",
+        action="store_true",
+        help="During segment-apply, allow trusted locked human confirmations whose confirmed text is intentionally blank.",
+    )
+    parser.add_argument(
+        "--segment-allow-locked-token-override",
+        action="store_true",
+        help="During segment-apply, allow human_locked rows to override token mismatch validation.",
+    )
+    parser.add_argument(
+        "--segment-require-token-policy-decision",
+        action="store_true",
+        help="During segment-apply, only apply token mismatches with an approved segment token policy decision.",
     )
     parser.add_argument(
         "--bootstrap-old",
@@ -336,6 +420,272 @@ def main() -> None:
         "--auto-path-like",
         default=None,
         help="During auto-validate, optional SQL LIKE filter for source relative_path, for example gui/%%.",
+    )
+    parser.add_argument(
+        "--segment-ids",
+        default=None,
+        help="During segment-apply, comma-separated segment ids to apply exactly.",
+    )
+    parser.add_argument(
+        "--token-policy-run-id",
+        type=int,
+        default=None,
+        help="During segment-token-policy-queue, inspect a specific segment_token_policy_runs id. Default is latest.",
+    )
+    parser.add_argument(
+        "--token-overlay-run-id",
+        type=int,
+        default=None,
+        help="During segment-token-overlay-* modes, inspect a specific segment_token_policy_overlay_runs id. Default is latest.",
+    )
+    parser.add_argument(
+        "--use-active-composite-gate",
+        action="store_true",
+        help="During segment-token-overlay-* modes, use the promoted active composite gate instead of the latest experimental overlay.",
+    )
+    parser.add_argument(
+        "--token-overlay-all",
+        action="store_true",
+        help="During segment-token-overlay-queue, include all overlay rows instead of critical rows only.",
+    )
+    parser.add_argument(
+        "--token-overlay-route",
+        default=None,
+        help="During segment-token-overlay-queue, comma-separated suggested_route filter.",
+    )
+    parser.add_argument(
+        "--token-overlay-risk",
+        default=None,
+        help="During segment-token-overlay-queue, comma-separated overlay risk filter.",
+    )
+    parser.add_argument(
+        "--token-overlay-limit",
+        type=int,
+        default=None,
+        help="During segment-token-overlay-queue, cap rows after filters.",
+    )
+    parser.add_argument(
+        "--token-overlay-skip-reviewed",
+        action="store_true",
+        help="During segment-token-overlay-queue, exclude items already reviewed in token policy decisions.",
+    )
+    parser.add_argument(
+        "--token-overlay-skip-queued",
+        action="store_true",
+        help="During segment-token-overlay-queue, exclude items already emitted in active gate queues.",
+    )
+    parser.add_argument(
+        "--token-policy-per-bucket",
+        type=int,
+        default=25,
+        help="During segment-token-policy-queue, maximum rows selected per policy bucket.",
+    )
+    parser.add_argument(
+        "--token-policy-buckets",
+        default=None,
+        help="During segment-token-policy-queue, comma-separated policy_bucket filter.",
+    )
+    parser.add_argument(
+        "--token-policy-risks",
+        default=None,
+        help="During segment-token-policy-queue, comma-separated risk_level filter.",
+    )
+    parser.add_argument(
+        "--token-policy-decisions",
+        default=None,
+        help="During segment-token-policy-decisions, JSON/JSONL/CSV file with reviewed token policy decisions.",
+    )
+    parser.add_argument(
+        "--token-policy-source-report",
+        default=None,
+        help="During segment-token-policy-decisions, optional source queue/report path for audit traceability.",
+    )
+    parser.add_argument(
+        "--token-policy-reviewer",
+        default=None,
+        help="During segment-token-policy-decisions, reviewer name stored on decisions when rows do not specify one.",
+    )
+    parser.add_argument(
+        "--composite-review-decisions",
+        action="append",
+        default=None,
+        help="During ml-composite-review-ingest, reviewed JSONL path. Can be used more than once. Defaults to discovered reports/*_reviewed.jsonl.",
+    )
+    parser.add_argument(
+        "--composite-review-reviewer",
+        default="composite_gate_review",
+        help="During ml-composite-review-ingest, reviewer name stored when applying validated decisions.",
+    )
+    parser.add_argument(
+        "--composite-queue-batch-size",
+        type=int,
+        default=25,
+        help="During ml-composite-next-queue-cycle, rows generated per selected route.",
+    )
+    parser.add_argument(
+        "--composite-queue-max-routes",
+        type=int,
+        default=4,
+        help="During ml-composite-next-queue-cycle, maximum routes selected for the cycle.",
+    )
+    parser.add_argument(
+        "--composite-queue-routes",
+        default=None,
+        help="During ml-composite-next-queue-cycle, comma-separated suggested_route filter.",
+    )
+    parser.add_argument(
+        "--composite-queue-plan-only",
+        action="store_true",
+        help="During ml-composite-next-queue-cycle, write only the plan report without generating queue files.",
+    )
+    parser.add_argument(
+        "--composite-subpolicy-min-evidence",
+        type=int,
+        default=10,
+        help="During ml-composite-subpolicy-diagnostic, reviewed rows needed to mark a subtype as ready for subpolicy design.",
+    )
+    parser.add_argument(
+        "--composite-subpolicy-min-positive",
+        type=int,
+        default=5,
+        help="During ml-composite-subpolicy-diagnostic, positive decisions needed for guarded policy candidate review.",
+    )
+    parser.add_argument(
+        "--composite-subpolicy-run-id",
+        type=int,
+        default=None,
+        help="During ml-composite-subpolicy-evidence-queue, diagnostic run id. Default is latest.",
+    )
+    parser.add_argument(
+        "--composite-subpolicy-statuses",
+        default="ready_to_design_subpolicy",
+        help="During ml-composite-subpolicy-evidence-queue, comma-separated maturity statuses to queue.",
+    )
+    parser.add_argument(
+        "--composite-subpolicy-routes",
+        default=None,
+        help="During ml-composite-subpolicy-evidence-queue, comma-separated route filter.",
+    )
+    parser.add_argument(
+        "--composite-subpolicy-subtypes",
+        default=None,
+        help="During ml-composite-subpolicy-evidence-queue, comma-separated token_subtype filter.",
+    )
+    parser.add_argument(
+        "--composite-subpolicy-max-groups",
+        type=int,
+        default=4,
+        help="During ml-composite-subpolicy-evidence-queue, maximum diagnostic groups to queue.",
+    )
+    parser.add_argument(
+        "--composite-subpolicy-limit-per-group",
+        type=int,
+        default=12,
+        help="During ml-composite-subpolicy-evidence-queue, maximum rows selected per diagnostic group.",
+    )
+    parser.add_argument(
+        "--composite-subpolicy-include-reviewed",
+        action="store_true",
+        help="During ml-composite-subpolicy-evidence-queue, allow already reviewed policy items to be requeued.",
+    )
+    parser.add_argument(
+        "--composite-subpolicy-include-queued",
+        action="store_true",
+        help="During ml-composite-subpolicy-evidence-queue, allow already queued policy items to be requeued.",
+    )
+    parser.add_argument(
+        "--composite-subpolicy-plan-only",
+        action="store_true",
+        help="During ml-composite-subpolicy-evidence-queue, write files without recording queue metadata.",
+    )
+    parser.add_argument(
+        "--composite-subpolicy-promotion-statuses",
+        default="policy_candidate_review,conflicting_evidence",
+        help="During ml-composite-subpolicy-promotion-audit, comma-separated maturity statuses to audit.",
+    )
+    parser.add_argument(
+        "--composite-promotion-audit-run-id",
+        type=int,
+        default=None,
+        help="During ml-composite-subpolicy-promotion-queue, promotion audit run id. Default is latest.",
+    )
+    parser.add_argument(
+        "--composite-promotion-queue-statuses",
+        default="needs_more_positive_evidence,split_required_conflicting_evidence",
+        help="During ml-composite-subpolicy-promotion-queue, comma-separated promotion_status values to queue.",
+    )
+    parser.add_argument(
+        "--composite-promotion-rule-keys",
+        default=None,
+        help="During ml-composite-subpolicy-promotion-queue, comma-separated narrow rule_key filter.",
+    )
+    parser.add_argument(
+        "--composite-promotion-skip-queued",
+        action="store_true",
+        help="During ml-composite-subpolicy-promotion-queue, skip items already present in an active gate queue.",
+    )
+    parser.add_argument(
+        "--composite-guarded-overlay-statuses",
+        default="ready_for_guarded_policy_review",
+        help="During ml-composite-subpolicy-guarded-overlay, comma-separated promotion_status values to enable.",
+    )
+    parser.add_argument(
+        "--composite-guarded-overlay-run-id",
+        type=int,
+        default=None,
+        help="During ml-composite-guarded-overlay-checkpoint, inspect a specific guarded overlay run. Default is latest.",
+    )
+    parser.add_argument(
+        "--composite-guarded-min-releases",
+        type=int,
+        default=50,
+        help="During ml-composite-guarded-overlay-checkpoint, target release sample before shadow validation.",
+    )
+    parser.add_argument(
+        "--composite-guarded-min-rules",
+        type=int,
+        default=3,
+        help="During ml-composite-guarded-overlay-checkpoint, minimum ready rules required for the checkpoint.",
+    )
+    parser.add_argument(
+        "--composite-guarded-checkpoint-id",
+        type=int,
+        default=None,
+        help="During guarded overlay shadow queue/promote, inspect a specific guarded checkpoint. Default is latest ready checkpoint.",
+    )
+    parser.add_argument(
+        "--composite-shadow-priority",
+        choices=["all", "hygiene", "clean"],
+        default="all",
+        help="During ml-composite-guarded-overlay-shadow-queue, restrict rows by shadow priority.",
+    )
+    parser.add_argument(
+        "--composite-shadow-limit",
+        type=int,
+        default=None,
+        help="During ml-composite-guarded-overlay-shadow-queue, cap selected rows after priority ordering.",
+    )
+    parser.add_argument(
+        "--composite-shadow-release-scope",
+        choices=["new", "inherited", "all"],
+        default="new",
+        help="During ml-composite-guarded-overlay-shadow-queue, choose new, inherited, or all guarded releases.",
+    )
+    parser.add_argument(
+        "--composite-shadow-plan-only",
+        action="store_true",
+        help="During ml-composite-guarded-overlay-shadow-queue, write files without recording queue metadata.",
+    )
+    parser.add_argument(
+        "--composite-shadow-skip-reviewed",
+        action="store_true",
+        help="During ml-composite-guarded-overlay-shadow-queue, exclude policy items that already have token policy decisions.",
+    )
+    parser.add_argument(
+        "--composite-shadow-queue-run-id",
+        type=int,
+        default=None,
+        help="During ml-composite-guarded-overlay-shadow-decisions, draft decisions for a specific shadow queue run.",
     )
     parser.add_argument(
         "--auto-offset",
@@ -523,15 +873,35 @@ def main() -> None:
             "titles",
             "religion",
             "title_subspecialists",
+            "religion_subspecialists",
             "title_promising_subspecialists",
+            "religion_promising_subspecialists",
             "all_with_title_subspecialists",
+            "all_with_religion_subspecialists",
+            "operational_title_religion_v1",
             "title_names",
             "title_adjectives",
+            "title_prefixes",
+            "title_rank_subspecialists",
+            "title_baronies",
+            "title_counties",
+            "title_duchies",
+            "title_kingdoms",
+            "title_empires",
             "title_cultural_names",
             "culture_title_labels",
+            "religion_bosnian_terms",
+            "religion_sufri",
+            "religion_possessive_gods",
+            "religion_preserved_terms",
         ],
         default="all",
         help="During ml-specialist-models, choose which specialist to train.",
+    )
+    parser.add_argument(
+        "--ml-specialist-dataset-only",
+        action="store_true",
+        help="During ml-specialist-models, build specialist dataset(s) without training models.",
     )
     parser.add_argument(
         "--ml-groups",
@@ -611,7 +981,42 @@ def main() -> None:
             "ml-threshold-sweep",
             "ml-specialist-models",
             "ml-specialist-auditor",
+            "ml-specialist-policy",
             "ml-specialist-score",
+            "ml-specialist-ensemble-policy",
+            "ml-specialist-frontier-queue",
+            "ml-agent-architecture",
+            "ml-agent-audit-queue",
+            "ml-composite-checkpoint",
+            "ml-composite-promote",
+            "ml-composite-review-progress",
+            "ml-composite-review-ingest",
+            "ml-composite-queue-backfill",
+            "ml-composite-next-queue-cycle",
+            "ml-composite-subpolicy-diagnostic",
+            "ml-composite-subpolicy-evidence-queue",
+            "ml-composite-subpolicy-promotion-audit",
+            "ml-composite-subpolicy-promotion-queue",
+            "ml-composite-subpolicy-guarded-overlay",
+            "ml-composite-guarded-overlay-checkpoint",
+            "ml-composite-guarded-overlay-promote",
+            "ml-composite-guarded-overlay-shadow-queue",
+            "ml-composite-guarded-overlay-shadow-decisions",
+            "segment-state",
+            "segment-apply",
+            "segment-token-queue",
+            "segment-token-policy",
+            "segment-token-tutorial-concept-policy",
+            "segment-token-tutorial-concept-promotion",
+            "segment-token-tutorial-concept-candidate-policy",
+            "segment-token-policy-overlay",
+            "segment-token-overlay-queue",
+            "segment-token-overlay-text-decisions",
+            "segment-token-overlay-structural-decisions",
+            "segment-token-policy-queue",
+            "segment-token-policy-decisions",
+            "segment-token-policy-decision-rebase",
+            "segment-token-confirmation-fixes",
             "ml-score",
             "ml-score-audit",
             "ml-score-regression-queue",
@@ -619,6 +1024,8 @@ def main() -> None:
             "learned-apply",
             "learned-autofix",
             "mojibake-audit",
+            "mojibake-strict",
+            "mojibake-curated-decisions",
             "gender-token-audit",
             "micro-review-queue",
             "mojibake-context",
@@ -851,7 +1258,10 @@ def main() -> None:
             tee_stderr = Tee(sys.stderr, buffer)
             try:
                 with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
-                    ml_group_threshold_policy.main(sample_limit=args.auto_limit or 60)
+                    ml_group_threshold_policy.main(
+                        score_run_id=args.ml_active_score_run_id,
+                        sample_limit=args.auto_limit or 60,
+                    )
             except Exception:
                 traceback.print_exc(file=buffer)
                 output = buffer.getvalue()
@@ -1001,6 +1411,7 @@ def main() -> None:
                         safe_multiplier=None if args.ml_safe_multiplier == 5 else args.ml_safe_multiplier,
                         feature_set=None if args.ml_feature_set == "legacy_v1" else args.ml_feature_set,
                         train_strategy=None if args.ml_train_strategy == "balanced_v1" else args.ml_train_strategy,
+                        dataset_only=args.ml_specialist_dataset_only,
                     )
             except Exception:
                 traceback.print_exc(file=buffer)
@@ -1033,6 +1444,28 @@ def main() -> None:
             log_lines.extend(output.splitlines())
             report_lines.append("- ml_specialist_auditor: executed")
 
+        if args.mode == "ml-specialist-policy":
+            import ml_specialist_policy
+
+            print("[main] Running stage: ml_specialist_policy (ml_specialist_policy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_specialist_policy.main(
+                        general_score_run_id=args.ml_active_score_run_id,
+                        specialist=args.ml_specialist,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_specialist_policy: executed")
+
         if args.mode == "ml-specialist-score":
             import ml_specialist_score
 
@@ -1048,6 +1481,7 @@ def main() -> None:
                         limit=args.auto_limit,
                         batch_size=args.ml_score_batch_size,
                         include_locked=args.ml_include_locked,
+                        safe_threshold=args.auto_min_score,
                     )
             except Exception:
                 traceback.print_exc(file=buffer)
@@ -1057,6 +1491,828 @@ def main() -> None:
             output = buffer.getvalue()
             log_lines.extend(output.splitlines())
             report_lines.append("- ml_specialist_score: executed")
+
+        if args.mode == "ml-specialist-ensemble-policy":
+            import ml_specialist_ensemble_policy
+
+            print("[main] Running stage: ml_specialist_ensemble_policy (ml_specialist_ensemble_policy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_specialist_ensemble_policy.main(
+                        general_score_run_id=args.ml_active_score_run_id,
+                        sample_limit=args.auto_limit or 40,
+                        specialist=args.ml_specialist,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_specialist_ensemble_policy: executed")
+
+        if args.mode == "ml-specialist-frontier-queue":
+            import ml_specialist_frontier_queue
+
+            print("[main] Running stage: ml_specialist_frontier_queue (ml_specialist_frontier_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_specialist_frontier_queue.main(
+                        specialist=args.ml_specialist,
+                        policy_run_id=None,
+                        limit=args.auto_limit or 60,
+                        batch_size=args.triage_batch_size or 20,
+                        min_score=args.auto_min_score if args.auto_min_score is not None else 0.70,
+                        per_specialist_limit=args.ml_per_path_limit,
+                        per_path_limit=args.ml_per_path_limit,
+                        output=None,
+                        include_reviewed=args.ml_include_locked,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_specialist_frontier_queue: executed")
+
+        if args.mode == "ml-agent-architecture":
+            import ml_agent_architecture
+
+            print("[main] Running stage: ml_agent_architecture (ml_agent_architecture.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_agent_architecture.main()
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_agent_architecture: executed")
+
+        if args.mode == "ml-agent-audit-queue":
+            import ml_agent_audit_queue
+
+            print("[main] Running stage: ml_agent_audit_queue (ml_agent_audit_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_agent_audit_queue.main(
+                        specialist=args.ml_specialist,
+                        routing_run_id=None,
+                        limit=args.auto_limit or 60,
+                        batch_size=args.triage_batch_size or 20,
+                        output=None,
+                        include_reviewed=args.ml_include_locked,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_agent_audit_queue: executed")
+
+        if args.mode == "ml-composite-checkpoint":
+            import ml_composite_checkpoint
+
+            print("[main] Running stage: ml_composite_checkpoint (ml_composite_checkpoint.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_composite_checkpoint.main()
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_composite_checkpoint: executed")
+
+        if args.mode == "ml-composite-promote":
+            import ml_composite_promote
+
+            print("[main] Running stage: ml_composite_promote (ml_composite_promote.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_composite_promote.main(promoted_by="codex")
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_composite_promote: executed")
+
+        if args.mode == "ml-composite-review-progress":
+            import ml_composite_review_progress
+
+            print("[main] Running stage: ml_composite_review_progress (ml_composite_review_progress.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_composite_review_progress.main()
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_composite_review_progress: executed")
+
+        if args.mode == "ml-composite-review-ingest":
+            import ml_composite_review_ingest
+
+            print("[main] Running stage: ml_composite_review_ingest (ml_composite_review_ingest.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_composite_review_ingest.main(
+                        decisions=args.composite_review_decisions,
+                        apply=args.auto_apply,
+                        reviewer=args.composite_review_reviewer,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(f"- ml_composite_review_ingest: executed, apply={args.auto_apply}")
+
+        if args.mode == "ml-composite-queue-backfill":
+            import ml_composite_queue_backfill
+
+            print("[main] Running stage: ml_composite_queue_backfill (ml_composite_queue_backfill.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_composite_queue_backfill.main()
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_composite_queue_backfill: executed")
+
+        if args.mode == "ml-composite-next-queue-cycle":
+            import ml_composite_next_queue_cycle
+
+            print("[main] Running stage: ml_composite_next_queue_cycle (ml_composite_next_queue_cycle.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_composite_next_queue_cycle.main(
+                        batch_size=args.composite_queue_batch_size,
+                        max_routes=args.composite_queue_max_routes,
+                        route_filter_value=args.composite_queue_routes,
+                        plan_only=args.composite_queue_plan_only,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(
+                f"- ml_composite_next_queue_cycle: executed, plan_only={args.composite_queue_plan_only}"
+            )
+
+        if args.mode == "ml-composite-subpolicy-diagnostic":
+            import ml_composite_subpolicy_diagnostic
+
+            print("[main] Running stage: ml_composite_subpolicy_diagnostic (ml_composite_subpolicy_diagnostic.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_composite_subpolicy_diagnostic.main(
+                        min_evidence=args.composite_subpolicy_min_evidence,
+                        min_positive=args.composite_subpolicy_min_positive,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_composite_subpolicy_diagnostic: executed")
+
+        if args.mode == "ml-composite-subpolicy-evidence-queue":
+            import ml_composite_subpolicy_evidence_queue
+
+            print("[main] Running stage: ml_composite_subpolicy_evidence_queue (ml_composite_subpolicy_evidence_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_composite_subpolicy_evidence_queue.main(
+                        diagnostic_run_id=args.composite_subpolicy_run_id,
+                        statuses_value=args.composite_subpolicy_statuses,
+                        routes_value=args.composite_subpolicy_routes,
+                        subtypes_value=args.composite_subpolicy_subtypes,
+                        max_groups=args.composite_subpolicy_max_groups,
+                        limit_per_group=args.composite_subpolicy_limit_per_group,
+                        include_reviewed=args.composite_subpolicy_include_reviewed,
+                        include_queued=args.composite_subpolicy_include_queued,
+                        plan_only=args.composite_subpolicy_plan_only,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(
+                f"- ml_composite_subpolicy_evidence_queue: executed, plan_only={args.composite_subpolicy_plan_only}"
+            )
+
+        if args.mode == "ml-composite-subpolicy-promotion-audit":
+            import ml_composite_subpolicy_promotion_audit
+
+            print("[main] Running stage: ml_composite_subpolicy_promotion_audit (ml_composite_subpolicy_promotion_audit.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_composite_subpolicy_promotion_audit.main(
+                        diagnostic_run_id=args.composite_subpolicy_run_id,
+                        statuses_value=args.composite_subpolicy_promotion_statuses,
+                        routes_value=args.composite_subpolicy_routes,
+                        subtypes_value=args.composite_subpolicy_subtypes,
+                        min_accept=args.composite_subpolicy_min_positive,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_composite_subpolicy_promotion_audit: executed")
+
+        if args.mode == "ml-composite-subpolicy-promotion-queue":
+            import ml_composite_subpolicy_promotion_queue
+
+            print("[main] Running stage: ml_composite_subpolicy_promotion_queue (ml_composite_subpolicy_promotion_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_composite_subpolicy_promotion_queue.main(
+                        audit_run_id=args.composite_promotion_audit_run_id,
+                        statuses_value=args.composite_promotion_queue_statuses,
+                        routes_value=args.composite_subpolicy_routes,
+                        subtypes_value=args.composite_subpolicy_subtypes,
+                        rule_keys_value=args.composite_promotion_rule_keys,
+                        max_rules=args.composite_subpolicy_max_groups,
+                        limit_per_rule=args.composite_subpolicy_limit_per_group,
+                        include_reviewed=args.composite_subpolicy_include_reviewed,
+                        include_queued=not args.composite_promotion_skip_queued,
+                        plan_only=args.composite_subpolicy_plan_only,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(
+                f"- ml_composite_subpolicy_promotion_queue: executed, plan_only={args.composite_subpolicy_plan_only}"
+            )
+
+        if args.mode == "ml-composite-subpolicy-guarded-overlay":
+            import ml_composite_subpolicy_guarded_overlay
+
+            print("[main] Running stage: ml_composite_subpolicy_guarded_overlay (ml_composite_subpolicy_guarded_overlay.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_composite_subpolicy_guarded_overlay.main(
+                        audit_run_id=args.composite_promotion_audit_run_id,
+                        statuses_value=args.composite_guarded_overlay_statuses,
+                        rule_keys_value=args.composite_promotion_rule_keys,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_composite_subpolicy_guarded_overlay: executed")
+
+        if args.mode == "ml-composite-guarded-overlay-checkpoint":
+            import ml_composite_guarded_overlay_checkpoint
+
+            print("[main] Running stage: ml_composite_guarded_overlay_checkpoint (ml_composite_guarded_overlay_checkpoint.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_composite_guarded_overlay_checkpoint.main(
+                        overlay_run_id=args.composite_guarded_overlay_run_id,
+                        min_releases=args.composite_guarded_min_releases,
+                        min_rules=args.composite_guarded_min_rules,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_composite_guarded_overlay_checkpoint: executed")
+
+        if args.mode == "ml-composite-guarded-overlay-promote":
+            import ml_composite_guarded_overlay_promote
+
+            print("[main] Running stage: ml_composite_guarded_overlay_promote (ml_composite_guarded_overlay_promote.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_composite_guarded_overlay_promote.main(
+                        checkpoint_id=args.composite_guarded_checkpoint_id,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_composite_guarded_overlay_promote: executed")
+
+        if args.mode == "ml-composite-guarded-overlay-shadow-queue":
+            import ml_composite_guarded_overlay_shadow_queue
+
+            print("[main] Running stage: ml_composite_guarded_overlay_shadow_queue (ml_composite_guarded_overlay_shadow_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_composite_guarded_overlay_shadow_queue.main(
+                        checkpoint_id=args.composite_guarded_checkpoint_id,
+                        priority=args.composite_shadow_priority,
+                        release_scope=args.composite_shadow_release_scope,
+                        limit=args.composite_shadow_limit,
+                        skip_reviewed=args.composite_shadow_skip_reviewed,
+                        plan_only=args.composite_shadow_plan_only,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(
+                f"- ml_composite_guarded_overlay_shadow_queue: executed, plan_only={args.composite_shadow_plan_only}"
+            )
+
+        if args.mode == "ml-composite-guarded-overlay-shadow-decisions":
+            import ml_composite_guarded_overlay_shadow_decisions
+
+            print("[main] Running stage: ml_composite_guarded_overlay_shadow_decisions (ml_composite_guarded_overlay_shadow_decisions.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    ml_composite_guarded_overlay_shadow_decisions.main(
+                        queue_run_id=args.composite_shadow_queue_run_id,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- ml_composite_guarded_overlay_shadow_decisions: executed")
+
+        if args.mode == "segment-state":
+            import segment_state_snapshot
+
+            print("[main] Running stage: segment_state_snapshot (segment_state_snapshot.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_state_snapshot.main(limit=args.auto_limit)
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_state: executed")
+
+        if args.mode == "segment-apply":
+            import apply_segment_state_updates
+
+            print("[main] Running stage: segment_apply (apply_segment_state_updates.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    apply_segment_state_updates.main(
+                        state_run_id=None,
+                        limit=args.auto_limit,
+                        path_like=args.auto_path_like,
+                        segment_ids_csv=args.segment_ids,
+                        review_states_csv=args.segment_review_states,
+                        include_auto_confirmed=args.segment_include_auto_confirmed,
+                        include_intentional_blank=args.segment_include_intentional_blank,
+                        allow_locked_token_override=args.segment_allow_locked_token_override,
+                        require_token_policy_decision=args.segment_require_token_policy_decision,
+                        token_policy_run_id=args.token_policy_run_id,
+                        apply=args.auto_apply,
+                        create_backup=not args.apply_no_backup,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(f"- segment_apply: executed, apply={args.auto_apply}")
+
+            if args.auto_apply:
+                index_current, changes = source_index_is_current(settings)
+                if index_current:
+                    print("[main] Post-segment-apply index is current; skipping refresh")
+                    report_lines.append("- post-segment-apply refresh: skipped, file hashes unchanged")
+                else:
+                    print(f"[main] Post-segment-apply refresh detected {len(changes)} changed file(s)")
+                    report_lines.append(f"- post-segment-apply refresh: detected {len(changes)} changed file(s)")
+                    report_lines.extend(f"  - {change}" for change in changes[:20])
+                    for stage in ["index", "inline", "analyze", "memory", "suggest", "evaluate"]:
+                        run_stage_with_log(stage, log_lines)
+                        report_lines.append(f"- post-segment-apply {stage}: executed")
+
+        if args.mode == "segment-token-queue":
+            import segment_token_mismatch_queue
+
+            print("[main] Running stage: segment_token_queue (segment_token_mismatch_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_mismatch_queue.main(
+                        state_run_id=None,
+                        limit=args.auto_limit,
+                        path_like=args.auto_path_like,
+                        review_states_csv=args.segment_review_states,
+                        include_auto_confirmed=args.segment_include_auto_confirmed,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_queue: executed")
+
+        if args.mode == "segment-token-policy":
+            import segment_token_policy
+
+            print("[main] Running stage: segment_token_policy (segment_token_policy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_policy.main(
+                        state_run_id=None,
+                        limit=args.auto_limit,
+                        path_like=args.auto_path_like,
+                        review_states_csv=args.segment_review_states,
+                        include_auto_confirmed=args.segment_include_auto_confirmed,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_policy: executed")
+
+        if args.mode == "segment-token-policy-queue":
+            import segment_token_policy_review_queue
+
+            print("[main] Running stage: segment_token_policy_queue (segment_token_policy_review_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_policy_review_queue.main(
+                        policy_run_id=args.token_policy_run_id,
+                        per_bucket=args.token_policy_per_bucket,
+                        limit=args.auto_limit,
+                        buckets_csv=args.token_policy_buckets,
+                        risks_csv=args.token_policy_risks,
+                        path_like=args.auto_path_like,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_policy_queue: executed")
+
+        if args.mode == "segment-token-tutorial-concept-policy":
+            import segment_token_tutorial_concept_policy
+
+            print("[main] Running stage: segment_token_tutorial_concept_policy (segment_token_tutorial_concept_policy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_tutorial_concept_policy.main(
+                        policy_run_id=args.token_policy_run_id,
+                        tutorial_only=False,
+                        limit=args.auto_limit,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_tutorial_concept_policy: executed")
+
+        if args.mode == "segment-token-tutorial-concept-promotion":
+            import segment_token_tutorial_concept_promotion
+
+            print("[main] Running stage: segment_token_tutorial_concept_promotion (segment_token_tutorial_concept_promotion.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_tutorial_concept_promotion.main(
+                        policy_run_id=args.token_policy_run_id,
+                        min_evidence=args.composite_subpolicy_min_positive,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_tutorial_concept_promotion: executed")
+
+        if args.mode == "segment-token-tutorial-concept-candidate-policy":
+            import segment_token_tutorial_concept_candidate_policy
+
+            print("[main] Running stage: segment_token_tutorial_concept_candidate_policy (segment_token_tutorial_concept_candidate_policy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_tutorial_concept_candidate_policy.main(
+                        policy_run_id=args.token_policy_run_id,
+                        min_evidence=args.composite_subpolicy_min_positive,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_tutorial_concept_candidate_policy: executed")
+
+        if args.mode == "segment-token-policy-overlay":
+            import segment_token_policy_overlay
+
+            print("[main] Running stage: segment_token_policy_overlay (segment_token_policy_overlay.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_policy_overlay.main(
+                        policy_run_id=args.token_policy_run_id,
+                        min_evidence=args.token_policy_per_bucket,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_policy_overlay: executed")
+
+        if args.mode == "segment-token-overlay-queue":
+            import segment_token_overlay_review_queue
+
+            print("[main] Running stage: segment_token_overlay_review_queue (segment_token_overlay_review_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_overlay_review_queue.main(
+                        overlay_run_id=args.token_overlay_run_id,
+                        critical_only=not args.token_overlay_all,
+                        use_active_gate=args.use_active_composite_gate,
+                        route=args.token_overlay_route,
+                        risk=args.token_overlay_risk,
+                        limit=args.token_overlay_limit,
+                        skip_reviewed=args.token_overlay_skip_reviewed,
+                        skip_queued=args.token_overlay_skip_queued,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_overlay_review_queue: executed")
+
+        if args.mode == "segment-token-overlay-text-decisions":
+            import segment_token_overlay_text_fix_decisions
+
+            print("[main] Running stage: segment_token_overlay_text_fix_decisions (segment_token_overlay_text_fix_decisions.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_overlay_text_fix_decisions.main(
+                        overlay_run_id=args.token_overlay_run_id,
+                        use_active_gate=args.use_active_composite_gate,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_overlay_text_fix_decisions: executed")
+
+        if args.mode == "segment-token-overlay-structural-decisions":
+            import segment_token_overlay_structural_fix_decisions
+
+            print("[main] Running stage: segment_token_overlay_structural_fix_decisions (segment_token_overlay_structural_fix_decisions.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_overlay_structural_fix_decisions.main(
+                        overlay_run_id=args.token_overlay_run_id,
+                        use_active_gate=args.use_active_composite_gate,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_overlay_structural_fix_decisions: executed")
+
+        if args.mode == "segment-token-policy-decisions":
+            import segment_token_policy_decisions
+
+            if not args.token_policy_decisions:
+                raise RuntimeError("--token-policy-decisions is required for segment-token-policy-decisions.")
+            print("[main] Running stage: segment_token_policy_decisions (segment_token_policy_decisions.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_policy_decisions.main(
+                        decisions_path=args.token_policy_decisions,
+                        policy_run_id=args.token_policy_run_id,
+                        source_report=args.token_policy_source_report,
+                        reviewer=args.token_policy_reviewer,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_policy_decisions: executed")
+
+        if args.mode == "segment-token-policy-decision-rebase":
+            import segment_token_policy_decision_rebase
+
+            print("[main] Running stage: segment_token_policy_decision_rebase (segment_token_policy_decision_rebase.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_policy_decision_rebase.main(
+                        state_run_id=None,
+                        policy_run_id=args.token_policy_run_id,
+                        apply=args.auto_apply,
+                        reviewer=args.token_policy_reviewer or "codex_token_policy_rebase",
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(f"- segment_token_policy_decision_rebase: executed, apply={args.auto_apply}")
+
+        if args.mode == "segment-token-confirmation-fixes":
+            import segment_token_policy_confirmation_fixes
+
+            print("[main] Running stage: segment_token_confirmation_fixes (segment_token_policy_confirmation_fixes.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_policy_confirmation_fixes.main(
+                        policy_run_id=args.token_policy_run_id,
+                        limit=args.auto_limit,
+                        apply=args.auto_apply,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(f"- segment_token_confirmation_fixes: executed, apply={args.auto_apply}")
 
         if args.mode == "ml-score":
             import ml_score_segments
@@ -1249,6 +2505,52 @@ def main() -> None:
             output = buffer.getvalue()
             log_lines.extend(output.splitlines())
             report_lines.append(f"- mojibake_audit: executed, apply={args.auto_apply}")
+
+        if args.mode == "mojibake-strict":
+            import strict_mojibake_confirmation_cleanup
+
+            print("[main] Running stage: mojibake_strict (strict_mojibake_confirmation_cleanup.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    strict_mojibake_confirmation_cleanup.main(
+                        policy_run_id=args.token_policy_run_id,
+                        buckets_csv=args.token_policy_buckets,
+                        path_like=args.auto_path_like,
+                        limit=args.auto_limit,
+                        apply=args.auto_apply,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(f"- mojibake_strict: executed, apply={args.auto_apply}")
+
+        if args.mode == "mojibake-curated-decisions":
+            import curated_mojibake_policy_decisions
+
+            print("[main] Running stage: mojibake_curated_decisions (curated_mojibake_policy_decisions.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    curated_mojibake_policy_decisions.main(
+                        policy_run_id=args.token_policy_run_id,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- mojibake_curated_decisions: executed")
 
         if args.mode == "gender-token-audit":
             run_stage_with_log("gender_token_audit", log_lines)

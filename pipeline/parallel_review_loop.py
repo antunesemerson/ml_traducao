@@ -179,6 +179,56 @@ SECTION_CONFIG = {
         """,
         "order": "m.model_safe_probability DESC, m.relative_path, m.source_key",
     },
+    "title_adjective_frontier_wide": {
+        "title": "Wide title adjective frontier samples",
+        "focus_group": "title_adjective_frontier_wide",
+        "where": """
+            m.final_action <> 'auto_safe'
+            AND m.relative_path IN ('titles_l_spanish.yml', 'titles_cultural_names_l_spanish.yml')
+            AND m.source_key LIKE '%_adj'
+            AND m.model_safe_probability >= 0.70
+            AND m.issue_count = 0
+            AND m.token_status = 'ok'
+        """,
+        "order": "m.model_safe_probability DESC, m.relative_path, m.source_key",
+    },
+    "title_adjective_suffix_frontier": {
+        "title": "Title adjective suffix frontier samples",
+        "focus_group": "title_adjective_suffix_frontier",
+        "where": """
+            m.final_action <> 'auto_safe'
+            AND m.relative_path = 'titles_l_spanish.yml'
+            AND m.source_key LIKE '%_adj'
+            AND m.model_safe_probability >= 0.90
+            AND m.issue_count = 0
+            AND m.token_status = 'ok'
+            AND (
+                lower(m.candidate_text) GLOB '*iano'
+                OR lower(m.candidate_text) GLOB '*ano'
+                OR lower(m.candidate_text) GLOB '*ense'
+                OR lower(m.candidate_text) GLOB '*eiro'
+            )
+        """,
+        "order": "m.model_safe_probability DESC, m.source_key",
+    },
+    "title_barony_frontier": {
+        "title": "Title barony frontier samples",
+        "focus_group": "title_barony_frontier",
+        "where": """
+            m.final_action <> 'auto_safe'
+            AND m.relative_path = 'titles_l_spanish.yml'
+            AND m.source_key LIKE 'b_%'
+            AND m.source_key NOT LIKE '%_adj'
+            AND m.source_key NOT LIKE '%_pre'
+            AND m.model_safe_probability >= 0.80
+            AND m.token_status = 'ok'
+        """,
+        "order": """
+            m.issue_count DESC,
+            m.model_safe_probability DESC,
+            m.source_key
+        """,
+    },
 }
 DEFAULT_SECTION_ORDER = ["priority", "deterministic", "high_safe", "clean_auto_safe"]
 
@@ -961,7 +1011,12 @@ def prepare_specialist_auditor(args: argparse.Namespace) -> None:
     }
     reports_dir = db.project_path(settings["reports_dir"])
     reports_dir.mkdir(parents=True, exist_ok=True)
-    output_path = Path(args.output) if args.output else reports_dir / f"{timestamp()}_specialist_auditor_review_decisions_template.json"
+    queue_stem = queue_path.stem.replace("ml_specialist_auditor_", "specialist_auditor_")
+    output_path = (
+        Path(args.output)
+        if args.output
+        else reports_dir / f"{timestamp()}_{queue_stem}_review_decisions_template.json"
+    )
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"[parallel_review_loop] Source queue: {queue_path}")
     print(f"[parallel_review_loop] Actions: {', '.join(sorted(requested_actions))}")
@@ -995,6 +1050,7 @@ def create_review_run(
         "ml_group_candidate_queue": "ml_group_candidate_queue",
         "ml_policy_audit_queue": "ml_policy_audit_queue",
         "ml_specialist_auditor": "ml_specialist_auditor",
+        "ml_specialist_scope_review": "ml_specialist_scope_review",
     }
     mode_source = mode_sources.get(source_type, "ml_score_audit")
     cursor = conn.execute(
@@ -1469,6 +1525,40 @@ def insert_specialist_auditor_review(
     candidate: dict[str, Any],
     source_report: str | None,
 ) -> None:
+    insert_specialist_review_candidate(
+        conn,
+        run_id,
+        candidate,
+        source_report,
+        queue_source="ml_specialist_auditor",
+        origin="ml_specialist_auditor",
+    )
+
+
+def insert_specialist_scope_review(
+    conn,
+    run_id: int,
+    candidate: dict[str, Any],
+    source_report: str | None,
+) -> None:
+    insert_specialist_review_candidate(
+        conn,
+        run_id,
+        candidate,
+        source_report,
+        queue_source="ml_specialist_scope_review",
+        origin="ml_specialist_scope_review",
+    )
+
+
+def insert_specialist_review_candidate(
+    conn,
+    run_id: int,
+    candidate: dict[str, Any],
+    source_report: str | None,
+    queue_source: str,
+    origin: str,
+) -> None:
     current = now()
     row = conn.execute(
         """
@@ -1492,6 +1582,14 @@ def insert_specialist_auditor_review(
     suggested_text = candidate.get("candidate_text") or candidate.get("suggested_text") or row["current_output_text"]
     if suggested_text in {None, ""}:
         suggested_text = row["spanish_text"] or ""
+    focus_group = (
+        candidate.get("focus_group")
+        if queue_source == "ml_specialist_scope_review"
+        else candidate.get("agent_key")
+        or candidate.get("auditor_action")
+        or candidate.get("focus_group")
+        or "specialist_auditor"
+    )
     conn.execute(
         """
         INSERT INTO local_learning_candidates (
@@ -1540,7 +1638,7 @@ def insert_specialist_auditor_review(
             suggested_text,
             None,
             "ml_specialist_candidate",
-            "ml_specialist_auditor",
+            origin,
             candidate.get("auditor_action") or "specialist_auditor",
             candidate.get("model_safe_probability") or candidate.get("specialist_safe_probability") or 0,
             candidate.get("token_status") or "unknown",
@@ -1555,7 +1653,9 @@ def insert_specialist_auditor_review(
             json.dumps(
                 [
                     f"source_report:{source_report or 'unknown'}",
-                    "source_queue:ml_specialist_auditor",
+                    f"source_queue:{queue_source}",
+                    f"agent_key:{candidate.get('agent_key') or 'unknown'}",
+                    f"route_status:{candidate.get('route_status') or 'unknown'}",
                     f"auditor_action:{candidate.get('auditor_action') or 'unknown'}",
                     f"general_action:{candidate.get('general_action') or 'unknown'}",
                     f"specialist_action:{candidate.get('specialist_action') or 'unknown'}",
@@ -1567,8 +1667,8 @@ def insert_specialist_auditor_review(
             ),
             current,
             current,
-            "ml_specialist_auditor",
-            candidate.get("auditor_action") or candidate.get("focus_group") or "specialist_auditor",
+            queue_source,
+            focus_group,
         ),
     )
 
@@ -1762,6 +1862,8 @@ def apply_decisions(args: argparse.Namespace) -> None:
                         insert_policy_audit_review(conn, run_id, candidate, source_report)
                     elif source_type == "ml_specialist_auditor":
                         insert_specialist_auditor_review(conn, run_id, candidate, source_report)
+                    elif source_type == "ml_specialist_scope_review":
+                        insert_specialist_scope_review(conn, run_id, candidate, source_report)
                     else:
                         if score_run_id is None:
                             raise RuntimeError("score_run_id is required for ml_score_audit decisions.")
