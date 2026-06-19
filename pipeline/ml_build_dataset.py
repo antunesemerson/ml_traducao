@@ -9,8 +9,8 @@ from typing import Any
 import db
 
 
-RULE_VERSION = "ml_build_dataset_v2_conflict_curation"
-DATASET_VERSION = "supervised_bootstrap_v2"
+RULE_VERSION = "ml_build_dataset_v3_issue_review_bridge"
+DATASET_VERSION = "supervised_bootstrap_v3"
 
 
 POSITIVE_LOCAL_LABELS = {
@@ -342,6 +342,132 @@ def fetch_locked_confirmation_examples(conn, limit: int | None) -> list[dict[str
     return examples
 
 
+def issue_review_issue_label(row: dict[str, Any]) -> str:
+    normalized_decision = row["normalized_decision"]
+    notes = row["notes"] or ""
+    if normalized_decision == "needs_repair" and "spanish_residual" in notes:
+        return "residual_spanish"
+    if normalized_decision == "needs_repair":
+        return "issue_review_needs_repair"
+    if normalized_decision == "false_positive_reopen":
+        return "issue_review_false_positive_reopen"
+    if normalized_decision == "safe_short_label":
+        return "issue_review_safe_short_label"
+    if normalized_decision == "needs_new_microagent":
+        return "issue_review_needs_new_microagent"
+    if normalized_decision == "needs_domain_context":
+        return "issue_review_needs_domain_context"
+    return f"issue_review_{normalized_decision}"
+
+
+def fetch_issue_review_examples(conn, limit: int | None) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        f"""
+        WITH token_counts AS (
+            SELECT segment_id, COUNT(*) AS token_count
+            FROM protected_tokens
+            GROUP BY segment_id
+        )
+        SELECT
+            d.id AS evidence_id,
+            d.segment_id,
+            d.normalized_decision,
+            d.evidence_label,
+            d.corrected_text,
+            d.notes,
+            d.reviewer,
+            d.updated_at AS reviewed_at,
+            d.agent_key,
+            d.issue_family,
+            d.issue_kind,
+            d.queue_bucket,
+            q.confirmed_text,
+            q.suggested_decision,
+            s.relative_path,
+            s.source_key,
+            s.source_line_number,
+            s.english_text,
+            s.spanish_text,
+            s.old_text,
+            s.has_english,
+            s.has_old,
+            o.portuguese_text AS output_text,
+            coalesce(tc.token_count, 0) AS token_count
+        FROM ml_issue_review_decisions d
+        JOIN ml_issue_review_queue_items q ON q.id = d.queue_item_id
+        JOIN source_segments s ON s.id = d.segment_id
+        LEFT JOIN output_segments o ON o.segment_id = s.id
+        LEFT JOIN token_counts tc ON tc.segment_id = s.id
+        WHERE s.is_active = 1
+          AND d.valid = 1
+        ORDER BY d.updated_at DESC, d.id DESC
+        {limited_clause(limit)}
+        """,
+        limited_params(limit),
+    ).fetchall()
+
+    examples: list[dict[str, Any]] = []
+    for sqlite_row in rows:
+        row = dict(sqlite_row)
+        normalized_decision = row["normalized_decision"]
+        candidate_text = row["confirmed_text"]
+        final_text = candidate_text
+        label = "neutral"
+        action_label = "context_router"
+        trust_level = 3
+
+        if normalized_decision in {"safe_short_label", "false_positive_reopen"}:
+            label = "positive"
+            action_label = "accepted_local"
+            trust_level = 5 if normalized_decision == "false_positive_reopen" else 4
+        elif normalized_decision == "needs_repair":
+            label = "negative"
+            action_label = "needs_autofix"
+            final_text = row["corrected_text"] or None
+            trust_level = 5
+        elif normalized_decision == "needs_new_microagent":
+            action_label = "create_subagent"
+            candidate_text = None
+            final_text = None
+            trust_level = 4
+        elif normalized_decision == "needs_domain_context":
+            action_label = "context_router"
+            candidate_text = None
+            final_text = None
+            trust_level = 3
+
+        examples.append(
+            {
+                **row,
+                "candidate_text": candidate_text,
+                "final_text": final_text,
+                "label": label,
+                "action_label": action_label,
+                "issue_label": issue_review_issue_label(row),
+                "trust_level": trust_level,
+                "evidence_source": "issue_review_decision",
+                "confidence_score": None,
+                "locked": 0,
+                "reasons_json": common_reason(
+                    "issue_review_decision",
+                    {
+                        "normalized_decision": normalized_decision,
+                        "evidence_label": row["evidence_label"],
+                        "agent_key": row["agent_key"],
+                        "issue_family": row["issue_family"],
+                        "issue_kind": row["issue_kind"],
+                        "queue_bucket": row["queue_bucket"],
+                        "suggested_decision": row["suggested_decision"],
+                        "reviewer": row["reviewer"],
+                        "notes": row["notes"],
+                        "macro_training_candidate": bool(candidate_text),
+                    },
+                ),
+            }
+        )
+    return examples
+
+
 def normalize_example(run_id: int, example: dict[str, Any], created_at: str) -> tuple:
     final_text = example.get("final_text")
     candidate_text = example.get("candidate_text")
@@ -498,16 +624,18 @@ def main(limit: int | None = None) -> None:
 
     with db.connect(settings) as conn:
         db.ensure_database(conn)
-        run_id = insert_run(conn, "feedback+local_learning+locked_human", limit, started_at)
+        run_id = insert_run(conn, "feedback+local_learning+locked_human+issue_review", limit, started_at)
         print(f"[ml_build_dataset] Run id: {run_id}")
 
         feedback_examples = fetch_feedback_examples(conn, limit)
         local_examples = fetch_local_learning_examples(conn, limit)
         confirmation_examples = fetch_locked_confirmation_examples(conn, limit)
+        issue_review_examples = fetch_issue_review_examples(conn, limit)
 
         insert_examples(conn, run_id, feedback_examples, started_at)
         insert_examples(conn, run_id, local_examples, started_at)
         insert_examples(conn, run_id, confirmation_examples, started_at)
+        insert_examples(conn, run_id, issue_review_examples, started_at)
 
         finished_at = now()
         counts = update_run_counts(conn, run_id, finished_at)
@@ -555,6 +683,8 @@ def main(limit: int | None = None) -> None:
         "- This dataset is intentionally conservative and auditable.",
         "- Locked human confirmations are positive anchors.",
         "- Edited/corrected/rejected rows teach the classifier what human review changed.",
+        "- Issue review decisions bridge agent queues into supervised evidence.",
+        "- Context/delegation issue-review rows are stored as neutral evidence without candidate_text, so they do not train the macro classifier as hard negatives.",
         "- Negative examples are still scarce, so the first classifier must be evaluated with extra caution.",
     ]
     report_path = db.write_report(settings, "ml_build_dataset", report_lines)

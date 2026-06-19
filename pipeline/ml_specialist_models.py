@@ -203,8 +203,16 @@ SPECIALISTS: dict[str, SpecialistConfig] = {
     ),
     "religion": SpecialistConfig(
         name="specialist_religion",
-        description="Religion names, gods, possessives, old/adherent/name/adj labels.",
-        scope_sql="relative_path LIKE 'religion/%'",
+        description=(
+            "Religion names, gods, possessives, old/adherent/name/adj labels, "
+            "excluding narrow boundaries owned by subagents."
+        ),
+        scope_sql=(
+            "relative_path LIKE 'religion/%' AND NOT ("
+            "relative_path = 'religion/religion_paganism_l_spanish.yml' "
+            "AND source_key LIKE 'acham_%_possessive'"
+            ")"
+        ),
         default_feature_set=LANGUAGE_FEATURE_SET,
         default_train_strategy=DEFAULT_TRAIN_STRATEGY,
         default_safe_threshold=0.95,
@@ -236,14 +244,21 @@ SPECIALISTS: dict[str, SpecialistConfig] = {
     ),
     "religion_possessive_gods": SpecialistConfig(
         name="specialist_religion_possessive_gods",
-        description="Religious possessive name fields that need safe PT-BR prepositions.",
+        description=(
+            "Religious possessive fields that need safe PT-BR prepositions, "
+            "excluding known Acham paganism boundary rows."
+        ),
         scope_sql=(
             "relative_path LIKE 'religion/%' AND ("
             "source_key LIKE '%_god_name_possessive' OR "
             "source_key LIKE '%_deity_name_possessive' OR "
             "source_key LIKE '%_devil_name_possessive' OR "
             "source_key LIKE '%_death_deity_%' OR "
-            "source_key LIKE '%_name_possessive'"
+            "source_key LIKE '%_name_possessive' OR "
+            "source_key LIKE '%_possessive'"
+            ") AND NOT ("
+            "relative_path = 'religion/religion_paganism_l_spanish.yml' "
+            "AND source_key LIKE 'acham_%_possessive'"
             ")"
         ),
         default_feature_set=LANGUAGE_FEATURE_SET,
@@ -254,18 +269,143 @@ SPECIALISTS: dict[str, SpecialistConfig] = {
     ),
     "religion_preserved_terms": SpecialistConfig(
         name="specialist_religion_preserved_terms",
-        description="Small religion-specific terms that may be preserved instead of translated.",
+        description=(
+            "Small religion-specific terms that may be preserved instead of translated, "
+            "excluding possessive fields owned by religion_possessive_gods."
+        ),
         scope_sql=(
             "relative_path LIKE 'religion/%' AND ("
             "source_key LIKE 'dab_qhuas_%' OR "
             "source_key LIKE 'tolotang_%' OR "
             "source_key LIKE '%_priest' OR "
             "source_key LIKE '%_afterlife'"
+            ") AND NOT ("
+            "source_key LIKE '%_god_name_possessive' OR "
+            "source_key LIKE '%_deity_name_possessive' OR "
+            "source_key LIKE '%_devil_name_possessive' OR "
+            "source_key LIKE '%_death_deity_%' OR "
+            "source_key LIKE '%divine_realm%' OR "
+            "source_key LIKE '%_name_possessive' OR "
+            "source_key LIKE '%_possessive'"
             ")"
         ),
         default_feature_set=LANGUAGE_FEATURE_SET,
         default_train_strategy=DEFAULT_TRAIN_STRATEGY,
         default_safe_threshold=0.97,
+        default_safe_multiplier=5,
+        holdout_min_negative=5,
+    ),
+    "religion_divine_realm_contextual_boundary": SpecialistConfig(
+        name="specialist_religion_divine_realm_contextual_boundary",
+        description=(
+            "Divine-realm religion fields where preserved sacred names and contextual PT-BR "
+            "translations need a narrower boundary before broad automation."
+        ),
+        scope_sql="relative_path LIKE 'religion/%' AND source_key LIKE '%divine_realm%'",
+        default_feature_set=LANGUAGE_FEATURE_SET,
+        default_train_strategy=DEFAULT_TRAIN_STRATEGY,
+        default_safe_threshold=0.98,
+        default_safe_multiplier=5,
+        holdout_min_negative=4,
+    ),
+    "religion_dab_qhuas_terms": SpecialistConfig(
+        name="specialist_religion_dab_qhuas_terms",
+        description=(
+            "Dab Qhuas preserved religious terms, excluding divine-realm aliases "
+            "and possessive fields owned by narrower boundaries."
+        ),
+        scope_sql=(
+            "relative_path = 'religion/religion_paganism_l_spanish.yml' "
+            "AND source_key LIKE 'dab_qhuas_%' "
+            "AND source_key NOT LIKE '%divine_realm%' "
+            "AND NOT ("
+            "source_key LIKE '%_god_name_possessive' OR "
+            "source_key LIKE '%_deity_name_possessive' OR "
+            "source_key LIKE '%_devil_name_possessive' OR "
+            "source_key LIKE '%_death_deity_%' OR "
+            "source_key LIKE '%_name_possessive' OR "
+            "source_key LIKE '%_possessive'"
+            ")"
+        ),
+        default_feature_set=LANGUAGE_FEATURE_SET,
+        default_train_strategy=DEFAULT_TRAIN_STRATEGY,
+        default_safe_threshold=0.97,
+        default_safe_multiplier=5,
+        holdout_min_negative=5,
+    ),
+    "select_cstring_ep3_laamp_roles": SpecialistConfig(
+        name="specialist_select_cstring_ep3_laamp_roles",
+        description=(
+            "EP3 LAAMP Select_CString role scenes, including contextual role nouns, "
+            "gendered articles, and scene-specific rewrites."
+        ),
+        scope_sql=(
+            "relative_path = 'dlc/ep3/ep3_laamp_decision_events_l_spanish.yml' "
+            "AND (english_text LIKE '%Select_CString%' "
+            "OR spanish_text LIKE '%Select_CString%' "
+            "OR old_text LIKE '%Select_CString%')"
+        ),
+        default_feature_set=DELTA_FEATURE_SET,
+        default_train_strategy=DEFAULT_TRAIN_STRATEGY,
+        default_safe_threshold=0.98,
+        default_safe_multiplier=5,
+        holdout_min_negative=5,
+    ),
+    "select_cstring_ep3_laamp_spanish_role_boundary": SpecialistConfig(
+        name="specialist_select_cstring_ep3_laamp_spanish_role_boundary",
+        description=(
+            "EP3 LAAMP Select_CString role branches that still carry Spanish articles, "
+            "prepositions, or plural adjectives inside dynamic alternatives."
+        ),
+        scope_sql=(
+            "relative_path = 'dlc/ep3/ep3_laamp_decision_events_l_spanish.yml' "
+            "AND old_text LIKE '%Select_CString%' "
+            "AND (old_text LIKE '%''la %' "
+            "OR old_text LIKE '%''el %' "
+            "OR old_text LIKE '%''las %' "
+            "OR old_text LIKE '%''los %' "
+            "OR old_text LIKE '%''una %' "
+            "OR old_text LIKE '%''un %' "
+            "OR old_text LIKE '%''a la%' "
+            "OR old_text LIKE '%''a las%' "
+            "OR old_text LIKE '%''a los%' "
+            "OR old_text LIKE '%''con la%' "
+            "OR old_text LIKE '%''con el%' "
+            "OR old_text LIKE '%enfadadas%' "
+            "OR old_text LIKE '%enfadados%')"
+        ),
+        default_feature_set=DELTA_FEATURE_SET,
+        default_train_strategy=DEFAULT_TRAIN_STRATEGY,
+        default_safe_threshold=0.99,
+        default_safe_multiplier=5,
+        holdout_min_negative=5,
+    ),
+    "select_cstring_ep3_laamp_role_correction_candidate": SpecialistConfig(
+        name="specialist_select_cstring_ep3_laamp_role_corrections",
+        description=(
+            "Reviewed PT-BR correction candidates for EP3 LAAMP Select_CString role "
+            "branches after the Spanish-role boundary blocks unsafe text."
+        ),
+        scope_sql=(
+            "relative_path = 'dlc/ep3/ep3_laamp_decision_events_l_spanish.yml' "
+            "AND old_text LIKE '%Select_CString%' "
+            "AND (old_text LIKE '%''la %' "
+            "OR old_text LIKE '%''el %' "
+            "OR old_text LIKE '%''las %' "
+            "OR old_text LIKE '%''los %' "
+            "OR old_text LIKE '%''una %' "
+            "OR old_text LIKE '%''un %' "
+            "OR old_text LIKE '%''a la%' "
+            "OR old_text LIKE '%''a las%' "
+            "OR old_text LIKE '%''a los%' "
+            "OR old_text LIKE '%''con la%' "
+            "OR old_text LIKE '%''con el%' "
+            "OR old_text LIKE '%enfadadas%' "
+            "OR old_text LIKE '%enfadados%')"
+        ),
+        default_feature_set=DELTA_FEATURE_SET,
+        default_train_strategy=DEFAULT_TRAIN_STRATEGY,
+        default_safe_threshold=0.99,
         default_safe_multiplier=5,
         holdout_min_negative=5,
     ),
@@ -298,11 +438,25 @@ SPECIALIST_GROUPS: dict[str, list[str]] = {
         "religion_sufri",
         "religion_possessive_gods",
         "religion_preserved_terms",
+        "religion_divine_realm_contextual_boundary",
+        "religion_dab_qhuas_terms",
     ],
     "religion_promising_subspecialists": [
         "religion_bosnian_terms",
         "religion_possessive_gods",
         "religion_preserved_terms",
+        "religion_divine_realm_contextual_boundary",
+        "religion_dab_qhuas_terms",
+    ],
+    "religion_preserved_subspecialists": [
+        "religion_preserved_terms",
+        "religion_divine_realm_contextual_boundary",
+        "religion_dab_qhuas_terms",
+    ],
+    "select_cstring_ep3_laamp_subspecialists": [
+        "select_cstring_ep3_laamp_roles",
+        "select_cstring_ep3_laamp_spanish_role_boundary",
+        "select_cstring_ep3_laamp_role_correction_candidate",
     ],
     "all_with_title_subspecialists": [
         "titles",
@@ -320,6 +474,15 @@ SPECIALIST_GROUPS: dict[str, list[str]] = {
         "religion_sufri",
         "religion_possessive_gods",
         "religion_preserved_terms",
+        "religion_divine_realm_contextual_boundary",
+        "religion_dab_qhuas_terms",
+    ],
+    "all_with_token_gate_subspecialists": [
+        "titles",
+        "religion",
+        "select_cstring_ep3_laamp_roles",
+        "select_cstring_ep3_laamp_spanish_role_boundary",
+        "select_cstring_ep3_laamp_role_correction_candidate",
     ],
     "operational_title_religion_v1": [
         "religion",

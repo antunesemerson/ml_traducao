@@ -13,7 +13,7 @@ from ml_specialist_policy import OPERATIONAL_SPECIALIST_KEYS, RULE_VERSION as SN
 from ml_specialist_models import SPECIALIST_GROUPS, SPECIALISTS
 
 
-RULE_VERSION = "ml_specialist_ensemble_policy_v1"
+RULE_VERSION = "ml_specialist_ensemble_policy_v2"
 POSITIVE_LABELS = {"correct", "contextual_exception"}
 NEGATIVE_LABELS = {
     "major_fix",
@@ -80,7 +80,12 @@ def resolve_specialist_keys(specialist: str | None) -> list[str]:
     return keys
 
 
-def latest_ready_snapshots(conn, general_score_run_id: int, specialist_keys: list[str]) -> list[dict[str, Any]]:
+def latest_ready_snapshots(
+    conn,
+    general_score_run_id: int,
+    specialist_keys: list[str],
+    allow_pending_demotions: bool = False,
+) -> list[dict[str, Any]]:
     placeholders = ",".join("?" for _ in specialist_keys)
     rows = conn.execute(
         f"""
@@ -106,14 +111,19 @@ def latest_ready_snapshots(conn, general_score_run_id: int, specialist_keys: lis
             + ", ".join(missing)
             + ". Run ml-specialist-policy first."
         )
-    blocked = [
-        row
-        for row in snapshots
-        if not str(row["status"]).startswith("READY")
-        or int(row.get("pending_real_count") or 0) > 0
-        or int(row.get("threshold_below_policy") or 0) > 0
-        or int(row.get("scope_delta_count") or 0) != 0
-    ]
+    blocked = []
+    for row in snapshots:
+        pending_real = int(row.get("pending_real_count") or 0)
+        pending_new_safe = int(row.get("pending_new_safe_count") or 0)
+        pending_demoted = int(row.get("pending_demoted_count") or 0)
+        demotions_only = pending_real > 0 and pending_new_safe == 0 and pending_demoted == pending_real
+        if (
+            not str(row["status"]).startswith("READY")
+            or (pending_real > 0 and not (allow_pending_demotions and demotions_only))
+            or int(row.get("threshold_below_policy") or 0) > 0
+            or int(row.get("scope_delta_count") or 0) != 0
+        ):
+            blocked.append(row)
     if blocked:
         details = ", ".join(
             f"{row['specialist_key']}:{row['status']}/pending={row.get('pending_real_count')}"
@@ -517,7 +527,12 @@ def main(
         general_score_run_id = general_score_run_id or latest_general_score_run(conn)
         general_score = load_score_run(conn, general_score_run_id)
         specialist_keys = resolve_specialist_keys(specialist)
-        snapshots = latest_ready_snapshots(conn, general_score_run_id, specialist_keys)
+        snapshots = latest_ready_snapshots(
+            conn,
+            general_score_run_id,
+            specialist_keys,
+            allow_pending_demotions=protect_general_safe,
+        )
         general_items = fetch_general_items(conn, general_score_run_id)
         specialist_votes = fetch_specialist_votes(conn, snapshots)
         learning_labels = fetch_learning_labels(conn)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import random
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -21,12 +22,20 @@ from ml_train_risk import (
     percent,
     select_examples,
     threshold_predictions,
+    candidate_differs_from_output,
+    language_features,
+    LANGUAGE_BLOCKING_FEATURES,
 )
 from ml_train_risk import DEFAULT_FEATURE_SET, DEFAULT_TRAIN_STRATEGY, FEATURE_SETS, TRAIN_STRATEGIES
-from ml_score_segments import has_known_unsafe_title_text, has_separator_whitespace_loss
+from ml_score_segments import (
+    has_blocked_spanish_geography_terms,
+    has_known_unsafe_title_text,
+    has_separator_whitespace_loss,
+    is_exact_token_only_passthrough,
+)
 
 
-RULE_VERSION = "ml_holdout_eval_v1"
+RULE_VERSION = "ml_holdout_eval_v6_title_compound_direction_guard"
 
 
 def count_labels(examples: list[dict[str, Any]]) -> Counter:
@@ -110,6 +119,22 @@ def apply_holdout_safety_gates(
 ) -> list[str]:
     gated: list[str] = []
     for row, pred in zip(examples, y_pred):
+        if pred == "auto_safe" and candidate_differs_from_output(row):
+            gated.append("needs_human")
+            continue
+        if pred == "auto_safe":
+            language_blocking_features = set(language_features(row)) & LANGUAGE_BLOCKING_FEATURES
+            if (
+                language_blocking_features == {"RISK_STRUCTURAL_EMPTY_VISIBLE_TEXT"}
+                and is_exact_token_only_passthrough(row)
+            ):
+                language_blocking_features = set()
+            if language_blocking_features:
+                gated.append("needs_human")
+                continue
+        if pred == "auto_safe" and has_blocked_spanish_geography_terms(row):
+            gated.append("needs_human")
+            continue
         if pred == "auto_safe" and has_known_unsafe_title_text(row):
             gated.append("needs_human")
             continue
@@ -334,6 +359,80 @@ def main(
         ]
     )
     report_path = db.write_report(settings, "ml_holdout_eval", report_lines)
+    finished_at = datetime.now().isoformat(timespec="seconds")
+    metrics = {
+        "holdout_paths": holdout_paths,
+        "train_label_counts": dict(train_label_counts),
+        "holdout_label_counts": dict(holdout_label_counts),
+        "classification_report": report,
+        "raw_classification_report": raw_report,
+        "confusion_matrix_labels": labels_sorted,
+        "confusion_matrix": matrix,
+        "false_safe_samples": false_safe_samples(holdout_examples, thresholded_predictions, sample_limit),
+        "per_path_summary": per_path_lines(holdout_examples, thresholded_predictions, sample_limit),
+    }
+    with db.connect(settings) as conn:
+        db.ensure_database(conn)
+        conn.execute(
+            """
+            INSERT INTO ml_holdout_eval_runs (
+                rule_version,
+                dataset_run_id,
+                safe_threshold,
+                target_ratio,
+                min_negative,
+                max_paths,
+                safe_multiplier,
+                feature_set,
+                train_strategy,
+                holdout_path_count,
+                holdout_examples,
+                predicted_safe_count,
+                false_safe_count,
+                false_safe_rate,
+                unique_predicted_safe_count,
+                unique_false_safe_count,
+                safe_precision,
+                safe_recall,
+                accuracy,
+                macro_f1,
+                report_path,
+                metrics_json,
+                started_at,
+                finished_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                RULE_VERSION,
+                dataset_run_id,
+                safe_threshold,
+                target_ratio,
+                min_negative,
+                max_paths,
+                safe_multiplier,
+                feature_set,
+                train_strategy,
+                len(holdout_paths),
+                len(holdout_examples),
+                int(stats["predicted_safe"]),
+                int(stats["false_safe"]),
+                float(stats["false_safe_rate"]),
+                int(unique_stats["unique_predicted_safe"]),
+                int(unique_stats["unique_false_safe"]),
+                float(stats["safe_precision"]),
+                float(stats["safe_recall"]),
+                float(accuracy),
+                float(macro_f1),
+                str(report_path),
+                json.dumps(metrics, ensure_ascii=False, sort_keys=True),
+                started_at.isoformat(timespec="seconds"),
+                finished_at,
+                finished_at,
+            ),
+        )
+        conn.commit()
 
     print(f"[ml_holdout_eval] Dataset run id: {dataset_run_id}")
     print(f"[ml_holdout_eval] Holdout paths: {len(holdout_paths)}")

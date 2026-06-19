@@ -20,7 +20,7 @@ import db
 import local_quality_validator
 
 
-RULE_VERSION = "ml_train_risk_v1"
+RULE_VERSION = "ml_train_risk_v7_title_compound_direction_guard"
 MODEL_KIND = "risk_action_classifier"
 DEFAULT_FEATURE_SET = "legacy_v1"
 STRUCTURAL_FEATURE_SET = "structural_v2"
@@ -48,13 +48,28 @@ VISIBLE_TOKEN_PATTERN = re.compile(r"\$[^$\s]+\$|\[[^\]]+\]|#[A-Za-z0-9_]+|#!|@[
 WORD_PATTERN = re.compile(r"[^\W\d_]+", re.UNICODE)
 EXTENDED_LATIN_PATTERN = re.compile(r"[\u0100-\u024f]")
 SPANISH_TITLE_RESIDUE_PATTERN = re.compile(
-    r"\b(?:Gran|Oeste|Este|El\s+Cairo|El\s+Pireo|Qum\s+El\s+Aoiun)\b| y ",
+    r"\b(?:"
+    r"Gran|Oeste|Este|Sur|Bajo|Baja|Occidental|Noreste|Sureste|Camino\s+de|Ruta\s+de|Imperio\s+de|El\s+Cairo|El\s+Pireo|Qum\s+El\s+Aoiun|"
+    r"Polonia|Tánger|Egipto|Finlandia|Rusia|Abisinia|Colonia|Fezán|Nankín|Jaldun|"
+    r"Basilea|Carcasona|Castellón|Beluchistán|Kurdistán|Azerbaiyán|Noreste|"
+    r"Encargo|bedfordés|Galitzia|Volinia|Juzistán|Venecia|Multán|Luristán|"
+    r"Almohades|norfolqués|ipuzcoano|Saboya|Bruselas|Eslavia|Italia|Normandía|"
+    r"Franconia|Orense|Alejandreta|oestewalano"
+    r")\b| y ",
+    re.IGNORECASE,
 )
 SPANISH_TITLE_ADJECTIVE_PATTERN = re.compile(
     r"\b(?:[a-z]+\u00e9s|[a-z]+\u00ed|[a-z]+\u00f3nico|"
     r"alejandrino|bajolotaringio|capadocio|franconio(?:\s+(?:oriental|occidental))?|pechenego)\b",
     re.IGNORECASE,
 )
+SPANISH_CULTURAL_TITLE_ADJECTIVE_PATTERN = re.compile(
+    r"\b(?:[a-z]+e\u00f1[oa]s?|[a-z]+\u00e9s(?:es|a|as)?|sur[a-z]*|[a-z]+\s+sur|(?:oeste|bajo|baja)[a-z]+)\b",
+    re.IGNORECASE,
+)
+TITLE_LOCALIZATION_PATHS = {"titles_l_spanish.yml", "titles_cultural_names_l_spanish.yml"}
+TITLE_KEY_PREFIXES = ("b_", "c_", "d_", "k_", "e_")
+TITLE_ALLOWED_LOWERCASE_CONNECTORS = {"a", "as", "da", "das", "de", "do", "dos", "e"}
 SAFE_FORMATTED_PT_WORDS = {"alto", "baixa", "baixo", "igual", "invertida", "lenta", "r\u00e1pida", "total"}
 SPANISH_FORMATTED_WORDS = {"baja", "bajo", "media", "medio", "muy"}
 KNOWN_TITLE_ADJECTIVE_UNSAFE_TEXT_BY_KEY = {
@@ -64,6 +79,20 @@ KNOWN_TITLE_ADJECTIVE_UNSAFE_TEXT_BY_KEY = {
     ("titles_l_spanish.yml", "c_trencin_adj"): {"trencíniano"},
     ("titles_l_spanish.yml", "d_qyzylsaryarka_adj"): {"quizylsaryarkano"},
     ("titles_l_spanish.yml", "k_outer_ajuraan_adj"): {"ajuraani exeterior"},
+    ("titles_l_spanish.yml", "c_saintois_adj"): {"saintois\u00e9s"},
+    ("titles_cultural_names_l_spanish.yml", "cn_liptovsky_hradok_adj"): {"liptovske\u00f1o"},
+    ("titles_cultural_names_l_spanish.yml", "cn_bartenstein_adj"): {"bartenstein\u00e9s"},
+    ("titles_cultural_names_l_spanish.yml", "cn_southscythia_adj"): {"surescita"},
+    ("titles_cultural_names_l_spanish.yml", "cn_south_yongwon_adj"): {"yongwon sur"},
+}
+KNOWN_TITLE_NAME_UNSAFE_TEXT_BY_KEY = {
+    ("titles_l_spanish.yml", "b_ourense"): {"Orense"},
+}
+KNOWN_CUSTOM_LOC_UNSAFE_TEXT_BY_KEY = {
+    ("custom_localization/es_custom_loc_l_spanish.yml", "Loc_ES_matrimonio_1"): {"[CHARACTER.GetUIName] se"},
+}
+KNOWN_CULTURE_NAME_UNSAFE_TEXT_BY_KEY = {
+    ("culture/culture_creation_names_l_spanish.yml", "samhan_hybrid_collective_noun"): {"samhanes"},
 }
 ENGLISH_UI_WORDS = {
     "battlefield",
@@ -92,6 +121,9 @@ LANGUAGE_BLOCKING_FEATURES = {
     "RISK_CORE_CONTEXTUAL_TITLE_TRANSLATION",
     "RISK_CORE_SKILL_INTENSITY",
     "RISK_CORE_UI_CAPITALIZATION_STYLE",
+    "RISK_CUSTOM_LOC_KNOWN_UNSAFE_FRAGMENT",
+    "RISK_CULTURE_NAME_KNOWN_UNSAFE_TEXT",
+    "RISK_CULTURE_TITLE_CAPITALIZATION_STYLE",
     "RISK_DEBUG_PROGRESS_REMAINING_DAYS",
     "RISK_DEBUG_MID_SENTENCE_CAPITALIZATION",
     "RISK_EVENT_INCOMPLETE_WHEN_CLAUSE",
@@ -112,12 +144,16 @@ LANGUAGE_BLOCKING_FEATURES = {
     "RISK_RELIGION_SAINT_POSSESSIVE_STYLE",
     "RISK_RELIGION_TEACHINGS_STYLE",
     "RISK_RELIGION_TO_NAME_TRANSLATED",
+    "RISK_REVIEWED_SHORT_SOURCE_CONFLICT",
     "RISK_SAHEL_ARTICLE_TRANSLATION",
     "RISK_SPANISH_LOCALIZATION_HELPER",
     "RISK_SPANISH_FORMATTED_LITERAL",
     "RISK_STRUCTURAL_LEADING_SPACE_LOSS",
     "RISK_TITLE_ADJECTIVE_SPANISH_FORM",
     "RISK_TITLE_ADJECTIVE_KNOWN_UNSAFE_TEXT",
+    "RISK_TITLE_ADJECTIVE_CAPITALIZATION_STYLE",
+    "RISK_TITLE_NAME_CAPITALIZATION_STYLE",
+    "RISK_TITLE_NAME_KNOWN_UNSAFE_TEXT",
     "RISK_TITLE_PREFIX_CAPITALIZATION_STYLE",
     "RISK_TITLE_SPANISH_GEOGRAPHIC_TERMS",
     "RISK_STANDALONE_DOUBLE_DOT",
@@ -151,9 +187,25 @@ def latest_dataset_run_id(conn) -> int:
     return int(row["id"])
 
 
-def risk_label(action_label: str, issue_label: str | None = None) -> str:
+def risk_label(
+    action_label: str,
+    issue_label: str | None = None,
+    candidate_text: str | None = None,
+    final_text: str | None = None,
+    dataset_label: str | None = None,
+) -> str:
     if issue_label == "contextual_exception":
         return "auto_safe"
+    if (
+        dataset_label == "positive"
+        and action_label == "human_corrected"
+        and issue_label == "minor_fix"
+        and final_text is not None
+        and (candidate_text or "") == (final_text or "")
+    ):
+        return "auto_safe"
+    if action_label == "human_corrected" and issue_label == "minor_fix":
+        return "needs_autofix"
     if action_label in SAFE_ACTIONS:
         return "auto_safe"
     return RISK_ACTION_MAP.get(action_label, "needs_human")
@@ -318,6 +370,85 @@ def formatted_words(value: str | None) -> set[str]:
     }
 
 
+def has_title_adjective_capitalization_risk(relative_path: str, source_key: str, candidate: str | None) -> bool:
+    if relative_path not in TITLE_LOCALIZATION_PATHS:
+        return False
+    if not source_key.endswith("_adj"):
+        return False
+    display = visible_display_text(candidate)
+    return bool(display and display[:1].isupper())
+
+
+def has_title_name_capitalization_risk(relative_path: str, source_key: str, candidate: str | None) -> bool:
+    if relative_path != "titles_l_spanish.yml":
+        return False
+    if not source_key.startswith(TITLE_KEY_PREFIXES) or source_key.endswith("_adj"):
+        return False
+    words = visible_display_text(candidate).split()
+    if len(words) < 2:
+        return False
+    for word in words[1:]:
+        stripped = re.sub(r"^[^\w]+|[^\w]+$", "", word, flags=re.UNICODE)
+        if not stripped or not stripped[:1].islower():
+            continue
+        if stripped.casefold() in TITLE_ALLOWED_LOWERCASE_CONNECTORS:
+            continue
+        return True
+    return False
+
+
+def has_culture_title_capitalization_risk(row: dict[str, Any]) -> bool:
+    if (row.get("relative_path") or "") != "culture/culture_titles_l_spanish.yml":
+        return False
+    candidate_display = visible_display_text(row.get("candidate_text"))
+    if not candidate_display:
+        return False
+    reference_display = (
+        visible_display_text(row.get("output_text"))
+        or visible_display_text(row.get("old_text"))
+        or visible_display_text(row.get("english_text"))
+    )
+    if not reference_display or candidate_display == reference_display:
+        return False
+    if normalize_compare(candidate_display) != normalize_compare(reference_display):
+        return False
+    candidate_words = candidate_display.split()
+    reference_words = reference_display.split()
+    if len(candidate_words) != len(reference_words):
+        return False
+    for candidate_word, reference_word in zip(candidate_words, reference_words):
+        candidate_core = re.sub(r"^[^\w]+|[^\w]+$", "", candidate_word, flags=re.UNICODE)
+        reference_core = re.sub(r"^[^\w]+|[^\w]+$", "", reference_word, flags=re.UNICODE)
+        if not candidate_core or not reference_core:
+            continue
+        if candidate_core.casefold() != reference_core.casefold():
+            continue
+        if reference_core[:1].isupper() and candidate_core[:1].islower():
+            return True
+    return False
+
+
+def has_reviewed_short_source_conflict(row: dict[str, Any]) -> bool:
+    if row.get("evidence_source") != "local_learning_candidate":
+        return False
+    if row.get("issue_label") != "semantic_error":
+        return False
+    candidate_visible = visible_text(row.get("candidate_text"))
+    english_visible = visible_text(row.get("english_text"))
+    spanish_visible = visible_text(row.get("spanish_text"))
+    old_visible = visible_text(row.get("old_text"))
+    output_visible = visible_text(row.get("output_text"))
+    if not candidate_visible or not english_visible or not spanish_visible:
+        return False
+    if english_visible == spanish_visible:
+        return False
+    if len(candidate_visible.split()) > 3:
+        return False
+    if len(english_visible.split()) > 3 or len(spanish_visible.split()) > 3:
+        return False
+    return candidate_visible in {old_visible, output_visible}
+
+
 def language_features(row: dict[str, Any]) -> list[str]:
     relative_path = row.get("relative_path") or ""
     source_key = row.get("source_key") or ""
@@ -409,6 +540,8 @@ def language_features(row: dict[str, Any]) -> list[str]:
         and any(word[:1].isupper() for word in candidate_display.split()[1:])
     ):
         features.append("RISK_IMPORTANT_ACTION_CAPITALIZATION_STYLE")
+    if has_reviewed_short_source_conflict(row):
+        features.append("RISK_REVIEWED_SHORT_SOURCE_CONFLICT")
     if (
         relative_path == "adventurer_name_sections_l_spanish.yml"
         and source_key == "ward_adventurer"
@@ -462,16 +595,34 @@ def language_features(row: dict[str, Any]) -> list[str]:
     if relative_path == "titles_l_spanish.yml" and SPANISH_TITLE_RESIDUE_PATTERN.search(candidate or ""):
         features.append("RISK_TITLE_SPANISH_GEOGRAPHIC_TERMS")
     if (
-        relative_path == "titles_l_spanish.yml"
+        relative_path in TITLE_LOCALIZATION_PATHS
         and source_key.endswith("_adj")
-        and SPANISH_TITLE_ADJECTIVE_PATTERN.search(candidate or "")
+        and (
+            SPANISH_TITLE_ADJECTIVE_PATTERN.search(candidate or "")
+            or SPANISH_CULTURAL_TITLE_ADJECTIVE_PATTERN.search(candidate or "")
+        )
     ):
         features.append("RISK_TITLE_ADJECTIVE_SPANISH_FORM")
+    if has_title_adjective_capitalization_risk(relative_path, source_key, candidate):
+        features.append("RISK_TITLE_ADJECTIVE_CAPITALIZATION_STYLE")
     blocked_title_adjectives = KNOWN_TITLE_ADJECTIVE_UNSAFE_TEXT_BY_KEY.get((relative_path, source_key), set())
     if source_key.endswith("_adj") and normalize_compare(candidate) in {
         normalize_compare(value) for value in blocked_title_adjectives
     }:
         features.append("RISK_TITLE_ADJECTIVE_KNOWN_UNSAFE_TEXT")
+    if has_title_name_capitalization_risk(relative_path, source_key, candidate):
+        features.append("RISK_TITLE_NAME_CAPITALIZATION_STYLE")
+    blocked_title_names = KNOWN_TITLE_NAME_UNSAFE_TEXT_BY_KEY.get((relative_path, source_key), set())
+    if normalize_compare(candidate) in {normalize_compare(value) for value in blocked_title_names}:
+        features.append("RISK_TITLE_NAME_KNOWN_UNSAFE_TEXT")
+    blocked_custom_loc = KNOWN_CUSTOM_LOC_UNSAFE_TEXT_BY_KEY.get((relative_path, source_key), set())
+    if normalize_compare(candidate) in {normalize_compare(value) for value in blocked_custom_loc}:
+        features.append("RISK_CUSTOM_LOC_KNOWN_UNSAFE_FRAGMENT")
+    blocked_culture_names = KNOWN_CULTURE_NAME_UNSAFE_TEXT_BY_KEY.get((relative_path, source_key), set())
+    if normalize_compare(candidate) in {normalize_compare(value) for value in blocked_culture_names}:
+        features.append("RISK_CULTURE_NAME_KNOWN_UNSAFE_TEXT")
+    if has_culture_title_capitalization_risk(row):
+        features.append("RISK_CULTURE_TITLE_CAPITALIZATION_STYLE")
     if (
         relative_path == "titles_l_spanish.yml"
         and source_key.endswith("_pre")
@@ -614,6 +765,7 @@ def fetch_examples(conn, dataset_run_id: int) -> list[dict[str, Any]]:
             output_text,
             candidate_text,
             final_text,
+            label,
             action_label,
             issue_label,
             trust_level,
@@ -635,7 +787,13 @@ def fetch_examples(conn, dataset_run_id: int) -> list[dict[str, Any]]:
     examples: list[dict[str, Any]] = []
     for row in rows:
         data = dict(row)
-        data["risk_label"] = risk_label(data["action_label"], data.get("issue_label"))
+        data["risk_label"] = risk_label(
+            data["action_label"],
+            data.get("issue_label"),
+            candidate_text=data.get("candidate_text"),
+            final_text=data.get("final_text"),
+            dataset_label=data.get("label"),
+        )
         examples.append(data)
     return examples
 
@@ -662,6 +820,7 @@ def balanced_examples(
 
 def example_priority(row: dict[str, Any]) -> tuple[int, int, int, int]:
     evidence_score = {
+        "issue_review_decision": 4,
         "local_learning_candidate": 3,
         "suggestion_feedback": 2,
         "segment_confirmation": 1,
@@ -690,6 +849,8 @@ def sample_weight(row: dict[str, Any]) -> float:
         weight *= 1.5
     if row.get("evidence_source") == "local_learning_candidate":
         weight *= 1.5
+    if row.get("evidence_source") == "issue_review_decision":
+        weight *= 1.35
     if row.get("action_label") == "human_corrected":
         weight *= 1.25
     if row.get("issue_label") in {"semantic_error", "residual_spanish", "token_mismatch", "structure_error"}:
@@ -819,6 +980,7 @@ def false_safe_samples(
                 "predicted_label": pred,
                 "action_label": row.get("action_label"),
                 "issue_label": row.get("issue_label"),
+                "dataset_label": row.get("label"),
                 "evidence_source": row.get("evidence_source"),
                 "evidence_id": row.get("evidence_id"),
                 "candidate_text": row.get("candidate_text"),

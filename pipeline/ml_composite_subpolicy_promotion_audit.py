@@ -36,6 +36,26 @@ NAME_METHODS = {
     "GetName",
     "GetNameNoTooltip",
 }
+POSSESSIVE_NAME_METHODS = {
+    "GetFirstNamePossessive",
+    "GetFirstNamePossessiveNoTooltip",
+    "GetFirstNamePossessiveRegnal",
+    "GetNamePossessive",
+}
+TITLE_ENTITY_NAME_METHODS = {
+    "GetAdjectiveNoTooltip",
+    "GetBaseName",
+    "GetBaseNameNoTooltip",
+    "GetCollectiveNounNoTooltip",
+    "GetCourtPositionType('<TEXT>').GetNameNoTooltip",
+    "GetCouncillorPosition",
+    "GetFirstNameRegnal",
+    "GetLadyLord",
+    "GetNameNoTier",
+    "GetNameNoTierNoTooltip",
+    "GetTitleAsNameNoTooltip",
+}
+EXTENDED_NAME_METHODS = NAME_METHODS | POSSESSIVE_NAME_METHODS | TITLE_ENTITY_NAME_METHODS
 GENDER_CUSTOM_MARKERS = {
     "ES_OA",
     "ES_XA",
@@ -248,6 +268,8 @@ def rule_key_for(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             return ("glossary_label_translation_key_changed_boundary", signature)
         if has_question_marker(signature["missing_glossary_labels"] + signature["extra_glossary_labels"]):
             return ("same_glossary_key_label_text_hygiene_boundary", signature)
+        if any(key.endswith("_REBELLION_GLOSS") for key in missing_glossary_keys):
+            return ("glossary_historical_rebellion_label_needs_subpolicy", signature)
         if len(missing_glossary_keys) == 1 and sum(missing_glossary_keys.values()) == 1:
             return ("single_glossary_same_key_label_translation_candidate", signature)
         return ("multi_glossary_same_key_label_translation_candidate", signature)
@@ -283,12 +305,22 @@ def rule_key_for(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         return ("tutorial_concept_mixed_boundary", signature)
 
     if subtype == "dynamic_name_form_rewrite":
+        source_key = str(row.get("source_key") or "")
+        relative_path = str(row.get("relative_path") or "")
+        missing_scopes = token_scopes(missing)
+        extra_scopes = token_scopes(extra)
+        same_scopes = missing_scopes == extra_scopes
+        token_text = " ".join(all_tokens)
+        signature["same_scopes"] = same_scopes
+        signature["missing_has_style"] = has_style_modifier(missing)
+        signature["extra_has_style"] = has_style_modifier(extra)
+        signature["has_custom_marker"] = has_marker(all_tokens, {"Custom("})
         if has_marker(all_tokens, {"GetFaith."}):
             return ("faith_name_adjective_semantic_rewrite", signature)
         if (
             missing_methods == {"GetFirstName"}
             and extra_methods == {"GetTitledFirstName"}
-            and token_scopes(missing) == token_scopes(extra)
+            and same_scopes
             and same_single_scope(all_tokens)
         ):
             return ("same_scope_first_name_to_titled_first_name", signature)
@@ -299,10 +331,92 @@ def rule_key_for(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             and same_single_scope(extra)
         ):
             return ("same_scope_no_tooltip_name_plus_pronoun_alignment", signature)
-        if only_methods(all_tokens, NAME_METHODS) and token_scopes(missing) == token_scopes(extra):
+        if only_methods(all_tokens, NAME_METHODS) and same_scopes:
             return ("same_scope_name_form_style_simplification", signature)
         if only_methods(all_tokens, NAME_METHODS | PRONOUN_METHODS):
+            if not same_scopes:
+                if not missing and extra_methods <= NAME_METHODS:
+                    if (
+                        relative_path == "event_localization/court_events/court_events_george_l_spanish.yml"
+                        and source_key == "court.7600.desc"
+                    ):
+                        return ("dynamic_single_name_added_court_child_manual_boundary", signature)
+                    return ("dynamic_single_name_added_needs_subpolicy", signature)
+                if (
+                    relative_path == "dlc/bp1/dlc_bp1_yearly_events_l_spanish.yml"
+                    and source_key == "bp1_yearly.5712.desc"
+                ):
+                    return ("dynamic_bp1_rival_rebinding_manual_boundary", signature)
+                if not missing and extra_methods & PRONOUN_METHODS:
+                    return ("dynamic_name_plus_pronoun_added_manual_boundary", signature)
+                return ("dynamic_name_pronoun_cross_scope_needs_subpolicy", signature)
+            if not missing and extra_methods <= NAME_METHODS:
+                return ("dynamic_name_added_contextual_boundary", signature)
+            if missing_methods <= NAME_METHODS and extra_methods & PRONOUN_METHODS:
+                if extra_methods >= {"GetSheHe", "GetHerHim"}:
+                    return ("same_scope_name_to_subject_object_pronoun_needs_subpolicy", signature)
+                if extra_methods == {"GetHerHim"}:
+                    return ("same_scope_name_to_object_pronoun_needs_subpolicy", signature)
+                if relative_path.startswith("contracts/laamp_base_learning_contract_events_l_spanish.yml"):
+                    return ("laamp_contract_same_scope_name_pronoun_manual_boundary", signature)
+                if relative_path == "custom_localization/education_custom_loc_l_spanish.yml":
+                    return ("education_outcome_same_scope_root_name_pronoun_manual_boundary", signature)
+                if relative_path == "dlc/ep3/ep3_laamp_decision_events_l_spanish.yml":
+                    return ("ep3_laamp_decision_same_scope_name_pronoun_manual_boundary", signature)
+                if relative_path == "dlc/ep3/ep3_laamp_flavor_l_spanish.yml":
+                    return ("ep3_laamp_flavor_same_scope_name_pronoun_needs_subpolicy", signature)
+                if relative_path == "dlc/mpo/mpo_migration_l_spanish.yml":
+                    return ("mpo_migration_same_scope_name_pronoun_needs_subpolicy", signature)
+                return ("same_scope_name_to_pronoun_contextual_boundary", signature)
             return ("dynamic_name_plus_pronoun_contextual_rewrite", signature)
+        if missing_methods & POSSESSIVE_NAME_METHODS or extra_methods & POSSESSIVE_NAME_METHODS:
+            if missing_methods | extra_methods <= EXTENDED_NAME_METHODS | PRONOUN_METHODS | {"Custom"}:
+                if not same_scopes:
+                    return ("dynamic_possessive_name_cross_scope_needs_subpolicy", signature)
+                if extra_methods & PRONOUN_METHODS:
+                    return ("dynamic_possessive_name_pronoun_contextual_boundary", signature)
+                if (
+                    relative_path == "dlc/ep3/ep3_emperor_yearly_8_l_spanish.yml"
+                    and source_key == "ep3_emperor_yearly.8030.desc"
+                ):
+                    return ("dynamic_possessive_regnal_name_manual_boundary", signature)
+                if "GetFirstNamePossessive" in extra_methods or "GetFirstNamePossessiveRegnal" in extra_methods:
+                    return ("dynamic_possessive_name_form_needs_subpolicy", signature)
+                return ("dynamic_possessive_name_form_contextual_boundary", signature)
+        if missing_methods & TITLE_ENTITY_NAME_METHODS or extra_methods & TITLE_ENTITY_NAME_METHODS:
+            if missing_methods | extra_methods <= EXTENDED_NAME_METHODS | PRONOUN_METHODS | {"Custom"}:
+                if not same_scopes:
+                    if (
+                        relative_path == "event_localization/court_events/court_events_oltner_l_spanish.yml"
+                        and source_key == "court.9200.desc"
+                    ):
+                        return ("dynamic_title_entity_food_lover_manual_boundary", signature)
+                    if "GetCourtPositionType" in token_text or "GetCouncillorPosition" in token_text:
+                        return ("dynamic_court_position_title_cross_scope_needs_subpolicy", signature)
+                    if "GetHouse." in token_text or "GetDynasty." in token_text:
+                        return ("dynamic_house_dynasty_title_pronoun_needs_subpolicy", signature)
+                    return ("dynamic_title_entity_role_rebinding_needs_subpolicy", signature)
+                if extra_methods & PRONOUN_METHODS:
+                    return ("dynamic_title_entity_pronoun_contextual_boundary", signature)
+                return ("dynamic_title_entity_name_form_boundary", signature)
+        if not same_scopes:
+            return ("dynamic_name_form_cross_scope_needs_subpolicy", signature)
+        if extra_methods & PRONOUN_METHODS and has_marker(all_tokens, {"Custom("}):
+            if extra_methods >= {"GetSheHe", "GetHerHim"}:
+                return ("same_scope_gendered_name_subject_object_pronoun_needs_subpolicy", signature)
+            if relative_path.startswith("contracts/laamp_base_learning_contract_events_l_spanish.yml"):
+                return ("laamp_contract_same_scope_gendered_name_pronoun_manual_boundary", signature)
+            if relative_path == "dlc/bp2/dlc_bp2_yearly_1_events_l_spanish.yml":
+                return ("bp2_child_same_scope_gendered_name_pronoun_manual_boundary", signature)
+            if relative_path == "dlc/ep3/ep3_eparch_events_l_spanish.yml":
+                return ("ep3_eparch_same_scope_gendered_name_pronoun_manual_boundary", signature)
+            if relative_path == "dlc/ep3/ep3_laamp_decision_events_l_spanish.yml":
+                return ("ep3_laamp_decision_same_scope_gendered_name_pronoun_manual_boundary", signature)
+            if relative_path == "event_localization/prison_events/prison_events_l_spanish.yml":
+                return ("prison_same_scope_gendered_name_pronoun_manual_boundary", signature)
+            return ("same_scope_gendered_name_to_pronoun_needs_subpolicy", signature)
+        if extra_methods & PRONOUN_METHODS:
+            return ("same_scope_dynamic_name_to_pronoun_contextual_boundary", signature)
         return ("dynamic_name_form_contextual_rewrite", signature)
 
     if subtype == "dynamic_scope_rewrite":
@@ -378,14 +492,16 @@ def rule_key_for(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
                     return ("multi_name_gender_pronoun_manual_exception_boundary", signature)
                 if relative_path == "dlc/ep3/ep3_frankokratia_events_l_spanish.yml":
                     return ("frankokratia_glossary_name_gender_manual_boundary", signature)
-                if source_key in {
-                    "nomad_events_oltner.0006.desc",
-                    "mpo_decisions_events.0112.desc",
-                    "emperor_imperial_examination.200.desc",
-                    "scheme_critical_moments.1226.desc_warring",
-                    "az_tour.0005.desc",
-                }:
-                    return ("multi_character_name_pronoun_needs_subpolicy", signature)
+                if source_key == "nomad_events_oltner.0006.desc":
+                    return ("mpo_nomad_tributary_hunt_name_pronoun_needs_subpolicy", signature)
+                if source_key == "mpo_decisions_events.0112.desc":
+                    return ("mpo_paiza_abuser_root_name_pronoun_needs_subpolicy", signature)
+                if source_key == "emperor_imperial_examination.200.desc":
+                    return ("tgp_imperial_exam_relation_name_pronoun_needs_subpolicy", signature)
+                if source_key == "scheme_critical_moments.1226.desc_warring":
+                    return ("tgp_mandala_warring_envoy_name_pronoun_needs_subpolicy", signature)
+                if source_key == "az_tour.0005.desc":
+                    return ("az_tour_musician_host_name_pronoun_needs_subpolicy", signature)
                 return ("mixed_name_gender_scope_shift_with_pronoun_context", signature)
             return ("mixed_name_gender_scope_shift_contextual_rewrite", signature)
 
@@ -560,6 +676,41 @@ def rule_key_for(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
                             "single_scope_missing_gender_to_subject_possessive_pronouns_english_aligned",
                             signature,
                         )
+                    if len(extra_methods & PRONOUN_METHODS) > 1:
+                        article_markers = {"ES_ElLa", "ES_ElElla", "ES_DelDela", "ES_AlAla", "ES_LoLa"}
+                        suffix_markers = {"ES_OA", "ES_XA", "ES_EA"}
+                        if missing_scopes != extra_scopes:
+                            return ("cross_scope_missing_gender_to_pronoun_set_needs_subpolicy", signature)
+                        if extra_methods == {"GetHerHim", "GetSheHe"}:
+                            if missing_markers & article_markers:
+                                if len(missing) > 1:
+                                    return (
+                                        "same_scope_repeated_article_to_object_subject_pronoun_set_needs_subpolicy",
+                                        signature,
+                                    )
+                                return (
+                                    "same_scope_article_to_object_subject_pronoun_set_needs_subpolicy",
+                                    signature,
+                                )
+                            if missing_markers & suffix_markers:
+                                return (
+                                    "same_scope_gender_suffix_to_object_subject_pronoun_set_needs_subpolicy",
+                                    signature,
+                                )
+                        if extra_methods == {"GetHerHim", "GetHerHis"}:
+                            if missing_markers & suffix_markers:
+                                return (
+                                    "same_scope_gender_suffix_to_object_possessive_pronoun_set_needs_subpolicy",
+                                    signature,
+                                )
+                            return (
+                                "same_scope_article_to_object_possessive_pronoun_set_needs_subpolicy",
+                                signature,
+                            )
+                        if extra_methods == {"GetHerHim", "GetHerHis", "GetSheHe"}:
+                            if len(missing) > 1:
+                                return ("same_scope_repeated_article_to_full_pronoun_set_needs_subpolicy", signature)
+                            return ("same_scope_article_to_full_pronoun_set_needs_subpolicy", signature)
                     return ("single_scope_missing_gender_to_pronoun_set_english_aligned", signature)
                 if extra_methods == {"GetHerHim"} and len(missing) == 1:
                     return ("single_scope_missing_article_to_object_pronoun_pt_rephrase_candidate", signature)
@@ -589,6 +740,25 @@ def rule_key_for(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
                 return ("multi_scope_missing_gender_pronoun_bridge_context", signature)
 
             if extra_methods & PRONOUN_METHODS:
+                source_key = str(row.get("source_key") or "")
+                relative_path = str(row.get("relative_path") or "")
+                if source_key == "bp1_yearly.2020.desc":
+                    return ("bp1_heir_partner_contextual_pronoun_needs_subpolicy", signature)
+                if source_key == "ep1_flavor.2060.desc":
+                    return ("ep1_detective_grocer_contextual_pronoun_manual_boundary", signature)
+                if source_key == "agent_events.4001.desc":
+                    return ("agent_target_possessive_contextual_pronoun_manual_boundary", signature)
+                if source_key == "steward_task.2005.desc":
+                    return ("steward_liege_tax_collector_contextual_pronoun_manual_boundary", signature)
+                if source_key in {
+                    "diplomacy_generic.0015.ridicule.desc",
+                    "diplomacy_majesty_special.1016.scare.desc",
+                }:
+                    return ("statecraft_root_target_contextual_pronoun_negative_boundary", signature)
+                if source_key == "bishop.2001.desc.a":
+                    return ("bishop_prisoner_multi_scope_pronoun_negative_boundary", signature)
+                if source_key == "religious_decision.0602.desc":
+                    return ("religious_founder_root_contextual_pronoun_negative_boundary", signature)
                 return ("missing_gender_plus_contextual_pronoun_rewrite", signature)
 
             return ("pronoun_added_with_missing_gender_or_pronoun", signature)
@@ -597,6 +767,18 @@ def rule_key_for(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             signature["gender_markers"] = sorted(gender_markers)
             signature["same_extra_scope"] = same_single_scope(extra)
             if not same_single_scope(extra):
+                extra_scopes = token_scopes(extra)
+                custom_extra = [token for token in extra if ".Custom(" in token]
+                pronoun_extra = [token for token in extra if any(method in token for method in PRONOUN_METHODS)]
+                signature["extra_scope_count"] = len(extra_scopes)
+                signature["custom_extra_count"] = len(custom_extra)
+                signature["pronoun_extra_count"] = len(pronoun_extra)
+                if len(extra_scopes) > 2:
+                    return ("multi_scope_gender_suffix_pronoun_three_scope_needs_subpolicy", signature)
+                if len(extra) > 3 or len(custom_extra) > 2:
+                    return ("multi_scope_gender_suffix_pronoun_dense_needs_subpolicy", signature)
+                if "ROOT.Char" in extra_scopes and pronoun_extra:
+                    return ("multi_scope_root_actor_gender_pronoun_manual_boundary", signature)
                 return ("multi_scope_gender_suffix_pronoun_added", signature)
             if "GetWomanMan" in extra_methods:
                 return ("single_scope_gendered_person_noun_rewrite", signature)
@@ -839,6 +1021,8 @@ def rule_key_for(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     if subtype == "select_cstring_multi_dynamic_rewrite":
         relative_path = row.get("relative_path") or ""
         source_key = row.get("source_key") or ""
+        missing_select_scopes = select_cstring_isfemale_scopes(missing)
+        signature["missing_select_scopes"] = sorted(missing_select_scopes)
         if (
             relative_path == "nicknames_l_spanish.yml"
             and source_key.startswith("nick_")
@@ -857,9 +1041,86 @@ def rule_key_for(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             return ("multi_localplayer_select_cstring_ui_neutralization", signature)
         if all_selects_are_localplayer(missing) and "concept" in set(row.get("token_families") or []):
             return ("multi_localplayer_select_cstring_concept_alert_boundary", signature)
+        if relative_path == "dlc/ep3/ep3_eparch_events_l_spanish.yml":
+            return ("ep3_eparch_reciprocal_title_select_cstring_manual_boundary", signature)
+        if source_key.startswith("ep3_laamp_decision_event.1025."):
+            if missing_select_scopes == {"laamp_town_crier"} and not extra:
+                return ("ep3_laamp_town_crier_repeated_gender_select_neutralization_boundary", signature)
+            if missing_select_scopes == {"laamp_town_crier"} and extra_methods <= PRONOUN_METHODS:
+                return ("ep3_laamp_town_crier_select_to_pronoun_narrative_boundary", signature)
+            return ("ep3_laamp_town_crier_select_context_boundary", signature)
+        if source_key.startswith("ep3_laamp_decision_event.1041."):
+            if "laamp_healer_character" in missing_select_scopes:
+                return ("ep3_laamp_healer_select_to_pronoun_narrative_boundary", signature)
+            return ("ep3_laamp_healer_select_context_boundary", signature)
+        if source_key.startswith("ep3_laamp_decision_event.1043."):
+            if "laamp_clergy_character" in missing_select_scopes or "laamp_clergy_character" in token_scopes(extra):
+                return ("ep3_laamp_clergy_select_gender_context_boundary", signature)
+            return ("ep3_laamp_clergy_select_context_boundary", signature)
+        if source_key.startswith("ep3_laamp_decision_event.1053."):
+            if {"laamp_plain_guard", "laamp_talented_guard"} <= missing_select_scopes:
+                return ("ep3_laamp_dual_guard_select_neutralization_boundary", signature)
+            return ("ep3_laamp_guard_select_context_boundary", signature)
+        if source_key.startswith("ep3_laamp_decision_event.1065."):
+            return ("ep3_laamp_jeweler_select_gender_narrative_manual_boundary", signature)
+        if source_key.startswith("ep3_laamp_decision_event.1067."):
+            return ("ep3_laamp_quartermaster_root_gender_select_manual_boundary", signature)
+        if source_key == "scheme_potential_suzerain_might_join_war_tt":
+            return ("mandala_suzerain_alert_select_concept_manual_boundary", signature)
         if has_isfemale_select(missing) and (extra_methods & PRONOUN_METHODS or has_marker(extra, GENDER_CUSTOM_MARKERS)):
             return ("multi_gender_select_cstring_narrative_rewrite", signature)
         return ("select_cstring_multi_dynamic_rewrite_candidate_rule", signature)
+
+    if subtype == "select_cstring_to_pronoun_rewrite":
+        relative_path = str(row.get("relative_path") or "")
+        source_key = str(row.get("source_key") or "")
+        missing_select_scopes = select_cstring_isfemale_scopes(missing)
+        extra_select_scopes = select_cstring_isfemale_scopes(extra)
+        signature["missing_select_scopes"] = sorted(missing_select_scopes)
+        signature["extra_select_scopes"] = sorted(extra_select_scopes)
+
+        if source_key == "tour_general.4003.desc_faux_bedchamber":
+            return ("tour_servant_select_pronoun_manual_boundary", signature)
+        if extra_select_scopes:
+            if not missing_select_scopes:
+                return ("select_cstring_pronoun_extra_select_negative_boundary", signature)
+            return ("select_cstring_pronoun_extra_select_mixed_negative_boundary", signature)
+        if source_key == "ep3_story_cycle_violet_poet.1015.desc":
+            return ("violet_poet_stranger_select_pronoun_manual_boundary", signature)
+        if source_key == "ep3_laamp_decision_event.1025.desc_tribal_reused_crier":
+            return ("ep3_laamp_town_crier_reused_select_pronoun_manual_boundary", signature)
+        if source_key in {
+            "ep3_laamp_decision_event.1065.desc_returned_01",
+            "ep3_laamp_decision_event.1067.desc_returned_03",
+        }:
+            return ("ep3_laamp_craftsman_select_pronoun_manual_boundary", signature)
+        if source_key == "BLOOD_BROTHER_RECIPIENT_SLIGHTLY_WEAKER_REASON":
+            return ("blood_brother_localplayer_select_name_manual_boundary", signature)
+        if source_key.startswith("ep3_laamp_decision_event.1025."):
+            return ("ep3_laamp_town_crier_select_pronoun_needs_subpolicy", signature)
+        if source_key.startswith("ep3_laamp_decision_event.1035."):
+            return ("ep3_laamp_spouse_select_pronoun_needs_subpolicy", signature)
+        if source_key.startswith("ep3_laamp_decision_event.1041."):
+            return ("ep3_laamp_healer_select_pronoun_needs_subpolicy", signature)
+        if source_key.startswith("ep3_laamp_decision_event.1043."):
+            return ("ep3_laamp_clergy_select_pronoun_needs_subpolicy", signature)
+        if source_key.startswith("ep3_laamp_decision_event.1051."):
+            return ("ep3_laamp_moa_select_pronoun_needs_subpolicy", signature)
+        if source_key.startswith("ep3_laamp_decision_event.1057."):
+            return ("ep3_laamp_bodyguard_select_pronoun_needs_subpolicy", signature)
+        if source_key.startswith("ep3_laamp_decision_event.1060."):
+            return ("ep3_laamp_quartermaster_complex_select_pronoun_needs_subpolicy", signature)
+        if source_key.startswith("ep3_laamp_decision_event.1061.") or source_key.startswith(
+            "ep3_laamp_decision_event.1063."
+        ):
+            return ("ep3_laamp_craftsman_select_pronoun_needs_subpolicy", signature)
+        if relative_path == "dlc/ep3/ep3_laamp_flavor_l_spanish.yml":
+            return ("ep3_laamp_flavor_child_ruler_select_pronoun_needs_subpolicy", signature)
+        if relative_path == "event_localization/activities/az_tour_events_l_spanish.yml":
+            return ("az_tour_intro_select_pronoun_needs_subpolicy", signature)
+        if source_key == "mpo_events_ariana.0100.desc":
+            return ("mpo_warrior_relation_select_pronoun_needs_subpolicy", signature)
+        return ("select_cstring_to_pronoun_rewrite_candidate_rule", signature)
 
     if subtype == "select_cstring_to_custom_gender_rewrite":
         if has_localplayer_select(missing) and has_marker(extra, GENDER_CUSTOM_MARKERS):
@@ -1079,6 +1340,10 @@ def supports_guarded_policy_release(route: str, subtype: str, rule_key: str = ""
         return rule_key == "same_scope_subject_to_object_pronoun_candidate"
     if route == "mixed_token_change_review" and subtype == "name_form_rewrite":
         return rule_key == "same_scope_name_form_style_removed_candidate"
+    if route == "mixed_token_change_review" and subtype == "mixed_unclassified_token_rewrite":
+        return rule_key == "same_token_style_modifier_english_aligned"
+    if route == "dynamic_scope_token_review" and subtype == "dynamic_scope_rewrite":
+        return rule_key == "debate_progress_marker_localplayer_scope_rephrase"
     if route == "mixed_token_change_review" and subtype == "glossary_label_translation":
         return rule_key in {
             "single_glossary_same_key_label_translation_candidate",

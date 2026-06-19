@@ -14,7 +14,12 @@ from ml_composite_subpolicy_promotion_audit import (
     same_tokens_after_style_strip,
     token_scopes,
 )
-from ml_composite_guarded_overlay_checkpoint import TARGET_ACTIONS, TARGET_PROFILES
+from ml_composite_guarded_overlay_checkpoint import (
+    DYNAMIC_SCOPE_TARGET_ACTION,
+    TARGET_ACTIONS,
+    TARGET_PROFILES,
+    TOKEN_STYLE_TARGET_ACTION,
+)
 
 
 RULE_VERSION = "ml_composite_guarded_overlay_shadow_decisions_v1"
@@ -60,6 +65,10 @@ def token_scope_method(token: str) -> tuple[str, str]:
 
 def has_style_modifier(tokens: list[str]) -> bool:
     return any("|" in token for token in tokens)
+
+
+def token_contains_any(tokens: list[str], markers: set[str]) -> bool:
+    return any(marker in token for token in tokens for marker in markers)
 
 
 def latest_shadow_queue_run_id(conn) -> int:
@@ -124,12 +133,14 @@ def fetch_queue_rows(conn, queue_run_id: int) -> list[dict[str, Any]]:
             d.id AS existing_decision_id,
             d.decision AS existing_decision,
             d.approved_for_apply AS existing_approved_for_apply,
-            d.notes AS existing_notes
+            d.notes AS existing_notes,
+            sc.confirmed_text
         FROM ml_composite_gate_queue_items qi
         JOIN segment_token_policy_overlay_items oi
           ON oi.run_id = qi.overlay_run_id
          AND oi.source_policy_item_id = qi.policy_item_id
         JOIN segment_token_policy_items i ON i.id = qi.policy_item_id
+        LEFT JOIN segment_confirmations sc ON sc.segment_id = qi.segment_id
         LEFT JOIN segment_token_policy_decisions d
           ON d.policy_run_id = qi.source_policy_run_id
          AND d.policy_item_id = qi.policy_item_id
@@ -270,6 +281,43 @@ def invariant_failures(row: dict[str, Any]) -> list[str]:
             for marker in ("Custom(", "Select_CString(", "Glossary(", "ES_")
         ):
             failures.append("name_form_style_release_has_manual_context_marker")
+    elif row["overlay_action"] == TOKEN_STYLE_TARGET_ACTION:
+        missing_tokens = row.get("missing_tokens") or []
+        extra_tokens = row.get("extra_tokens") or []
+        if row.get("queue_rule_key") != "same_token_style_modifier_english_aligned":
+            failures.append("unexpected_token_style_rule_key")
+        if not missing_tokens or not extra_tokens:
+            failures.append("token_style_release_requires_missing_and_extra_tokens")
+        if len(missing_tokens) != len(extra_tokens):
+            failures.append("token_style_release_requires_equal_token_counts")
+        if token_scopes(missing_tokens) != token_scopes(extra_tokens):
+            failures.append("token_style_release_requires_same_scopes")
+        if not same_tokens_after_style_strip(missing_tokens, extra_tokens):
+            failures.append("token_style_release_requires_same_tokens_after_style_strip")
+        if has_style_modifier(missing_tokens):
+            failures.append("token_style_release_requires_missing_without_style_modifier")
+        if not has_style_modifier(extra_tokens):
+            failures.append("token_style_release_requires_extra_style_modifier")
+        if token_contains_any(missing_tokens + extra_tokens, {"Custom(", "Select_CString(", "Glossary(", "ES_"}):
+            failures.append("token_style_release_has_manual_context_marker")
+    elif row["overlay_action"] == DYNAMIC_SCOPE_TARGET_ACTION:
+        missing_tokens = row.get("missing_tokens") or []
+        extra_tokens = row.get("extra_tokens") or []
+        confirmed_text = row.get("confirmed_text") or ""
+        if row.get("queue_rule_key") != "debate_progress_marker_localplayer_scope_rephrase":
+            failures.append("unexpected_dynamic_scope_rule_key")
+        if str(row.get("relative_path") or "") != "activities/debate_activity_l_spanish.yml":
+            failures.append("dynamic_scope_release_requires_debate_activity_path")
+        if not str(row.get("source_key") or "").startswith("DEBATE_PROGRESS_MARKER_"):
+            failures.append("dynamic_scope_release_requires_debate_progress_marker_key")
+        if len(missing_tokens) != 1:
+            failures.append("dynamic_scope_release_requires_one_missing_token")
+        if not token_contains_any(missing_tokens, {"LocalPlayerString("}):
+            failures.append("dynamic_scope_release_requires_localplayerstring_missing_token")
+        if extra_tokens:
+            failures.append("dynamic_scope_release_requires_no_extra_tokens")
+        if " tem " not in f" {confirmed_text} ":
+            failures.append("dynamic_scope_release_requires_neutral_tem_wording")
     elif row["overlay_action"] == TUTORIAL_CONCEPT_RELEASE_ACTION:
         missing_tokens = row.get("missing_tokens") or []
         extra_tokens = row.get("extra_tokens") or []

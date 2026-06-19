@@ -908,6 +908,13 @@ def prepare_specialist_auditor(args: argparse.Namespace) -> None:
             for row in csv.DictReader(handle)
             if not requested_actions or row.get("auditor_action") in requested_actions
         ]
+    divergence_actions = {"specialist_new_safe_review", "specialist_demoted_review"}
+    csv_rows = [
+        row
+        for row in csv_rows
+        if row.get("auditor_action") not in divergence_actions
+        or str(row.get("requires_human_review") or "0") == "1"
+    ]
     action_priority = {
         "specialist_new_safe_review": 0,
         "specialist_demoted_review": 1,
@@ -930,7 +937,7 @@ def prepare_specialist_auditor(args: argparse.Namespace) -> None:
             """
             SELECT segment_id
             FROM local_learning_candidates
-            WHERE queue_source = 'ml_specialist_auditor'
+            WHERE queue_source IN ('ml_specialist_auditor', 'ml_specialist_scope_review')
               AND local_status = 'reviewed_human'
             """
         ).fetchall()

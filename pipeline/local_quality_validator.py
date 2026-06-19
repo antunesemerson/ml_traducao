@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 
-RULE_VERSION = "local_quality_validator_v4"
+RULE_VERSION = "local_quality_validator_v6"
 
 WORD_PATTERN = re.compile(r"[A-Za-z\u00c0-\u00ff]+", re.UNICODE)
 PROTECTED_TOKEN_PATTERN = re.compile(
@@ -392,7 +392,6 @@ SPANISH_RESIDUE_WORDS = {
     "prohibidos",
     "oportunidad",
     "otra",
-    "portas",
     "perderas",
     "perderás",
     "pertenece",
@@ -849,6 +848,7 @@ SPANISH_RESIDUE_WORDS.update(
         "ten\u00e9is",
         "reprobables",
         "subyugaci\u00f3n",
+        "sonido",
         "tambi\u00e9n",
         "tendr\u00e1",
         "tendr\u00e1s",
@@ -901,8 +901,9 @@ SORTED_SPANISH_RESIDUE_PHRASES = tuple(
     sorted({normalize_detection_term(phrase) for phrase in SPANISH_RESIDUE_PHRASES} | SPANISH_RESIDUE_PHRASES)
 )
 SORTED_SPANISH_RESIDUE_WORDS = tuple(
-    sorted({normalize_detection_term(word) for word in SPANISH_RESIDUE_WORDS} | SPANISH_RESIDUE_WORDS)
+    sorted(({normalize_detection_term(word) for word in SPANISH_RESIDUE_WORDS} | SPANISH_RESIDUE_WORDS) - {"te"})
 )
+SPANISH_LITERAL_ONLY_RESIDUES = {"te"}
 SPANISH_RESIDUE_PHRASE_PATTERNS = tuple(
     (
         phrase,
@@ -918,6 +919,15 @@ SPANISH_RESIDUE_WORD_PATTERNS = tuple(
         re.compile(rf"(?<![-A-Za-zÀ-ÿ]){re.escape(word)}(?![-A-Za-zÀ-ÿ])"),
     )
     for word in SORTED_SPANISH_RESIDUE_WORDS
+)
+
+ENGLISH_RESIDUE_PATTERNS = (
+    ("in_place_itself", re.compile(r"\bin\s+[A-Za-z][A-Za-z' -]{2,}\s+itself\b", re.IGNORECASE)),
+    ("itself", re.compile(r"\bitself\b", re.IGNORECASE)),
+    ("loses_nothing_to", re.compile(r"\bloses?\s+nothing\s+to\b", re.IGNORECASE)),
+    ("gains_nothing", re.compile(r"\bgains?\s+nothing\b", re.IGNORECASE)),
+    ("will_action", re.compile(r"\bwill\s+(?:lose|gain|receive|be|become|not)\b", re.IGNORECASE)),
+    ("you_auxiliary", re.compile(r"\byou\s+(?:are|will|have|cannot|can)\b", re.IGNORECASE)),
 )
 
 TOKEN_JOINED_TO_WORD_PATTERN = re.compile(
@@ -977,6 +987,7 @@ UNNATURAL_PORTUGUESE_FRAGMENT_PATTERNS = (
     re.compile(r"\bvejo\s+m\s+rival\b", re.IGNORECASE),
     re.compile(r"\bo-que\s+est[Ã¡á]\b", re.IGNORECASE),
     re.compile(r"\best[Ã¡á]\s+#EMP\s+acontece\b", re.IGNORECASE),
+    re.compile(r"\besta\s+em\b", re.IGNORECASE),
     re.compile(r"\bexcelendo\s+em\b", re.IGNORECASE),
     re.compile(r"\bse\s+divergir\b", re.IGNORECASE),
     re.compile(r"\bparade\s+de\b", re.IGNORECASE),
@@ -1073,11 +1084,22 @@ def count_spanish_residue(value: str | None) -> tuple[int, list[str]]:
     return len(found), found
 
 
+def count_english_residue(value: str | None) -> tuple[int, list[str]]:
+    if not value:
+        return 0, []
+    visible_value = PROTECTED_TOKEN_PATTERN.sub(" ", value)
+    found = [label for label, pattern in ENGLISH_RESIDUE_PATTERNS if pattern.search(visible_value)]
+    return len(found), found
+
+
 def count_literal_spanish_residue(value: str | None) -> tuple[int, list[str]]:
     found: list[str] = []
     for literal in literal_texts(value):
         if is_technical_literal(literal):
             continue
+        normalized_literal = normalize(literal)
+        if normalized_literal in SPANISH_LITERAL_ONLY_RESIDUES:
+            found.append(normalized_literal)
         _, literal_found = count_spanish_residue(literal)
         found.extend(literal_found)
         if any(mark in literal for mark in SPANISH_PUNCTUATION):
@@ -1167,6 +1189,17 @@ def validate_text(value: str | None) -> dict:
                 "severity": "high" if residue_count >= 2 else "medium",
                 "message": "Known Spanish residue remains in human text.",
                 "matches": residues[:20],
+            }
+        )
+
+    english_count, english_residues = count_english_residue(text)
+    if english_count:
+        issues.append(
+            {
+                "code": "english_residue",
+                "severity": "high",
+                "message": "Known English residue remains in localized text.",
+                "matches": english_residues[:20],
             }
         )
 

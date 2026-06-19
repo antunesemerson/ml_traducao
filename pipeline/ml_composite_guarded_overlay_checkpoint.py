@@ -21,6 +21,9 @@ TARGET_AGENT = "gender_pronoun_english_aligned_subpolicy"
 MIXED_TARGET_ACTION = "dry_run_release_to_guarded_mixed_name_gender_policy"
 MIXED_TARGET_BUCKET = "guarded_mixed_name_gender_subpolicy"
 MIXED_TARGET_AGENT = "mixed_name_gender_subpolicy"
+GLOSSARY_LABEL_TARGET_ACTION = "dry_run_release_to_guarded_glossary_label_policy"
+GLOSSARY_LABEL_TARGET_BUCKET = "guarded_glossary_label_translation_subpolicy"
+GLOSSARY_LABEL_TARGET_AGENT = "glossary_label_translation_subpolicy"
 SELECT_TARGET_ACTION = "dry_run_release_to_guarded_select_cstring_policy"
 SELECT_TARGET_BUCKET = "guarded_select_cstring_ui_subpolicy"
 SELECT_TARGET_AGENT = "select_cstring_ui_subpolicy"
@@ -39,18 +42,27 @@ PRONOUN_FORM_SWAP_TARGET_AGENT = "pronoun_form_swap_subpolicy"
 NAME_FORM_STYLE_TARGET_ACTION = "dry_run_release_to_guarded_name_form_style_policy"
 NAME_FORM_STYLE_TARGET_BUCKET = "guarded_name_form_style_subpolicy"
 NAME_FORM_STYLE_TARGET_AGENT = "name_form_style_subpolicy"
+TOKEN_STYLE_TARGET_ACTION = "dry_run_release_to_guarded_token_style_modifier_policy"
+TOKEN_STYLE_TARGET_BUCKET = "guarded_token_style_modifier_subpolicy"
+TOKEN_STYLE_TARGET_AGENT = "token_style_modifier_subpolicy"
+DYNAMIC_SCOPE_TARGET_ACTION = "dry_run_release_to_guarded_dynamic_scope_neutralization_policy"
+DYNAMIC_SCOPE_TARGET_BUCKET = "guarded_dynamic_scope_neutralization_subpolicy"
+DYNAMIC_SCOPE_TARGET_AGENT = "dynamic_scope_neutralization_subpolicy"
 TUTORIAL_CONCEPT_TARGET_ACTION = "dry_run_release_to_guarded_tutorial_concept_policy"
 TUTORIAL_CONCEPT_TARGET_BUCKET = "guarded_tutorial_concept_exception_subpolicy"
 TUTORIAL_CONCEPT_TARGET_AGENT = "tutorial_concept_exception_subpolicy"
 TARGET_ACTIONS = {
     TARGET_ACTION,
     MIXED_TARGET_ACTION,
+    GLOSSARY_LABEL_TARGET_ACTION,
     SELECT_TARGET_ACTION,
     TOKEN_ADDED_TARGET_ACTION,
     GENDER_ARTICLE_TARGET_ACTION,
     GENDER_FORM_SWAP_TARGET_ACTION,
     PRONOUN_FORM_SWAP_TARGET_ACTION,
     NAME_FORM_STYLE_TARGET_ACTION,
+    TOKEN_STYLE_TARGET_ACTION,
+    DYNAMIC_SCOPE_TARGET_ACTION,
     TUTORIAL_CONCEPT_TARGET_ACTION,
 }
 TARGET_PROFILES = {
@@ -68,6 +80,14 @@ TARGET_PROFILES = {
         "target_bucket": MIXED_TARGET_BUCKET,
         "target_risk": "low",
         "target_agent": MIXED_TARGET_AGENT,
+        "issue_flags": {"mixed_token_change"},
+    },
+    GLOSSARY_LABEL_TARGET_ACTION: {
+        "original_bucket": "review_mixed_token_change",
+        "original_risk": "high",
+        "target_bucket": GLOSSARY_LABEL_TARGET_BUCKET,
+        "target_risk": "low",
+        "target_agent": GLOSSARY_LABEL_TARGET_AGENT,
         "issue_flags": {"mixed_token_change"},
     },
     SELECT_TARGET_ACTION: {
@@ -117,6 +137,22 @@ TARGET_PROFILES = {
         "target_risk": "low",
         "target_agent": NAME_FORM_STYLE_TARGET_AGENT,
         "issue_flags": {"mixed_token_change"},
+    },
+    TOKEN_STYLE_TARGET_ACTION: {
+        "original_bucket": "review_mixed_token_change",
+        "original_risk": "high",
+        "target_bucket": TOKEN_STYLE_TARGET_BUCKET,
+        "target_risk": "low",
+        "target_agent": TOKEN_STYLE_TARGET_AGENT,
+        "issue_flags": {"mixed_token_change"},
+    },
+    DYNAMIC_SCOPE_TARGET_ACTION: {
+        "original_bucket": "review_dynamic_scope_change",
+        "original_risk": "high",
+        "target_bucket": DYNAMIC_SCOPE_TARGET_BUCKET,
+        "target_risk": "low",
+        "target_agent": DYNAMIC_SCOPE_TARGET_AGENT,
+        "issue_flags": {"dynamic_scope_or_name_token_changed"},
     },
     TUTORIAL_CONCEPT_TARGET_ACTION: {
         "original_bucket": "blocked_variable_or_icon_change",

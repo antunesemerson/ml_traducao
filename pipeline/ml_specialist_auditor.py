@@ -12,6 +12,7 @@ import db
 
 
 RULE_VERSION = "ml_specialist_auditor_v1"
+REVIEW_SOURCES = ("ml_specialist_auditor", "ml_specialist_scope_review")
 
 
 def now() -> str:
@@ -106,7 +107,7 @@ def compare_rows(conn, general_score_run_id: int, specialist_score_run_id: int) 
                 GROUP_CONCAT(DISTINCT human_label) AS reviewed_labels,
                 MAX(reviewed_at) AS latest_reviewed_at
             FROM local_learning_candidates
-            WHERE queue_source = 'ml_specialist_auditor'
+            WHERE queue_source IN ('ml_specialist_auditor', 'ml_specialist_scope_review')
               AND local_status = 'reviewed_human'
             GROUP BY segment_id
         ) r ON r.segment_id = s.segment_id

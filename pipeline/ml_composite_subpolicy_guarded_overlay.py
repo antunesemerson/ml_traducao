@@ -14,6 +14,8 @@ from apply_segment_state_updates import short
 from ml_composite_subpolicy_diagnostic import classify_token_subtype
 from ml_composite_subpolicy_promotion_audit import (
     NAME_METHODS,
+    all_glossary_tokens,
+    glossary_key_counter,
     only_methods,
     rule_key_for,
     same_tokens_after_style_strip,
@@ -36,6 +38,9 @@ TARGET_ACTION = "dry_run_release_to_guarded_pronoun_policy"
 MIXED_AGENT_KEY = "mixed_name_gender_subpolicy"
 MIXED_TARGET_BUCKET = "guarded_mixed_name_gender_subpolicy"
 MIXED_TARGET_ACTION = "dry_run_release_to_guarded_mixed_name_gender_policy"
+GLOSSARY_LABEL_AGENT_KEY = "glossary_label_translation_subpolicy"
+GLOSSARY_LABEL_TARGET_BUCKET = "guarded_glossary_label_translation_subpolicy"
+GLOSSARY_LABEL_TARGET_ACTION = "dry_run_release_to_guarded_glossary_label_policy"
 SELECT_AGENT_KEY = "select_cstring_ui_subpolicy"
 SELECT_TARGET_BUCKET = "guarded_select_cstring_ui_subpolicy"
 SELECT_TARGET_ACTION = "dry_run_release_to_guarded_select_cstring_policy"
@@ -54,6 +59,12 @@ PRONOUN_FORM_SWAP_TARGET_ACTION = "dry_run_release_to_guarded_pronoun_form_swap_
 NAME_FORM_STYLE_AGENT_KEY = "name_form_style_subpolicy"
 NAME_FORM_STYLE_TARGET_BUCKET = "guarded_name_form_style_subpolicy"
 NAME_FORM_STYLE_TARGET_ACTION = "dry_run_release_to_guarded_name_form_style_policy"
+TOKEN_STYLE_AGENT_KEY = "token_style_modifier_subpolicy"
+TOKEN_STYLE_TARGET_BUCKET = "guarded_token_style_modifier_subpolicy"
+TOKEN_STYLE_TARGET_ACTION = "dry_run_release_to_guarded_token_style_modifier_policy"
+DYNAMIC_SCOPE_AGENT_KEY = "dynamic_scope_neutralization_subpolicy"
+DYNAMIC_SCOPE_TARGET_BUCKET = "guarded_dynamic_scope_neutralization_subpolicy"
+DYNAMIC_SCOPE_TARGET_ACTION = "dry_run_release_to_guarded_dynamic_scope_neutralization_policy"
 TUTORIAL_CONCEPT_AGENT_KEY = "tutorial_concept_exception_subpolicy"
 TUTORIAL_CONCEPT_TARGET_BUCKET = "guarded_tutorial_concept_exception_subpolicy"
 TUTORIAL_CONCEPT_TARGET_ACTION = "dry_run_release_to_guarded_tutorial_concept_policy"
@@ -96,6 +107,12 @@ RELEASE_PROFILES = {
         "target_action": MIXED_TARGET_ACTION,
         "target_risk": "low",
     },
+    "glossary_label_translation": {
+        "agent_key": GLOSSARY_LABEL_AGENT_KEY,
+        "target_bucket": GLOSSARY_LABEL_TARGET_BUCKET,
+        "target_action": GLOSSARY_LABEL_TARGET_ACTION,
+        "target_risk": "low",
+    },
     "select_cstring_ui": {
         "agent_key": SELECT_AGENT_KEY,
         "target_bucket": SELECT_TARGET_BUCKET,
@@ -130,6 +147,18 @@ RELEASE_PROFILES = {
         "agent_key": NAME_FORM_STYLE_AGENT_KEY,
         "target_bucket": NAME_FORM_STYLE_TARGET_BUCKET,
         "target_action": NAME_FORM_STYLE_TARGET_ACTION,
+        "target_risk": "low",
+    },
+    "token_style_modifier": {
+        "agent_key": TOKEN_STYLE_AGENT_KEY,
+        "target_bucket": TOKEN_STYLE_TARGET_BUCKET,
+        "target_action": TOKEN_STYLE_TARGET_ACTION,
+        "target_risk": "low",
+    },
+    "dynamic_scope_neutralization": {
+        "agent_key": DYNAMIC_SCOPE_AGENT_KEY,
+        "target_bucket": DYNAMIC_SCOPE_TARGET_BUCKET,
+        "target_action": DYNAMIC_SCOPE_TARGET_ACTION,
         "target_risk": "low",
     },
     "tutorial_concept": {
@@ -279,6 +308,24 @@ def release_profile_for(row: dict[str, Any], rule: dict[str, Any]) -> dict[str, 
         and rule["rule_key"] == "same_scope_name_form_style_removed_candidate"
     ):
         return RELEASE_PROFILES["name_form_style"]
+    if (
+        rule["suggested_route"] == "mixed_token_change_review"
+        and rule["token_subtype"] == "mixed_unclassified_token_rewrite"
+        and rule["rule_key"] == "same_token_style_modifier_english_aligned"
+    ):
+        return RELEASE_PROFILES["token_style_modifier"]
+    if (
+        rule["suggested_route"] == "mixed_token_change_review"
+        and rule["token_subtype"] == "glossary_label_translation"
+        and rule["rule_key"] == "single_glossary_same_key_label_translation_candidate"
+    ):
+        return RELEASE_PROFILES["glossary_label_translation"]
+    if (
+        rule["suggested_route"] == "dynamic_scope_token_review"
+        and rule["token_subtype"] == "dynamic_scope_rewrite"
+        and rule["rule_key"] == "debate_progress_marker_localplayer_scope_rephrase"
+    ):
+        return RELEASE_PROFILES["dynamic_scope_neutralization"]
     if (
         rule["suggested_route"] == "select_cstring_dynamic_context_review"
         and rule["token_subtype"]
@@ -529,6 +576,101 @@ def can_release(row: dict[str, Any], rule: dict[str, Any] | None) -> tuple[bool,
             reasons.append("name_form_style_release_blocked_by_text_hygiene:" + ",".join(hygiene_flags))
         if set(row.get("issue_flags") or []) != {"mixed_token_change"}:
             reasons.append("unexpected_name_form_style_issue_flags")
+    elif profile["target_action"] == TOKEN_STYLE_TARGET_ACTION:
+        current_allowed_buckets = {"review_mixed_token_change", profile["target_bucket"]}
+        current_allowed_risks = {"high", profile["target_risk"]}
+        missing_tokens = row.get("missing_tokens") or []
+        extra_tokens = row.get("extra_tokens") or []
+        if row.get("base_policy_bucket") != "review_mixed_token_change":
+            reasons.append("original_bucket_not_mixed_token_review")
+        if row.get("base_risk_level") != "high":
+            reasons.append("original_risk_not_high")
+        if row["overlay_policy_bucket"] not in current_allowed_buckets:
+            reasons.append("current_bucket_not_eligible_for_token_style_release")
+        if row["overlay_risk_level"] not in current_allowed_risks:
+            reasons.append("current_risk_not_eligible_for_token_style_release")
+        if rule.get("rule_key") != "same_token_style_modifier_english_aligned":
+            reasons.append("unexpected_token_style_rule_key")
+        if not missing_tokens or not extra_tokens:
+            reasons.append("token_style_release_requires_missing_and_extra_tokens")
+        if len(missing_tokens) != len(extra_tokens):
+            reasons.append("token_style_release_requires_equal_token_counts")
+        if token_scopes(missing_tokens) != token_scopes(extra_tokens):
+            reasons.append("token_style_release_requires_same_scopes")
+        if not same_tokens_after_style_strip(missing_tokens, extra_tokens):
+            reasons.append("token_style_release_requires_same_tokens_after_style_strip")
+        if has_style_modifier(missing_tokens):
+            reasons.append("token_style_release_requires_missing_without_style_modifier")
+        if not has_style_modifier(extra_tokens):
+            reasons.append("token_style_release_requires_extra_style_modifier")
+        if token_contains_any(missing_tokens + extra_tokens, {"Custom(", "Select_CString(", "Glossary(", "ES_"}):
+            reasons.append("token_style_release_has_manual_context_marker")
+        hygiene_flags = text_hygiene_flags(row.get("confirmed_text"))
+        if hygiene_flags:
+            reasons.append("token_style_release_blocked_by_text_hygiene:" + ",".join(hygiene_flags))
+        if set(row.get("issue_flags") or []) != {"mixed_token_change"}:
+            reasons.append("unexpected_token_style_issue_flags")
+    elif profile["target_action"] == GLOSSARY_LABEL_TARGET_ACTION:
+        current_allowed_buckets = {"review_mixed_token_change", profile["target_bucket"]}
+        current_allowed_risks = {"high", profile["target_risk"]}
+        missing_tokens = row.get("missing_tokens") or []
+        extra_tokens = row.get("extra_tokens") or []
+        if row.get("base_policy_bucket") != "review_mixed_token_change":
+            reasons.append("original_bucket_not_mixed_token_review")
+        if row.get("base_risk_level") != "high":
+            reasons.append("original_risk_not_high")
+        if row["overlay_policy_bucket"] not in current_allowed_buckets:
+            reasons.append("current_bucket_not_eligible_for_glossary_label_release")
+        if row["overlay_risk_level"] not in current_allowed_risks:
+            reasons.append("current_risk_not_eligible_for_glossary_label_release")
+        if rule.get("rule_key") != "single_glossary_same_key_label_translation_candidate":
+            reasons.append("unexpected_glossary_label_rule_key")
+        if len(missing_tokens) != 1 or len(extra_tokens) != 1:
+            reasons.append("glossary_label_release_requires_one_missing_and_one_extra")
+        if not all_glossary_tokens(missing_tokens + extra_tokens):
+            reasons.append("glossary_label_release_requires_only_glossary_tokens")
+        if glossary_key_counter(missing_tokens) != glossary_key_counter(extra_tokens):
+            reasons.append("glossary_label_release_requires_same_glossary_key")
+        if any(key.endswith("_REBELLION_GLOSS") for key in glossary_key_counter(missing_tokens)):
+            reasons.append("glossary_label_release_blocks_historical_rebellion_boundary")
+        hygiene_flags = text_hygiene_flags(row.get("confirmed_text"))
+        if hygiene_flags:
+            reasons.append("glossary_label_release_blocked_by_text_hygiene:" + ",".join(hygiene_flags))
+        if set(row.get("issue_flags") or []) != {"mixed_token_change"}:
+            reasons.append("unexpected_glossary_label_issue_flags")
+    elif profile["target_action"] == DYNAMIC_SCOPE_TARGET_ACTION:
+        current_allowed_buckets = {"review_dynamic_scope_change", profile["target_bucket"]}
+        current_allowed_risks = {"high", profile["target_risk"]}
+        missing_tokens = row.get("missing_tokens") or []
+        extra_tokens = row.get("extra_tokens") or []
+        if row.get("base_policy_bucket") != "review_dynamic_scope_change":
+            reasons.append("original_bucket_not_dynamic_scope_review")
+        if row.get("base_risk_level") != "high":
+            reasons.append("original_risk_not_high")
+        if row["overlay_policy_bucket"] not in current_allowed_buckets:
+            reasons.append("current_bucket_not_eligible_for_dynamic_scope_release")
+        if row["overlay_risk_level"] not in current_allowed_risks:
+            reasons.append("current_risk_not_eligible_for_dynamic_scope_release")
+        if rule.get("rule_key") != "debate_progress_marker_localplayer_scope_rephrase":
+            reasons.append("unexpected_dynamic_scope_rule_key")
+        if str(row.get("relative_path") or "") != "activities/debate_activity_l_spanish.yml":
+            reasons.append("dynamic_scope_release_requires_debate_activity_path")
+        if not str(row.get("source_key") or "").startswith("DEBATE_PROGRESS_MARKER_"):
+            reasons.append("dynamic_scope_release_requires_debate_progress_marker_key")
+        if len(missing_tokens) != 1:
+            reasons.append("dynamic_scope_release_requires_one_missing_token")
+        if not token_contains_any(missing_tokens, {"LocalPlayerString("}):
+            reasons.append("dynamic_scope_release_requires_localplayerstring_missing_token")
+        if extra_tokens:
+            reasons.append("dynamic_scope_release_requires_no_extra_tokens")
+        confirmed_text = row.get("confirmed_text") or ""
+        if " tem " not in f" {confirmed_text} ":
+            reasons.append("dynamic_scope_release_requires_neutral_tem_wording")
+        hygiene_flags = text_hygiene_flags(confirmed_text)
+        if hygiene_flags:
+            reasons.append("dynamic_scope_release_blocked_by_text_hygiene:" + ",".join(hygiene_flags))
+        if set(row.get("issue_flags") or []) != {"dynamic_scope_or_name_token_changed"}:
+            reasons.append("unexpected_dynamic_scope_issue_flags")
     elif profile["target_action"] == TUTORIAL_CONCEPT_TARGET_ACTION:
         current_allowed_buckets = {
             "blocked_variable_or_icon_change",

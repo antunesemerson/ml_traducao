@@ -122,18 +122,25 @@ O resultado operacional nao e uma previsao crua. E uma decisao de gate: seguro, 
 Fluxo seguro para gravar no output:
 
 ```powershell
-python dashboard\backend.py
+python dashboard\backend.py --host 127.0.0.1 --port 8765
 # via POST /api/production/start, acionado pelo botao visual:
 # 1. snapshot consistente antes de qualquer escrita
 python pipeline\main.py cycle
 python pipeline\main.py segment-state
 python pipeline\main.py segment-apply --segment-include-auto-confirmed
 python pipeline\main.py segment-apply --segment-include-auto-confirmed --segment-require-token-policy-decision
+python pipeline\main.py controlled-token-subpolicy-apply
+python pipeline\main.py auto-confirmation-text-boundary-repair-production-audit
+python pipeline\main.py same-token-boundary-repair-apply
 python pipeline\main.py segment-apply --segment-include-auto-confirmed --auto-apply
 python pipeline\main.py segment-apply --segment-include-auto-confirmed --segment-require-token-policy-decision --auto-apply
+python pipeline\main.py controlled-token-subpolicy-apply --auto-apply
+python pipeline\main.py same-token-boundary-repair-apply --auto-apply
 python pipeline\main.py segment-apply --segment-review-states human_locked,human_confirmed --segment-include-intentional-blank --segment-allow-locked-token-override --auto-apply
 python pipeline\main.py segment-state
 python pipeline\main.py segment-token-policy --segment-include-auto-confirmed
+python pipeline\main.py controlled-token-subpolicy-apply --controlled-token-subpolicy-reaudit
+python pipeline\main.py same-token-boundary-repair-apply --same-token-boundary-repair-reaudit
 python pipeline\main.py ml-composite-review-progress
 ```
 
@@ -144,7 +151,10 @@ Interpretacao:
 - sem `--auto-apply`, nada e gravado;
 - a primeira escrita aplica segmentos confirmados com tokens preservados;
 - a segunda escrita aplica somente excecoes com politica de token aprovada;
-- a terceira escrita reaplica excecoes humanas travadas, inclusive quando a correcao altera literais dentro de comandos CK3;
+- a etapa `controlled-token-subpolicy-apply` consome apenas auditorias maduras de subpolitica de token, promove `corrected_text` para confirmacao confiavel e so entao escreve o output;
+- a etapa `same-token-boundary-repair-apply` consome a auditoria controlada de boundary same-token, promove reparos reais, escreve output seguro e fecha observacoes no-op ja alinhadas pelo lifecycle;
+- a escrita seguinte reaplica excecoes humanas travadas, inclusive quando a correcao altera literais dentro de comandos CK3;
+- as reaudit controladas medem o ganho real depois do novo `segment-state`;
 - `token_mismatch` sem politica aprovada fica bloqueado;
 - `stale_token_policy_*` exige nova decisao ou revalidacao;
 - backups sao criados automaticamente em `memory/backups`.
@@ -209,7 +219,7 @@ Execucao atual do botao:
 - `GET /api/learning/status`: verifica semaforo de aprendizado;
 - `POST /api/production/start`: inicia execucao real se `can_start_production = true`;
 - `GET /api/production/runs/latest`: acompanha status, etapas, logs, relatorio e snapshot;
-- escreve `output/spanish` somente na etapa `apply_token_policy_write`;
+- escreve `output/spanish` nas etapas de apply autorizadas: regular, token-policy, subpolicy controlada, same-token boundary repair e locked/manual override;
 - gera log em `logs/<run_id>_production_run.log`;
 - gera relatorio em `reports/<run_id>_production_run.txt`.
 

@@ -16,6 +16,7 @@ from apply_safe_output_updates import protected_tokens
 from ml_train_risk import DEFAULT_FEATURE_SET, candidate_differs_from_output, language_features, make_text
 from ml_train_risk import normalize_compare
 from ml_train_risk import LANGUAGE_BLOCKING_FEATURES
+from ml_train_risk import SPANISH_TITLE_RESIDUE_PATTERN
 
 
 RULE_VERSION = "ml_score_segments_v1"
@@ -134,13 +135,12 @@ def has_blocked_spanish_geography_terms(row: dict[str, Any]) -> bool:
     if (row.get("relative_path") or "") != "titles_l_spanish.yml":
         return False
     candidate = row.get("candidate_text") or ""
-    return bool(
-        re.search(
-            r"\b(Caballer[oa]s?|Camino|Caminos|Pradera|Praderas|Bajo|Baja|Sur|dorad[oa]s?|Duero|Guardia)\b",
-            candidate,
-            flags=re.IGNORECASE,
-        )
+    legacy_terms = re.search(
+        r"\b(Caballer[oa]s?|Camino|Caminos|Pradera|Praderas|Bajo|Baja|Sur|dorad[oa]s?|Duero|Guardia)\b",
+        candidate,
+        flags=re.IGNORECASE,
     )
+    return bool(legacy_terms or SPANISH_TITLE_RESIDUE_PATTERN.search(candidate))
 
 
 def has_known_unsafe_title_text(row: dict[str, Any]) -> bool:

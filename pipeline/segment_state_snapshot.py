@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import db
-from apply_safe_output_updates import escape_localization_value
+from apply_safe_output_updates import escape_localization_value, protected_tokens
 
 
 RULE_VERSION = "segment_state_snapshot_v1"
@@ -18,6 +20,512 @@ STRUCTURAL_ACTIONS = {"blocked_structure"}
 REPAIR_ACTIONS = {"needs_autofix"}
 HUMAN_REVIEW_ACTIONS = {"needs_human"}
 SAFE_ACTIONS = {"auto_safe"}
+CONTROLLED_TOKEN_SUBPOLICY_CLOSURE_ACTION = "close_reopen_boundary_token_subpolicy_controlled"
+CONTROLLED_TOKEN_SUBPOLICY_CONFIRMATION_SOURCE = "controlled_token_subpolicy_production"
+CONTROLLED_TOKEN_SUBPOLICY_CONFIRMATION_LABEL = "boundary_token_subpolicy_controlled_production"
+SAME_TOKEN_BOUNDARY_REPAIR_CLOSURE_ACTION = "close_reopen_same_token_boundary_repair_controlled"
+SAME_TOKEN_BOUNDARY_REPAIR_NOOP_CLOSURE_ACTION = "close_reopen_same_token_boundary_repair_noop"
+SAME_TOKEN_BOUNDARY_REPAIR_CONFIRMATION_SOURCE = "same_token_boundary_repair_production"
+SAME_TOKEN_BOUNDARY_REPAIR_CONFIRMATION_LABEL = "same_token_boundary_repair_controlled_production"
+SELECT_CSTRING_GOVERNED_BRIDGE_CLOSURE_ACTION = "close_reopen_select_cstring_governed_bridge"
+SELECT_CSTRING_GOVERNED_BRIDGE_CONFIRMATION_SOURCE = "select_cstring_governed_bridge_production"
+SELECT_CSTRING_GOVERNED_BRIDGE_CONFIRMATION_LABEL_PREFIX = "select_cstring_governed_bridge:proposal_"
+SELECT_CSTRING_SEGMENT_LIFECYCLE_BRIDGE_CLOSURE_ACTION = "close_reopen_select_cstring_segment_lifecycle_bridge"
+ACTIONABLE_FALSE_REOPEN_CLOSURE_ACTION = "close_reopen_actionable_pending_false_positive"
+ACTIONABLE_REVIEWED_REPAIR_CLOSURE_ACTION = "close_reopen_actionable_pending_reviewed_repair"
+ACTIONABLE_REVIEWED_REPAIR_CONFIRMATION_SOURCE = "actionable_pending_reviewed_repair_production"
+ACTIONABLE_REVIEWED_REPAIR_CONFIRMATION_LABEL = "actionable_pending_lifecycle_gap_repair:queue_40"
+TITLE_LANDED_ES_REVIEWED_REPAIR_CONFIRMATION_SOURCE = "title_landed_es_reviewed_repair_production"
+TITLE_LANDED_ES_REVIEWED_REPAIR_CONFIRMATION_LABEL = "landed_title_spanish_es_suffix_repair:queue_150"
+NICKNAME_GENDER_ARTICLE_REVIEWED_SAFE_CONFIRMATION_SOURCE = "nickname_gender_article_reviewed_safe_production"
+NICKNAME_GENDER_ARTICLE_REVIEWED_SAFE_CONFIRMATION_LABEL = "nickname_gender_article_reviewed_safe:strict_review_v1"
+NICKNAME_GENDER_ARTICLE_HELD_EXCEPTION_CONFIRMATION_SOURCE = "nickname_gender_article_held_exception_production"
+NICKNAME_GENDER_ARTICLE_HELD_EXCEPTION_CONFIRMATION_LABEL = "nickname_gender_article_held_exception:structural_watch_v1"
+SHORT_LABEL_BOLD_NO_REPAIR_CONFIRMATION_SOURCE = "short_label_bold_no_repair_production"
+SHORT_LABEL_BOLD_NO_REPAIR_CONFIRMATION_LABEL = "short_label_bold_no_repair:checkpoint_3"
+PTBR_ORTHOGRAPHIC_MICROFIX_CONFIRMATION_SOURCE = "ptbr_orthographic_microfix_production"
+PTBR_ORTHOGRAPHIC_MICROFIX_CONFIRMATION_LABEL = "ptbr_orthographic_microfix:phase_b_ready18"
+TITLE_LANDED_ADJECTIVE_LEXICAL_RESIDUE_CONFIRMATION_SOURCE = "title_landed_adjective_lexical_residue_repair_production"
+TITLE_LANDED_ADJECTIVE_LEXICAL_RESIDUE_CONFIRMATION_LABEL = "title_landed_adjective_lexical_residue_exact_v1"
+TITLE_LANDED_ADJECTIVE_LEXICAL_RESIDUE_MEDIUM_CONFIRMATION_SOURCE = "title_landed_adjective_lexical_residue_medium_repair_production"
+TITLE_LANDED_ADJECTIVE_LEXICAL_RESIDUE_MEDIUM_CONFIRMATION_LABEL = "title_landed_adjective_lexical_residue_direction_suffix_v1"
+UI_COMPACT_LABEL_OVERRIDE_CONFIRMATION_SOURCE = "ui_compact_label_override_production"
+UI_COMPACT_LABEL_OVERRIDE_CONFIRMATION_LABEL = "border_wars_laws:compact_display_v1"
+IN_GAME_FEEDBACK_MICROFIX_CONFIRMATION_SOURCE = "in_game_feedback_microfix_production"
+IN_GAME_FEEDBACK_MICROFIX_CONFIRMATION_LABEL = "20260613_in_game_feedback_microfix_v2"
+IN_GAME_FEEDBACK_VASSAL_STANCES_CLAIM_CB_MICROFIX_CONFIRMATION_SOURCE = (
+    "in_game_feedback_vassal_stances_claim_cb_microfix_production"
+)
+IN_GAME_FEEDBACK_VASSAL_STANCES_CLAIM_CB_MICROFIX_CONFIRMATION_LABEL = (
+    "in_game_feedback_claim_cb_microfix"
+)
+IN_GAME_FEEDBACK_MANUAL_LOCKED_OVERRIDE_CONFIRMATION_SOURCE = (
+    "in_game_feedback_manual_locked_override"
+)
+IN_GAME_FEEDBACK_MANUAL_LOCKED_OVERRIDE_CONFIRMATION_LABEL = (
+    "vassal_stances_compact_ui_label"
+)
+IN_GAME_FEEDBACK_VASSAL_STANCES_CLAIM_CB_MICROFIX_STATE = (
+    "closed_auto_confirmed_in_game_feedback_vassal_stances_claim_cb_microfix"
+)
+TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_trait_description_esta_personagem_lifecycle"
+)
+TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_trait_description_esta_personagem_lifecycle"
+)
+DIARCHY_EXTRAVAGANCE_DESCRIPTION_REVIEWED_JSONL = (
+    "reports/20260619_120840_663296_diarchy_extravagance_description_microagent_reviewed_chat.jsonl"
+)
+DIARCHY_EXTRAVAGANCE_DESCRIPTION_READY_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_diarchy_extravagance_description_ready_lifecycle"
+)
+DIARCHY_EXTRAVAGANCE_DESCRIPTION_STYLE_WATCH_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_diarchy_extravagance_description_style_watch_lifecycle"
+)
+DIARCHY_EXTRAVAGANCE_DESCRIPTION_READY_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_diarchy_extravagance_description_ready_lifecycle"
+)
+DIARCHY_EXTRAVAGANCE_DESCRIPTION_STYLE_WATCH_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_diarchy_extravagance_description_style_watch_lifecycle"
+)
+AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_unknown_plain_event_ui_tooltip_lifecycle"
+)
+AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_unknown_plain_event_plain_prose_lifecycle"
+)
+AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_unknown_plain_event_gloss_historical_lifecycle"
+)
+AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_unknown_plain_event_ui_tooltip_lifecycle"
+)
+AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_unknown_plain_event_plain_prose_lifecycle"
+)
+AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_unknown_plain_event_gloss_historical_lifecycle"
+)
+AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_SEMANTIC_COMPANION_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_unknown_plain_event_ui_tooltip_semantic_companion_lifecycle"
+)
+AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_SEMANTIC_COMPANION_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_unknown_plain_event_plain_prose_semantic_companion_lifecycle"
+)
+AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_SEMANTIC_COMPANION_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_unknown_plain_event_gloss_historical_semantic_companion_lifecycle"
+)
+AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_unknown_plain_event_ui_tooltip_semantic_companion_lifecycle"
+)
+AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_unknown_plain_event_plain_prose_semantic_companion_lifecycle"
+)
+AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_unknown_plain_event_gloss_historical_semantic_companion_lifecycle"
+)
+AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_PLAIN_PROSE_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_unknown_plain_event_context_composer_plain_prose_lifecycle"
+)
+AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_EVENT_CONTEXT_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_unknown_plain_event_context_composer_event_context_lifecycle"
+)
+AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_PLAIN_PROSE_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_unknown_plain_event_context_composer_plain_prose_lifecycle"
+)
+AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_EVENT_CONTEXT_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_unknown_plain_event_context_composer_event_context_lifecycle"
+)
+GENDER_LONGFORM_BLOCKER_REPAIR_CONFIRMATION_SOURCE = "gender_longform_blocker_repair_production"
+GENDER_LONGFORM_BLOCKER_REPAIR_CONFIRMATION_LABEL = "gender_longform_blocker_repair:checkpoint_1"
+GENDER_LONGFORM_BLOCKER_NOOP_CONFIRMATION_SOURCE = "gender_longform_blocker_noop_production"
+GENDER_LONGFORM_BLOCKER_NOOP_CONFIRMATION_LABEL = "gender_longform_blocker_noop:checkpoint_1"
+GENDER_LONGFORM_CONTEXT_REWRITE_REVIEW_CONFIRMATION_SOURCE = "gender_longform_context_rewrite_review_production"
+GENDER_LONGFORM_CONTEXT_REWRITE_REVIEW_CONFIRMATION_LABEL = "gender_longform_context_rewrite_review:checkpoint_1"
+SELECT_CSTRING_RESIDUAL_LITERAL_REPAIR_CONFIRMATION_SOURCE = "select_cstring_residual_literal_repair_production"
+SELECT_CSTRING_RESIDUAL_LITERAL_REPAIR_CONFIRMATION_LABEL = "select_cstring_residual_literal_repair_checkpoint:run_1"
+SELECT_CSTRING_POSSESSIVE_CONTEXT_REPAIR_CONFIRMATION_SOURCE = "select_cstring_possessive_context_production"
+SELECT_CSTRING_POSSESSIVE_CONTEXT_REPAIR_CONFIRMATION_LABEL = "select_cstring_possessive_context_checkpoint:run_1"
+SELECT_CSTRING_AUXILIARY_CONTEXT_REPAIR_CONFIRMATION_SOURCE = "select_cstring_auxiliary_context_production"
+SELECT_CSTRING_AUXILIARY_CONTEXT_REPAIR_CONFIRMATION_LABEL = "select_cstring_auxiliary_context_checkpoint:run_2"
+SELECT_CSTRING_OBJECT_PRONOUN_SENTENCE_COMPOSER_CONFIRMATION_SOURCE = (
+    "select_cstring_object_pronoun_sentence_composer_production"
+)
+SELECT_CSTRING_OBJECT_PRONOUN_SENTENCE_COMPOSER_CONFIRMATION_LABEL = "object_pronoun_sentence_composer:run_3"
+SELECT_CSTRING_PASSIVE_CONFISCATION_COMPOSER_CONFIRMATION_SOURCE = (
+    "select_cstring_passive_confiscation_composer_production"
+)
+SELECT_CSTRING_PASSIVE_CONFISCATION_COMPOSER_CONFIRMATION_LABEL = "passive_confiscation_sentence_composer:71709"
+SELECT_CSTRING_PRETERITE_TRANSFER_REPAIR_CONFIRMATION_SOURCE = "select_cstring_preterite_transfer_production"
+SELECT_CSTRING_PRETERITE_TRANSFER_REPAIR_CONFIRMATION_LABEL = "select_cstring_preterite_transfer:98033"
+SELECT_CSTRING_PRETERITE_SAFE_BATCH_REPAIR_CONFIRMATION_SOURCE = "select_cstring_preterite_safe_batch_production"
+SELECT_CSTRING_PRETERITE_SAFE_BATCH_REPAIR_CONFIRMATION_LABEL = "select_cstring_preterite_safe_batch:run8"
+SHORT_LABEL_COMPACT_UI_OBVIOUS_REPAIR_CONFIRMATION_SOURCE = "short_label_compact_ui_obvious_repair_production"
+SHORT_LABEL_COMPACT_UI_OBVIOUS_REPAIR_CONFIRMATION_LABEL = "short_label_compact_ui_semantic_obvious_repair:queue_181"
+SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_REPAIR_CONFIRMATION_SOURCE = "short_label_single_issue_residual_repair_production"
+SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_REPAIR_CONFIRMATION_LABEL = (
+    "short_label_single_issue_residual_repair:checkpoint_2:decision_run_176:queue_215"
+)
+GENDER_ES_OA_FINAL_VOWEL_TRIM_PARTIAL_REPAIR_CONFIRMATION_SOURCE = (
+    "gender_es_oa_final_vowel_trim_partial_repair_production"
+)
+GENDER_ES_OA_FINAL_VOWEL_TRIM_PARTIAL_REPAIR_CONFIRMATION_LABEL = (
+    "gender_es_oa_final_vowel_trim_partial_repair:checkpoint_2"
+)
+GENDER_ES_OA_FINAL_VOWEL_TRIM_DRYRUN3_REPAIR_CONFIRMATION_SOURCE = (
+    "gender_es_oa_final_vowel_trim_dryrun3_repair_production"
+)
+GENDER_ES_OA_FINAL_VOWEL_TRIM_DRYRUN3_REPAIR_CONFIRMATION_LABEL = (
+    "gender_es_oa_final_vowel_trim_dryrun3_repair:checkpoint_4"
+)
+GENDER_ES_OA_FINAL_VOWEL_TRIM_DRYRUN3_REPAIR_STATE = (
+    "closed_auto_confirmed_gender_es_oa_final_vowel_trim_dryrun3_repair"
+)
+RELATION_POSSESSIVE_BOUNDARY_MICROREPAIR_CONFIRMATION_SOURCE = "relation_possessive_boundary_microrepair_production"
+RELATION_POSSESSIVE_BOUNDARY_MICROREPAIR_CONFIRMATION_LABEL = "relation_possessive_boundary_microrepair:checkpoint_1"
+RELATION_SEMANTIC_COMPOSER_REVIEWED_REPAIR_CONFIRMATION_SOURCE = (
+    "relation_semantic_composer_reviewed_repair_production"
+)
+RELATION_SEMANTIC_COMPOSER_REVIEWED_REPAIR_CONFIRMATION_LABEL = (
+    "relation_semantic_composer_reviewed_boundary_checkpoint:run_1"
+)
+SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH1_CONFIRMATION_SOURCE = (
+    "single_combat_signature_weapon_composer_batch1_production"
+)
+SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH1_CONFIRMATION_LABEL = (
+    "single_combat_signature_weapon_composer_batch1_repair"
+)
+SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH2_0041_CONFIRMATION_SOURCE = (
+    "single_combat_signature_weapon_composer_batch2_0041_production"
+)
+SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH2_0041_CONFIRMATION_LABEL = (
+    "single_combat_signature_weapon_composer_batch2_0041_repair"
+)
+DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REPAIR_CONFIRMATION_SOURCE = (
+    "dynamic_acclaimed_knight_requirement_repair_production"
+)
+DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REPAIR_CONFIRMATION_LABEL = (
+    "dynamic_acclaimed_knight_requirement_repair_ready"
+)
+DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REPAIR_STATE = (
+    "closed_auto_confirmed_dynamic_acclaimed_knight_requirement_repair"
+)
+DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REVIEWED_JSONL = (
+    "reports/20260619_133415_006829_dynamic_acclaimed_knight_requirement_policy_reviewed_chat.jsonl"
+)
+DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_STYLE_WATCH_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_dynamic_acclaimed_knight_requirement_style_watch_lifecycle"
+)
+SINGLE_COMBAT_SIGNATURE_WEAPON_ALREADY_GOOD_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_single_combat_signature_weapon_already_good_lifecycle"
+)
+SEMANTIC_SHORT_LABEL_EVENT_CONTEXT_DOMAIN_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_semantic_short_label_event_context_domain_lifecycle"
+)
+SEMANTIC_SHORT_LABEL_REQUIREMENT_TOOLTIP_DOMAIN_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_semantic_short_label_requirement_tooltip_domain_lifecycle"
+)
+SEMANTIC_SHORT_LABEL_REQUIREMENT_TOOLTIP_MICROREPAIR_CONFIRMATION_SOURCE = (
+    "semantic_short_label_requirement_tooltip_microrepair_production"
+)
+SEMANTIC_SHORT_LABEL_REQUIREMENT_TOOLTIP_MICROREPAIR_CONFIRMATION_LABEL = (
+    "requirement_tooltip_microrepair_safe:queue_218"
+)
+SEMANTIC_SHORT_LABEL_REQUIREMENT_TOOLTIP_MICROREPAIR_STATE = (
+    "closed_auto_confirmed_semantic_short_label_requirement_tooltip_microrepair"
+)
+SHORT_LABEL_STYLE_QUEUE220_STRICT_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_style_queue220_strict_lifecycle"
+)
+SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_CONFIRMATION_SOURCE = (
+    "short_label_style_queue220_microrepair_production"
+)
+SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_CONFIRMATION_LABEL = (
+    "short_label_microrepair_safe:queue_220"
+)
+SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_STATE = (
+    "closed_auto_confirmed_short_label_style_queue220_microrepair"
+)
+AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_unknown_ui_surface_queue221_lifecycle"
+)
+AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_unknown_ui_surface_queue221_lifecycle"
+)
+AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_MICROREPAIR_CONFIRMATION_SOURCE = (
+    "autofix_unknown_ui_surface_queue221_microrepair_production"
+)
+AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_MICROREPAIR_CONFIRMATION_LABEL = (
+    "autofix_unknown_ui_surface_queue221_microrepair"
+)
+AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_MICROREPAIR_STATE = (
+    "closed_auto_confirmed_autofix_unknown_ui_surface_queue221_microrepair"
+)
+SHORT_LABEL_COMPACT_UI_SEMANTIC_QUEUE222_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_compact_ui_semantic_queue222_lifecycle"
+)
+SHORT_LABEL_COMPACT_UI_SEMANTIC_QUEUE222_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_short_label_compact_ui_semantic_queue222_lifecycle"
+)
+SHORT_LABEL_COMPACT_UI_SEMANTIC_QUEUE222_MICROREPAIR_CONFIRMATION_SOURCE = (
+    "short_label_compact_ui_semantic_queue222_microrepair_production"
+)
+SHORT_LABEL_COMPACT_UI_SEMANTIC_QUEUE222_MICROREPAIR_CONFIRMATION_LABEL = (
+    "short_label_compact_ui_semantic_queue222_microrepair"
+)
+SHORT_LABEL_COMPACT_UI_SEMANTIC_QUEUE222_MICROREPAIR_STATE = (
+    "closed_auto_confirmed_short_label_compact_ui_semantic_queue222_microrepair"
+)
+SPANISH_RESIDUAL_CHECKPOINT9_SAFE_REPAIR_CONFIRMATION_SOURCE = (
+    "spanish_residual_checkpoint9_safe_repair_production"
+)
+SPANISH_RESIDUAL_CHECKPOINT9_SAFE_REPAIR_CONFIRMATION_LABEL = (
+    "spanish_residual_checkpoint9_safe_repair"
+)
+SPANISH_RESIDUAL_CHECKPOINT9_SAFE_REPAIR_STATE = (
+    "closed_auto_confirmed_spanish_residual_checkpoint9_safe_repair"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_MODIFIER_DESCRIPTION_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_pure_no_token_queue4_modifier_description_lifecycle"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_EVENT_OPTION_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_pure_no_token_queue4_event_option_lifecycle"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_short_label_pure_no_token_queue4_lifecycle"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_MICROREPAIR_CONFIRMATION_SOURCE = (
+    "short_label_pure_no_token_queue4_microrepair_production"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_MICROREPAIR_CONFIRMATION_LABEL = (
+    "short_label_pure_no_token_queue4_microrepair"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_MICROREPAIR_STATE = (
+    "closed_auto_confirmed_short_label_pure_no_token_queue4_microrepair"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MODIFIER_DESCRIPTION_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_pure_no_token_queue5_modifier_description_lifecycle"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_EVENT_OPTION_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_pure_no_token_queue5_event_option_lifecycle"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_NOMINAL_LABEL_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_pure_no_token_queue5_nominal_label_lifecycle"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_DEATH_REASON_FRAGMENT_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_pure_no_token_queue5_death_reason_fragment_lifecycle"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_short_label_pure_no_token_queue5_lifecycle"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MODIFIER_DESCRIPTION_FALSE_REOPEN_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_pure_no_token_queue5_modifier_description_false_reopen_lifecycle"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_EVENT_OPTION_FALSE_REOPEN_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_pure_no_token_queue5_event_option_false_reopen_lifecycle"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_NOMINAL_LABEL_FALSE_REOPEN_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_pure_no_token_queue5_nominal_label_false_reopen_lifecycle"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_DEATH_REASON_FRAGMENT_FALSE_REOPEN_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_pure_no_token_queue5_death_reason_fragment_false_reopen_lifecycle"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_short_label_pure_no_token_queue5_false_reopen_lifecycle"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MICROREPAIR_CONFIRMATION_SOURCE = (
+    "short_label_pure_no_token_queue5_microrepair_production"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MICROREPAIR_CONFIRMATION_LABEL = (
+    "short_label_pure_no_token_queue5_microrepair"
+)
+SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MICROREPAIR_STATE = (
+    "closed_auto_confirmed_short_label_pure_no_token_queue5_microrepair"
+)
+SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_QUEUE225_NOOP_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_single_issue_residual_queue225_noop_lifecycle"
+)
+SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_QUEUE225_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_short_label_single_issue_residual_queue225_noop_lifecycle"
+)
+SHORT_LABEL_SEMANTIC_PAIR_QUOTE_FRAGMENT_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_semantic_pair_quote_fragment_lifecycle"
+)
+SHORT_LABEL_SEMANTIC_PAIR_NOMINAL_LABEL_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_semantic_pair_nominal_label_lifecycle"
+)
+SHORT_LABEL_SEMANTIC_PAIR_SHORT_PHRASE_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_semantic_pair_short_phrase_lifecycle"
+)
+SHORT_LABEL_SEMANTIC_PAIR_COMPACT_OPTION_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_semantic_pair_compact_option_lifecycle"
+)
+SHORT_LABEL_SEMANTIC_PAIR_QUOTE_FRAGMENT_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_short_label_semantic_pair_quote_fragment_lifecycle"
+)
+SHORT_LABEL_SEMANTIC_PAIR_NOMINAL_LABEL_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_short_label_semantic_pair_nominal_label_lifecycle"
+)
+SHORT_LABEL_SEMANTIC_PAIR_SHORT_PHRASE_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_short_label_semantic_pair_short_phrase_lifecycle"
+)
+SHORT_LABEL_SEMANTIC_PAIR_COMPACT_OPTION_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_short_label_semantic_pair_compact_option_lifecycle"
+)
+SHORT_LABEL_SEMANTIC_LOAD_TIPS_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_semantic_load_tips_lifecycle"
+)
+SHORT_LABEL_SEMANTIC_LOAD_TIPS_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_short_label_semantic_load_tips_lifecycle"
+)
+SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_QUEUE225_REPAIR_CONFIRMATION_SOURCE = (
+    "short_label_single_issue_residual_queue225_repair_production"
+)
+SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_QUEUE225_REPAIR_CONFIRMATION_LABEL = (
+    "short_label_single_issue_residual_queue225_repair"
+)
+SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_QUEUE225_REPAIR_STATE = (
+    "closed_auto_confirmed_short_label_single_issue_residual_queue225_repair"
+)
+ACTIONABLE_BOOTSTRAP_REPAIR_CLOSURE_ACTION = "close_pending_unknown_actionable_bootstrap_repair"
+ACTIONABLE_BOOTSTRAP_REPAIR_CONFIRMATION_SOURCE = "actionable_pending_missing_confirmation_bootstrap_production"
+ACTIONABLE_BOOTSTRAP_REPAIR_CONFIRMATION_LABEL = "actionable_pending_missing_confirmation_bootstrap:queue_40"
+SHORT_LABEL_GUARDED_LIFECYCLE_CLOSURE_ACTION = "close_reopen_short_label_guarded_lifecycle"
+SHORT_LABEL_PURE_NO_TOKEN_SEGMENT_LIFECYCLE_CLOSURE_ACTION = "close_reopen_short_label_pure_no_token_segment_lifecycle_bridge"
+SHORT_LABEL_PURE_NO_TOKEN_SEMANTIC_LIFECYCLE_CLOSURE_ACTION = "close_reopen_short_label_pure_no_token_semantic_lifecycle"
+SHORT_LABEL_PURE_NO_TOKEN_DOMAIN_LIFECYCLE_CLOSURE_ACTION = "close_reopen_short_label_pure_no_token_domain_lifecycle"
+SHORT_LABEL_COMPACT_UI_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_short_label_compact_ui_false_reopen_lifecycle"
+)
+SHORT_LABEL_COMPACT_UI_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_short_label_compact_ui_semantic_companion_lifecycle"
+)
+SHORT_LABEL_DYNAMIC_DELEGATE_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_short_label_dynamic_delegate_lifecycle"
+)
+SHORT_LABEL_SINGLE_ISSUE_SYSTEM_TOOLTIP_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_short_label_single_issue_system_tooltip_lifecycle"
+)
+SHORT_LABEL_TOKENIZED_UI_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_short_label_tokenized_ui_false_reopen_lifecycle"
+)
+DYNAMIC_CK3_PATTERN_SHADOW_LIFECYCLE_CLOSURE_ACTION = "close_reopen_dynamic_ck3_pattern_shadow_lifecycle"
+GENDER_LONGFORM_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION = "close_reopen_gender_longform_false_reopen_context"
+SHORT_LABEL_SEMANTIC_TIER1_GUARDED_COMPOSITION_CLOSURE_ACTION = "close_reopen_short_label_semantic_tier1_guarded_composition"
+SEMANTIC_SHORT_LABEL_PAIR_GUARDED_LIFECYCLE_CLOSURE_ACTION = "close_reopen_semantic_short_label_pair_guarded_lifecycle"
+SEMANTIC_SHORT_LABEL_BLOCKED_SURFACE_LIFECYCLE_CLOSURE_ACTION = "close_reopen_semantic_short_label_blocked_surface_lifecycle"
+EVENT_DIALOGUE_OPTION_LIFECYCLE_CLOSURE_ACTION = "close_reopen_event_dialogue_option_lifecycle"
+EVENT_DIALOGUE_OPTION_BOUNDARY_LIFECYCLE_CLOSURE_ACTION = "close_reopen_event_dialogue_option_boundary_lifecycle"
+EVENT_OUTCOME_SHORT_LABEL_BOUNDARY_LIFECYCLE_CLOSURE_ACTION = "close_reopen_event_outcome_short_label_boundary_lifecycle"
+EVENT_CONTEXT_COMPOSER_LIFECYCLE_CLOSURE_ACTION = "close_reopen_event_context_composer_lifecycle"
+EVENT_CONTEXT_SENTENCE_BOUNDARY_LIFECYCLE_CLOSURE_ACTION = "close_reopen_event_context_sentence_boundary_lifecycle"
+EVENT_CONTEXT_COMPOSER_LIFECYCLE_BATCH_CLOSURE_ACTION = "close_reopen_event_context_composer_lifecycle_batch"
+SHORT_LABEL_STYLE_LIFECYCLE_BATCH_CLOSURE_ACTION = "close_reopen_short_label_style_lifecycle_batch"
+EVENT_SURFACE_ROUTER_LIFECYCLE_BATCH_CLOSURE_ACTION = "close_reopen_event_surface_router_lifecycle_batch"
+REQUIREMENT_TOOLTIP_SURFACE_LIFECYCLE_BATCH_CLOSURE_ACTION = "close_reopen_requirement_tooltip_surface_lifecycle_batch"
+EVENT_CONTEXT_COMPOSER_LIFECYCLE_RUN36_CLOSURE_ACTION = "close_reopen_event_context_composer_lifecycle_run36"
+SHORT_LABEL_STYLE_LIFECYCLE_RUN36_CLOSURE_ACTION = "close_reopen_short_label_style_lifecycle_run36"
+EVENT_SURFACE_ROUTER_LIFECYCLE_RUN36_CLOSURE_ACTION = "close_reopen_event_surface_router_lifecycle_run36"
+REQUIREMENT_TOOLTIP_SURFACE_LIFECYCLE_RUN36_CLOSURE_ACTION = "close_reopen_requirement_tooltip_surface_lifecycle_run36"
+AUTOFIX_UNKNOWN_EVENT_COMPOSITION_LIFECYCLE_CLOSURE_ACTION = "close_reopen_autofix_unknown_event_composition_lifecycle"
+AUTOFIX_UNKNOWN_EVENT_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_unknown_event_semantic_companion_lifecycle"
+)
+AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_BUILDING_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_unknown_semantic_companion_building_lifecycle"
+)
+AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_RULE_EFFECT_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_unknown_semantic_companion_rule_effect_lifecycle"
+)
+EVENT_SURFACE_SHORT_LABEL_COMPANION_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_event_surface_short_label_companion_lifecycle"
+)
+AUTOFIX_UNKNOWN_SURFACE_LIFECYCLE_CLOSURE_ACTION = "close_reopen_autofix_unknown_surface_lifecycle_bridge"
+AUTOFIX_UNKNOWN_SURFACE_CHECKPOINT_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_unknown_surface_checkpoint_lifecycle"
+)
+AUTOFIX_UNKNOWN_SURFACE_SEMANTIC_LIFECYCLE_CLOSURE_ACTION = "close_reopen_autofix_unknown_surface_semantic_lifecycle"
+AUTOFIX_UNKNOWN_DOMAIN_GUARDED_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_unknown_domain_guarded_lifecycle"
+)
+AUTOFIX_UNKNOWN_DOMAIN_GUARDED_REVIEWED_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_unknown_domain_guarded_reviewed_lifecycle"
+)
+LIFECYCLE_CLOSURE_ACTIONS = {
+    "close_reopen_guarded_formatting",
+    "close_reopen_static_token_only",
+    CONTROLLED_TOKEN_SUBPOLICY_CLOSURE_ACTION,
+    SAME_TOKEN_BOUNDARY_REPAIR_CLOSURE_ACTION,
+    SAME_TOKEN_BOUNDARY_REPAIR_NOOP_CLOSURE_ACTION,
+    SELECT_CSTRING_GOVERNED_BRIDGE_CLOSURE_ACTION,
+    SELECT_CSTRING_SEGMENT_LIFECYCLE_BRIDGE_CLOSURE_ACTION,
+    ACTIONABLE_FALSE_REOPEN_CLOSURE_ACTION,
+    ACTIONABLE_REVIEWED_REPAIR_CLOSURE_ACTION,
+    ACTIONABLE_BOOTSTRAP_REPAIR_CLOSURE_ACTION,
+    SHORT_LABEL_GUARDED_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_PURE_NO_TOKEN_SEGMENT_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_PURE_NO_TOKEN_SEMANTIC_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_PURE_NO_TOKEN_DOMAIN_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_COMPACT_UI_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_COMPACT_UI_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_DYNAMIC_DELEGATE_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_SINGLE_ISSUE_SYSTEM_TOOLTIP_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_TOKENIZED_UI_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+    DYNAMIC_CK3_PATTERN_SHADOW_LIFECYCLE_CLOSURE_ACTION,
+    GENDER_LONGFORM_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_SEMANTIC_TIER1_GUARDED_COMPOSITION_CLOSURE_ACTION,
+    SEMANTIC_SHORT_LABEL_PAIR_GUARDED_LIFECYCLE_CLOSURE_ACTION,
+    SEMANTIC_SHORT_LABEL_BLOCKED_SURFACE_LIFECYCLE_CLOSURE_ACTION,
+    EVENT_DIALOGUE_OPTION_LIFECYCLE_CLOSURE_ACTION,
+    EVENT_DIALOGUE_OPTION_BOUNDARY_LIFECYCLE_CLOSURE_ACTION,
+    EVENT_OUTCOME_SHORT_LABEL_BOUNDARY_LIFECYCLE_CLOSURE_ACTION,
+    EVENT_CONTEXT_COMPOSER_LIFECYCLE_CLOSURE_ACTION,
+    EVENT_CONTEXT_SENTENCE_BOUNDARY_LIFECYCLE_CLOSURE_ACTION,
+    EVENT_CONTEXT_COMPOSER_LIFECYCLE_BATCH_CLOSURE_ACTION,
+    SHORT_LABEL_STYLE_LIFECYCLE_BATCH_CLOSURE_ACTION,
+    EVENT_SURFACE_ROUTER_LIFECYCLE_BATCH_CLOSURE_ACTION,
+    REQUIREMENT_TOOLTIP_SURFACE_LIFECYCLE_BATCH_CLOSURE_ACTION,
+    EVENT_CONTEXT_COMPOSER_LIFECYCLE_RUN36_CLOSURE_ACTION,
+    SHORT_LABEL_STYLE_LIFECYCLE_RUN36_CLOSURE_ACTION,
+    EVENT_SURFACE_ROUTER_LIFECYCLE_RUN36_CLOSURE_ACTION,
+    REQUIREMENT_TOOLTIP_SURFACE_LIFECYCLE_RUN36_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_EVENT_COMPOSITION_LIFECYCLE_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_EVENT_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_BUILDING_LIFECYCLE_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_RULE_EFFECT_LIFECYCLE_CLOSURE_ACTION,
+    EVENT_SURFACE_SHORT_LABEL_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_SURFACE_LIFECYCLE_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_SURFACE_CHECKPOINT_LIFECYCLE_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_SURFACE_SEMANTIC_LIFECYCLE_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_DOMAIN_GUARDED_LIFECYCLE_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_DOMAIN_GUARDED_REVIEWED_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+    TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_CLOSURE_ACTION,
+    DIARCHY_EXTRAVAGANCE_DESCRIPTION_READY_LIFECYCLE_CLOSURE_ACTION,
+    DIARCHY_EXTRAVAGANCE_DESCRIPTION_STYLE_WATCH_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_SEMANTIC_PAIR_QUOTE_FRAGMENT_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_SEMANTIC_PAIR_NOMINAL_LABEL_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_SEMANTIC_PAIR_SHORT_PHRASE_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_SEMANTIC_PAIR_COMPACT_OPTION_LIFECYCLE_CLOSURE_ACTION,
+    SHORT_LABEL_SEMANTIC_LOAD_TIPS_LIFECYCLE_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_LIFECYCLE_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_LIFECYCLE_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_LIFECYCLE_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_PLAIN_PROSE_LIFECYCLE_CLOSURE_ACTION,
+    AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_EVENT_CONTEXT_LIFECYCLE_CLOSURE_ACTION,
+}
+ACTIVE_REOPEN_LIFECYCLE_POLICIES = {
+    "guarded_mechanical_formatting_reopen_closure",
+    "guarded_static_token_only_reopen_closure",
+    "actionable_pending_reviewed_false_reopen_closure",
+    "short_label_guarded_lifecycle_bridge",
+}
 
 
 @dataclass(frozen=True)
@@ -48,6 +556,4052 @@ def as_text(value: Any) -> str:
 
 def canonical_localization_text(value: Any) -> str:
     return escape_localization_value(as_text(value))
+
+
+def sha256_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    return hashlib.sha256(as_text(value).encode("utf-8")).hexdigest()
+
+
+def sha1_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    return hashlib.sha1(as_text(value).encode("utf-8")).hexdigest()
+
+
+def protected_tokens_signature(value: Any) -> str:
+    return json.dumps(sorted(protected_tokens(as_text(value)).items()), ensure_ascii=False)
+
+
+def register_sql_functions(conn) -> None:
+    conn.create_function("sha256_text", 1, sha256_text)
+    conn.create_function("sha1_text", 1, sha1_text)
+    conn.create_function("canonical_l10n", 1, canonical_localization_text)
+    conn.create_function("protected_tokens_signature", 1, protected_tokens_signature)
+
+
+def prepare_autofix_unknown_semantic_companion_building_lifecycle(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_unknown_semantic_companion_building_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_unknown_semantic_companion_building_lifecycle AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        building_ledger_summary AS (
+            SELECT
+                checkpoint_item.ledger_run_id,
+                checkpoint_item.segment_id,
+                COUNT(*) AS open_ledger_count,
+                SUM(
+                    CASE
+                        WHEN lower(COALESCE(ledger_item.issue_severity, '')) IN ('high', 'error', 'critical')
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS high_ledger_count,
+                SUM(
+                    CASE
+                        WHEN COALESCE(ledger_item.token_status, '') NOT IN ('', 'ok')
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS token_ledger_count
+            FROM ml_issue_autofix_unknown_semantic_companion_checkpoint_items checkpoint_item
+            JOIN ml_issue_ledger_items ledger_item
+              ON ledger_item.run_id = checkpoint_item.ledger_run_id
+             AND ledger_item.segment_id = checkpoint_item.segment_id
+             AND ledger_item.status = 'open'
+            WHERE checkpoint_item.checkpoint_run_id = 3
+            GROUP BY checkpoint_item.ledger_run_id, checkpoint_item.segment_id
+        ),
+        current_issue_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS issue_count,
+                SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+            FROM issues
+            GROUP BY segment_id
+        )
+        SELECT DISTINCT item.segment_id
+        FROM ml_issue_autofix_unknown_semantic_companion_checkpoint_items item
+        JOIN ml_issue_autofix_unknown_semantic_companion_checkpoint_runs checkpoint
+          ON checkpoint.id = item.checkpoint_run_id
+         AND checkpoint.ledger_run_id = item.ledger_run_id
+         AND checkpoint.segment_state_run_id = item.segment_state_run_id
+        JOIN ml_issue_ledger_items autofix_ledger_item
+          ON autofix_ledger_item.id = item.autofix_ledger_item_id
+         AND autofix_ledger_item.run_id = item.ledger_run_id
+         AND autofix_ledger_item.segment_id = item.segment_id
+        JOIN ml_issue_ledger_items semantic_ledger_item
+          ON semantic_ledger_item.id = item.semantic_ledger_item_id
+         AND semantic_ledger_item.run_id = item.ledger_run_id
+         AND semantic_ledger_item.segment_id = item.segment_id
+        JOIN building_ledger_summary
+          ON building_ledger_summary.ledger_run_id = item.ledger_run_id
+         AND building_ledger_summary.segment_id = item.segment_id
+        JOIN segment_state_items state
+          ON state.segment_id = item.segment_id
+        JOIN previous_run current_state_run
+          ON current_state_run.id = state.run_id
+        JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = item.segment_id
+        JOIN output_segments output
+          ON output.segment_id = item.segment_id
+        LEFT JOIN current_issue_summary issue_summary
+          ON issue_summary.segment_id = item.segment_id
+        WHERE checkpoint.finished_at IS NOT NULL
+          AND checkpoint.id = 3
+          AND checkpoint.rule_version = 'issue_autofix_unknown_semantic_companion_checkpoint_v2_building_first'
+          AND checkpoint.checkpoint_name = 'autofix_unknown_semantic_companion_checkpoint_v2_building_first'
+          AND checkpoint.checkpoint_status = 'ready_for_shadow_lifecycle'
+          AND checkpoint.agent_key = 'micro_autofix_unknown_semantic_companion'
+          AND checkpoint.total_candidates = 3185
+          AND checkpoint.checkpoint_allowed_count = 468
+          AND checkpoint.checkpoint_blocked_count = 2717
+          AND item.checkpoint_run_id = 3
+          AND item.checkpoint_allowed = 1
+          AND COALESCE(TRIM(item.block_reason), '') = ''
+          AND item.subpolicy_name = 'building_description_guarded'
+          AND item.checkpoint_action = 'cover_autofix_unknown_semantic_companion_false_reopen'
+          AND (
+                item.current_confirmed_text_hash IS NULL
+             OR item.current_output_text_hash IS NULL
+             OR item.current_confirmed_text_hash = item.current_output_text_hash
+          )
+          AND autofix_ledger_item.status = 'open'
+          AND autofix_ledger_item.issue_family = 'autofix_unknown_microagent'
+          AND autofix_ledger_item.issue_kind = 'needs_autofix_unclassified'
+          AND semantic_ledger_item.status = 'open'
+          AND semantic_ledger_item.issue_family = 'semantic_review_router'
+          AND semantic_ledger_item.issue_kind = 'needs_human_or_semantic_conflict'
+          AND COALESCE(building_ledger_summary.open_ledger_count, 0) = 2
+          AND COALESCE(building_ledger_summary.high_ledger_count, 0) = 0
+          AND COALESCE(building_ledger_summary.token_ledger_count, 0) = 0
+          AND COALESCE(issue_summary.issue_count, 0) = 0
+          AND COALESCE(issue_summary.high_issue_count, 0) = 0
+          AND COALESCE(state.review_state, '') = 'auto_confirmed'
+          AND COALESCE(state.review_state, '') NOT IN ('human_locked', 'human_confirmed')
+          AND COALESCE(state.confirmed_matches_output, 0) = 1
+          AND COALESCE(state.needs_output_apply, 0) = 0
+          AND COALESCE(state.locked, 0) = 0
+          AND (
+                (
+                    COALESCE(state.needs_reopen, 0) = 1
+                AND COALESCE(state.state_group, '') = 'pending'
+                AND COALESCE(state.final_state, '') = 'reopen_auto_confirmed_autofix'
+                )
+             OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_semantic_companion_building_lifecycle'
+          )
+          AND COALESCE(confirmation.locked, 0) = 0
+          AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+          AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+          AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+          AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+        """
+    )
+
+
+def prepare_autofix_unknown_semantic_companion_rule_effect_lifecycle(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_unknown_semantic_companion_rule_effect_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_unknown_semantic_companion_rule_effect_lifecycle AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        rule_effect_ledger_summary AS (
+            SELECT
+                checkpoint_item.ledger_run_id,
+                checkpoint_item.segment_id,
+                COUNT(*) AS open_ledger_count,
+                SUM(
+                    CASE
+                        WHEN lower(COALESCE(ledger_item.issue_severity, '')) IN ('high', 'error', 'critical')
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS high_ledger_count,
+                SUM(
+                    CASE
+                        WHEN COALESCE(ledger_item.token_status, '') NOT IN ('', 'ok')
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS token_ledger_count
+            FROM ml_issue_autofix_unknown_semantic_companion_checkpoint_items checkpoint_item
+            JOIN ml_issue_ledger_items ledger_item
+              ON ledger_item.run_id = checkpoint_item.ledger_run_id
+             AND ledger_item.segment_id = checkpoint_item.segment_id
+             AND ledger_item.status = 'open'
+            WHERE checkpoint_item.checkpoint_run_id = 5
+            GROUP BY checkpoint_item.ledger_run_id, checkpoint_item.segment_id
+        ),
+        current_issue_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS issue_count,
+                SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+            FROM issues
+            GROUP BY segment_id
+        )
+        SELECT DISTINCT item.segment_id
+        FROM ml_issue_autofix_unknown_semantic_companion_checkpoint_items item
+        JOIN ml_issue_autofix_unknown_semantic_companion_checkpoint_runs checkpoint
+          ON checkpoint.id = item.checkpoint_run_id
+         AND checkpoint.ledger_run_id = item.ledger_run_id
+         AND checkpoint.segment_state_run_id = item.segment_state_run_id
+        JOIN ml_issue_ledger_items autofix_ledger_item
+          ON autofix_ledger_item.id = item.autofix_ledger_item_id
+         AND autofix_ledger_item.run_id = item.ledger_run_id
+         AND autofix_ledger_item.segment_id = item.segment_id
+        JOIN ml_issue_ledger_items semantic_ledger_item
+          ON semantic_ledger_item.id = item.semantic_ledger_item_id
+         AND semantic_ledger_item.run_id = item.ledger_run_id
+         AND semantic_ledger_item.segment_id = item.segment_id
+        JOIN rule_effect_ledger_summary
+          ON rule_effect_ledger_summary.ledger_run_id = item.ledger_run_id
+         AND rule_effect_ledger_summary.segment_id = item.segment_id
+        JOIN segment_state_items state
+          ON state.segment_id = item.segment_id
+        JOIN previous_run current_state_run
+          ON current_state_run.id = state.run_id
+        JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = item.segment_id
+        JOIN output_segments output
+          ON output.segment_id = item.segment_id
+        LEFT JOIN current_issue_summary issue_summary
+          ON issue_summary.segment_id = item.segment_id
+        WHERE checkpoint.finished_at IS NOT NULL
+          AND checkpoint.id = 5
+          AND checkpoint.rule_version = 'issue_autofix_unknown_semantic_companion_checkpoint_v3_rule_effect_second'
+          AND checkpoint.checkpoint_name = 'autofix_unknown_semantic_companion_checkpoint_v3_rule_effect_second'
+          AND checkpoint.checkpoint_status = 'ready_for_shadow_lifecycle'
+          AND checkpoint.agent_key = 'micro_autofix_unknown_semantic_companion'
+          AND checkpoint.total_candidates = 2717
+          AND checkpoint.checkpoint_allowed_count = 465
+          AND checkpoint.checkpoint_blocked_count = 2252
+          AND item.checkpoint_run_id = 5
+          AND item.checkpoint_allowed = 1
+          AND COALESCE(TRIM(item.block_reason), '') = ''
+          AND item.subpolicy_name = 'rule_effect_modifier_guarded'
+          AND item.checkpoint_action = 'cover_autofix_unknown_semantic_companion_false_reopen'
+          AND (
+                item.current_confirmed_text_hash IS NULL
+             OR item.current_output_text_hash IS NULL
+             OR item.current_confirmed_text_hash = item.current_output_text_hash
+          )
+          AND autofix_ledger_item.status = 'open'
+          AND autofix_ledger_item.issue_family = 'autofix_unknown_microagent'
+          AND autofix_ledger_item.issue_kind = 'needs_autofix_unclassified'
+          AND semantic_ledger_item.status = 'open'
+          AND semantic_ledger_item.issue_family = 'semantic_review_router'
+          AND semantic_ledger_item.issue_kind = 'needs_human_or_semantic_conflict'
+          AND COALESCE(rule_effect_ledger_summary.open_ledger_count, 0) = 2
+          AND COALESCE(rule_effect_ledger_summary.high_ledger_count, 0) = 0
+          AND COALESCE(rule_effect_ledger_summary.token_ledger_count, 0) = 0
+          AND COALESCE(issue_summary.issue_count, 0) = 0
+          AND COALESCE(issue_summary.high_issue_count, 0) = 0
+          AND COALESCE(state.review_state, '') = 'auto_confirmed'
+          AND COALESCE(state.review_state, '') NOT IN ('human_locked', 'human_confirmed')
+          AND COALESCE(state.confirmed_matches_output, 0) = 1
+          AND COALESCE(state.needs_output_apply, 0) = 0
+          AND COALESCE(state.locked, 0) = 0
+          AND (
+                (
+                    COALESCE(state.needs_reopen, 0) = 1
+                AND COALESCE(state.state_group, '') = 'pending'
+                AND COALESCE(state.final_state, '') = 'reopen_auto_confirmed_autofix'
+                )
+             OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_semantic_companion_rule_effect_lifecycle'
+          )
+          AND COALESCE(confirmation.locked, 0) = 0
+          AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+          AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+          AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+          AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+        """
+    )
+
+
+def ensure_short_label_bridge_tables(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS short_label_guarded_lifecycle_bridge_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            state_run_id INTEGER NOT NULL,
+            checkpoint_runs_considered INTEGER NOT NULL DEFAULT 0,
+            raw_candidates INTEGER NOT NULL DEFAULT 0,
+            raw_distinct_segments INTEGER NOT NULL DEFAULT 0,
+            deduped_candidates INTEGER NOT NULL DEFAULT 0,
+            eligible_count INTEGER NOT NULL DEFAULT 0,
+            blocked_count INTEGER NOT NULL DEFAULT 0,
+            estimated_closed_gain INTEGER NOT NULL DEFAULT 0,
+            report_path TEXT,
+            csv_path TEXT,
+            jsonl_path TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS short_label_guarded_lifecycle_bridge_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            checkpoint_run_id INTEGER NOT NULL,
+            checkpoint_item_id INTEGER NOT NULL,
+            release_run_id INTEGER NOT NULL,
+            release_item_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            queue_bucket TEXT,
+            normalized_decision TEXT,
+            evidence_label TEXT,
+            bridge_status TEXT NOT NULL,
+            block_reasons TEXT,
+            current_final_state TEXT,
+            current_review_state TEXT,
+            current_apply_state TEXT,
+            current_is_closed INTEGER NOT NULL DEFAULT 0,
+            current_confirmed_text_hash TEXT,
+            output_text_hash TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES short_label_guarded_lifecycle_bridge_runs(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+
+def ensure_autofix_unknown_surface_bridge_tables(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_issue_autofix_unknown_surface_bridge_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            bridge_name TEXT NOT NULL,
+            source_checkpoint_run_id INTEGER NOT NULL,
+            source_segment_state_run_id INTEGER NOT NULL,
+            source_ledger_run_id INTEGER NOT NULL,
+            total_candidates INTEGER NOT NULL DEFAULT 0,
+            ready_count INTEGER NOT NULL DEFAULT 0,
+            partial_count INTEGER NOT NULL DEFAULT 0,
+            blocked_count INTEGER NOT NULL DEFAULT 0,
+            estimated_closed_gain INTEGER NOT NULL DEFAULT 0,
+            production_release_allowed INTEGER NOT NULL DEFAULT 0,
+            status_counts_json TEXT,
+            block_counts_json TEXT,
+            report_path TEXT,
+            jsonl_path TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_issue_autofix_unknown_surface_bridge_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            checkpoint_item_id INTEGER NOT NULL,
+            checkpoint_run_id INTEGER NOT NULL,
+            ledger_run_id INTEGER NOT NULL,
+            segment_state_run_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT,
+            source_key TEXT,
+            cluster TEXT,
+            bridge_status TEXT NOT NULL,
+            block_reason TEXT,
+            segment_open_issue_count INTEGER NOT NULL DEFAULT 0,
+            covered_issue_count INTEGER NOT NULL DEFAULT 0,
+            final_state TEXT,
+            evidence_text TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def prepare_single_combat_signature_weapon_already_good_lifecycle(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_single_combat_signature_weapon_already_good_review")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_single_combat_signature_weapon_already_good_review (
+            segment_id INTEGER PRIMARY KEY,
+            source_key TEXT NOT NULL,
+            review_file TEXT NOT NULL
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO temp_single_combat_signature_weapon_already_good_review (
+            segment_id,
+            source_key,
+            review_file
+        )
+        VALUES (?, ?, ?)
+        """,
+        [
+            (
+                246047,
+                "single_combat.0031.desc.sc_attacker.hurt_me_better",
+                "reports/20260617_170943_single_combat_signature_weapon_composer_batch1_decisions_reviewed_chat_v2.jsonl",
+            ),
+            (
+                246266,
+                "single_combat.0041.desc.opponent_response.stoic_veteran.injury",
+                "reports/20260617_191550_single_combat_signature_weapon_composer_batch2_0041_decisions_reviewed_chat_v3.jsonl",
+            ),
+            (
+                246428,
+                "single_combat.0041.desc.sc_attacker.hurt_me_better.fatality",
+                "reports/20260617_191550_single_combat_signature_weapon_composer_batch2_0041_decisions_reviewed_chat_v3.jsonl",
+            ),
+            (
+                246357,
+                "single_combat.0041.desc.sc_attacker.nut_em.injury",
+                "reports/20260617_191550_single_combat_signature_weapon_composer_batch2_0041_decisions_reviewed_chat_v3.jsonl",
+            ),
+        ],
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_single_combat_signature_weapon_already_good_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_single_combat_signature_weapon_already_good_lifecycle AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(
+                    CASE
+                        WHEN issue_family = 'dynamic_ck3_expression_microagent'
+                         AND issue_kind = 'custom_localization_expression'
+                        THEN 1 ELSE 0
+                    END
+                ) AS dynamic_issue_count,
+                GROUP_CONCAT(issue_family || '/' || issue_kind, '; ') AS open_issues
+            FROM ml_issue_ledger_items
+            WHERE run_id = 56
+              AND status = 'open'
+              AND segment_id IN (246047, 246266, 246428, 246357)
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.source_key,
+            review.review_file,
+            previous.final_state AS previous_final_state,
+            previous.state_group AS previous_state_group,
+            previous.confirmed_matches_output,
+            previous.needs_output_apply,
+            previous.needs_reopen,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.dynamic_issue_count, 0) AS dynamic_issue_count,
+            COALESCE(ledger_summary.open_issues, '') AS open_issues,
+            CASE
+                WHEN previous.final_state = 'closed_auto_confirmed_single_combat_signature_weapon_already_good_lifecycle'
+                    THEN 'closed'
+                WHEN review.segment_id = 246266 THEN 'blocked_preserved'
+                WHEN review.segment_id = 246357 THEN 'blocked_preserved'
+                WHEN review.segment_id NOT IN (246047, 246428) THEN 'blocked_preserved'
+                WHEN COALESCE(previous.state_group, '') = 'closed' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.final_state, '') != 'reopen_auto_confirmed_autofix' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'blocked_preserved'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.dynamic_issue_count, 0) != 1 THEN 'blocked_preserved'
+                WHEN source.relative_path != 'single_combat_events_l_spanish.yml' THEN 'blocked_preserved'
+                WHEN source.source_key != review.source_key THEN 'blocked_preserved'
+                WHEN source.source_key NOT LIKE 'single_combat.0031%'
+                 AND source.source_key NOT LIKE 'single_combat.0041%' THEN 'blocked_preserved'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN previous.final_state = 'closed_auto_confirmed_single_combat_signature_weapon_already_good_lifecycle' THEN ''
+                WHEN review.segment_id = 246266 THEN 'other_open_issue: gender_token_usage'
+                WHEN review.segment_id = 246357 THEN 'other_open_issue: needs_human_or_semantic_conflict'
+                WHEN review.segment_id NOT IN (246047, 246428) THEN 'not_in_closure_allowlist'
+                WHEN COALESCE(previous.state_group, '') = 'closed' THEN 'previous_state_closed'
+                WHEN COALESCE(previous.final_state, '') != 'reopen_auto_confirmed_autofix' THEN 'previous_state_not_reopen_auto_confirmed_autofix'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'confirmed_does_not_match_output'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'needs_output_apply'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'locked_confirmation'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'confirmation_stale'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'token_signature_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 1 THEN 'ledger_open_issue_count_not_1'
+                WHEN COALESCE(ledger_summary.dynamic_issue_count, 0) != 1 THEN 'ledger_issue_not_dynamic_custom_localization'
+                WHEN source.relative_path != 'single_combat_events_l_spanish.yml' THEN 'relative_path_mismatch'
+                WHEN source.source_key != review.source_key THEN 'source_key_mismatch'
+                WHEN source.source_key NOT LIKE 'single_combat.0031%'
+                 AND source.source_key NOT LIKE 'single_combat.0041%' THEN 'source_key_prefix_mismatch'
+                ELSE ''
+            END AS block_reason
+        FROM temp_single_combat_signature_weapon_already_good_review review
+        JOIN source_segments source
+          ON source.id = review.segment_id
+        JOIN output_segments output
+          ON output.segment_id = review.segment_id
+        JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = review.segment_id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        JOIN previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+         AND previous.segment_id = review.segment_id
+        """
+    )
+
+
+def prepare_semantic_short_label_domain_context_lifecycle(conn) -> None:
+    review_files = [
+        (
+            219,
+            Path("reports/20260617_204325_semantic_short_label_domain_context_queue_219_reviewed_chat.jsonl"),
+            {"context_composer_ready", "already_good_context_confirmed"},
+            SEMANTIC_SHORT_LABEL_EVENT_CONTEXT_DOMAIN_LIFECYCLE_STATE,
+            "event_context_domain",
+            180,
+            172,
+        ),
+        (
+            218,
+            Path("reports/20260617_204325_semantic_short_label_domain_context_queue_218_reviewed_chat.jsonl"),
+            {"requirement_tooltip_ready", "already_good_context_confirmed"},
+            SEMANTIC_SHORT_LABEL_REQUIREMENT_TOOLTIP_DOMAIN_LIFECYCLE_STATE,
+            "requirement_tooltip_domain",
+            120,
+            106,
+        ),
+    ]
+    conn.execute("DROP TABLE IF EXISTS temp_semantic_short_label_domain_context_review")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_semantic_short_label_domain_context_review (
+            queue_run_id INTEGER NOT NULL,
+            segment_id INTEGER PRIMARY KEY,
+            agent_key TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            tokens_preserved INTEGER NOT NULL,
+            requires_apply_later INTEGER NOT NULL,
+            lifecycle_candidate INTEGER NOT NULL,
+            suggested_subpolicy TEXT,
+            target_state TEXT NOT NULL,
+            bridge_family TEXT NOT NULL
+        )
+        """
+    )
+    insert_rows = []
+    for queue_run_id, path, allowed_decisions, target_state, bridge_family, expected_total, expected_candidates in review_files:
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if len(rows) != expected_total:
+            raise RuntimeError(f"Unexpected reviewed row count for queue {queue_run_id}: {len(rows)}")
+        candidate_count = 0
+        for row in rows:
+            is_candidate = (
+                row.get("decision") in allowed_decisions
+                and row.get("lifecycle_candidate") is True
+                and row.get("requires_apply_later") is False
+                and row.get("tokens_preserved") is True
+            )
+            if is_candidate:
+                candidate_count += 1
+            insert_rows.append(
+                (
+                    int(row["queue_run_id"]),
+                    int(row["segment_id"]),
+                    as_text(row["agent_key"]),
+                    as_text(row["source_key"]),
+                    as_text(row["relative_path"]),
+                    as_text(row["decision"]),
+                    float(row["confidence"]),
+                    1 if row.get("tokens_preserved") is True else 0,
+                    1 if row.get("requires_apply_later") is True else 0,
+                    1 if row.get("lifecycle_candidate") is True else 0,
+                    as_text(row.get("suggested_subpolicy")),
+                    target_state,
+                    bridge_family,
+                )
+            )
+        if candidate_count != expected_candidates:
+            raise RuntimeError(
+                f"Unexpected lifecycle candidate count for queue {queue_run_id}: {candidate_count}"
+            )
+    conn.executemany(
+        """
+        INSERT INTO temp_semantic_short_label_domain_context_review (
+            queue_run_id,
+            segment_id,
+            agent_key,
+            source_key,
+            relative_path,
+            decision,
+            confidence,
+            tokens_preserved,
+            requires_apply_later,
+            lifecycle_candidate,
+            suggested_subpolicy,
+            target_state,
+            bridge_family
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        insert_rows,
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_semantic_short_label_domain_context_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_semantic_short_label_domain_context_lifecycle AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router'
+                          AND issue_kind = 'needs_human_or_semantic_conflict'
+                         THEN 1 ELSE 0 END) AS semantic_issue_count,
+                SUM(CASE WHEN issue_family = 'short_label_style_microagent'
+                          AND issue_kind = 'short_or_compact_label_reopened'
+                         THEN 1 ELSE 0 END) AS short_label_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical')
+                         THEN 1 ELSE 0 END) AS high_issue_count,
+                GROUP_CONCAT(issue_family || '/' || issue_kind, '; ') AS open_issues
+            FROM ml_issue_ledger_items
+            WHERE run_id = 57
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.queue_run_id,
+            review.agent_key,
+            review.source_key,
+            review.relative_path,
+            review.decision,
+            review.suggested_subpolicy,
+            review.target_state,
+            review.bridge_family,
+            previous.final_state AS previous_final_state,
+            previous.state_group AS previous_state_group,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.semantic_issue_count, 0) AS semantic_issue_count,
+            COALESCE(ledger_summary.short_label_issue_count, 0) AS short_label_issue_count,
+            COALESCE(ledger_summary.high_issue_count, 0) AS high_issue_count,
+            COALESCE(ledger_summary.open_issues, '') AS open_issues,
+            CASE
+                WHEN previous.final_state = review.target_state THEN 'closed'
+                WHEN review.lifecycle_candidate != 1 THEN 'blocked_preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked_preserved'
+                WHEN review.tokens_preserved != 1 THEN 'blocked_preserved'
+                WHEN review.queue_run_id = 219
+                 AND review.decision NOT IN ('context_composer_ready', 'already_good_context_confirmed')
+                    THEN 'blocked_preserved'
+                WHEN review.queue_run_id = 218
+                 AND review.decision NOT IN ('requirement_tooltip_ready', 'already_good_context_confirmed')
+                    THEN 'blocked_preserved'
+                WHEN COALESCE(previous.state_group, '') = 'closed' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.final_state, '') NOT LIKE 'reopen_%' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'blocked_preserved'
+                WHEN confirmation.segment_id IS NULL THEN 'blocked_preserved'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'blocked_preserved'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'blocked_preserved'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                    THEN 'blocked_preserved'
+                WHEN source.source_key != review.source_key THEN 'blocked_preserved'
+                WHEN source.relative_path != review.relative_path THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.semantic_issue_count, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.short_label_issue_count, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'blocked_preserved'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN previous.final_state = review.target_state THEN ''
+                WHEN review.lifecycle_candidate != 1 THEN 'not_lifecycle_candidate'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN review.tokens_preserved != 1 THEN 'tokens_not_preserved'
+                WHEN review.queue_run_id = 219
+                 AND review.decision NOT IN ('context_composer_ready', 'already_good_context_confirmed')
+                    THEN 'decision_not_allowed_for_event_context'
+                WHEN review.queue_run_id = 218
+                 AND review.decision NOT IN ('requirement_tooltip_ready', 'already_good_context_confirmed')
+                    THEN 'decision_not_allowed_for_requirement_tooltip'
+                WHEN COALESCE(previous.state_group, '') = 'closed' THEN 'previous_state_closed'
+                WHEN COALESCE(previous.final_state, '') NOT LIKE 'reopen_%' THEN 'previous_state_not_reopen'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'confirmed_does_not_match_output'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'needs_output_apply'
+                WHEN confirmation.segment_id IS NULL THEN 'missing_confirmation'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'locked_confirmation'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'confirmation_stale'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                    THEN 'token_signature_mismatch'
+                WHEN source.source_key != review.source_key THEN 'source_key_mismatch'
+                WHEN source.relative_path != review.relative_path THEN 'relative_path_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'ledger_open_issue_count_not_2'
+                WHEN COALESCE(ledger_summary.semantic_issue_count, 0) != 1 THEN 'missing_semantic_issue'
+                WHEN COALESCE(ledger_summary.short_label_issue_count, 0) != 1 THEN 'missing_short_label_issue'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'high_issue_present'
+                ELSE ''
+            END AS block_reason
+        FROM temp_semantic_short_label_domain_context_review review
+        JOIN source_segments source
+          ON source.id = review.segment_id
+        JOIN output_segments output
+          ON output.segment_id = review.segment_id
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = review.segment_id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        JOIN previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+         AND previous.segment_id = review.segment_id
+        """
+    )
+
+
+def prepare_short_label_style_queue220_strict_lifecycle(conn) -> None:
+    review_path = Path("reports/20260617_220200_short_label_style_queue_220_reviewed_chat.jsonl")
+    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(rows) != 240:
+        raise RuntimeError(f"Unexpected queue 220 reviewed row count: {len(rows)}")
+    allowed_decisions = {"active_safe_candidate_confirmed", "compact_ui_label_ready"}
+    allowed_subpolicies = {
+        "active_safe_candidate_autofix_false_reopen",
+        "effect_reward_short_label_guard",
+        "compact_ui_tokenized_label_guard",
+    }
+    candidate_count = sum(
+        1
+        for row in rows
+        if row.get("lifecycle_candidate") is True
+        and row.get("requires_apply_later") is False
+        and row.get("tokens_preserved") is True
+        and row.get("decision") in allowed_decisions
+        and row.get("suggested_subpolicy") in allowed_subpolicies
+    )
+    if candidate_count != 63:
+        raise RuntimeError(f"Unexpected queue 220 strict candidate count: {candidate_count}")
+
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_style_queue220_review")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_style_queue220_review (
+            queue_run_id INTEGER NOT NULL,
+            segment_id INTEGER PRIMARY KEY,
+            agent_key TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            current_text TEXT,
+            tokens_preserved INTEGER NOT NULL,
+            requires_apply_later INTEGER NOT NULL,
+            lifecycle_candidate INTEGER NOT NULL,
+            suggested_subpolicy TEXT
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO temp_short_label_style_queue220_review (
+            queue_run_id,
+            segment_id,
+            agent_key,
+            source_key,
+            relative_path,
+            decision,
+            confidence,
+            current_text,
+            tokens_preserved,
+            requires_apply_later,
+            lifecycle_candidate,
+            suggested_subpolicy
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(row["queue_run_id"]),
+                int(row["segment_id"]),
+                as_text(row["agent_key"]),
+                as_text(row["source_key"]),
+                as_text(row["relative_path"]),
+                as_text(row["decision"]),
+                float(row["confidence"]),
+                as_text(row.get("current_text")),
+                1 if row.get("tokens_preserved") is True else 0,
+                1 if row.get("requires_apply_later") is True else 0,
+                1 if row.get("lifecycle_candidate") is True else 0,
+                as_text(row.get("suggested_subpolicy")),
+            )
+            for row in rows
+        ],
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_style_queue220_strict_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_style_queue220_strict_lifecycle AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'short_label_style_microagent'
+                          AND issue_kind = 'short_or_compact_label_reopened'
+                         THEN 1 ELSE 0 END) AS short_label_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical')
+                         THEN 1 ELSE 0 END) AS high_issue_count,
+                SUM(CASE WHEN issue_family != 'short_label_style_microagent'
+                         THEN 1 ELSE 0 END) AS other_issue_count,
+                GROUP_CONCAT(issue_family || '/' || issue_kind, '; ') AS open_issues
+            FROM ml_issue_ledger_items
+            WHERE run_id = 58
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.queue_run_id,
+            review.agent_key,
+            review.source_key,
+            review.relative_path,
+            review.decision,
+            review.suggested_subpolicy,
+            review.current_text,
+            previous.final_state AS previous_final_state,
+            previous.state_group AS previous_state_group,
+            COALESCE(previous.confirmed_matches_output, 0) AS confirmed_matches_output,
+            COALESCE(previous.needs_output_apply, 0) AS needs_output_apply,
+            COALESCE(previous.needs_reopen, 0) AS needs_reopen,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.short_label_issue_count, 0) AS short_label_issue_count,
+            COALESCE(ledger_summary.high_issue_count, 0) AS high_issue_count,
+            COALESCE(ledger_summary.other_issue_count, 0) AS other_issue_count,
+            COALESCE(ledger_summary.open_issues, '') AS open_issues,
+            CASE
+                WHEN previous.final_state = ? THEN 'closed'
+                WHEN review.lifecycle_candidate != 1 THEN 'blocked_preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked_preserved'
+                WHEN review.tokens_preserved != 1 THEN 'blocked_preserved'
+                WHEN review.decision NOT IN ('active_safe_candidate_confirmed', 'compact_ui_label_ready') THEN 'blocked_preserved'
+                WHEN review.suggested_subpolicy NOT IN (
+                    'active_safe_candidate_autofix_false_reopen',
+                    'effect_reward_short_label_guard',
+                    'compact_ui_tokenized_label_guard'
+                ) THEN 'blocked_preserved'
+                WHEN COALESCE(previous.state_group, '') = 'closed' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.final_state, '') NOT LIKE 'reopen_%' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'blocked_preserved'
+                WHEN confirmation.segment_id IS NULL THEN 'blocked_preserved'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'blocked_preserved'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN source.source_key != review.source_key THEN 'blocked_preserved'
+                WHEN source.relative_path != review.relative_path THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.short_label_issue_count, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'blocked_preserved'
+                WHEN lower(COALESCE(output.portuguese_text, '')) LIKE '%#bold no#!%' THEN 'blocked_preserved'
+                WHEN COALESCE(output.portuguese_text, '') LIKE '%#bold No#!%' THEN 'blocked_preserved'
+                WHEN COALESCE(output.portuguese_text, '') LIKE '%#bold NO#!%' THEN 'blocked_preserved'
+                WHEN COALESCE(output.portuguese_text, '') LIKE '%#bold NÃƒ%' THEN 'blocked_preserved'
+                WHEN COALESCE(output.portuguese_text, '') LIKE '% no#!%' THEN 'blocked_preserved'
+                WHEN COALESCE(output.portuguese_text, '') LIKE '% No#!%' THEN 'blocked_preserved'
+                WHEN COALESCE(output.portuguese_text, '') LIKE '% :%' THEN 'blocked_preserved'
+                WHEN COALESCE(output.portuguese_text, '') LIKE '% ,%' THEN 'blocked_preserved'
+                WHEN COALESCE(output.portuguese_text, '') LIKE '% .%' THEN 'blocked_preserved'
+                WHEN lower(COALESCE(output.portuguese_text, '')) LIKE '%desbloquea%' THEN 'blocked_preserved'
+                WHEN lower(COALESCE(output.portuguese_text, '')) LIKE '%ningún%' THEN 'blocked_preserved'
+                WHEN lower(COALESCE(output.portuguese_text, '')) LIKE '% tienes %' THEN 'blocked_preserved'
+                WHEN lower(COALESCE(output.portuguese_text, '')) LIKE '% tiene %' THEN 'blocked_preserved'
+                WHEN lower(source.relative_path) LIKE '%religion%'
+                  OR lower(source.relative_path) LIKE '%culture%'
+                  OR lower(source.relative_path) LIKE '%title%'
+                  OR source.source_key LIKE '%TITLE%'
+                  OR output.portuguese_text LIKE '%[TITLE.%'
+                  OR output.portuguese_text LIKE '%GetCultureTradition%'
+                  OR output.portuguese_text LIKE '%GetFaithDoctrine%'
+                    THEN 'blocked_preserved'
+                WHEN length(COALESCE(output.portuguese_text, '')) > 180
+                 AND (
+                    output.portuguese_text LIKE '%Get%'
+                    OR output.portuguese_text LIKE '%ScriptValue%'
+                    OR output.portuguese_text LIKE '%MakeScope%'
+                 ) THEN 'blocked_preserved'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN previous.final_state = ? THEN ''
+                WHEN review.lifecycle_candidate != 1 THEN 'not_lifecycle_candidate'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN review.tokens_preserved != 1 THEN 'tokens_not_preserved'
+                WHEN review.decision NOT IN ('active_safe_candidate_confirmed', 'compact_ui_label_ready') THEN 'decision_not_allowed'
+                WHEN review.suggested_subpolicy NOT IN (
+                    'active_safe_candidate_autofix_false_reopen',
+                    'effect_reward_short_label_guard',
+                    'compact_ui_tokenized_label_guard'
+                ) THEN 'subpolicy_not_allowed'
+                WHEN COALESCE(previous.state_group, '') = 'closed' THEN 'previous_state_closed'
+                WHEN COALESCE(previous.final_state, '') NOT LIKE 'reopen_%' THEN 'previous_state_not_reopen'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'confirmed_does_not_match_output'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'needs_output_apply'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'not_currently_reopen'
+                WHEN confirmation.segment_id IS NULL THEN 'missing_confirmation'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'locked_confirmation'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'confirmation_stale'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'token_signature_mismatch'
+                WHEN source.source_key != review.source_key THEN 'source_key_mismatch'
+                WHEN source.relative_path != review.relative_path THEN 'relative_path_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 1 THEN 'ledger_open_issue_count_not_1'
+                WHEN COALESCE(ledger_summary.short_label_issue_count, 0) != 1 THEN 'missing_short_label_issue'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'other_open_issue_present'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'high_issue_present'
+                WHEN lower(COALESCE(output.portuguese_text, '')) LIKE '%#bold no#!%' THEN 'visible_bold_no_residual'
+                WHEN COALESCE(output.portuguese_text, '') LIKE '%#bold No#!%' THEN 'visible_bold_No_residual'
+                WHEN COALESCE(output.portuguese_text, '') LIKE '%#bold NO#!%' THEN 'visible_bold_NO_residual'
+                WHEN COALESCE(output.portuguese_text, '') LIKE '%#bold NÃƒ%' THEN 'visible_bold_mojibake_guard'
+                WHEN COALESCE(output.portuguese_text, '') LIKE '% no#!%' THEN 'visible_no_token_residual'
+                WHEN COALESCE(output.portuguese_text, '') LIKE '% No#!%' THEN 'visible_No_token_residual'
+                WHEN COALESCE(output.portuguese_text, '') LIKE '% :%' THEN 'space_before_colon'
+                WHEN COALESCE(output.portuguese_text, '') LIKE '% ,%' THEN 'space_before_comma'
+                WHEN COALESCE(output.portuguese_text, '') LIKE '% .%' THEN 'space_before_period'
+                WHEN lower(COALESCE(output.portuguese_text, '')) LIKE '%desbloquea%' THEN 'spanish_residual_desbloquea'
+                WHEN lower(COALESCE(output.portuguese_text, '')) LIKE '%ningún%' THEN 'spanish_residual_ningun'
+                WHEN lower(COALESCE(output.portuguese_text, '')) LIKE '% tienes %' THEN 'spanish_residual_tienes'
+                WHEN lower(COALESCE(output.portuguese_text, '')) LIKE '% tiene %' THEN 'spanish_residual_tiene'
+                WHEN lower(source.relative_path) LIKE '%religion%'
+                  OR lower(source.relative_path) LIKE '%culture%'
+                  OR lower(source.relative_path) LIKE '%title%'
+                  OR source.source_key LIKE '%TITLE%'
+                  OR output.portuguese_text LIKE '%[TITLE.%'
+                  OR output.portuguese_text LIKE '%GetCultureTradition%'
+                  OR output.portuguese_text LIKE '%GetFaithDoctrine%'
+                    THEN 'sensitive_domain_guard'
+                WHEN length(COALESCE(output.portuguese_text, '')) > 180
+                 AND (
+                    output.portuguese_text LIKE '%Get%'
+                    OR output.portuguese_text LIKE '%ScriptValue%'
+                    OR output.portuguese_text LIKE '%MakeScope%'
+                 ) THEN 'dense_dynamic_expression_guard'
+                ELSE ''
+            END AS block_reason
+        FROM temp_short_label_style_queue220_review review
+        JOIN source_segments source
+          ON source.id = review.segment_id
+        JOIN output_segments output
+          ON output.segment_id = review.segment_id
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = review.segment_id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        JOIN previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+         AND previous.segment_id = review.segment_id
+        """,
+        (
+            SHORT_LABEL_STYLE_QUEUE220_STRICT_LIFECYCLE_STATE,
+            SHORT_LABEL_STYLE_QUEUE220_STRICT_LIFECYCLE_STATE,
+        ),
+    )
+
+
+def prepare_autofix_unknown_ui_surface_queue221_lifecycle(conn) -> None:
+    review_path = Path("reports/20260617_233004_autofix_unknown_ui_surface_queue_221_reviewed_chat.jsonl")
+    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(rows) != 180:
+        raise RuntimeError(f"Unexpected queue 221 reviewed row count: {len(rows)}")
+    expected_ids = {95993, 95994, 95995, 95996, 6, 144212, 143819, 158505}
+    allowed_decisions = {"lifecycle_ready_ui_warning", "lifecycle_ready_ui_tooltip"}
+    lifecycle_ids = {
+        int(row["segment_id"])
+        for row in rows
+        if row.get("lifecycle_candidate") is True
+        and row.get("requires_apply_later") is False
+        and row.get("tokens_preserved") is True
+        and row.get("decision") in allowed_decisions
+    }
+    if lifecycle_ids != expected_ids:
+        raise RuntimeError(f"Unexpected queue 221 lifecycle ids: {sorted(lifecycle_ids)}")
+
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_unknown_ui_surface_queue221_review")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_unknown_ui_surface_queue221_review (
+            queue_run_id INTEGER NOT NULL,
+            ledger_run_id INTEGER NOT NULL,
+            segment_id INTEGER PRIMARY KEY,
+            source_key TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            current_text TEXT,
+            tokens_preserved INTEGER NOT NULL,
+            requires_apply_later INTEGER NOT NULL,
+            lifecycle_candidate INTEGER NOT NULL,
+            suggested_subpolicy TEXT
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO temp_autofix_unknown_ui_surface_queue221_review (
+            queue_run_id,
+            ledger_run_id,
+            segment_id,
+            source_key,
+            relative_path,
+            decision,
+            confidence,
+            current_text,
+            tokens_preserved,
+            requires_apply_later,
+            lifecycle_candidate,
+            suggested_subpolicy
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(row["queue_run_id"]),
+                int(row["ledger_run_id"]),
+                int(row["segment_id"]),
+                as_text(row["source_key"]),
+                as_text(row["relative_path"]),
+                as_text(row["decision"]),
+                float(row["confidence"]),
+                as_text(row.get("current_text")),
+                1 if row.get("tokens_preserved") is True else 0,
+                1 if row.get("requires_apply_later") is True else 0,
+                1 if row.get("lifecycle_candidate") is True else 0,
+                as_text(row.get("suggested_subpolicy")),
+            )
+            for row in rows
+        ],
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_unknown_ui_surface_queue221_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_unknown_ui_surface_queue221_lifecycle AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent'
+                         THEN 1 ELSE 0 END) AS autofix_unknown_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical')
+                         THEN 1 ELSE 0 END) AS high_issue_count,
+                SUM(CASE WHEN issue_family != 'autofix_unknown_microagent'
+                         THEN 1 ELSE 0 END) AS other_issue_count,
+                GROUP_CONCAT(issue_family || '/' || issue_kind, '; ') AS open_issues
+            FROM ml_issue_ledger_items
+            WHERE run_id = 59
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.queue_run_id,
+            review.ledger_run_id,
+            review.source_key,
+            review.relative_path,
+            review.decision,
+            review.suggested_subpolicy,
+            review.current_text,
+            previous.final_state AS previous_final_state,
+            previous.state_group AS previous_state_group,
+            COALESCE(previous.confirmed_matches_output, 0) AS confirmed_matches_output,
+            COALESCE(previous.needs_output_apply, 0) AS needs_output_apply,
+            COALESCE(previous.needs_reopen, 0) AS needs_reopen,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.autofix_unknown_issue_count, 0) AS autofix_unknown_issue_count,
+            COALESCE(ledger_summary.high_issue_count, 0) AS high_issue_count,
+            COALESCE(ledger_summary.other_issue_count, 0) AS other_issue_count,
+            COALESCE(ledger_summary.open_issues, '') AS open_issues,
+            CASE
+                WHEN previous.final_state = ? THEN 'closed'
+                WHEN review.segment_id NOT IN (95993, 95994, 95995, 95996, 6, 144212, 143819, 158505) THEN 'blocked_preserved'
+                WHEN review.lifecycle_candidate != 1 THEN 'blocked_preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked_preserved'
+                WHEN review.tokens_preserved != 1 THEN 'blocked_preserved'
+                WHEN review.decision NOT IN ('lifecycle_ready_ui_warning', 'lifecycle_ready_ui_tooltip') THEN 'blocked_preserved'
+                WHEN COALESCE(previous.state_group, '') = 'closed' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.final_state, '') NOT LIKE 'reopen_%' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'blocked_preserved'
+                WHEN confirmation.segment_id IS NULL THEN 'blocked_preserved'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'blocked_preserved'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN source.source_key != review.source_key THEN 'blocked_preserved'
+                WHEN source.relative_path != review.relative_path THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != COALESCE(ledger_summary.autofix_unknown_issue_count, 0) THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'blocked_preserved'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN previous.final_state = ? THEN ''
+                WHEN review.segment_id NOT IN (95993, 95994, 95995, 95996, 6, 144212, 143819, 158505) THEN 'segment_not_allowlisted'
+                WHEN review.lifecycle_candidate != 1 THEN 'not_lifecycle_candidate'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN review.tokens_preserved != 1 THEN 'tokens_not_preserved'
+                WHEN review.decision NOT IN ('lifecycle_ready_ui_warning', 'lifecycle_ready_ui_tooltip') THEN 'decision_not_allowed'
+                WHEN COALESCE(previous.state_group, '') = 'closed' THEN 'previous_state_closed'
+                WHEN COALESCE(previous.final_state, '') NOT LIKE 'reopen_%' THEN 'previous_state_not_reopen'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'confirmed_does_not_match_output'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'needs_output_apply'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'not_currently_reopen'
+                WHEN confirmation.segment_id IS NULL THEN 'missing_confirmation'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'locked_confirmation'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'confirmation_stale'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'token_signature_mismatch'
+                WHEN source.source_key != review.source_key THEN 'source_key_mismatch'
+                WHEN source.relative_path != review.relative_path THEN 'relative_path_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != COALESCE(ledger_summary.autofix_unknown_issue_count, 0) THEN 'other_open_issue_present'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'high_issue_present'
+                ELSE ''
+            END AS block_reason
+        FROM temp_autofix_unknown_ui_surface_queue221_review review
+        JOIN source_segments source
+          ON source.id = review.segment_id
+        JOIN output_segments output
+          ON output.segment_id = review.segment_id
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = review.segment_id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        JOIN previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+         AND previous.segment_id = review.segment_id
+        WHERE review.lifecycle_candidate = 1
+        """,
+        (
+            AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_LIFECYCLE_STATE,
+        ),
+    )
+
+
+def prepare_autofix_unknown_plain_event_queue226_lifecycle(conn) -> None:
+    review_path = Path("reports/20260618_180523_016737_autofix_unknown_plain_event_queue_226_reviewed_chat.jsonl")
+    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(rows) != 240:
+        raise RuntimeError(f"Unexpected queue 226 reviewed row count: {len(rows)}")
+    allowed_decisions = {
+        "lifecycle_ready_ui_tooltip_sentence",
+        "lifecycle_ready_plain_prose",
+        "lifecycle_ready_gloss_or_historical_note",
+    }
+    expected_counts = Counter(
+        row.get("decision")
+        for row in rows
+        if row.get("queue_run_id") == 226
+        and row.get("ledger_run_id") == 68
+        and row.get("decision") in allowed_decisions
+        and row.get("lifecycle_candidate") is True
+        and row.get("requires_apply_later") is False
+        and row.get("corrected_text") == ""
+        and row.get("tokens_preserved") is True
+    )
+    if dict(expected_counts) != {
+        "lifecycle_ready_ui_tooltip_sentence": 84,
+        "lifecycle_ready_plain_prose": 6,
+        "lifecycle_ready_gloss_or_historical_note": 1,
+    }:
+        raise RuntimeError(f"Unexpected queue 226 lifecycle candidate counts: {dict(expected_counts)}")
+
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_unknown_plain_event_queue226_review")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_unknown_plain_event_queue226_review (
+            queue_run_id INTEGER NOT NULL,
+            ledger_run_id INTEGER NOT NULL,
+            segment_id INTEGER PRIMARY KEY,
+            source_key TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            subpolicy TEXT NOT NULL,
+            lifecycle_candidate INTEGER NOT NULL,
+            requires_apply_later INTEGER NOT NULL,
+            corrected_text TEXT NOT NULL,
+            route_to_agent TEXT NOT NULL,
+            tokens_preserved INTEGER NOT NULL,
+            confidence TEXT NOT NULL,
+            notes TEXT NOT NULL
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO temp_autofix_unknown_plain_event_queue226_review (
+            queue_run_id,
+            ledger_run_id,
+            segment_id,
+            source_key,
+            relative_path,
+            decision,
+            subpolicy,
+            lifecycle_candidate,
+            requires_apply_later,
+            corrected_text,
+            route_to_agent,
+            tokens_preserved,
+            confidence,
+            notes
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(row["queue_run_id"]),
+                int(row["ledger_run_id"]),
+                int(row["segment_id"]),
+                as_text(row["source_key"]),
+                as_text(row["relative_path"]),
+                as_text(row["decision"]),
+                as_text(row["subpolicy"]),
+                1 if row.get("lifecycle_candidate") is True else 0,
+                1 if row.get("requires_apply_later") is True else 0,
+                as_text(row.get("corrected_text")),
+                as_text(row["route_to_agent"]),
+                1 if row.get("tokens_preserved") is True else 0,
+                as_text(row["confidence"]),
+                as_text(row["notes"]),
+            )
+            for row in rows
+        ],
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_unknown_plain_event_queue226_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_unknown_plain_event_queue226_lifecycle AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent'
+                         THEN 1 ELSE 0 END) AS autofix_unknown_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical')
+                         THEN 1 ELSE 0 END) AS high_issue_count,
+                SUM(CASE WHEN issue_family != 'autofix_unknown_microagent'
+                         THEN 1 ELSE 0 END) AS other_issue_count,
+                GROUP_CONCAT(issue_family || '/' || issue_kind, '; ') AS open_issues
+            FROM ml_issue_ledger_items
+            WHERE run_id = 68
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.queue_run_id,
+            review.ledger_run_id,
+            review.source_key,
+            review.relative_path,
+            review.decision,
+            review.subpolicy,
+            review.route_to_agent,
+            previous_run.id AS baseline_run_id,
+            previous.final_state AS previous_final_state,
+            previous.state_group AS previous_state_group,
+            COALESCE(previous.confirmed_matches_output, 0) AS confirmed_matches_output,
+            COALESCE(previous.needs_output_apply, 0) AS needs_output_apply,
+            COALESCE(previous.needs_reopen, 0) AS needs_reopen,
+            COALESCE(previous.locked, 0) AS previous_locked,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.autofix_unknown_issue_count, 0) AS autofix_unknown_issue_count,
+            COALESCE(ledger_summary.high_issue_count, 0) AS high_issue_count,
+            COALESCE(ledger_summary.other_issue_count, 0) AS other_issue_count,
+            COALESCE(ledger_summary.open_issues, '') AS open_issues,
+            CASE review.decision
+                WHEN 'lifecycle_ready_ui_tooltip_sentence'
+                    THEN ?
+                WHEN 'lifecycle_ready_plain_prose'
+                    THEN ?
+                WHEN 'lifecycle_ready_gloss_or_historical_note'
+                    THEN ?
+                ELSE ''
+            END AS target_state,
+            CASE review.decision
+                WHEN 'lifecycle_ready_ui_tooltip_sentence'
+                    THEN ?
+                WHEN 'lifecycle_ready_plain_prose'
+                    THEN ?
+                WHEN 'lifecycle_ready_gloss_or_historical_note'
+                    THEN ?
+                ELSE ''
+            END AS target_action,
+            CASE
+                WHEN review.queue_run_id != 226 THEN 'blocked_preserved'
+                WHEN review.ledger_run_id != 68 THEN 'blocked_preserved'
+                WHEN review.decision NOT IN (
+                    'lifecycle_ready_ui_tooltip_sentence',
+                    'lifecycle_ready_plain_prose',
+                    'lifecycle_ready_gloss_or_historical_note'
+                ) THEN 'blocked_preserved'
+                WHEN review.lifecycle_candidate != 1 THEN 'blocked_preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked_preserved'
+                WHEN review.corrected_text != '' THEN 'blocked_preserved'
+                WHEN review.tokens_preserved != 1 THEN 'blocked_preserved'
+                WHEN previous.final_state = CASE review.decision
+                    WHEN 'lifecycle_ready_ui_tooltip_sentence'
+                        THEN ?
+                    WHEN 'lifecycle_ready_plain_prose'
+                        THEN ?
+                    WHEN 'lifecycle_ready_gloss_or_historical_note'
+                        THEN ?
+                    ELSE ''
+                END THEN 'closed'
+                WHEN COALESCE(previous.state_group, '') = 'closed' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.final_state, '') NOT LIKE 'reopen_%' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'blocked_preserved'
+                WHEN confirmation.segment_id IS NULL THEN 'blocked_preserved'
+                WHEN COALESCE(confirmation.locked, 0) = 1
+                 AND canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'blocked_preserved'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'blocked_preserved'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                    THEN 'blocked_preserved'
+                WHEN source.source_key != review.source_key THEN 'blocked_preserved'
+                WHEN source.relative_path != review.relative_path THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != COALESCE(ledger_summary.autofix_unknown_issue_count, 0)
+                    THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'blocked_preserved'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN review.queue_run_id != 226 THEN 'queue_run_mismatch'
+                WHEN review.ledger_run_id != 68 THEN 'ledger_run_mismatch'
+                WHEN review.decision NOT IN (
+                    'lifecycle_ready_ui_tooltip_sentence',
+                    'lifecycle_ready_plain_prose',
+                    'lifecycle_ready_gloss_or_historical_note'
+                ) THEN 'decision_not_allowed'
+                WHEN review.lifecycle_candidate != 1 THEN 'not_lifecycle_candidate'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN review.corrected_text != '' THEN 'corrected_text_present'
+                WHEN review.tokens_preserved != 1 THEN 'tokens_not_preserved'
+                WHEN previous.final_state = CASE review.decision
+                    WHEN 'lifecycle_ready_ui_tooltip_sentence'
+                        THEN ?
+                    WHEN 'lifecycle_ready_plain_prose'
+                        THEN ?
+                    WHEN 'lifecycle_ready_gloss_or_historical_note'
+                        THEN ?
+                    ELSE ''
+                END THEN ''
+                WHEN COALESCE(previous.state_group, '') = 'closed' THEN 'previous_state_closed'
+                WHEN COALESCE(previous.final_state, '') NOT LIKE 'reopen_%' THEN 'previous_state_not_reopen'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'confirmed_does_not_match_output'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'needs_output_apply'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'not_currently_reopen'
+                WHEN confirmation.segment_id IS NULL THEN 'missing_confirmation'
+                WHEN COALESCE(confirmation.locked, 0) = 1
+                 AND canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'locked_confirmation_divergent'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'confirmation_stale'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                    THEN 'token_signature_mismatch'
+                WHEN source.source_key != review.source_key THEN 'source_key_mismatch'
+                WHEN source.relative_path != review.relative_path THEN 'relative_path_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != COALESCE(ledger_summary.autofix_unknown_issue_count, 0)
+                    THEN 'other_open_issue_present'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'high_issue_present'
+                ELSE ''
+            END AS block_reason
+        FROM temp_autofix_unknown_plain_event_queue226_review review
+        JOIN source_segments source
+          ON source.id = review.segment_id
+        JOIN output_segments output
+          ON output.segment_id = review.segment_id
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = review.segment_id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        JOIN previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+         AND previous.segment_id = review.segment_id
+        WHERE review.decision IN (
+            'lifecycle_ready_ui_tooltip_sentence',
+            'lifecycle_ready_plain_prose',
+            'lifecycle_ready_gloss_or_historical_note'
+        )
+          AND review.lifecycle_candidate = 1
+        """,
+        (
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_LIFECYCLE_STATE,
+        ),
+    )
+
+
+def prepare_autofix_unknown_plain_event_queue226_semantic_companion_lifecycle(conn) -> None:
+    review_path = Path("reports/20260618_180523_016737_autofix_unknown_plain_event_queue_226_reviewed_chat.jsonl")
+    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(rows) != 240:
+        raise RuntimeError(f"Unexpected queue 226 reviewed row count: {len(rows)}")
+    allowed_decisions = {
+        "lifecycle_ready_ui_tooltip_sentence",
+        "lifecycle_ready_plain_prose",
+        "lifecycle_ready_gloss_or_historical_note",
+    }
+    lifecycle_candidate_count = sum(
+        1
+        for row in rows
+        if row.get("queue_run_id") == 226
+        and row.get("ledger_run_id") == 68
+        and row.get("decision") in allowed_decisions
+        and row.get("lifecycle_candidate") is True
+        and row.get("requires_apply_later") is False
+        and row.get("corrected_text") == ""
+        and row.get("tokens_preserved") is True
+    )
+    if lifecycle_candidate_count != 91:
+        raise RuntimeError(f"Unexpected queue 226 lifecycle candidate count: {lifecycle_candidate_count}")
+
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_unknown_plain_event_queue226_semantic_companion_review")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_unknown_plain_event_queue226_semantic_companion_review (
+            queue_run_id INTEGER NOT NULL,
+            ledger_run_id INTEGER NOT NULL,
+            segment_id INTEGER PRIMARY KEY,
+            source_key TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            subpolicy TEXT NOT NULL,
+            lifecycle_candidate INTEGER NOT NULL,
+            requires_apply_later INTEGER NOT NULL,
+            corrected_text TEXT NOT NULL,
+            route_to_agent TEXT NOT NULL,
+            tokens_preserved INTEGER NOT NULL,
+            confidence TEXT NOT NULL,
+            notes TEXT NOT NULL
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO temp_autofix_unknown_plain_event_queue226_semantic_companion_review (
+            queue_run_id,
+            ledger_run_id,
+            segment_id,
+            source_key,
+            relative_path,
+            decision,
+            subpolicy,
+            lifecycle_candidate,
+            requires_apply_later,
+            corrected_text,
+            route_to_agent,
+            tokens_preserved,
+            confidence,
+            notes
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(row["queue_run_id"]),
+                int(row["ledger_run_id"]),
+                int(row["segment_id"]),
+                as_text(row["source_key"]),
+                as_text(row["relative_path"]),
+                as_text(row["decision"]),
+                as_text(row["subpolicy"]),
+                1 if row.get("lifecycle_candidate") is True else 0,
+                1 if row.get("requires_apply_later") is True else 0,
+                as_text(row.get("corrected_text")),
+                as_text(row["route_to_agent"]),
+                1 if row.get("tokens_preserved") is True else 0,
+                as_text(row["confidence"]),
+                as_text(row["notes"]),
+            )
+            for row in rows
+        ],
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_unknown_plain_event_queue226_semantic_companion_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_unknown_plain_event_queue226_semantic_companion_lifecycle AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent'
+                          AND issue_kind = 'needs_autofix_unclassified'
+                         THEN 1 ELSE 0 END) AS autofix_unknown_issue_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router'
+                          AND issue_kind = 'needs_human_or_semantic_conflict'
+                         THEN 1 ELSE 0 END) AS semantic_review_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical')
+                         THEN 1 ELSE 0 END) AS high_issue_count,
+                GROUP_CONCAT(issue_family || '/' || issue_kind || '/' || COALESCE(issue_severity, ''), '; ') AS open_issues
+            FROM ml_issue_ledger_items
+            WHERE run_id = 68
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.queue_run_id,
+            review.ledger_run_id,
+            review.source_key,
+            review.relative_path,
+            review.decision,
+            review.subpolicy,
+            review.route_to_agent,
+            previous_run.id AS baseline_run_id,
+            previous.final_state AS previous_final_state,
+            previous.state_group AS previous_state_group,
+            COALESCE(previous.confirmed_matches_output, 0) AS confirmed_matches_output,
+            COALESCE(previous.needs_output_apply, 0) AS needs_output_apply,
+            COALESCE(previous.needs_reopen, 0) AS needs_reopen,
+            COALESCE(previous.locked, 0) AS previous_locked,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.autofix_unknown_issue_count, 0) AS autofix_unknown_issue_count,
+            COALESCE(ledger_summary.semantic_review_issue_count, 0) AS semantic_review_issue_count,
+            COALESCE(ledger_summary.high_issue_count, 0) AS high_issue_count,
+            COALESCE(ledger_summary.open_issues, '') AS open_issues,
+            CASE review.decision
+                WHEN 'lifecycle_ready_ui_tooltip_sentence'
+                    THEN ?
+                WHEN 'lifecycle_ready_plain_prose'
+                    THEN ?
+                WHEN 'lifecycle_ready_gloss_or_historical_note'
+                    THEN ?
+                ELSE ''
+            END AS target_state,
+            CASE review.decision
+                WHEN 'lifecycle_ready_ui_tooltip_sentence'
+                    THEN ?
+                WHEN 'lifecycle_ready_plain_prose'
+                    THEN ?
+                WHEN 'lifecycle_ready_gloss_or_historical_note'
+                    THEN ?
+                ELSE ''
+            END AS target_action,
+            CASE
+                WHEN review.queue_run_id != 226 THEN 'blocked_preserved'
+                WHEN review.ledger_run_id != 68 THEN 'blocked_preserved'
+                WHEN review.decision NOT IN (
+                    'lifecycle_ready_ui_tooltip_sentence',
+                    'lifecycle_ready_plain_prose',
+                    'lifecycle_ready_gloss_or_historical_note'
+                ) THEN 'blocked_preserved'
+                WHEN review.lifecycle_candidate != 1 THEN 'blocked_preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked_preserved'
+                WHEN review.corrected_text != '' THEN 'blocked_preserved'
+                WHEN review.tokens_preserved != 1 THEN 'blocked_preserved'
+                WHEN previous.final_state IN (
+                    ?,
+                    ?,
+                    ?
+                ) THEN 'blocked_preserved'
+                WHEN previous.final_state = CASE review.decision
+                    WHEN 'lifecycle_ready_ui_tooltip_sentence'
+                        THEN ?
+                    WHEN 'lifecycle_ready_plain_prose'
+                        THEN ?
+                    WHEN 'lifecycle_ready_gloss_or_historical_note'
+                        THEN ?
+                    ELSE ''
+                END THEN 'closed'
+                WHEN COALESCE(previous.state_group, '') = 'closed' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.final_state, '') NOT LIKE 'reopen_%' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'blocked_preserved'
+                WHEN confirmation.segment_id IS NULL THEN 'blocked_preserved'
+                WHEN COALESCE(confirmation.locked, 0) = 1
+                 AND canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'blocked_preserved'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'blocked_preserved'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                    THEN 'blocked_preserved'
+                WHEN source.source_key != review.source_key THEN 'blocked_preserved'
+                WHEN source.relative_path != review.relative_path THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.autofix_unknown_issue_count, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.semantic_review_issue_count, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'blocked_preserved'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN review.queue_run_id != 226 THEN 'queue_run_mismatch'
+                WHEN review.ledger_run_id != 68 THEN 'ledger_run_mismatch'
+                WHEN review.decision NOT IN (
+                    'lifecycle_ready_ui_tooltip_sentence',
+                    'lifecycle_ready_plain_prose',
+                    'lifecycle_ready_gloss_or_historical_note'
+                ) THEN 'decision_not_allowed'
+                WHEN review.lifecycle_candidate != 1 THEN 'not_lifecycle_candidate'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN review.corrected_text != '' THEN 'corrected_text_present'
+                WHEN review.tokens_preserved != 1 THEN 'tokens_not_preserved'
+                WHEN previous.final_state IN (
+                    ?,
+                    ?,
+                    ?
+                ) THEN 'already_closed_by_plain_event_lifecycle'
+                WHEN previous.final_state = CASE review.decision
+                    WHEN 'lifecycle_ready_ui_tooltip_sentence'
+                        THEN ?
+                    WHEN 'lifecycle_ready_plain_prose'
+                        THEN ?
+                    WHEN 'lifecycle_ready_gloss_or_historical_note'
+                        THEN ?
+                    ELSE ''
+                END THEN ''
+                WHEN COALESCE(previous.state_group, '') = 'closed' THEN 'previous_state_closed'
+                WHEN COALESCE(previous.final_state, '') NOT LIKE 'reopen_%' THEN 'previous_state_not_reopen'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'confirmed_does_not_match_output'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'needs_output_apply'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'not_currently_reopen'
+                WHEN confirmation.segment_id IS NULL THEN 'missing_confirmation'
+                WHEN COALESCE(confirmation.locked, 0) = 1
+                 AND canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'locked_confirmation_divergent'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'confirmation_stale'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                    THEN 'token_signature_mismatch'
+                WHEN source.source_key != review.source_key THEN 'source_key_mismatch'
+                WHEN source.relative_path != review.relative_path THEN 'relative_path_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'open_issue_count_not_two'
+                WHEN COALESCE(ledger_summary.autofix_unknown_issue_count, 0) != 1 THEN 'missing_autofix_unknown_issue'
+                WHEN COALESCE(ledger_summary.semantic_review_issue_count, 0) != 1 THEN 'missing_semantic_review_issue'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'high_issue_present'
+                ELSE ''
+            END AS block_reason
+        FROM temp_autofix_unknown_plain_event_queue226_semantic_companion_review review
+        JOIN source_segments source
+          ON source.id = review.segment_id
+        JOIN output_segments output
+          ON output.segment_id = review.segment_id
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = review.segment_id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        JOIN previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+         AND previous.segment_id = review.segment_id
+        WHERE review.decision IN (
+            'lifecycle_ready_ui_tooltip_sentence',
+            'lifecycle_ready_plain_prose',
+            'lifecycle_ready_gloss_or_historical_note'
+        )
+          AND review.lifecycle_candidate = 1
+        """,
+        (
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+        ),
+    )
+
+
+def prepare_autofix_unknown_plain_event_context_composer_lifecycle(conn) -> None:
+    review_path = Path("reports/20260618_190926_595844_autofix_unknown_plain_event_context_composer_reviewed_chat.jsonl")
+    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(rows) != 224:
+        raise RuntimeError(f"Unexpected context composer reviewed row count: {len(rows)}")
+    allowed_decisions = {
+        "composition_ready_plain_prose",
+        "composition_ready_event_context",
+        "composition_ready_historical_or_gloss",
+    }
+    candidate_rows = [
+        row
+        for row in rows
+        if row.get("composer_decision") in allowed_decisions
+        and row.get("lifecycle_candidate") is True
+        and row.get("requires_apply_later") is False
+        and row.get("corrected_text") == ""
+        and row.get("tokens_preserved") is True
+    ]
+    if len(candidate_rows) != 132:
+        raise RuntimeError(f"Unexpected context composer candidate line count: {len(candidate_rows)}")
+    by_segment: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in candidate_rows:
+        by_segment[int(row["segment_id"])].append(row)
+    if len(by_segment) != 78:
+        raise RuntimeError(f"Unexpected context composer distinct candidate count: {len(by_segment)}")
+    duplicate_count = len(candidate_rows) - len(by_segment)
+    if duplicate_count != 54:
+        raise RuntimeError(f"Unexpected context composer duplicate line count: {duplicate_count}")
+
+    deduped_rows: list[dict[str, Any]] = []
+    for segment_id, segment_rows in sorted(by_segment.items()):
+        decisions = {as_text(row["composer_decision"]) for row in segment_rows}
+        if len(decisions) != 1:
+            raise RuntimeError(f"Conflicting composer decisions for segment {segment_id}: {sorted(decisions)}")
+        chosen = dict(segment_rows[0])
+        chosen["duplicate_review_line_count"] = len(segment_rows) - 1
+        deduped_rows.append(chosen)
+
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_unknown_plain_event_context_composer_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_unknown_plain_event_context_composer_lifecycle (
+            source_queue_run_id INTEGER NOT NULL,
+            ledger_run_id INTEGER NOT NULL,
+            segment_id INTEGER PRIMARY KEY,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            input_decision TEXT NOT NULL,
+            input_subpolicy TEXT NOT NULL,
+            composer_family TEXT NOT NULL,
+            composer_decision TEXT NOT NULL,
+            subpolicy TEXT NOT NULL,
+            lifecycle_candidate INTEGER NOT NULL,
+            requires_apply_later INTEGER NOT NULL,
+            corrected_text TEXT NOT NULL,
+            route_to_agent TEXT NOT NULL,
+            tokens_preserved INTEGER NOT NULL,
+            confidence TEXT NOT NULL,
+            risk_flags_json TEXT NOT NULL,
+            notes TEXT NOT NULL,
+            duplicate_review_line_count INTEGER NOT NULL,
+            baseline_run_id INTEGER,
+            previous_final_state TEXT,
+            previous_state_group TEXT,
+            confirmed_matches_output INTEGER,
+            needs_output_apply INTEGER,
+            needs_reopen INTEGER,
+            previous_locked INTEGER,
+            open_issue_count INTEGER,
+            autofix_unknown_issue_count INTEGER,
+            semantic_review_issue_count INTEGER,
+            banned_issue_count INTEGER,
+            high_issue_count INTEGER,
+            open_issues TEXT,
+            target_state TEXT,
+            target_action TEXT,
+            bridge_result TEXT,
+            block_reason TEXT
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO temp_autofix_unknown_plain_event_context_composer_lifecycle (
+            source_queue_run_id,
+            ledger_run_id,
+            segment_id,
+            relative_path,
+            source_key,
+            input_decision,
+            input_subpolicy,
+            composer_family,
+            composer_decision,
+            subpolicy,
+            lifecycle_candidate,
+            requires_apply_later,
+            corrected_text,
+            route_to_agent,
+            tokens_preserved,
+            confidence,
+            risk_flags_json,
+            notes,
+            duplicate_review_line_count
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(row["source_queue_run_id"]),
+                int(row["ledger_run_id"]),
+                int(row["segment_id"]),
+                as_text(row["relative_path"]),
+                as_text(row["source_key"]),
+                as_text(row["input_decision"]),
+                as_text(row["input_subpolicy"]),
+                as_text(row["composer_family"]),
+                as_text(row["composer_decision"]),
+                as_text(row["subpolicy"]),
+                1 if row.get("lifecycle_candidate") is True else 0,
+                1 if row.get("requires_apply_later") is True else 0,
+                as_text(row.get("corrected_text")),
+                as_text(row["route_to_agent"]),
+                1 if row.get("tokens_preserved") is True else 0,
+                as_text(row["confidence"]),
+                json.dumps(row.get("risk_flags", []), ensure_ascii=False, sort_keys=True),
+                as_text(row["notes"]),
+                int(row["duplicate_review_line_count"]),
+            )
+            for row in deduped_rows
+        ],
+    )
+    conn.execute(
+        """
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent'
+                          AND issue_kind = 'needs_autofix_unclassified'
+                         THEN 1 ELSE 0 END) AS autofix_unknown_issue_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router'
+                          AND issue_kind = 'needs_human_or_semantic_conflict'
+                         THEN 1 ELSE 0 END) AS semantic_review_issue_count,
+                SUM(CASE WHEN issue_family IN (
+                            'nickname_name_policy',
+                            'culture_semantic_microagent',
+                            'religion_semantic_microagent',
+                            'title_policy_microagent',
+                            'gender_token_microagent',
+                            'dynamic_ck3_expression_microagent',
+                            'spanish_residual_microagent',
+                            'surface_boundary_microagent',
+                            'high_issue_auditor'
+                         )
+                         THEN 1 ELSE 0 END) AS banned_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical')
+                         THEN 1 ELSE 0 END) AS high_issue_count,
+                GROUP_CONCAT(issue_family || ':' || issue_kind || ':' || COALESCE(issue_severity, ''), '; ') AS open_issues
+            FROM ml_issue_ledger_items
+            WHERE run_id = 69
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        UPDATE temp_autofix_unknown_plain_event_context_composer_lifecycle AS target
+        SET
+            baseline_run_id = (SELECT id FROM previous_run),
+            previous_final_state = previous.final_state,
+            previous_state_group = previous.state_group,
+            confirmed_matches_output = COALESCE(previous.confirmed_matches_output, 0),
+            needs_output_apply = COALESCE(previous.needs_output_apply, 0),
+            needs_reopen = COALESCE(previous.needs_reopen, 0),
+            previous_locked = COALESCE(previous.locked, 0),
+            open_issue_count = COALESCE(ledger_summary.open_issue_count, 0),
+            autofix_unknown_issue_count = COALESCE(ledger_summary.autofix_unknown_issue_count, 0),
+            semantic_review_issue_count = COALESCE(ledger_summary.semantic_review_issue_count, 0),
+            banned_issue_count = COALESCE(ledger_summary.banned_issue_count, 0),
+            high_issue_count = COALESCE(ledger_summary.high_issue_count, 0),
+            open_issues = COALESCE(ledger_summary.open_issues, ''),
+            target_state = CASE composer_decision
+                WHEN 'composition_ready_plain_prose'
+                    THEN ?
+                WHEN 'composition_ready_event_context'
+                    THEN ?
+                ELSE ''
+            END,
+            target_action = CASE composer_decision
+                WHEN 'composition_ready_plain_prose'
+                    THEN ?
+                WHEN 'composition_ready_event_context'
+                    THEN ?
+                ELSE ''
+            END,
+            bridge_result = CASE
+                WHEN composer_decision = 'composition_ready_historical_or_gloss' THEN 'blocked_preserved'
+                WHEN composer_decision NOT IN ('composition_ready_plain_prose', 'composition_ready_event_context') THEN 'blocked_preserved'
+                WHEN lifecycle_candidate != 1 THEN 'blocked_preserved'
+                WHEN requires_apply_later != 0 THEN 'blocked_preserved'
+                WHEN corrected_text != '' THEN 'blocked_preserved'
+                WHEN tokens_preserved != 1 THEN 'blocked_preserved'
+                WHEN previous.final_state = CASE composer_decision
+                    WHEN 'composition_ready_plain_prose'
+                        THEN ?
+                    WHEN 'composition_ready_event_context'
+                        THEN ?
+                    ELSE ''
+                END THEN 'closed'
+                WHEN previous.final_state IN (
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?
+                ) THEN 'blocked_preserved'
+                WHEN COALESCE(previous.state_group, '') = 'closed' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.final_state, '') != 'reopen_auto_confirmed_autofix' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'blocked_preserved'
+                WHEN confirmation.segment_id IS NULL THEN 'blocked_preserved'
+                WHEN COALESCE(confirmation.locked, 0) = 1
+                 AND canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'blocked_preserved'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'blocked_preserved'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                    THEN 'blocked_preserved'
+                WHEN source.source_key != target.source_key THEN 'blocked_preserved'
+                WHEN source.relative_path != target.relative_path THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.banned_issue_count, 0) != 0 THEN 'blocked_preserved'
+                WHEN NOT (
+                    (COALESCE(ledger_summary.open_issue_count, 0) = 1
+                     AND COALESCE(ledger_summary.autofix_unknown_issue_count, 0) = 1)
+                    OR
+                    (COALESCE(ledger_summary.open_issue_count, 0) = 2
+                     AND COALESCE(ledger_summary.autofix_unknown_issue_count, 0) = 1
+                     AND COALESCE(ledger_summary.semantic_review_issue_count, 0) = 1)
+                ) THEN 'blocked_preserved'
+                ELSE 'closed'
+            END,
+            block_reason = CASE
+                WHEN composer_decision = 'composition_ready_historical_or_gloss' THEN 'historical_or_gloss_not_enabled_for_this_bridge'
+                WHEN composer_decision NOT IN ('composition_ready_plain_prose', 'composition_ready_event_context') THEN 'composer_decision_not_allowed'
+                WHEN lifecycle_candidate != 1 THEN 'not_lifecycle_candidate'
+                WHEN requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN corrected_text != '' THEN 'corrected_text_present'
+                WHEN tokens_preserved != 1 THEN 'tokens_not_preserved'
+                WHEN previous.final_state = CASE composer_decision
+                    WHEN 'composition_ready_plain_prose'
+                        THEN ?
+                    WHEN 'composition_ready_event_context'
+                        THEN ?
+                    ELSE ''
+                END THEN ''
+                WHEN previous.final_state IN (
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?
+                ) THEN 'already_closed_by_queue226_lifecycle'
+                WHEN COALESCE(previous.state_group, '') = 'closed' THEN 'previous_state_closed'
+                WHEN COALESCE(previous.final_state, '') != 'reopen_auto_confirmed_autofix' THEN 'previous_state_not_reopen_auto_confirmed_autofix'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'confirmed_does_not_match_output'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'needs_output_apply'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'not_currently_reopen'
+                WHEN confirmation.segment_id IS NULL THEN 'missing_confirmation'
+                WHEN COALESCE(confirmation.locked, 0) = 1
+                 AND canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'locked_confirmation_divergent'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'confirmation_stale'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                    THEN 'token_signature_mismatch'
+                WHEN source.source_key != target.source_key THEN 'source_key_mismatch'
+                WHEN source.relative_path != target.relative_path THEN 'relative_path_mismatch'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'high_issue_present'
+                WHEN COALESCE(ledger_summary.banned_issue_count, 0) != 0 THEN 'banned_issue_present'
+                WHEN NOT (
+                    (COALESCE(ledger_summary.open_issue_count, 0) = 1
+                     AND COALESCE(ledger_summary.autofix_unknown_issue_count, 0) = 1)
+                    OR
+                    (COALESCE(ledger_summary.open_issue_count, 0) = 2
+                     AND COALESCE(ledger_summary.autofix_unknown_issue_count, 0) = 1
+                     AND COALESCE(ledger_summary.semantic_review_issue_count, 0) = 1)
+                ) THEN 'issue_set_not_allowed'
+                ELSE ''
+            END
+        FROM previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+        JOIN source_segments source
+          ON source.id = previous.segment_id
+        JOIN output_segments output
+          ON output.segment_id = previous.segment_id
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = previous.segment_id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = previous.segment_id
+        WHERE previous.segment_id = target.segment_id
+        """,
+        (
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_PLAIN_PROSE_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_EVENT_CONTEXT_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_PLAIN_PROSE_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_EVENT_CONTEXT_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_PLAIN_PROSE_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_EVENT_CONTEXT_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_PLAIN_PROSE_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_EVENT_CONTEXT_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+        ),
+    )
+
+
+def prepare_short_label_compact_ui_semantic_queue222_lifecycle(conn) -> None:
+    review_path = Path("reports/20260618_010015_short_label_compact_ui_semantic_queue_222_reviewed_chat.jsonl")
+    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(rows) != 180:
+        raise RuntimeError(f"Unexpected queue 222 reviewed row count: {len(rows)}")
+    expected_ids = {26785, 98465, 98467}
+    allowed_decisions = {"lifecycle_ready_compact_ui", "lifecycle_ready_rules_tooltip"}
+    lifecycle_ids = {
+        int(row["segment_id"])
+        for row in rows
+        if row.get("lifecycle_candidate") is True
+        and row.get("requires_apply_later") is False
+        and row.get("tokens_preserved") is True
+        and row.get("decision") in allowed_decisions
+    }
+    if lifecycle_ids != expected_ids:
+        raise RuntimeError(f"Unexpected queue 222 lifecycle ids: {sorted(lifecycle_ids)}")
+
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_compact_ui_semantic_queue222_review")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_compact_ui_semantic_queue222_review (
+            queue_run_id INTEGER NOT NULL,
+            diagnostic_run_id INTEGER NOT NULL,
+            ledger_run_id INTEGER NOT NULL,
+            segment_id INTEGER PRIMARY KEY,
+            source_key TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            current_text TEXT,
+            tokens_preserved INTEGER NOT NULL,
+            requires_apply_later INTEGER NOT NULL,
+            lifecycle_candidate INTEGER NOT NULL,
+            suggested_subpolicy TEXT
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO temp_short_label_compact_ui_semantic_queue222_review (
+            queue_run_id,
+            diagnostic_run_id,
+            ledger_run_id,
+            segment_id,
+            source_key,
+            relative_path,
+            decision,
+            confidence,
+            current_text,
+            tokens_preserved,
+            requires_apply_later,
+            lifecycle_candidate,
+            suggested_subpolicy
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(row["queue_run_id"]),
+                int(row["diagnostic_run_id"]),
+                int(row["ledger_run_id"]),
+                int(row["segment_id"]),
+                as_text(row["source_key"]),
+                as_text(row["relative_path"]),
+                as_text(row["decision"]),
+                float(row["confidence"]),
+                as_text(row.get("current_text")),
+                1 if row.get("tokens_preserved") is True else 0,
+                1 if row.get("requires_apply_later") is True else 0,
+                1 if row.get("lifecycle_candidate") is True else 0,
+                as_text(row.get("suggested_subpolicy")),
+            )
+            for row in rows
+        ],
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_compact_ui_semantic_queue222_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_compact_ui_semantic_queue222_lifecycle AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'short_label_style_microagent'
+                         THEN 1 ELSE 0 END) AS short_label_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical')
+                         THEN 1 ELSE 0 END) AS high_issue_count,
+                SUM(CASE WHEN issue_family != 'short_label_style_microagent'
+                         THEN 1 ELSE 0 END) AS other_issue_count,
+                GROUP_CONCAT(issue_family || '/' || issue_kind, '; ') AS open_issues
+            FROM ml_issue_ledger_items
+            WHERE run_id = 60
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.queue_run_id,
+            review.diagnostic_run_id,
+            review.ledger_run_id,
+            review.source_key,
+            review.relative_path,
+            review.decision,
+            review.suggested_subpolicy,
+            review.current_text,
+            previous.final_state AS previous_final_state,
+            previous.state_group AS previous_state_group,
+            COALESCE(previous.confirmed_matches_output, 0) AS confirmed_matches_output,
+            COALESCE(previous.needs_output_apply, 0) AS needs_output_apply,
+            COALESCE(previous.needs_reopen, 0) AS needs_reopen,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.short_label_issue_count, 0) AS short_label_issue_count,
+            COALESCE(ledger_summary.high_issue_count, 0) AS high_issue_count,
+            COALESCE(ledger_summary.other_issue_count, 0) AS other_issue_count,
+            COALESCE(ledger_summary.open_issues, '') AS open_issues,
+            CASE
+                WHEN previous.final_state = ? THEN 'closed'
+                WHEN review.segment_id NOT IN (26785, 98465, 98467) THEN 'blocked_preserved'
+                WHEN review.lifecycle_candidate != 1 THEN 'blocked_preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked_preserved'
+                WHEN review.tokens_preserved != 1 THEN 'blocked_preserved'
+                WHEN review.decision NOT IN ('lifecycle_ready_compact_ui', 'lifecycle_ready_rules_tooltip') THEN 'blocked_preserved'
+                WHEN COALESCE(previous.state_group, '') = 'closed' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.final_state, '') NOT LIKE 'reopen_%' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'blocked_preserved'
+                WHEN confirmation.segment_id IS NULL THEN 'blocked_preserved'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'blocked_preserved'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN source.source_key != review.source_key THEN 'blocked_preserved'
+                WHEN source.relative_path != review.relative_path THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != COALESCE(ledger_summary.short_label_issue_count, 0) THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'blocked_preserved'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN previous.final_state = ? THEN ''
+                WHEN review.segment_id NOT IN (26785, 98465, 98467) THEN 'segment_not_allowlisted'
+                WHEN review.lifecycle_candidate != 1 THEN 'not_lifecycle_candidate'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN review.tokens_preserved != 1 THEN 'tokens_not_preserved'
+                WHEN review.decision NOT IN ('lifecycle_ready_compact_ui', 'lifecycle_ready_rules_tooltip') THEN 'decision_not_allowed'
+                WHEN COALESCE(previous.state_group, '') = 'closed' THEN 'previous_state_closed'
+                WHEN COALESCE(previous.final_state, '') NOT LIKE 'reopen_%' THEN 'previous_state_not_reopen'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'confirmed_does_not_match_output'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'needs_output_apply'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'not_currently_reopen'
+                WHEN confirmation.segment_id IS NULL THEN 'missing_confirmation'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'locked_confirmation'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'confirmation_stale'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'token_signature_mismatch'
+                WHEN source.source_key != review.source_key THEN 'source_key_mismatch'
+                WHEN source.relative_path != review.relative_path THEN 'relative_path_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != COALESCE(ledger_summary.short_label_issue_count, 0) THEN 'other_open_issue_present'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'high_issue_present'
+                ELSE ''
+            END AS block_reason
+        FROM temp_short_label_compact_ui_semantic_queue222_review review
+        JOIN source_segments source
+          ON source.id = review.segment_id
+        JOIN output_segments output
+          ON output.segment_id = review.segment_id
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = review.segment_id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        JOIN previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+         AND previous.segment_id = review.segment_id
+        WHERE review.lifecycle_candidate = 1
+        """,
+        (
+            SHORT_LABEL_COMPACT_UI_SEMANTIC_QUEUE222_LIFECYCLE_STATE,
+            SHORT_LABEL_COMPACT_UI_SEMANTIC_QUEUE222_LIFECYCLE_STATE,
+        ),
+    )
+
+
+def prepare_short_label_semantic_pair_lifecycle(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_semantic_pair_lifecycle")
+    table_exists = conn.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'ml_short_label_semantic_pair_lifecycle_bridge_items'
+        """
+    ).fetchone()
+    if int(table_exists["total"] or 0) == 0:
+        conn.execute(
+            """
+            CREATE TEMP TABLE temp_short_label_semantic_pair_lifecycle (
+                bridge_run_id INTEGER,
+                reviewed_jsonl TEXT,
+                ledger_run_id INTEGER,
+                segment_state_run_id INTEGER,
+                segment_id INTEGER PRIMARY KEY,
+                relative_path TEXT,
+                source_key TEXT,
+                decision TEXT,
+                suggested_subpolicy TEXT,
+                surface_bucket TEXT,
+                bridge_status TEXT,
+                bridge_block_reason TEXT,
+                lifecycle_candidate INTEGER,
+                requires_apply_later INTEGER,
+                tokens_preserved INTEGER,
+                corrected_text TEXT,
+                baseline_run_id INTEGER,
+                previous_final_state TEXT,
+                previous_state_group TEXT,
+                previous_review_state TEXT,
+                confirmed_matches_output INTEGER,
+                needs_output_apply INTEGER,
+                needs_reopen INTEGER,
+                previous_locked INTEGER,
+                confirmation_locked INTEGER,
+                open_issue_count INTEGER,
+                short_label_issue_count INTEGER,
+                semantic_issue_count INTEGER,
+                high_issue_count INTEGER,
+                extra_issue_count INTEGER,
+                open_issues TEXT,
+                target_state TEXT,
+                target_action TEXT,
+                bridge_result TEXT,
+                block_reason TEXT
+            )
+            """
+        )
+        return
+
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_semantic_pair_lifecycle AS
+        WITH bridge_runs AS (
+            SELECT *
+            FROM ml_short_label_semantic_pair_lifecycle_bridge_runs
+            WHERE finished_at IS NOT NULL
+              AND ready_count > 0
+        ),
+        ranked_items AS (
+            SELECT
+                item.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY item.segment_id
+                    ORDER BY
+                        CASE item.bridge_status WHEN 'ready_for_lifecycle_bridge' THEN 0 ELSE 1 END,
+                        item.run_id ASC,
+                        item.id ASC
+                ) AS segment_rank
+            FROM ml_short_label_semantic_pair_lifecycle_bridge_items item
+            JOIN bridge_runs bridge
+              ON bridge.id = item.run_id
+             AND bridge.reviewed_jsonl = item.reviewed_jsonl
+        ),
+        deduped AS (
+            SELECT *
+            FROM ranked_items
+            WHERE segment_rank = 1
+        ),
+        previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                run_id AS ledger_run_id,
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'short_label_style_microagent'
+                          AND issue_kind = 'short_or_compact_label_reopened'
+                         THEN 1 ELSE 0 END) AS short_label_issue_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router'
+                          AND issue_kind = 'needs_human_or_semantic_conflict'
+                         THEN 1 ELSE 0 END) AS semantic_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical')
+                         THEN 1 ELSE 0 END) AS high_issue_count,
+                SUM(CASE WHEN NOT (
+                            issue_family = 'short_label_style_microagent'
+                            AND issue_kind = 'short_or_compact_label_reopened'
+                         )
+                         AND NOT (
+                            issue_family = 'semantic_review_router'
+                            AND issue_kind = 'needs_human_or_semantic_conflict'
+                         )
+                         THEN 1 ELSE 0 END) AS extra_issue_count,
+                GROUP_CONCAT(issue_family || ':' || issue_kind || ':' || COALESCE(issue_severity, ''), '; ') AS open_issues
+            FROM ml_issue_ledger_items
+            WHERE run_id IN (
+                SELECT DISTINCT source_ledger_run_id
+                FROM deduped
+            )
+              AND status = 'open'
+            GROUP BY run_id, segment_id
+        )
+        SELECT
+            item.run_id AS bridge_run_id,
+            item.reviewed_jsonl,
+            item.source_ledger_run_id AS ledger_run_id,
+            item.source_segment_state_run_id AS segment_state_run_id,
+            item.segment_id,
+            item.relative_path,
+            item.source_key,
+            item.decision,
+            item.suggested_subpolicy,
+            item.surface_bucket,
+            item.bridge_status,
+            item.block_reason AS bridge_block_reason,
+            item.lifecycle_candidate,
+            item.requires_apply_later,
+            item.tokens_preserved,
+            COALESCE(item.corrected_text, '') AS corrected_text,
+            previous_run.id AS baseline_run_id,
+            previous.final_state AS previous_final_state,
+            previous.state_group AS previous_state_group,
+            previous.review_state AS previous_review_state,
+            COALESCE(previous.confirmed_matches_output, 0) AS confirmed_matches_output,
+            COALESCE(previous.needs_output_apply, 0) AS needs_output_apply,
+            COALESCE(previous.needs_reopen, 0) AS needs_reopen,
+            COALESCE(previous.locked, 0) AS previous_locked,
+            COALESCE(confirmation.locked, 0) AS confirmation_locked,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.short_label_issue_count, 0) AS short_label_issue_count,
+            COALESCE(ledger_summary.semantic_issue_count, 0) AS semantic_issue_count,
+            COALESCE(ledger_summary.high_issue_count, 0) AS high_issue_count,
+            COALESCE(ledger_summary.extra_issue_count, 0) AS extra_issue_count,
+            COALESCE(ledger_summary.open_issues, '') AS open_issues,
+            CASE item.decision
+                WHEN 'lifecycle_ready_quote_fragment' THEN ?
+                WHEN 'lifecycle_ready_nominal_label' THEN ?
+                WHEN 'lifecycle_ready_short_phrase' THEN ?
+                WHEN 'lifecycle_ready_compact_option' THEN ?
+                ELSE ''
+            END AS target_state,
+            CASE item.decision
+                WHEN 'lifecycle_ready_quote_fragment' THEN ?
+                WHEN 'lifecycle_ready_nominal_label' THEN ?
+                WHEN 'lifecycle_ready_short_phrase' THEN ?
+                WHEN 'lifecycle_ready_compact_option' THEN ?
+                ELSE ''
+            END AS target_action,
+            CASE
+                WHEN item.bridge_status != 'ready_for_lifecycle_bridge' THEN 'blocked_preserved'
+                WHEN item.lifecycle_candidate != 1 THEN 'blocked_preserved'
+                WHEN item.requires_apply_later != 0 THEN 'blocked_preserved'
+                WHEN item.tokens_preserved != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(item.corrected_text, '') != '' THEN 'blocked_preserved'
+                WHEN item.decision NOT IN (
+                    'lifecycle_ready_quote_fragment',
+                    'lifecycle_ready_nominal_label',
+                    'lifecycle_ready_short_phrase',
+                    'lifecycle_ready_compact_option'
+                ) THEN 'blocked_preserved'
+                WHEN previous.final_state = CASE item.decision
+                    WHEN 'lifecycle_ready_quote_fragment' THEN ?
+                    WHEN 'lifecycle_ready_nominal_label' THEN ?
+                    WHEN 'lifecycle_ready_short_phrase' THEN ?
+                    WHEN 'lifecycle_ready_compact_option' THEN ?
+                    ELSE ''
+                END THEN 'closed'
+                WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.final_state, '') != 'reopen_auto_confirmed_autofix' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.review_state, '') != 'auto_confirmed' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.locked, 0) != 0
+                  OR COALESCE(previous.review_state, '') IN ('human_locked', 'human_confirmed')
+                    THEN 'blocked_preserved'
+                WHEN COALESCE(confirmation.locked, 0) != 0 THEN 'blocked_preserved'
+                WHEN confirmation.segment_id IS NULL THEN 'blocked_preserved'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'blocked_preserved'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                    THEN 'blocked_preserved'
+                WHEN source.source_key != item.source_key THEN 'blocked_preserved'
+                WHEN source.relative_path != item.relative_path THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.short_label_issue_count, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.semantic_issue_count, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.extra_issue_count, 0) != 0 THEN 'blocked_preserved'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN item.bridge_status != 'ready_for_lifecycle_bridge' THEN COALESCE(item.block_reason, 'bridge_item_not_ready')
+                WHEN item.lifecycle_candidate != 1 THEN 'not_lifecycle_candidate'
+                WHEN item.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN item.tokens_preserved != 1 THEN 'tokens_not_preserved'
+                WHEN COALESCE(item.corrected_text, '') != '' THEN 'corrected_text_present'
+                WHEN item.decision NOT IN (
+                    'lifecycle_ready_quote_fragment',
+                    'lifecycle_ready_nominal_label',
+                    'lifecycle_ready_short_phrase',
+                    'lifecycle_ready_compact_option'
+                ) THEN 'decision_not_lifecycle_ready'
+                WHEN previous.final_state = CASE item.decision
+                    WHEN 'lifecycle_ready_quote_fragment' THEN ?
+                    WHEN 'lifecycle_ready_nominal_label' THEN ?
+                    WHEN 'lifecycle_ready_short_phrase' THEN ?
+                    WHEN 'lifecycle_ready_compact_option' THEN ?
+                    ELSE ''
+                END THEN ''
+                WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'not_pending'
+                WHEN COALESCE(previous.final_state, '') != 'reopen_auto_confirmed_autofix'
+                    THEN 'state_not_reopen_auto_confirmed_autofix'
+                WHEN COALESCE(previous.review_state, '') != 'auto_confirmed'
+                    THEN 'review_state_not_auto_confirmed'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'needs_output_apply'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'confirmed_output_mismatch'
+                WHEN COALESCE(previous.locked, 0) != 0
+                  OR COALESCE(previous.review_state, '') IN ('human_locked', 'human_confirmed')
+                    THEN 'human_locked_or_confirmed'
+                WHEN COALESCE(confirmation.locked, 0) != 0 THEN 'confirmation_locked'
+                WHEN confirmation.segment_id IS NULL THEN 'human_locked_or_confirmed'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'confirmed_output_mismatch'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                    THEN 'tokens_not_preserved'
+                WHEN source.source_key != item.source_key THEN 'source_key_mismatch'
+                WHEN source.relative_path != item.relative_path THEN 'relative_path_mismatch'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'high_issue_present'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'open_issue_count_not_two'
+                WHEN COALESCE(ledger_summary.short_label_issue_count, 0) != 1
+                    THEN 'short_label_issue_missing_or_not_one'
+                WHEN COALESCE(ledger_summary.semantic_issue_count, 0) != 1
+                    THEN 'semantic_issue_missing_or_not_one'
+                WHEN COALESCE(ledger_summary.extra_issue_count, 0) != 0 THEN 'extra_open_issue_present'
+                ELSE ''
+            END AS block_reason
+        FROM deduped item
+        JOIN previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+         AND previous.segment_id = item.segment_id
+        JOIN source_segments source
+          ON source.id = item.segment_id
+        JOIN output_segments output
+          ON output.segment_id = item.segment_id
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = item.segment_id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = item.segment_id
+         AND ledger_summary.ledger_run_id = item.source_ledger_run_id
+        """,
+        (
+            SHORT_LABEL_SEMANTIC_PAIR_QUOTE_FRAGMENT_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_NOMINAL_LABEL_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_SHORT_PHRASE_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_COMPACT_OPTION_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_QUOTE_FRAGMENT_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_SEMANTIC_PAIR_NOMINAL_LABEL_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_SEMANTIC_PAIR_SHORT_PHRASE_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_SEMANTIC_PAIR_COMPACT_OPTION_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_SEMANTIC_PAIR_QUOTE_FRAGMENT_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_NOMINAL_LABEL_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_SHORT_PHRASE_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_COMPACT_OPTION_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_QUOTE_FRAGMENT_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_NOMINAL_LABEL_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_SHORT_PHRASE_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_COMPACT_OPTION_LIFECYCLE_STATE,
+        ),
+    )
+
+
+def prepare_short_label_semantic_load_tips_lifecycle(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_semantic_load_tips_lifecycle")
+    table_exists = conn.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'ml_short_label_semantic_load_tips_lifecycle_bridge_items'
+        """
+    ).fetchone()
+    if int(table_exists["total"] or 0) == 0:
+        conn.execute(
+            """
+            CREATE TEMP TABLE temp_short_label_semantic_load_tips_lifecycle (
+                bridge_run_id INTEGER,
+                ledger_run_id INTEGER,
+                segment_state_run_id INTEGER,
+                segment_id INTEGER PRIMARY KEY,
+                relative_path TEXT,
+                source_key TEXT,
+                bridge_status TEXT,
+                bridge_block_reason TEXT,
+                baseline_run_id INTEGER,
+                previous_final_state TEXT,
+                previous_state_group TEXT,
+                previous_review_state TEXT,
+                confirmed_matches_output INTEGER,
+                needs_output_apply INTEGER,
+                previous_locked INTEGER,
+                confirmation_locked INTEGER,
+                open_issue_count INTEGER,
+                short_label_issue_count INTEGER,
+                semantic_issue_count INTEGER,
+                high_issue_count INTEGER,
+                open_issues TEXT,
+                target_state TEXT,
+                target_action TEXT,
+                bridge_result TEXT,
+                block_reason TEXT
+            )
+            """
+        )
+        return
+
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_semantic_load_tips_lifecycle AS
+        WITH bridge_runs AS (
+            SELECT *
+            FROM ml_short_label_semantic_load_tips_lifecycle_bridge_runs
+            WHERE finished_at IS NOT NULL
+              AND ready_count > 0
+        ),
+        ranked_items AS (
+            SELECT
+                item.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY item.segment_id
+                    ORDER BY
+                        CASE item.bridge_status WHEN 'ready_for_lifecycle_bridge' THEN 0 ELSE 1 END,
+                        item.run_id ASC,
+                        item.id ASC
+                ) AS segment_rank
+            FROM ml_short_label_semantic_load_tips_lifecycle_bridge_items item
+            JOIN bridge_runs bridge
+              ON bridge.id = item.run_id
+             AND bridge.source_ledger_run_id = item.source_ledger_run_id
+        ),
+        deduped AS (
+            SELECT *
+            FROM ranked_items
+            WHERE segment_rank = 1
+        ),
+        previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                run_id AS ledger_run_id,
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'short_label_style_microagent'
+                          AND issue_kind = 'short_or_compact_label_reopened'
+                         THEN 1 ELSE 0 END) AS short_label_issue_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router'
+                          AND issue_kind = 'needs_human_or_semantic_conflict'
+                         THEN 1 ELSE 0 END) AS semantic_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical')
+                         THEN 1 ELSE 0 END) AS high_issue_count,
+                GROUP_CONCAT(issue_family || ':' || issue_kind || ':' || COALESCE(issue_severity, ''), '; ') AS open_issues
+            FROM ml_issue_ledger_items
+            WHERE run_id IN (
+                SELECT DISTINCT source_ledger_run_id
+                FROM deduped
+            )
+              AND status = 'open'
+            GROUP BY run_id, segment_id
+        )
+        SELECT
+            item.run_id AS bridge_run_id,
+            item.source_ledger_run_id AS ledger_run_id,
+            item.source_segment_state_run_id AS segment_state_run_id,
+            item.segment_id,
+            item.relative_path,
+            item.source_key,
+            item.bridge_status,
+            item.block_reason AS bridge_block_reason,
+            previous_run.id AS baseline_run_id,
+            previous.final_state AS previous_final_state,
+            previous.state_group AS previous_state_group,
+            previous.review_state AS previous_review_state,
+            COALESCE(previous.confirmed_matches_output, 0) AS confirmed_matches_output,
+            COALESCE(previous.needs_output_apply, 0) AS needs_output_apply,
+            COALESCE(previous.locked, 0) AS previous_locked,
+            COALESCE(confirmation.locked, 0) AS confirmation_locked,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.short_label_issue_count, 0) AS short_label_issue_count,
+            COALESCE(ledger_summary.semantic_issue_count, 0) AS semantic_issue_count,
+            COALESCE(ledger_summary.high_issue_count, 0) AS high_issue_count,
+            COALESCE(ledger_summary.open_issues, '') AS open_issues,
+            ? AS target_state,
+            ? AS target_action,
+            CASE
+                WHEN item.bridge_status != 'ready_for_lifecycle_bridge' THEN 'blocked_preserved'
+                WHEN COALESCE(item.relative_path, '') NOT LIKE 'load_tips%' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.final_state, '') != 'reopen_auto_confirmed_autofix' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.review_state, '') != 'auto_confirmed' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.locked, 0) != 0
+                  OR COALESCE(previous.review_state, '') IN ('human_locked', 'human_confirmed')
+                    THEN 'blocked_preserved'
+                WHEN COALESCE(confirmation.locked, 0) != 0 THEN 'blocked_preserved'
+                WHEN confirmation.segment_id IS NULL THEN 'blocked_preserved'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.short_label_issue_count, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.semantic_issue_count, 0) != 1 THEN 'blocked_preserved'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN item.bridge_status != 'ready_for_lifecycle_bridge'
+                    THEN COALESCE(item.block_reason, 'load_tip_pattern_mismatch')
+                WHEN COALESCE(item.relative_path, '') NOT LIKE 'load_tips%' THEN 'not_load_tips'
+                WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'not_pending'
+                WHEN COALESCE(previous.final_state, '') != 'reopen_auto_confirmed_autofix'
+                    THEN 'state_not_reopen_auto_confirmed_autofix'
+                WHEN COALESCE(previous.review_state, '') != 'auto_confirmed'
+                    THEN 'review_state_not_auto_confirmed'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'needs_output_apply'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'confirmed_output_mismatch'
+                WHEN COALESCE(previous.locked, 0) != 0
+                  OR COALESCE(previous.review_state, '') IN ('human_locked', 'human_confirmed')
+                    THEN 'human_locked_or_confirmed'
+                WHEN COALESCE(confirmation.locked, 0) != 0 THEN 'confirmation_locked'
+                WHEN confirmation.segment_id IS NULL THEN 'human_locked_or_confirmed'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'confirmed_output_mismatch'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'high_issue_present'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'open_issue_count_not_two'
+                WHEN COALESCE(ledger_summary.short_label_issue_count, 0) != 1
+                    THEN 'short_label_issue_missing_or_not_one'
+                WHEN COALESCE(ledger_summary.semantic_issue_count, 0) != 1
+                    THEN 'semantic_issue_missing_or_not_one'
+                ELSE ''
+            END AS block_reason
+        FROM deduped item
+        JOIN previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+         AND previous.segment_id = item.segment_id
+        JOIN output_segments output
+          ON output.segment_id = item.segment_id
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = item.segment_id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = item.segment_id
+         AND ledger_summary.ledger_run_id = item.source_ledger_run_id
+        """,
+        (
+            SHORT_LABEL_SEMANTIC_LOAD_TIPS_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_LOAD_TIPS_LIFECYCLE_CLOSURE_ACTION,
+        ),
+    )
+
+
+def prepare_diarchy_extravagance_description_lifecycle(conn) -> None:
+    review_path = Path(DIARCHY_EXTRAVAGANCE_DESCRIPTION_REVIEWED_JSONL)
+    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    allowed_decisions = {
+        "diarchy_extravagance_ready_lifecycle",
+        "diarchy_extravagance_style_watch_lifecycle",
+    }
+    selected: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    duplicate_count = 0
+    candidates_by_decision = Counter()
+    for row in rows:
+        if not (
+            row.get("microagent") == "diarchy_extravagance_description"
+            and row.get("decision") in allowed_decisions
+            and row.get("lifecycle_candidate") is True
+            and row.get("requires_apply_later") is False
+            and as_text(row.get("corrected_text")) == ""
+            and row.get("tokens_preserved") is True
+            and row.get("relative_path") == "diarchies/diarchies_l_spanish.yml"
+        ):
+            continue
+        candidates_by_decision[as_text(row.get("decision"))] += 1
+        segment_id = int(row["segment_id"])
+        if segment_id in seen:
+            duplicate_count += 1
+            continue
+        seen.add(segment_id)
+        selected.append(row)
+
+    conn.execute("DROP TABLE IF EXISTS temp_diarchy_extravagance_description_review")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_diarchy_extravagance_description_review (
+            segment_id INTEGER PRIMARY KEY,
+            reviewed_jsonl TEXT NOT NULL,
+            ledger_run_id INTEGER NOT NULL,
+            segment_state_run_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            extravagance_tier TEXT,
+            extravagance_lane TEXT,
+            topic TEXT,
+            candidate_line_count INTEGER NOT NULL,
+            duplicate_review_line_ignored INTEGER NOT NULL
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO temp_diarchy_extravagance_description_review (
+            segment_id,
+            reviewed_jsonl,
+            ledger_run_id,
+            segment_state_run_id,
+            relative_path,
+            source_key,
+            decision,
+            extravagance_tier,
+            extravagance_lane,
+            topic,
+            candidate_line_count,
+            duplicate_review_line_ignored
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(row["segment_id"]),
+                DIARCHY_EXTRAVAGANCE_DESCRIPTION_REVIEWED_JSONL,
+                int(row["ledger_run_id"]),
+                int(row["segment_state_run_id"]),
+                as_text(row["relative_path"]),
+                as_text(row["source_key"]),
+                as_text(row["decision"]),
+                row.get("extravagance_tier"),
+                row.get("extravagance_lane"),
+                row.get("topic"),
+                len(selected) + duplicate_count,
+                duplicate_count,
+            )
+            for row in selected
+        ],
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_diarchy_extravagance_description_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_diarchy_extravagance_description_lifecycle AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                run_id AS ledger_run_id,
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent'
+                          AND issue_kind = 'needs_autofix_unclassified'
+                         THEN 1 ELSE 0 END) AS autofix_issue_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router'
+                          AND issue_kind = 'needs_human_or_semantic_conflict'
+                         THEN 1 ELSE 0 END) AS semantic_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical')
+                         THEN 1 ELSE 0 END) AS high_issue_count,
+                SUM(CASE WHEN issue_family IN (
+                    'nickname_name_policy',
+                    'culture_semantic_microagent',
+                    'religion_semantic_microagent',
+                    'title_policy_microagent',
+                    'gender_token_microagent',
+                    'dynamic_ck3_expression_microagent',
+                    'spanish_residual_microagent',
+                    'surface_boundary_microagent',
+                    'high_issue_auditor'
+                ) THEN 1 ELSE 0 END) AS banned_issue_count,
+                GROUP_CONCAT(issue_family || ':' || issue_kind || ':' || COALESCE(issue_severity, ''), '; ') AS open_issues
+            FROM ml_issue_ledger_items
+            WHERE status = 'open'
+              AND run_id IN (SELECT DISTINCT ledger_run_id FROM temp_diarchy_extravagance_description_review)
+            GROUP BY run_id, segment_id
+        )
+        SELECT
+            review.*,
+            previous_run.id AS baseline_run_id,
+            previous.final_state AS previous_final_state,
+            previous.state_group AS previous_state_group,
+            previous.review_state AS previous_review_state,
+            COALESCE(previous.needs_output_apply, 0) AS needs_output_apply,
+            COALESCE(previous.confirmed_matches_output, 0) AS confirmed_matches_output,
+            COALESCE(previous.needs_reopen, 0) AS needs_reopen,
+            COALESCE(previous.locked, 0) AS previous_locked,
+            COALESCE(confirmation.locked, 0) AS confirmation_locked,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.autofix_issue_count, 0) AS autofix_issue_count,
+            COALESCE(ledger_summary.semantic_issue_count, 0) AS semantic_issue_count,
+            COALESCE(ledger_summary.high_issue_count, 0) AS high_issue_count,
+            COALESCE(ledger_summary.banned_issue_count, 0) AS banned_issue_count,
+            COALESCE(ledger_summary.open_issues, '') AS open_issues,
+            CASE review.decision
+                WHEN 'diarchy_extravagance_ready_lifecycle' THEN ?
+                WHEN 'diarchy_extravagance_style_watch_lifecycle' THEN ?
+                ELSE ''
+            END AS target_state,
+            CASE review.decision
+                WHEN 'diarchy_extravagance_ready_lifecycle' THEN ?
+                WHEN 'diarchy_extravagance_style_watch_lifecycle' THEN ?
+                ELSE ''
+            END AS target_action,
+            CASE
+                WHEN review.relative_path != 'diarchies/diarchies_l_spanish.yml' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.final_state, '') != 'reopen_auto_confirmed_autofix' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.locked, 0) != 0
+                  OR COALESCE(previous.review_state, '') IN ('human_locked', 'human_confirmed') THEN 'blocked_preserved'
+                WHEN COALESCE(confirmation.locked, 0) != 0 THEN 'blocked_preserved'
+                WHEN confirmation.segment_id IS NULL THEN 'blocked_preserved'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.banned_issue_count, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.autofix_issue_count, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.semantic_issue_count, 0) NOT IN (0, 1) THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0)
+                   != COALESCE(ledger_summary.autofix_issue_count, 0) + COALESCE(ledger_summary.semantic_issue_count, 0)
+                    THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) NOT IN (1, 2) THEN 'blocked_preserved'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN review.relative_path != 'diarchies/diarchies_l_spanish.yml' THEN 'unexpected_relative_path'
+                WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'not_pending'
+                WHEN COALESCE(previous.final_state, '') != 'reopen_auto_confirmed_autofix'
+                    THEN 'state_not_reopen_auto_confirmed_autofix'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'needs_output_apply'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'confirmed_output_mismatch'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'needs_reopen_not_one'
+                WHEN COALESCE(previous.locked, 0) != 0
+                  OR COALESCE(previous.review_state, '') IN ('human_locked', 'human_confirmed')
+                    THEN 'human_locked_or_confirmed'
+                WHEN COALESCE(confirmation.locked, 0) != 0 THEN 'confirmation_locked'
+                WHEN confirmation.segment_id IS NULL THEN 'missing_confirmation'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                    THEN 'confirmed_output_mismatch'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'high_issue_present'
+                WHEN COALESCE(ledger_summary.banned_issue_count, 0) != 0 THEN 'banned_issue_present'
+                WHEN COALESCE(ledger_summary.autofix_issue_count, 0) != 1 THEN 'autofix_issue_missing_or_not_one'
+                WHEN COALESCE(ledger_summary.semantic_issue_count, 0) NOT IN (0, 1)
+                    THEN 'semantic_issue_count_not_allowed'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0)
+                   != COALESCE(ledger_summary.autofix_issue_count, 0) + COALESCE(ledger_summary.semantic_issue_count, 0)
+                    THEN 'outside_issue_present'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) NOT IN (1, 2) THEN 'open_issue_count_not_allowed'
+                ELSE ''
+            END AS block_reason
+        FROM temp_diarchy_extravagance_description_review review
+        JOIN previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+         AND previous.segment_id = review.segment_id
+        JOIN output_segments output
+          ON output.segment_id = review.segment_id
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = review.segment_id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+         AND ledger_summary.ledger_run_id = review.ledger_run_id
+        """,
+        (
+            DIARCHY_EXTRAVAGANCE_DESCRIPTION_READY_LIFECYCLE_STATE,
+            DIARCHY_EXTRAVAGANCE_DESCRIPTION_STYLE_WATCH_LIFECYCLE_STATE,
+            DIARCHY_EXTRAVAGANCE_DESCRIPTION_READY_LIFECYCLE_CLOSURE_ACTION,
+            DIARCHY_EXTRAVAGANCE_DESCRIPTION_STYLE_WATCH_LIFECYCLE_CLOSURE_ACTION,
+        ),
+    )
+
+
+def prepare_short_label_pure_no_token_queue4_lifecycle(conn) -> None:
+    review_path = Path("reports/20260618_115841_816555_short_label_pure_no_token_queue4_sublane_review.jsonl")
+    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(rows) != 240:
+        raise RuntimeError(f"Unexpected queue 4 sublane review row count: {len(rows)}")
+    lifecycle_rows = [
+        row
+        for row in rows
+        if row.get("candidate_lifecycle_later") is True
+        and row.get("candidate_checkpoint_later") is True
+        and row.get("requires_apply_later") is False
+        and row.get("decision") in {"safe_modifier_description", "event_option_ready"}
+        and row.get("subpolicy") in {"modifier_description_guard", "event_option_short_phrase_guard"}
+    ]
+    if len(lifecycle_rows) != 52:
+        raise RuntimeError(f"Unexpected queue 4 lifecycle candidate count: {len(lifecycle_rows)}")
+
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_pure_no_token_queue4_review")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_pure_no_token_queue4_review (
+            segment_id INTEGER PRIMARY KEY,
+            source_key TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            subpolicy TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            current_text TEXT,
+            corrected_text TEXT,
+            requires_apply_later INTEGER NOT NULL,
+            candidate_lifecycle_later INTEGER NOT NULL,
+            candidate_checkpoint_later INTEGER NOT NULL
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO temp_short_label_pure_no_token_queue4_review (
+            segment_id,
+            source_key,
+            relative_path,
+            decision,
+            subpolicy,
+            reason,
+            current_text,
+            corrected_text,
+            requires_apply_later,
+            candidate_lifecycle_later,
+            candidate_checkpoint_later
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(row["segment_id"]),
+                as_text(row["source_key"]),
+                as_text(row["relative_path"]),
+                as_text(row["decision"]),
+                as_text(row["subpolicy"]),
+                as_text(row["reason"]),
+                as_text(row["current_text"]),
+                as_text(row.get("corrected_text")),
+                1 if row.get("requires_apply_later") is True else 0,
+                1 if row.get("candidate_lifecycle_later") is True else 0,
+                1 if row.get("candidate_checkpoint_later") is True else 0,
+            )
+            for row in rows
+        ],
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_pure_no_token_queue4_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_pure_no_token_queue4_lifecycle AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family IN ('short_label_style_microagent', 'semantic_review_router')
+                         THEN 1 ELSE 0 END) AS allowed_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical')
+                         THEN 1 ELSE 0 END) AS high_issue_count,
+                SUM(CASE WHEN issue_family NOT IN ('short_label_style_microagent', 'semantic_review_router')
+                         THEN 1 ELSE 0 END) AS other_issue_count,
+                GROUP_CONCAT(issue_family || '/' || issue_kind, '; ') AS open_issues
+            FROM ml_issue_ledger_items
+            WHERE run_id = 63
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.source_key,
+            review.relative_path,
+            review.decision,
+            review.subpolicy,
+            review.reason,
+            review.current_text,
+            CASE
+                WHEN review.decision = 'safe_modifier_description'
+                    THEN ?
+                WHEN review.decision = 'event_option_ready'
+                    THEN ?
+                ELSE ''
+            END AS target_state,
+            previous.final_state AS previous_final_state,
+            previous.state_group AS previous_state_group,
+            previous.review_state AS previous_review_state,
+            COALESCE(previous.confirmed_matches_output, 0) AS confirmed_matches_output,
+            COALESCE(previous.needs_output_apply, 0) AS needs_output_apply,
+            COALESCE(previous.needs_reopen, 0) AS needs_reopen,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.allowed_issue_count, 0) AS allowed_issue_count,
+            COALESCE(ledger_summary.high_issue_count, 0) AS high_issue_count,
+            COALESCE(ledger_summary.other_issue_count, 0) AS other_issue_count,
+            COALESCE(ledger_summary.open_issues, '') AS open_issues,
+            CASE
+                WHEN previous.final_state IN (?, ?) THEN 'closed'
+                WHEN review.candidate_lifecycle_later != 1 THEN 'blocked_preserved'
+                WHEN review.candidate_checkpoint_later != 1 THEN 'blocked_preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked_preserved'
+                WHEN review.decision NOT IN ('safe_modifier_description', 'event_option_ready') THEN 'blocked_preserved'
+                WHEN review.subpolicy NOT IN ('modifier_description_guard', 'event_option_short_phrase_guard') THEN 'blocked_preserved'
+                WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.final_state, '') NOT LIKE 'reopen_%' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.review_state, '') != 'auto_confirmed' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'blocked_preserved'
+                WHEN confirmation.segment_id IS NULL THEN 'blocked_preserved'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'blocked_preserved'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN canonical_l10n(review.current_text) != canonical_l10n(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN source.source_key != review.source_key THEN 'blocked_preserved'
+                WHEN source.relative_path != review.relative_path THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) = 0 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != COALESCE(ledger_summary.allowed_issue_count, 0) THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'blocked_preserved'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN previous.final_state IN (?, ?) THEN ''
+                WHEN review.candidate_lifecycle_later != 1 THEN 'not_lifecycle_candidate'
+                WHEN review.candidate_checkpoint_later != 1 THEN 'not_checkpoint_candidate'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN review.decision NOT IN ('safe_modifier_description', 'event_option_ready') THEN 'decision_not_allowed'
+                WHEN review.subpolicy NOT IN ('modifier_description_guard', 'event_option_short_phrase_guard') THEN 'subpolicy_not_allowed'
+                WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'previous_state_not_pending'
+                WHEN COALESCE(previous.final_state, '') NOT LIKE 'reopen_%' THEN 'previous_state_not_reopen'
+                WHEN COALESCE(previous.review_state, '') != 'auto_confirmed' THEN 'review_state_not_auto_confirmed'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'confirmed_does_not_match_output'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'needs_output_apply'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'not_currently_reopen'
+                WHEN confirmation.segment_id IS NULL THEN 'missing_confirmation'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'locked_confirmation'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'confirmation_stale'
+                WHEN canonical_l10n(review.current_text) != canonical_l10n(output.portuguese_text) THEN 'review_current_text_stale'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'token_signature_mismatch'
+                WHEN source.source_key != review.source_key THEN 'source_key_mismatch'
+                WHEN source.relative_path != review.relative_path THEN 'relative_path_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) = 0 THEN 'missing_open_ledger_issue'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != COALESCE(ledger_summary.allowed_issue_count, 0) THEN 'other_open_issue_present'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'high_issue_present'
+                ELSE ''
+            END AS block_reason
+        FROM temp_short_label_pure_no_token_queue4_review review
+        JOIN source_segments source
+          ON source.id = review.segment_id
+        JOIN output_segments output
+          ON output.segment_id = review.segment_id
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = review.segment_id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        JOIN previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+         AND previous.segment_id = review.segment_id
+        WHERE review.candidate_lifecycle_later = 1
+        """,
+        (
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_MODIFIER_DESCRIPTION_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_EVENT_OPTION_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_MODIFIER_DESCRIPTION_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_EVENT_OPTION_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_MODIFIER_DESCRIPTION_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_EVENT_OPTION_LIFECYCLE_STATE,
+        ),
+    )
+
+
+def prepare_short_label_pure_no_token_queue5_lifecycle(conn) -> None:
+    review_path = Path("reports/20260618_141408_037911_short_label_pure_no_token_queue5_sublane_review.jsonl")
+    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(rows) != 240:
+        raise RuntimeError(f"Unexpected queue 5 sublane review row count: {len(rows)}")
+    allowed_decisions = {
+        "safe_modifier_description",
+        "event_option_ready",
+        "safe_nominal_label",
+        "safe_death_reason_fragment",
+    }
+    allowed_subpolicies = {
+        "modifier_description_guard",
+        "event_option_short_phrase_guard",
+        "pure_no_token_nominal_label_guard",
+        "death_reason_fragment_guard",
+    }
+    lifecycle_rows = [
+        row
+        for row in rows
+        if row.get("candidate_lifecycle_later") is True
+        and row.get("candidate_checkpoint_later") is True
+        and row.get("requires_apply_later") is False
+        and row.get("decision") in allowed_decisions
+        and row.get("subpolicy") in allowed_subpolicies
+    ]
+    if len(lifecycle_rows) != 69:
+        raise RuntimeError(f"Unexpected queue 5 lifecycle candidate count: {len(lifecycle_rows)}")
+
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_pure_no_token_queue5_review")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_pure_no_token_queue5_review (
+            segment_id INTEGER PRIMARY KEY,
+            source_key TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            subpolicy TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            current_text TEXT,
+            corrected_text TEXT,
+            requires_apply_later INTEGER NOT NULL,
+            candidate_lifecycle_later INTEGER NOT NULL,
+            candidate_checkpoint_later INTEGER NOT NULL
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO temp_short_label_pure_no_token_queue5_review (
+            segment_id,
+            source_key,
+            relative_path,
+            decision,
+            subpolicy,
+            reason,
+            current_text,
+            corrected_text,
+            requires_apply_later,
+            candidate_lifecycle_later,
+            candidate_checkpoint_later
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(row["segment_id"]),
+                as_text(row["source_key"]),
+                as_text(row["relative_path"]),
+                as_text(row["decision"]),
+                as_text(row["subpolicy"]),
+                as_text(row["reason"]),
+                as_text(row["current_text"]),
+                as_text(row.get("corrected_text")),
+                1 if row.get("requires_apply_later") is True else 0,
+                1 if row.get("candidate_lifecycle_later") is True else 0,
+                1 if row.get("candidate_checkpoint_later") is True else 0,
+            )
+            for row in rows
+        ],
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_pure_no_token_queue5_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_pure_no_token_queue5_lifecycle AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family IN ('short_label_style_microagent', 'semantic_review_router')
+                         THEN 1 ELSE 0 END) AS allowed_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical')
+                         THEN 1 ELSE 0 END) AS high_issue_count,
+                SUM(CASE WHEN issue_family NOT IN ('short_label_style_microagent', 'semantic_review_router')
+                         THEN 1 ELSE 0 END) AS other_issue_count,
+                GROUP_CONCAT(issue_family || '/' || issue_kind, '; ') AS open_issues
+            FROM ml_issue_ledger_items
+            WHERE run_id = 66
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.source_key,
+            review.relative_path,
+            review.decision,
+            review.subpolicy,
+            review.reason,
+            review.current_text,
+            CASE
+                WHEN review.decision = 'safe_modifier_description'
+                    THEN ?
+                WHEN review.decision = 'event_option_ready'
+                    THEN ?
+                WHEN review.decision = 'safe_nominal_label'
+                    THEN ?
+                WHEN review.decision = 'safe_death_reason_fragment'
+                    THEN ?
+                ELSE ''
+            END AS target_state,
+            previous.final_state AS previous_final_state,
+            previous.state_group AS previous_state_group,
+            previous.review_state AS previous_review_state,
+            COALESCE(previous.confirmed_matches_output, 0) AS confirmed_matches_output,
+            COALESCE(previous.needs_output_apply, 0) AS needs_output_apply,
+            COALESCE(previous.needs_reopen, 0) AS needs_reopen,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.allowed_issue_count, 0) AS allowed_issue_count,
+            COALESCE(ledger_summary.high_issue_count, 0) AS high_issue_count,
+            COALESCE(ledger_summary.other_issue_count, 0) AS other_issue_count,
+            COALESCE(ledger_summary.open_issues, '') AS open_issues,
+            CASE
+                WHEN previous.final_state IN (?, ?, ?, ?) THEN 'closed'
+                WHEN review.candidate_lifecycle_later != 1 THEN 'blocked_preserved'
+                WHEN review.candidate_checkpoint_later != 1 THEN 'blocked_preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked_preserved'
+                WHEN review.decision NOT IN (
+                    'safe_modifier_description',
+                    'event_option_ready',
+                    'safe_nominal_label',
+                    'safe_death_reason_fragment'
+                ) THEN 'blocked_preserved'
+                WHEN review.subpolicy NOT IN (
+                    'modifier_description_guard',
+                    'event_option_short_phrase_guard',
+                    'pure_no_token_nominal_label_guard',
+                    'death_reason_fragment_guard'
+                ) THEN 'blocked_preserved'
+                WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.review_state, '') != 'auto_confirmed' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_reopen, 0) != 0 THEN 'blocked_preserved'
+                WHEN confirmation.segment_id IS NULL THEN 'blocked_preserved'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'blocked_preserved'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN canonical_l10n(review.current_text) != canonical_l10n(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN source.source_key != review.source_key THEN 'blocked_preserved'
+                WHEN source.relative_path != review.relative_path THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) = 0 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != COALESCE(ledger_summary.allowed_issue_count, 0) THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'blocked_preserved'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN previous.final_state IN (?, ?, ?, ?) THEN ''
+                WHEN review.candidate_lifecycle_later != 1 THEN 'not_lifecycle_candidate'
+                WHEN review.candidate_checkpoint_later != 1 THEN 'not_checkpoint_candidate'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN review.decision NOT IN (
+                    'safe_modifier_description',
+                    'event_option_ready',
+                    'safe_nominal_label',
+                    'safe_death_reason_fragment'
+                ) THEN 'decision_not_allowed'
+                WHEN review.subpolicy NOT IN (
+                    'modifier_description_guard',
+                    'event_option_short_phrase_guard',
+                    'pure_no_token_nominal_label_guard',
+                    'death_reason_fragment_guard'
+                ) THEN 'subpolicy_not_allowed'
+                WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'previous_state_not_pending'
+                WHEN COALESCE(previous.review_state, '') != 'auto_confirmed' THEN 'review_state_not_auto_confirmed'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'confirmed_does_not_match_output'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'needs_output_apply'
+                WHEN COALESCE(previous.needs_reopen, 0) != 0 THEN 'needs_reopen_not_zero'
+                WHEN confirmation.segment_id IS NULL THEN 'missing_confirmation'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'locked_confirmation'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'confirmation_stale'
+                WHEN canonical_l10n(review.current_text) != canonical_l10n(output.portuguese_text) THEN 'review_current_text_stale'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'token_signature_mismatch'
+                WHEN source.source_key != review.source_key THEN 'source_key_mismatch'
+                WHEN source.relative_path != review.relative_path THEN 'relative_path_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) = 0 THEN 'missing_open_ledger_issue'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != COALESCE(ledger_summary.allowed_issue_count, 0) THEN 'other_open_issue_present'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'high_issue_present'
+                ELSE ''
+            END AS block_reason
+        FROM temp_short_label_pure_no_token_queue5_review review
+        JOIN source_segments source
+          ON source.id = review.segment_id
+        JOIN output_segments output
+          ON output.segment_id = review.segment_id
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = review.segment_id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        JOIN previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+         AND previous.segment_id = review.segment_id
+        WHERE review.candidate_lifecycle_later = 1
+        """,
+        (
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MODIFIER_DESCRIPTION_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_EVENT_OPTION_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_NOMINAL_LABEL_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_DEATH_REASON_FRAGMENT_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MODIFIER_DESCRIPTION_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_EVENT_OPTION_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_NOMINAL_LABEL_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_DEATH_REASON_FRAGMENT_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MODIFIER_DESCRIPTION_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_EVENT_OPTION_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_NOMINAL_LABEL_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_DEATH_REASON_FRAGMENT_LIFECYCLE_STATE,
+        ),
+    )
+
+
+def prepare_short_label_pure_no_token_queue5_false_reopen_lifecycle(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_pure_no_token_queue5_false_reopen_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_pure_no_token_queue5_false_reopen_lifecycle AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                COUNT(DISTINCT issue_family) AS open_family_count,
+                SUM(CASE WHEN issue_family = 'short_label_style_microagent'
+                         THEN 1 ELSE 0 END) AS short_label_issue_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router'
+                         THEN 1 ELSE 0 END) AS semantic_issue_count,
+                SUM(CASE WHEN issue_family NOT IN ('short_label_style_microagent', 'semantic_review_router')
+                         THEN 1 ELSE 0 END) AS other_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical')
+                         THEN 1 ELSE 0 END) AS high_issue_count,
+                GROUP_CONCAT(issue_family || '/' || issue_kind, '; ') AS open_issues
+            FROM ml_issue_ledger_items
+            WHERE run_id = 67
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.source_key,
+            review.relative_path,
+            review.decision,
+            review.subpolicy,
+            review.reason,
+            review.current_text,
+            CASE
+                WHEN review.decision = 'safe_modifier_description'
+                    THEN ?
+                WHEN review.decision = 'event_option_ready'
+                    THEN ?
+                WHEN review.decision = 'safe_nominal_label'
+                    THEN ?
+                WHEN review.decision = 'safe_death_reason_fragment'
+                    THEN ?
+                ELSE ''
+            END AS target_state,
+            previous.final_state AS previous_final_state,
+            previous.state_group AS previous_state_group,
+            previous.review_state AS previous_review_state,
+            COALESCE(previous.confirmed_matches_output, 0) AS confirmed_matches_output,
+            COALESCE(previous.needs_output_apply, 0) AS needs_output_apply,
+            COALESCE(previous.needs_reopen, 0) AS needs_reopen,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.open_family_count, 0) AS open_family_count,
+            COALESCE(ledger_summary.short_label_issue_count, 0) AS short_label_issue_count,
+            COALESCE(ledger_summary.semantic_issue_count, 0) AS semantic_issue_count,
+            COALESCE(ledger_summary.other_issue_count, 0) AS other_issue_count,
+            COALESCE(ledger_summary.high_issue_count, 0) AS high_issue_count,
+            COALESCE(ledger_summary.open_issues, '') AS open_issues,
+            CASE
+                WHEN previous.final_state IN (?, ?, ?, ?) THEN 'closed'
+                WHEN review.segment_id IN (20975, 21085) THEN 'blocked_preserved'
+                WHEN review.candidate_lifecycle_later != 1 THEN 'blocked_preserved'
+                WHEN review.candidate_checkpoint_later != 1 THEN 'blocked_preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked_preserved'
+                WHEN review.decision NOT IN (
+                    'safe_modifier_description',
+                    'event_option_ready',
+                    'safe_nominal_label',
+                    'safe_death_reason_fragment'
+                ) THEN 'blocked_preserved'
+                WHEN review.subpolicy NOT IN (
+                    'modifier_description_guard',
+                    'event_option_short_phrase_guard',
+                    'pure_no_token_nominal_label_guard',
+                    'death_reason_fragment_guard'
+                ) THEN 'blocked_preserved'
+                WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.final_state, '') != 'reopen_auto_confirmed_autofix' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.review_state, '') != 'auto_confirmed' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'blocked_preserved'
+                WHEN confirmation.segment_id IS NULL THEN 'blocked_preserved'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'blocked_preserved'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN canonical_l10n(review.current_text) != canonical_l10n(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN source.source_key != review.source_key THEN 'blocked_preserved'
+                WHEN source.relative_path != review.relative_path THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_family_count, 0) != 2 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.short_label_issue_count, 0) = 0 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.semantic_issue_count, 0) = 0 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'blocked_preserved'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN previous.final_state IN (?, ?, ?, ?) THEN ''
+                WHEN review.segment_id IN (20975, 21085) THEN 'explicit_preserve_culture_semantic_extra_family'
+                WHEN review.candidate_lifecycle_later != 1 THEN 'not_lifecycle_candidate'
+                WHEN review.candidate_checkpoint_later != 1 THEN 'not_checkpoint_candidate'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN review.decision NOT IN (
+                    'safe_modifier_description',
+                    'event_option_ready',
+                    'safe_nominal_label',
+                    'safe_death_reason_fragment'
+                ) THEN 'decision_not_allowed'
+                WHEN review.subpolicy NOT IN (
+                    'modifier_description_guard',
+                    'event_option_short_phrase_guard',
+                    'pure_no_token_nominal_label_guard',
+                    'death_reason_fragment_guard'
+                ) THEN 'subpolicy_not_allowed'
+                WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'previous_state_not_pending'
+                WHEN COALESCE(previous.final_state, '') != 'reopen_auto_confirmed_autofix' THEN 'previous_state_not_reopen_auto_confirmed_autofix'
+                WHEN COALESCE(previous.review_state, '') != 'auto_confirmed' THEN 'review_state_not_auto_confirmed'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'confirmed_does_not_match_output'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'needs_output_apply'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'needs_reopen_not_one'
+                WHEN confirmation.segment_id IS NULL THEN 'missing_confirmation'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'locked_confirmation'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'confirmation_stale'
+                WHEN canonical_l10n(review.current_text) != canonical_l10n(output.portuguese_text) THEN 'review_current_text_stale'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'token_signature_mismatch'
+                WHEN source.source_key != review.source_key THEN 'source_key_mismatch'
+                WHEN source.relative_path != review.relative_path THEN 'relative_path_mismatch'
+                WHEN COALESCE(ledger_summary.open_family_count, 0) != 2 THEN 'ledger_family_count_not_two'
+                WHEN COALESCE(ledger_summary.short_label_issue_count, 0) = 0 THEN 'missing_short_label_style_family'
+                WHEN COALESCE(ledger_summary.semantic_issue_count, 0) = 0 THEN 'missing_semantic_review_family'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'other_open_issue_present'
+                WHEN COALESCE(ledger_summary.high_issue_count, 0) != 0 THEN 'high_issue_present'
+                ELSE ''
+            END AS block_reason
+        FROM temp_short_label_pure_no_token_queue5_review review
+        JOIN source_segments source
+          ON source.id = review.segment_id
+        JOIN output_segments output
+          ON output.segment_id = review.segment_id
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = review.segment_id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        JOIN previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+         AND previous.segment_id = review.segment_id
+        WHERE review.candidate_lifecycle_later = 1
+        """,
+        (
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MODIFIER_DESCRIPTION_FALSE_REOPEN_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_EVENT_OPTION_FALSE_REOPEN_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_NOMINAL_LABEL_FALSE_REOPEN_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_DEATH_REASON_FRAGMENT_FALSE_REOPEN_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MODIFIER_DESCRIPTION_FALSE_REOPEN_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_EVENT_OPTION_FALSE_REOPEN_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_NOMINAL_LABEL_FALSE_REOPEN_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_DEATH_REASON_FRAGMENT_FALSE_REOPEN_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MODIFIER_DESCRIPTION_FALSE_REOPEN_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_EVENT_OPTION_FALSE_REOPEN_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_NOMINAL_LABEL_FALSE_REOPEN_LIFECYCLE_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_DEATH_REASON_FRAGMENT_FALSE_REOPEN_LIFECYCLE_STATE,
+        ),
+    )
+
+
+def prepare_trait_description_esta_personagem_lifecycle(conn) -> None:
+    expected_ids = {
+        281388,
+        281415,
+        281430,
+        281451,
+        281454,
+        281457,
+        281466,
+        281469,
+        281475,
+        281478,
+        281484,
+        281490,
+        281496,
+        281499,
+        281508,
+        281511,
+        281520,
+        281523,
+        281526,
+        281529,
+        281532,
+        281568,
+        281571,
+        281607,
+        281610,
+        281646,
+        281652,
+        281655,
+        281658,
+        281661,
+    }
+    review_path = Path("reports/20260618_141408_037911_short_label_pure_no_token_queue5_sublane_review.jsonl")
+    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    selected = [
+        row
+        for row in rows
+        if row.get("decision") == "needs_new_microagent"
+        and row.get("subpolicy") == "new_microagent_required"
+        and row.get("reason") == "repeated_trait_description_pattern_needs_trait_description_microagent"
+        and row.get("notes") == "trait_description_esta_personagem_pattern"
+        and row.get("relative_path") == "traits_l_spanish.yml"
+        and row.get("requires_apply_later") is False
+        and row.get("candidate_lifecycle_later") is False
+    ]
+    selected_ids = {int(row["segment_id"]) for row in selected}
+    if selected_ids != expected_ids:
+        raise RuntimeError(f"Unexpected trait description esta personagem ids: {sorted(selected_ids)}")
+    if len(selected) != 30:
+        raise RuntimeError(f"Unexpected trait description esta personagem candidate count: {len(selected)}")
+
+    conn.execute("DROP TABLE IF EXISTS temp_trait_description_esta_personagem_review")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_trait_description_esta_personagem_review (
+            segment_id INTEGER PRIMARY KEY,
+            source_key TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            subpolicy TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            notes TEXT NOT NULL,
+            current_text TEXT,
+            corrected_text TEXT,
+            requires_apply_later INTEGER NOT NULL,
+            candidate_lifecycle_later INTEGER NOT NULL
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO temp_trait_description_esta_personagem_review (
+            segment_id,
+            source_key,
+            relative_path,
+            decision,
+            subpolicy,
+            reason,
+            notes,
+            current_text,
+            corrected_text,
+            requires_apply_later,
+            candidate_lifecycle_later
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(row["segment_id"]),
+                as_text(row["source_key"]),
+                as_text(row["relative_path"]),
+                as_text(row["decision"]),
+                as_text(row["subpolicy"]),
+                as_text(row["reason"]),
+                as_text(row.get("notes")),
+                as_text(row["current_text"]),
+                as_text(row.get("corrected_text")),
+                1 if row.get("requires_apply_later") is True else 0,
+                1 if row.get("candidate_lifecycle_later") is True else 0,
+            )
+            for row in selected
+        ],
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_trait_description_esta_personagem_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_trait_description_esta_personagem_lifecycle AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE
+                    WHEN issue_family = 'semantic_review_router'
+                     AND issue_kind = 'needs_human_or_semantic_conflict'
+                     AND issue_severity = 'medium'
+                        THEN 1 ELSE 0 END) AS semantic_issue_count,
+                SUM(CASE
+                    WHEN issue_family = 'short_label_style_microagent'
+                     AND issue_kind = 'short_or_compact_label_reopened'
+                     AND issue_severity = 'medium'
+                        THEN 1 ELSE 0 END) AS short_label_issue_count,
+                SUM(CASE
+                    WHEN issue_family = 'gender_token_microagent'
+                     AND issue_kind = 'gender_token_usage'
+                     AND issue_severity = 'high'
+                        THEN 1 ELSE 0 END) AS gender_issue_count,
+                SUM(CASE
+                    WHEN (
+                        issue_family = 'semantic_review_router'
+                        AND issue_kind = 'needs_human_or_semantic_conflict'
+                        AND issue_severity = 'medium'
+                    ) OR (
+                        issue_family = 'short_label_style_microagent'
+                        AND issue_kind = 'short_or_compact_label_reopened'
+                        AND issue_severity = 'medium'
+                    ) OR (
+                        issue_family = 'gender_token_microagent'
+                        AND issue_kind = 'gender_token_usage'
+                        AND issue_severity = 'high'
+                    )
+                        THEN 1 ELSE 0 END) AS allowed_issue_count,
+                GROUP_CONCAT(issue_family || ':' || issue_kind || ':' || issue_severity, '; ') AS open_issues
+            FROM ml_issue_ledger_items
+            WHERE run_id = 67
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.source_key,
+            review.relative_path,
+            review.current_text,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.allowed_issue_count, 0) AS allowed_issue_count,
+            COALESCE(ledger_summary.semantic_issue_count, 0) AS semantic_issue_count,
+            COALESCE(ledger_summary.short_label_issue_count, 0) AS short_label_issue_count,
+            COALESCE(ledger_summary.gender_issue_count, 0) AS gender_issue_count,
+            COALESCE(ledger_summary.open_issues, '') AS open_issues,
+            CASE
+                WHEN COALESCE(ledger_summary.gender_issue_count, 0) > 0
+                    THEN 'gender + semantic + short_label'
+                ELSE 'semantic + short_label'
+            END AS issue_combo,
+            ? AS target_state,
+            previous.final_state AS previous_final_state,
+            previous.state_group AS previous_state_group,
+            previous.review_state AS previous_review_state,
+            COALESCE(previous.locked, 0) AS previous_locked,
+            COALESCE(previous.confirmed_matches_output, 0) AS confirmed_matches_output,
+            COALESCE(previous.needs_output_apply, 0) AS needs_output_apply,
+            COALESCE(previous.needs_reopen, 0) AS needs_reopen,
+            CASE
+                WHEN previous.final_state = ? THEN 'closed'
+                WHEN review.segment_id NOT IN (
+                    281388, 281415, 281430, 281451, 281454, 281457, 281466, 281469, 281475, 281478,
+                    281484, 281490, 281496, 281499, 281508, 281511, 281520, 281523, 281526, 281529,
+                    281532, 281568, 281571, 281607, 281610, 281646, 281652, 281655, 281658, 281661
+                ) THEN 'blocked_preserved'
+                WHEN review.relative_path != 'traits_l_spanish.yml' THEN 'blocked_preserved'
+                WHEN source.relative_path != 'traits_l_spanish.yml' THEN 'blocked_preserved'
+                WHEN source.source_key NOT GLOB 'trait_*_desc' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.final_state, '') NOT IN ('reopen_auto_confirmed_autofix') THEN 'blocked_preserved'
+                WHEN COALESCE(previous.review_state, '') != 'auto_confirmed' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.locked, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(TRIM(review.corrected_text), '') != '' THEN 'blocked_preserved'
+                WHEN confirmation.segment_id IS NULL THEN 'blocked_preserved'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN canonical_l10n(review.current_text) != canonical_l10n(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN NOT (
+                    review.current_text LIKE '%Esta personagem%'
+                    OR review.current_text LIKE '%esta personagem%'
+                    OR review.current_text LIKE '%a esta personagem%'
+                    OR source.source_key = 'trait_administrator_desc'
+                ) THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) = 0 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != COALESCE(ledger_summary.allowed_issue_count, 0) THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.semantic_issue_count, 0) = 0 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.short_label_issue_count, 0) = 0 THEN 'blocked_preserved'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN previous.final_state = ? THEN ''
+                WHEN review.segment_id NOT IN (
+                    281388, 281415, 281430, 281451, 281454, 281457, 281466, 281469, 281475, 281478,
+                    281484, 281490, 281496, 281499, 281508, 281511, 281520, 281523, 281526, 281529,
+                    281532, 281568, 281571, 281607, 281610, 281646, 281652, 281655, 281658, 281661
+                ) THEN 'segment_not_allowlisted'
+                WHEN review.relative_path != 'traits_l_spanish.yml' THEN 'review_relative_path_mismatch'
+                WHEN source.relative_path != 'traits_l_spanish.yml' THEN 'source_relative_path_mismatch'
+                WHEN source.source_key NOT GLOB 'trait_*_desc' THEN 'source_key_not_trait_desc'
+                WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'previous_state_not_pending'
+                WHEN COALESCE(previous.final_state, '') NOT IN ('reopen_auto_confirmed_autofix') THEN 'previous_state_not_reopen_auto_confirmed_autofix'
+                WHEN COALESCE(previous.review_state, '') != 'auto_confirmed' THEN 'review_state_not_auto_confirmed'
+                WHEN COALESCE(previous.locked, 0) != 0 THEN 'locked_confirmation'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'confirmed_does_not_match_output'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'needs_output_apply'
+                WHEN COALESCE(previous.needs_reopen, 0) != 1 THEN 'needs_reopen_not_one'
+                WHEN COALESCE(TRIM(review.corrected_text), '') != '' THEN 'corrected_text_present'
+                WHEN confirmation.segment_id IS NULL THEN 'missing_confirmation'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'confirmation_stale'
+                WHEN canonical_l10n(review.current_text) != canonical_l10n(output.portuguese_text) THEN 'review_current_text_stale'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'token_signature_mismatch'
+                WHEN NOT (
+                    review.current_text LIKE '%Esta personagem%'
+                    OR review.current_text LIKE '%esta personagem%'
+                    OR review.current_text LIKE '%a esta personagem%'
+                    OR source.source_key = 'trait_administrator_desc'
+                ) THEN 'trait_description_indicator_missing'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) = 0 THEN 'missing_open_ledger_issue'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != COALESCE(ledger_summary.allowed_issue_count, 0) THEN 'other_open_issue_present'
+                WHEN COALESCE(ledger_summary.semantic_issue_count, 0) = 0 THEN 'missing_semantic_issue'
+                WHEN COALESCE(ledger_summary.short_label_issue_count, 0) = 0 THEN 'missing_short_label_issue'
+                ELSE ''
+            END AS block_reason
+        FROM temp_trait_description_esta_personagem_review review
+        JOIN source_segments source
+          ON source.id = review.segment_id
+        JOIN output_segments output
+          ON output.segment_id = review.segment_id
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = review.segment_id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        JOIN previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+         AND previous.segment_id = review.segment_id
+        """,
+        (
+            TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_STATE,
+            TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_STATE,
+            TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_STATE,
+        ),
+    )
+
+
+def prepare_short_label_single_issue_residual_queue225_lifecycle(conn) -> None:
+    review_path = Path("reports/20260618_123935_802713_short_label_single_issue_residual_queue225_review.jsonl")
+    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(rows) != 64:
+        raise RuntimeError(f"Unexpected queue 225 review row count: {len(rows)}")
+    lifecycle_rows = [
+        row
+        for row in rows
+        if row.get("candidate_lifecycle_later") is True
+        and row.get("requires_apply_later") is False
+        and row.get("decision") == "safe_markup_no_repair"
+        and row.get("subpolicy") == "bold_no_ptbr_microrepair"
+    ]
+    if len(lifecycle_rows) != 11:
+        raise RuntimeError(f"Unexpected queue 225 lifecycle candidate count: {len(lifecycle_rows)}")
+
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_single_issue_residual_queue225_review")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_single_issue_residual_queue225_review (
+            segment_id INTEGER PRIMARY KEY,
+            source_key TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            subpolicy TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            current_text TEXT,
+            corrected_text TEXT,
+            requires_apply_later INTEGER NOT NULL,
+            candidate_lifecycle_later INTEGER NOT NULL
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO temp_short_label_single_issue_residual_queue225_review (
+            segment_id,
+            source_key,
+            relative_path,
+            decision,
+            subpolicy,
+            reason,
+            current_text,
+            corrected_text,
+            requires_apply_later,
+            candidate_lifecycle_later
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(row["segment_id"]),
+                as_text(row["source_key"]),
+                as_text(row["relative_path"]),
+                as_text(row["decision"]),
+                as_text(row["subpolicy"]),
+                as_text(row["reason"]),
+                as_text(row["current_text"]),
+                as_text(row.get("corrected_text")),
+                1 if row.get("requires_apply_later") is True else 0,
+                1 if row.get("candidate_lifecycle_later") is True else 0,
+            )
+            for row in rows
+        ],
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_single_issue_residual_queue225_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_single_issue_residual_queue225_lifecycle AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'short_label_style_microagent'
+                         THEN 1 ELSE 0 END) AS allowed_issue_count,
+                SUM(CASE WHEN issue_family != 'short_label_style_microagent'
+                         THEN 1 ELSE 0 END) AS other_issue_count,
+                GROUP_CONCAT(issue_family || '/' || issue_kind, '; ') AS open_issues
+            FROM ml_issue_ledger_items
+            WHERE run_id = 64
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.source_key,
+            review.relative_path,
+            review.decision,
+            review.subpolicy,
+            review.reason,
+            review.current_text,
+            ? AS target_state,
+            previous.final_state AS previous_final_state,
+            previous.state_group AS previous_state_group,
+            previous.review_state AS previous_review_state,
+            COALESCE(previous.confirmed_matches_output, 0) AS confirmed_matches_output,
+            COALESCE(previous.needs_output_apply, 0) AS needs_output_apply,
+            COALESCE(previous.needs_reopen, 0) AS needs_reopen,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.allowed_issue_count, 0) AS allowed_issue_count,
+            COALESCE(ledger_summary.other_issue_count, 0) AS other_issue_count,
+            COALESCE(ledger_summary.open_issues, '') AS open_issues,
+            CASE
+                WHEN previous.final_state = ? THEN 'closed'
+                WHEN review.candidate_lifecycle_later != 1 THEN 'blocked_preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked_preserved'
+                WHEN review.decision != 'safe_markup_no_repair' THEN 'blocked_preserved'
+                WHEN review.subpolicy != 'bold_no_ptbr_microrepair' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.review_state, '') != 'auto_confirmed' THEN 'blocked_preserved'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'blocked_preserved'
+                WHEN COALESCE(previous.needs_reopen, 0) != 0 THEN 'blocked_preserved'
+                WHEN confirmation.segment_id IS NULL THEN 'blocked_preserved'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'blocked_preserved'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN canonical_l10n(review.current_text) != canonical_l10n(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'blocked_preserved'
+                WHEN source.source_key != review.source_key THEN 'blocked_preserved'
+                WHEN source.relative_path != review.relative_path THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) = 0 THEN 'blocked_preserved'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != COALESCE(ledger_summary.allowed_issue_count, 0) THEN 'blocked_preserved'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN previous.final_state = ? THEN ''
+                WHEN review.candidate_lifecycle_later != 1 THEN 'not_lifecycle_candidate'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN review.decision != 'safe_markup_no_repair' THEN 'decision_not_allowed'
+                WHEN review.subpolicy != 'bold_no_ptbr_microrepair' THEN 'subpolicy_not_allowed'
+                WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'previous_state_not_pending'
+                WHEN COALESCE(previous.review_state, '') != 'auto_confirmed' THEN 'review_state_not_auto_confirmed'
+                WHEN COALESCE(previous.confirmed_matches_output, 0) != 1 THEN 'confirmed_does_not_match_output'
+                WHEN COALESCE(previous.needs_output_apply, 0) != 0 THEN 'needs_output_apply'
+                WHEN COALESCE(previous.needs_reopen, 0) != 0 THEN 'needs_reopen_not_zero'
+                WHEN confirmation.segment_id IS NULL THEN 'missing_confirmation'
+                WHEN COALESCE(confirmation.locked, 0) = 1 THEN 'locked_confirmation'
+                WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'confirmation_stale'
+                WHEN canonical_l10n(review.current_text) != canonical_l10n(output.portuguese_text) THEN 'review_current_text_stale'
+                WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text) THEN 'token_signature_mismatch'
+                WHEN source.source_key != review.source_key THEN 'source_key_mismatch'
+                WHEN source.relative_path != review.relative_path THEN 'relative_path_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) = 0 THEN 'missing_open_ledger_issue'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != COALESCE(ledger_summary.allowed_issue_count, 0) THEN 'other_open_issue_present'
+                ELSE ''
+            END AS block_reason
+        FROM temp_short_label_single_issue_residual_queue225_review review
+        JOIN source_segments source
+          ON source.id = review.segment_id
+        JOIN output_segments output
+          ON output.segment_id = review.segment_id
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = review.segment_id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        JOIN previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+         AND previous.segment_id = review.segment_id
+        WHERE review.candidate_lifecycle_later = 1
+        """,
+        (
+            SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_QUEUE225_NOOP_LIFECYCLE_STATE,
+            SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_QUEUE225_NOOP_LIFECYCLE_STATE,
+            SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_QUEUE225_NOOP_LIFECYCLE_STATE,
+        ),
+    )
 
 
 def latest_active_score_run(conn) -> int | None:
@@ -114,6 +4668,29 @@ def latest_agent_routing_run(conn) -> int | None:
     return int(row["id"]) if row else None
 
 
+def latest_reopen_lifecycle_policy_runs(conn) -> list[int]:
+    placeholders = ", ".join("?" for _ in ACTIVE_REOPEN_LIFECYCLE_POLICIES)
+    rows = conn.execute(
+        """
+        SELECT run.id
+        FROM auto_confirmation_reopen_lifecycle_policy_runs run
+        JOIN (
+            SELECT policy_name, MAX(id) AS id
+            FROM auto_confirmation_reopen_lifecycle_policy_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_status = 'active'
+              AND released_count > 0
+              AND policy_name IN ({placeholders})
+            GROUP BY policy_name
+        ) latest
+          ON latest.id = run.id
+        ORDER BY run.policy_name
+        """.format(placeholders=placeholders),
+        tuple(sorted(ACTIVE_REOPEN_LIFECYCLE_POLICIES)),
+    ).fetchall()
+    return [int(row["id"]) for row in rows]
+
+
 def insert_run(
     conn,
     *,
@@ -121,11 +4698,13 @@ def insert_run(
     candidate_score_run_id: int | None,
     policy_run_id: int | None,
     agent_routing_run_id: int | None,
+    reopen_lifecycle_policy_run_ids: list[int],
     started_at: str,
 ) -> int:
     notes = {
         "purpose": "materialized operational lifecycle state per active localization segment",
         "agent_routing_run_id": agent_routing_run_id,
+        "reopen_lifecycle_policy_run_ids": reopen_lifecycle_policy_run_ids,
         "safe_behavior": "does not modify output, confirmations, suggestions, or ML scores",
     }
     cur = conn.execute(
@@ -161,12 +4740,65 @@ def confirmation_review_state(row) -> str:
         return "human_locked"
     level = as_text(row["confirmation_level"]).lower()
     source = as_text(row["confirmation_source"]).lower()
+    label = as_text(row["confirmation_label"]).lower()
+    if source == ACTIONABLE_REVIEWED_REPAIR_CONFIRMATION_SOURCE:
+        return "auto_confirmed"
+    if (
+        source == TITLE_LANDED_ES_REVIEWED_REPAIR_CONFIRMATION_SOURCE
+        and label == TITLE_LANDED_ES_REVIEWED_REPAIR_CONFIRMATION_LABEL
+    ):
+        return "auto_confirmed"
+    if (
+        source == NICKNAME_GENDER_ARTICLE_REVIEWED_SAFE_CONFIRMATION_SOURCE
+        and label == NICKNAME_GENDER_ARTICLE_REVIEWED_SAFE_CONFIRMATION_LABEL
+    ):
+        return "auto_confirmed"
+    if (
+        source == SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_REPAIR_CONFIRMATION_SOURCE
+        and label == SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_REPAIR_CONFIRMATION_LABEL
+    ):
+        return "auto_confirmed"
+    if (
+        source == SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_CONFIRMATION_SOURCE
+        and label == SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_CONFIRMATION_LABEL
+    ):
+        return "auto_confirmed"
+    if (
+        source == DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REPAIR_CONFIRMATION_SOURCE
+        and label == DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REPAIR_CONFIRMATION_LABEL
+    ):
+        return "auto_confirmed"
     if level in HUMAN_LEVELS or any(hint in source for hint in HUMAN_SOURCE_HINTS):
         return "human_confirmed"
     return "auto_confirmed"
 
 
+def policy_new_safe_overrides_candidate_autofix(row) -> bool:
+    if row["policy_action"] != "auto_safe":
+        return False
+    if row["candidate_action"] != "needs_autofix":
+        return False
+    if int(row["policy_new_safe"] or 0) != 1:
+        return False
+    if int(row["policy_learned_positive"] or 0) != 1:
+        return False
+    if int(row["policy_learned_negative"] or 0) != 0:
+        return False
+    if not as_text(row["policy_group"]).startswith("specialist_ensemble:"):
+        return False
+    if "policy:new_safe_from_reviewed_specialist" not in as_text(row["policy_reasons_json"]):
+        return False
+    if int(row["high_issue_count"] or 0) > 0:
+        return False
+    for column in ("active_action", "candidate_action", "policy_action"):
+        if row[column] in STRUCTURAL_ACTIONS:
+            return False
+    return True
+
+
 def current_action_columns(row) -> list[str]:
+    if policy_new_safe_overrides_candidate_autofix(row):
+        return ["policy_action"]
     columns = ["policy_action", "candidate_action"]
     if row["policy_action"] is None and row["candidate_action"] is None:
         columns.append("active_action")
@@ -193,6 +4825,46 @@ def safe_action(row) -> bool:
     return any(row[column] in SAFE_ACTIONS for column in current_action_columns(row))
 
 
+def lifecycle_closure_allowed(row) -> bool:
+    actions = {
+        action.strip()
+        for action in as_text(row["lifecycle_policy_action"]).split(",")
+        if action.strip()
+    }
+    allowed_actions = actions & LIFECYCLE_CLOSURE_ACTIONS
+    if not allowed_actions or int(row["lifecycle_policy_allowed"] or 0) != 1:
+        return False
+    if CONTROLLED_TOKEN_SUBPOLICY_CLOSURE_ACTION in allowed_actions:
+        return (
+            row["confirmation_source"] == CONTROLLED_TOKEN_SUBPOLICY_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == CONTROLLED_TOKEN_SUBPOLICY_CONFIRMATION_LABEL
+        )
+    if SAME_TOKEN_BOUNDARY_REPAIR_CLOSURE_ACTION in allowed_actions:
+        return (
+            row["confirmation_source"] == SAME_TOKEN_BOUNDARY_REPAIR_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == SAME_TOKEN_BOUNDARY_REPAIR_CONFIRMATION_LABEL
+        )
+    if SAME_TOKEN_BOUNDARY_REPAIR_NOOP_CLOSURE_ACTION in allowed_actions:
+        return True
+    if SELECT_CSTRING_GOVERNED_BRIDGE_CLOSURE_ACTION in allowed_actions:
+        return (
+            row["confirmation_source"] == SELECT_CSTRING_GOVERNED_BRIDGE_CONFIRMATION_SOURCE
+            and as_text(row["confirmation_label"]).startswith(SELECT_CSTRING_GOVERNED_BRIDGE_CONFIRMATION_LABEL_PREFIX)
+        )
+    return True
+
+
+def lifecycle_action_allowed(row, action: str) -> bool:
+    if not lifecycle_closure_allowed(row):
+        return False
+    actions = {
+        item.strip()
+        for item in as_text(row["lifecycle_policy_action"]).split(",")
+        if item.strip()
+    }
+    return action in actions
+
+
 def classify(row) -> SegmentState:
     spanish_blank = is_blank(row["spanish_text"])
     english_blank = is_blank(row["english_text"])
@@ -215,8 +4887,11 @@ def classify(row) -> SegmentState:
         )
 
     review_state = confirmation_review_state(row)
+    policy_new_safe_override = policy_new_safe_overrides_candidate_autofix(row)
     danger = risky_action(row)
     reasons: list[str] = []
+    if policy_new_safe_override:
+        reasons.append("specialist ensemble reviewed new_safe overrides candidate autofix")
 
     def closed_state(final_state: str, output_state: str, extra_reason: str) -> SegmentState:
         reasons.append(extra_reason)
@@ -229,7 +4904,67 @@ def classify(row) -> SegmentState:
                 and row["candidate_action"] != row["active_action"]
             )
         )
-        final = f"{final_state}_watch" if watch and final_state.startswith("closed_auto") else final_state
+        watch_suffix_allowed = final_state not in {
+            "closed_auto_confirmed_title_landed_es_reviewed_repair",
+            "closed_auto_confirmed_nickname_gender_article_reviewed_safe",
+            "closed_auto_confirmed_short_label_bold_no_repair",
+            "closed_auto_confirmed_ptbr_orthographic_microfix",
+            "closed_auto_confirmed_title_landed_adjective_lexical_residue_repair",
+            "closed_auto_confirmed_title_landed_adjective_lexical_residue_direction_suffix_repair",
+            "closed_auto_confirmed_ui_compact_label_override",
+            "closed_auto_confirmed_in_game_feedback_microfix",
+            IN_GAME_FEEDBACK_VASSAL_STANCES_CLAIM_CB_MICROFIX_STATE,
+            TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_STATE,
+            DIARCHY_EXTRAVAGANCE_DESCRIPTION_READY_LIFECYCLE_STATE,
+            DIARCHY_EXTRAVAGANCE_DESCRIPTION_STYLE_WATCH_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_PLAIN_PROSE_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_EVENT_CONTEXT_LIFECYCLE_STATE,
+            "closed_auto_confirmed_gender_longform_blocker_repair",
+            "closed_auto_confirmed_gender_longform_blocker_noop",
+            "closed_auto_confirmed_gender_longform_context_rewrite_review",
+            "closed_auto_confirmed_select_cstring_residual_literal_repair",
+            "closed_auto_confirmed_select_cstring_possessive_context_repair",
+            "closed_auto_confirmed_select_cstring_auxiliary_context_repair",
+            "closed_auto_confirmed_select_cstring_object_pronoun_sentence_composer",
+            "closed_auto_confirmed_select_cstring_passive_confiscation_composer",
+            "closed_auto_confirmed_select_cstring_preterite_transfer_repair",
+            "closed_auto_confirmed_select_cstring_preterite_safe_batch_repair",
+            "closed_auto_confirmed_short_label_compact_ui_obvious_repair",
+            "closed_auto_confirmed_short_label_single_issue_residual_repair",
+            "closed_auto_confirmed_gender_es_oa_final_vowel_trim_partial_repair",
+            "closed_auto_confirmed_relation_possessive_boundary_microrepair",
+            "closed_auto_confirmed_relation_semantic_composer_reviewed_repair",
+            "closed_auto_confirmed_single_combat_signature_weapon_composer_batch1_repair",
+            "closed_auto_confirmed_single_combat_signature_weapon_composer_batch2_0041_repair",
+            DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REPAIR_STATE,
+            SINGLE_COMBAT_SIGNATURE_WEAPON_ALREADY_GOOD_LIFECYCLE_STATE,
+            SEMANTIC_SHORT_LABEL_EVENT_CONTEXT_DOMAIN_LIFECYCLE_STATE,
+            SEMANTIC_SHORT_LABEL_REQUIREMENT_TOOLTIP_DOMAIN_LIFECYCLE_STATE,
+            SEMANTIC_SHORT_LABEL_REQUIREMENT_TOOLTIP_MICROREPAIR_STATE,
+            SHORT_LABEL_STYLE_QUEUE220_STRICT_LIFECYCLE_STATE,
+            SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_QUOTE_FRAGMENT_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_NOMINAL_LABEL_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_SHORT_PHRASE_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_COMPACT_OPTION_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_LOAD_TIPS_LIFECYCLE_STATE,
+            "closed_auto_confirmed_short_label_compact_ui_false_reopen_lifecycle",
+            "closed_auto_confirmed_short_label_compact_ui_semantic_companion_lifecycle",
+            "closed_auto_confirmed_dynamic_ck3_pattern_shadow_lifecycle",
+            "closed_auto_confirmed_autofix_unknown_surface_lifecycle",
+            "closed_auto_confirmed_autofix_unknown_domain_guarded_reviewed_lifecycle",
+        }
+        final = (
+            f"{final_state}_watch"
+            if watch and watch_suffix_allowed and final_state.startswith("closed_auto")
+            else final_state
+        )
         if watch and final != final_state:
             reasons.append("closed but kept in low-priority watch because model/guard signals disagree")
         return SegmentState(
@@ -326,6 +5061,201 @@ def classify(row) -> SegmentState:
         )
 
     if has_confirmation and confirmed_matches_output:
+        if (
+            row["confirmation_source"] == GENDER_LONGFORM_CONTEXT_REWRITE_REVIEW_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == GENDER_LONGFORM_CONTEXT_REWRITE_REVIEW_CONFIRMATION_LABEL
+        ):
+            return closed_state(
+                "closed_auto_confirmed_gender_longform_context_rewrite_review",
+                "output_present",
+                "gender longform reviewed context rewrite confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == SELECT_CSTRING_RESIDUAL_LITERAL_REPAIR_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == SELECT_CSTRING_RESIDUAL_LITERAL_REPAIR_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_select_cstring_residual_literal_repair",
+                "output_present",
+                "Select_CString residual literal repair production confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == SELECT_CSTRING_POSSESSIVE_CONTEXT_REPAIR_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == SELECT_CSTRING_POSSESSIVE_CONTEXT_REPAIR_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_select_cstring_possessive_context_repair",
+                "output_present",
+                "Select_CString possessive context repair production confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == SELECT_CSTRING_AUXILIARY_CONTEXT_REPAIR_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == SELECT_CSTRING_AUXILIARY_CONTEXT_REPAIR_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_select_cstring_auxiliary_context_repair",
+                "output_present",
+                "Select_CString auxiliary context repair production confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == SELECT_CSTRING_OBJECT_PRONOUN_SENTENCE_COMPOSER_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == SELECT_CSTRING_OBJECT_PRONOUN_SENTENCE_COMPOSER_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_select_cstring_object_pronoun_sentence_composer",
+                "output_present",
+                "Select_CString object pronoun sentence composer production confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == SELECT_CSTRING_PASSIVE_CONFISCATION_COMPOSER_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == SELECT_CSTRING_PASSIVE_CONFISCATION_COMPOSER_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_select_cstring_passive_confiscation_composer",
+                "output_present",
+                "Select_CString passive confiscation sentence composer production confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == SELECT_CSTRING_PRETERITE_TRANSFER_REPAIR_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == SELECT_CSTRING_PRETERITE_TRANSFER_REPAIR_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_select_cstring_preterite_transfer_repair",
+                "output_present",
+                "Select_CString preterite transfer repair production confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == SELECT_CSTRING_PRETERITE_SAFE_BATCH_REPAIR_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == SELECT_CSTRING_PRETERITE_SAFE_BATCH_REPAIR_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_select_cstring_preterite_safe_batch_repair",
+                "output_present",
+                "Select_CString preterite safe batch repair production confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == SHORT_LABEL_COMPACT_UI_OBVIOUS_REPAIR_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == SHORT_LABEL_COMPACT_UI_OBVIOUS_REPAIR_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_short_label_compact_ui_obvious_repair",
+                "output_present",
+                "short-label compact UI obvious repair production confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_REPAIR_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_REPAIR_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_short_label_single_issue_residual_repair",
+                "output_present",
+                "short-label single-issue residual repair production confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_STATE,
+                "output_present",
+                "short-label style queue 220 microrepair confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == GENDER_ES_OA_FINAL_VOWEL_TRIM_PARTIAL_REPAIR_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == GENDER_ES_OA_FINAL_VOWEL_TRIM_PARTIAL_REPAIR_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_gender_es_oa_final_vowel_trim_partial_repair",
+                "output_present",
+                "gender ES_OA final-vowel trim partial repair confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == RELATION_POSSESSIVE_BOUNDARY_MICROREPAIR_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == RELATION_POSSESSIVE_BOUNDARY_MICROREPAIR_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_relation_possessive_boundary_microrepair",
+                "output_present",
+                "relation/possessive boundary microrepair confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == RELATION_SEMANTIC_COMPOSER_REVIEWED_REPAIR_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == RELATION_SEMANTIC_COMPOSER_REVIEWED_REPAIR_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_relation_semantic_composer_reviewed_repair",
+                "output_present",
+                "relation semantic composer reviewed repair confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH1_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH1_CONFIRMATION_LABEL
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_single_combat_signature_weapon_composer_batch1_repair",
+                "output_present",
+                "single combat signature weapon batch 1 repair confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH2_0041_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH2_0041_CONFIRMATION_LABEL
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_single_combat_signature_weapon_composer_batch2_0041_repair",
+                "output_present",
+                "single combat signature weapon batch 2 single_combat.0041 repair confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REPAIR_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REPAIR_CONFIRMATION_LABEL
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REPAIR_STATE,
+                "output_present",
+                "dynamic acclaimed knight requirement repair confirmation matches output",
+            )
         if review_state in {"human_locked", "human_confirmed"}:
             if danger or high_issue_count > 0:
                 reasons.append("manual confirmation is preserved despite model/issue watch signal")
@@ -333,6 +5263,386 @@ def classify(row) -> SegmentState:
                 "closed_human_confirmed" if review_state == "human_confirmed" else "closed_human_locked",
                 "output_present",
                 "confirmed output matches trusted human text",
+            )
+        if (
+            row["confirmation_source"] == TITLE_LANDED_ES_REVIEWED_REPAIR_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == TITLE_LANDED_ES_REVIEWED_REPAIR_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_title_landed_es_reviewed_repair",
+                "output_present",
+                "landed-title -es reviewed repair production confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == NICKNAME_GENDER_ARTICLE_REVIEWED_SAFE_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == NICKNAME_GENDER_ARTICLE_REVIEWED_SAFE_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_nickname_gender_article_reviewed_safe",
+                "output_present",
+                "nickname gender/article reviewed-safe production confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == NICKNAME_GENDER_ARTICLE_HELD_EXCEPTION_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == NICKNAME_GENDER_ARTICLE_HELD_EXCEPTION_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_nickname_gender_article_held_exception_watch",
+                "output_present",
+                "nickname gender/article held-exception structural repair matches output with semantic watch",
+            )
+        if (
+            row["confirmation_source"] == SHORT_LABEL_BOLD_NO_REPAIR_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == SHORT_LABEL_BOLD_NO_REPAIR_CONFIRMATION_LABEL
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_short_label_bold_no_repair",
+                "output_present",
+                "short-label bold No repair production confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == PTBR_ORTHOGRAPHIC_MICROFIX_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == PTBR_ORTHOGRAPHIC_MICROFIX_CONFIRMATION_LABEL
+        ):
+            return closed_state(
+                "closed_auto_confirmed_ptbr_orthographic_microfix",
+                "output_present",
+                "PT-BR orthographic microfix production confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == TITLE_LANDED_ADJECTIVE_LEXICAL_RESIDUE_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == TITLE_LANDED_ADJECTIVE_LEXICAL_RESIDUE_CONFIRMATION_LABEL
+        ):
+            return closed_state(
+                "closed_auto_confirmed_title_landed_adjective_lexical_residue_repair",
+                "output_present",
+                "landed-title adjective lexical residue repair production confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == TITLE_LANDED_ADJECTIVE_LEXICAL_RESIDUE_MEDIUM_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == TITLE_LANDED_ADJECTIVE_LEXICAL_RESIDUE_MEDIUM_CONFIRMATION_LABEL
+        ):
+            return closed_state(
+                "closed_auto_confirmed_title_landed_adjective_lexical_residue_direction_suffix_repair",
+                "output_present",
+                "landed-title adjective direction/suffix lexical residue repair production confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == UI_COMPACT_LABEL_OVERRIDE_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == UI_COMPACT_LABEL_OVERRIDE_CONFIRMATION_LABEL
+            and danger != "blocked_structure"
+        ):
+            return closed_state(
+                "closed_auto_confirmed_ui_compact_label_override",
+                "output_present",
+                "UI compact label override is deliberate and matches output",
+            )
+        if (
+            row["confirmation_source"] == IN_GAME_FEEDBACK_MICROFIX_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == IN_GAME_FEEDBACK_MICROFIX_CONFIRMATION_LABEL
+        ):
+            return closed_state(
+                "closed_auto_confirmed_in_game_feedback_microfix",
+                "output_present",
+                "in-game feedback microfix is deliberate and matches output",
+            )
+        if (
+            (
+                row["confirmation_source"] == IN_GAME_FEEDBACK_VASSAL_STANCES_CLAIM_CB_MICROFIX_CONFIRMATION_SOURCE
+                and row["confirmation_label"] == IN_GAME_FEEDBACK_VASSAL_STANCES_CLAIM_CB_MICROFIX_CONFIRMATION_LABEL
+            )
+            or (
+                row["confirmation_source"] == IN_GAME_FEEDBACK_MANUAL_LOCKED_OVERRIDE_CONFIRMATION_SOURCE
+                and row["confirmation_label"] == IN_GAME_FEEDBACK_MANUAL_LOCKED_OVERRIDE_CONFIRMATION_LABEL
+            )
+        ):
+            return closed_state(
+                "closed_auto_confirmed_in_game_feedback_vassal_stances_claim_cb_microfix",
+                "output_present",
+                "in-game feedback vassal stances and claim CB microfix is deliberate and matches output",
+            )
+        if (
+            row["confirmation_source"] == GENDER_LONGFORM_BLOCKER_REPAIR_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == GENDER_LONGFORM_BLOCKER_REPAIR_CONFIRMATION_LABEL
+        ):
+            return closed_state(
+                "closed_auto_confirmed_gender_longform_blocker_repair",
+                "output_present",
+                "gender longform blocker protected repair confirmation matches output",
+            )
+        if (
+            row["confirmation_source"] == GENDER_LONGFORM_BLOCKER_NOOP_CONFIRMATION_SOURCE
+            and row["confirmation_label"] == GENDER_LONGFORM_BLOCKER_NOOP_CONFIRMATION_LABEL
+        ):
+            return closed_state(
+                "closed_auto_confirmed_gender_longform_blocker_noop",
+                "output_present",
+                "gender longform blocker contextual noop confirmation matches output",
+            )
+        if (
+            lifecycle_action_allowed(row, EVENT_SURFACE_SHORT_LABEL_COMPANION_LIFECYCLE_CLOSURE_ACTION)
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+            and review_state == "auto_confirmed"
+        ):
+            reasons.extend(
+                [
+                    "auto-confirmed output has event-surface + short-label companion lifecycle bridge",
+                    "companion bridge covers mirrored event-surface and short-label issues with current confirmation/output alignment",
+                ]
+            )
+            return SegmentState(
+                final_state="closed_auto_confirmed_event_surface_short_label_companion_lifecycle",
+                state_group="closed",
+                output_state="output_present",
+                review_state=review_state,
+                apply_state="applied",
+                has_output=True,
+                source_blank=source_blank,
+                confirmed_matches_output=True,
+                needs_human=False,
+                needs_output_apply=False,
+                needs_reopen=False,
+                is_closed=True,
+                priority_score=0.0,
+                reasons=reasons,
+            )
+        if lifecycle_closure_allowed(row) and issue_count == 0 and high_issue_count == 0:
+            lifecycle_actions = {
+                action.strip()
+                for action in as_text(row["lifecycle_policy_action"]).split(",")
+                if action.strip()
+            }
+            controlled_token_subpolicy = CONTROLLED_TOKEN_SUBPOLICY_CLOSURE_ACTION in lifecycle_actions
+            same_token_boundary_repair = SAME_TOKEN_BOUNDARY_REPAIR_CLOSURE_ACTION in lifecycle_actions
+            same_token_boundary_noop = SAME_TOKEN_BOUNDARY_REPAIR_NOOP_CLOSURE_ACTION in lifecycle_actions
+            select_cstring_bridge = SELECT_CSTRING_GOVERNED_BRIDGE_CLOSURE_ACTION in lifecycle_actions
+            select_cstring_segment_bridge = SELECT_CSTRING_SEGMENT_LIFECYCLE_BRIDGE_CLOSURE_ACTION in lifecycle_actions
+            actionable_false_reopen = ACTIONABLE_FALSE_REOPEN_CLOSURE_ACTION in lifecycle_actions
+            actionable_reviewed_repair = ACTIONABLE_REVIEWED_REPAIR_CLOSURE_ACTION in lifecycle_actions
+            actionable_bootstrap_repair = ACTIONABLE_BOOTSTRAP_REPAIR_CLOSURE_ACTION in lifecycle_actions
+            short_label_guarded = SHORT_LABEL_GUARDED_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            short_label_pure_segment_bridge = SHORT_LABEL_PURE_NO_TOKEN_SEGMENT_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            short_label_pure_semantic_bridge = SHORT_LABEL_PURE_NO_TOKEN_SEMANTIC_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            short_label_pure_domain_bridge = SHORT_LABEL_PURE_NO_TOKEN_DOMAIN_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            short_label_compact_ui_false_reopen_bridge = (
+                SHORT_LABEL_COMPACT_UI_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            )
+            short_label_compact_ui_semantic_companion_bridge = (
+                SHORT_LABEL_COMPACT_UI_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            )
+            short_label_dynamic_delegate_bridge = SHORT_LABEL_DYNAMIC_DELEGATE_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            short_label_single_issue_system_tooltip_bridge = (
+                SHORT_LABEL_SINGLE_ISSUE_SYSTEM_TOOLTIP_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            )
+            short_label_tokenized_ui_false_reopen_bridge = (
+                SHORT_LABEL_TOKENIZED_UI_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            )
+            dynamic_ck3_pattern_bridge = DYNAMIC_CK3_PATTERN_SHADOW_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            gender_longform_false_reopen_bridge = GENDER_LONGFORM_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            short_label_semantic_tier1_bridge = SHORT_LABEL_SEMANTIC_TIER1_GUARDED_COMPOSITION_CLOSURE_ACTION in lifecycle_actions
+            semantic_short_label_pair_bridge = SEMANTIC_SHORT_LABEL_PAIR_GUARDED_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            semantic_short_label_blocked_surface_bridge = SEMANTIC_SHORT_LABEL_BLOCKED_SURFACE_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            event_dialogue_option_bridge = EVENT_DIALOGUE_OPTION_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            event_dialogue_option_boundary_bridge = EVENT_DIALOGUE_OPTION_BOUNDARY_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            event_outcome_short_label_boundary_bridge = EVENT_OUTCOME_SHORT_LABEL_BOUNDARY_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            event_context_composer_bridge = EVENT_CONTEXT_COMPOSER_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            event_context_sentence_boundary_bridge = EVENT_CONTEXT_SENTENCE_BOUNDARY_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            event_context_composer_batch_bridge = EVENT_CONTEXT_COMPOSER_LIFECYCLE_BATCH_CLOSURE_ACTION in lifecycle_actions
+            short_label_style_batch_bridge = SHORT_LABEL_STYLE_LIFECYCLE_BATCH_CLOSURE_ACTION in lifecycle_actions
+            event_surface_router_batch_bridge = EVENT_SURFACE_ROUTER_LIFECYCLE_BATCH_CLOSURE_ACTION in lifecycle_actions
+            requirement_tooltip_surface_batch_bridge = REQUIREMENT_TOOLTIP_SURFACE_LIFECYCLE_BATCH_CLOSURE_ACTION in lifecycle_actions
+            event_context_composer_run36_bridge = EVENT_CONTEXT_COMPOSER_LIFECYCLE_RUN36_CLOSURE_ACTION in lifecycle_actions
+            short_label_style_run36_bridge = SHORT_LABEL_STYLE_LIFECYCLE_RUN36_CLOSURE_ACTION in lifecycle_actions
+            event_surface_router_run36_bridge = EVENT_SURFACE_ROUTER_LIFECYCLE_RUN36_CLOSURE_ACTION in lifecycle_actions
+            requirement_tooltip_surface_run36_bridge = REQUIREMENT_TOOLTIP_SURFACE_LIFECYCLE_RUN36_CLOSURE_ACTION in lifecycle_actions
+            autofix_unknown_event_composition_bridge = AUTOFIX_UNKNOWN_EVENT_COMPOSITION_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            autofix_unknown_event_semantic_companion_bridge = (
+                AUTOFIX_UNKNOWN_EVENT_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            )
+            autofix_unknown_semantic_companion_building_bridge = (
+                AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_BUILDING_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            )
+            autofix_unknown_semantic_companion_rule_effect_bridge = (
+                AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_RULE_EFFECT_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            )
+            autofix_unknown_surface_bridge = AUTOFIX_UNKNOWN_SURFACE_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            autofix_unknown_surface_checkpoint_bridge = (
+                AUTOFIX_UNKNOWN_SURFACE_CHECKPOINT_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            )
+            autofix_unknown_surface_semantic_bridge = AUTOFIX_UNKNOWN_SURFACE_SEMANTIC_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            autofix_unknown_domain_guarded_bridge = AUTOFIX_UNKNOWN_DOMAIN_GUARDED_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            autofix_unknown_domain_guarded_reviewed_bridge = (
+                AUTOFIX_UNKNOWN_DOMAIN_GUARDED_REVIEWED_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+            )
+            if controlled_token_subpolicy:
+                closure_reason = "controlled token subpolicy production reconciles this as a safe closure"
+                closure_state = "closed_auto_confirmed_controlled_token_subpolicy"
+            elif same_token_boundary_repair:
+                closure_reason = "same-token boundary repair production reconciles this as a safe closure"
+                closure_state = "closed_auto_confirmed_same_token_boundary_repair"
+            elif same_token_boundary_noop:
+                closure_reason = "same-token boundary no-op lifecycle observes already aligned trusted output"
+                closure_state = "closed_auto_confirmed_same_token_boundary_noop"
+            elif select_cstring_bridge:
+                closure_reason = "Select_CString governed bridge production reconciles this as a safe closure"
+                closure_state = "closed_auto_confirmed_select_cstring_governed_bridge"
+            elif select_cstring_segment_bridge:
+                closure_reason = "Select_CString segment-level lifecycle bridge observes mature shadow composition with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_select_cstring_segment_lifecycle_bridge"
+            elif actionable_false_reopen:
+                closure_reason = "reviewed actionable pending evidence marks this reopen as a false positive"
+                closure_state = "closed_auto_confirmed_actionable_false_reopen"
+            elif actionable_reviewed_repair:
+                closure_reason = "reviewed actionable repair production reconciles this as a safe closure"
+                closure_state = "closed_auto_confirmed_actionable_reviewed_repair"
+            elif actionable_bootstrap_repair:
+                closure_reason = "reviewed missing-confirmation bootstrap repair reconciles this as a safe closure"
+                closure_state = "closed_auto_confirmed_actionable_bootstrap_repair"
+            elif short_label_guarded:
+                closure_reason = "short-label guarded lifecycle checkpoint marks this conservative reopen as safe"
+                closure_state = "closed_auto_confirmed_short_label_guarded_lifecycle"
+            elif short_label_pure_semantic_bridge:
+                closure_reason = "short-label pure no-token semantic lifecycle bridge observes full style and semantic issue coverage with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_short_label_pure_no_token_semantic_lifecycle"
+            elif short_label_pure_segment_bridge:
+                closure_reason = "short-label pure no-token segment lifecycle bridge observes full issue coverage with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_short_label_pure_no_token_segment_lifecycle_bridge"
+            elif short_label_pure_domain_bridge:
+                closure_reason = "short-label pure no-token domain lifecycle bridge observes nominal no-token checkpoint evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_short_label_pure_no_token_domain_lifecycle"
+            elif short_label_compact_ui_false_reopen_bridge:
+                closure_reason = "short-label compact UI false-reopen lifecycle bridge observes full issue coverage with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_short_label_compact_ui_false_reopen_lifecycle"
+            elif short_label_compact_ui_semantic_companion_bridge:
+                closure_reason = "short-label compact UI semantic companion lifecycle bridge observes paired style and companion issue coverage with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_short_label_compact_ui_semantic_companion_lifecycle"
+            elif short_label_dynamic_delegate_bridge:
+                closure_reason = "short-label dynamic delegate lifecycle bridge observes safe delegation evidence to the dynamic CK3 expression microagent with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_short_label_dynamic_delegate_lifecycle"
+            elif short_label_single_issue_system_tooltip_bridge:
+                closure_reason = "short-label single-issue system tooltip lifecycle bridge observes clean system tooltip evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_short_label_single_issue_system_tooltip_lifecycle"
+            elif short_label_tokenized_ui_false_reopen_bridge:
+                closure_reason = "short-label tokenized UI false-reopen lifecycle bridge observes tokenized UI evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_short_label_tokenized_ui_false_reopen_lifecycle"
+            elif dynamic_ck3_pattern_bridge:
+                closure_reason = "dynamic CK3 pattern lifecycle bridge observes reviewed dynamic-rule tooltip evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_dynamic_ck3_pattern_shadow_lifecycle"
+            elif gender_longform_false_reopen_bridge:
+                closure_reason = "gender longform false-reopen lifecycle bridge observes routed context evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_gender_longform_false_reopen_context"
+            elif short_label_semantic_tier1_bridge:
+                closure_reason = "short-label + semantic Tier 1 guarded composition observes full issue coverage with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_short_label_semantic_tier1_guarded_composition"
+            elif semantic_short_label_pair_bridge:
+                closure_reason = "semantic + short-label pair guarded lifecycle bridge observes audited safe UI-label evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_semantic_short_label_pair_guarded_lifecycle"
+            elif semantic_short_label_blocked_surface_bridge:
+                closure_reason = "semantic short-label blocked-surface lifecycle bridge observes strict short-label checkpoint evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_semantic_short_label_blocked_surface_lifecycle"
+            elif event_dialogue_option_bridge:
+                closure_reason = "event dialogue option lifecycle bridge observes audited event-option checkpoint evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_event_dialogue_option_lifecycle"
+            elif event_dialogue_option_boundary_bridge:
+                closure_reason = "event dialogue option boundary lifecycle bridge observes audited boundary checkpoint evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_event_dialogue_option_boundary_lifecycle"
+            elif event_outcome_short_label_boundary_bridge:
+                closure_reason = "event outcome short-label boundary lifecycle bridge observes audited boundary checkpoint evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_event_outcome_short_label_boundary_lifecycle"
+            elif event_context_composer_bridge:
+                closure_reason = "event context composer lifecycle bridge observes audited event-context checkpoint evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_event_context_composer_lifecycle"
+            elif event_context_sentence_boundary_bridge:
+                closure_reason = "event context sentence boundary lifecycle bridge observes audited sentence-boundary checkpoint evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_event_context_sentence_boundary_lifecycle"
+            elif event_context_composer_batch_bridge:
+                closure_reason = "event context composer lifecycle batch observes audited event-context checkpoint evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_event_context_composer_lifecycle_batch"
+            elif short_label_style_batch_bridge:
+                closure_reason = "short-label style lifecycle batch observes audited short-label checkpoint evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_short_label_style_lifecycle_batch"
+            elif event_surface_router_batch_bridge:
+                closure_reason = "event surface router lifecycle batch observes audited event-surface checkpoint evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_event_surface_router_lifecycle_batch"
+            elif requirement_tooltip_surface_batch_bridge:
+                closure_reason = "requirement tooltip surface lifecycle batch observes audited requirement-tooltip checkpoint evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_requirement_tooltip_surface_lifecycle_batch"
+            elif event_context_composer_run36_bridge:
+                closure_reason = "event context composer lifecycle run36 batch observes audited event-context checkpoint evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_event_context_composer_lifecycle_run36"
+            elif short_label_style_run36_bridge:
+                closure_reason = "short-label style lifecycle run36 batch observes audited short-label checkpoint evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_short_label_style_lifecycle_run36"
+            elif event_surface_router_run36_bridge:
+                closure_reason = "event surface router lifecycle run36 batch observes audited event-surface checkpoint evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_event_surface_router_lifecycle_run36"
+            elif requirement_tooltip_surface_run36_bridge:
+                closure_reason = "requirement tooltip surface lifecycle run36 batch observes audited requirement-tooltip checkpoint evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_requirement_tooltip_surface_lifecycle_run36"
+            elif autofix_unknown_event_composition_bridge:
+                closure_reason = "autofix_unknown event composition lifecycle bridge observes mature event sentence composition evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_autofix_unknown_event_composition_lifecycle"
+            elif autofix_unknown_event_semantic_companion_bridge:
+                closure_reason = "autofix_unknown event semantic companion lifecycle bridge observes composition-ready event evidence with only the generic semantic companion gate remaining"
+                closure_state = "closed_auto_confirmed_autofix_unknown_event_semantic_companion_lifecycle"
+            elif autofix_unknown_semantic_companion_building_bridge:
+                closure_reason = "autofix_unknown semantic companion building lifecycle bridge observes guarded building description evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_autofix_unknown_semantic_companion_building_lifecycle"
+            elif autofix_unknown_semantic_companion_rule_effect_bridge:
+                closure_reason = "autofix_unknown semantic companion rule/effect lifecycle bridge observes guarded rule/effect/modifier evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_autofix_unknown_semantic_companion_rule_effect_lifecycle"
+            elif autofix_unknown_surface_checkpoint_bridge:
+                closure_reason = "autofix_unknown surface checkpoint lifecycle observes positive safe-surface evidence as the only open ledger issue with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_autofix_unknown_surface_lifecycle"
+            elif autofix_unknown_surface_bridge:
+                closure_reason = "autofix_unknown surface lifecycle bridge observes reviewed UI surface evidence with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_autofix_unknown_surface_lifecycle_bridge"
+            elif autofix_unknown_surface_semantic_bridge:
+                closure_reason = "autofix_unknown surface + semantic lifecycle bridge observes full issue coverage with current confirmation/output alignment"
+                closure_state = "closed_auto_confirmed_autofix_unknown_surface_semantic_lifecycle"
+            elif autofix_unknown_domain_guarded_bridge:
+                closure_reason = "autofix_unknown domain guarded lifecycle observes strict guarded-domain false-reopen evidence with current single-issue ledger alignment"
+                closure_state = "closed_auto_confirmed_autofix_unknown_domain_guarded_lifecycle"
+            elif autofix_unknown_domain_guarded_reviewed_bridge:
+                closure_reason = "autofix_unknown domain guarded reviewed lifecycle observes human-reviewed false-positive reopen evidence with current single-issue ledger alignment"
+                closure_state = "closed_auto_confirmed_autofix_unknown_domain_guarded_reviewed_lifecycle"
+            else:
+                closure_reason = "guarded lifecycle policy reconciles this as a safe closure"
+                closure_state = "closed_auto_confirmed_guarded_lifecycle"
+            reasons.extend(
+                [
+                    "auto-confirmed output has governed lifecycle closure signal",
+                    closure_reason,
+                ]
+            )
+            return SegmentState(
+                final_state=closure_state,
+                state_group="closed",
+                output_state="output_present",
+                review_state=review_state,
+                apply_state="applied",
+                has_output=True,
+                source_blank=source_blank,
+                confirmed_matches_output=True,
+                needs_human=False,
+                needs_output_apply=False,
+                needs_reopen=False,
+                is_closed=True,
+                priority_score=0.0,
+                reasons=reasons,
             )
         if danger == "blocked_structure" or high_issue_count > 0:
             reasons.extend(["auto-confirmed output has structural/high issue signal", "requires reopening before final closure"])
@@ -353,6 +5663,285 @@ def classify(row) -> SegmentState:
                 reasons=reasons,
             )
         if danger == "needs_autofix":
+            if lifecycle_closure_allowed(row) and issue_count == 0 and high_issue_count == 0:
+                lifecycle_actions = {
+                    action.strip()
+                    for action in as_text(row["lifecycle_policy_action"]).split(",")
+                    if action.strip()
+                }
+                controlled_token_subpolicy = CONTROLLED_TOKEN_SUBPOLICY_CLOSURE_ACTION in lifecycle_actions
+                same_token_boundary_repair = SAME_TOKEN_BOUNDARY_REPAIR_CLOSURE_ACTION in lifecycle_actions
+                same_token_boundary_noop = SAME_TOKEN_BOUNDARY_REPAIR_NOOP_CLOSURE_ACTION in lifecycle_actions
+                select_cstring_bridge = SELECT_CSTRING_GOVERNED_BRIDGE_CLOSURE_ACTION in lifecycle_actions
+                select_cstring_segment_bridge = SELECT_CSTRING_SEGMENT_LIFECYCLE_BRIDGE_CLOSURE_ACTION in lifecycle_actions
+                actionable_false_reopen = ACTIONABLE_FALSE_REOPEN_CLOSURE_ACTION in lifecycle_actions
+                actionable_reviewed_repair = ACTIONABLE_REVIEWED_REPAIR_CLOSURE_ACTION in lifecycle_actions
+                actionable_bootstrap_repair = ACTIONABLE_BOOTSTRAP_REPAIR_CLOSURE_ACTION in lifecycle_actions
+                short_label_guarded = SHORT_LABEL_GUARDED_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                short_label_pure_segment_bridge = SHORT_LABEL_PURE_NO_TOKEN_SEGMENT_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                short_label_pure_semantic_bridge = SHORT_LABEL_PURE_NO_TOKEN_SEMANTIC_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                short_label_pure_domain_bridge = SHORT_LABEL_PURE_NO_TOKEN_DOMAIN_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                short_label_compact_ui_false_reopen_bridge = (
+                    SHORT_LABEL_COMPACT_UI_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                )
+                short_label_compact_ui_semantic_companion_bridge = (
+                    SHORT_LABEL_COMPACT_UI_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                )
+                short_label_dynamic_delegate_bridge = SHORT_LABEL_DYNAMIC_DELEGATE_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                short_label_single_issue_system_tooltip_bridge = (
+                    SHORT_LABEL_SINGLE_ISSUE_SYSTEM_TOOLTIP_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                )
+                short_label_tokenized_ui_false_reopen_bridge = (
+                    SHORT_LABEL_TOKENIZED_UI_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                )
+                dynamic_ck3_pattern_bridge = DYNAMIC_CK3_PATTERN_SHADOW_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                gender_longform_false_reopen_bridge = GENDER_LONGFORM_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                short_label_semantic_tier1_bridge = SHORT_LABEL_SEMANTIC_TIER1_GUARDED_COMPOSITION_CLOSURE_ACTION in lifecycle_actions
+                semantic_short_label_pair_bridge = SEMANTIC_SHORT_LABEL_PAIR_GUARDED_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                semantic_short_label_blocked_surface_bridge = SEMANTIC_SHORT_LABEL_BLOCKED_SURFACE_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                event_dialogue_option_bridge = EVENT_DIALOGUE_OPTION_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                event_dialogue_option_boundary_bridge = EVENT_DIALOGUE_OPTION_BOUNDARY_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                event_outcome_short_label_boundary_bridge = EVENT_OUTCOME_SHORT_LABEL_BOUNDARY_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                event_context_composer_bridge = EVENT_CONTEXT_COMPOSER_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                event_context_sentence_boundary_bridge = EVENT_CONTEXT_SENTENCE_BOUNDARY_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                event_context_composer_batch_bridge = EVENT_CONTEXT_COMPOSER_LIFECYCLE_BATCH_CLOSURE_ACTION in lifecycle_actions
+                short_label_style_batch_bridge = SHORT_LABEL_STYLE_LIFECYCLE_BATCH_CLOSURE_ACTION in lifecycle_actions
+                event_surface_router_batch_bridge = EVENT_SURFACE_ROUTER_LIFECYCLE_BATCH_CLOSURE_ACTION in lifecycle_actions
+                requirement_tooltip_surface_batch_bridge = REQUIREMENT_TOOLTIP_SURFACE_LIFECYCLE_BATCH_CLOSURE_ACTION in lifecycle_actions
+                event_context_composer_run36_bridge = EVENT_CONTEXT_COMPOSER_LIFECYCLE_RUN36_CLOSURE_ACTION in lifecycle_actions
+                short_label_style_run36_bridge = SHORT_LABEL_STYLE_LIFECYCLE_RUN36_CLOSURE_ACTION in lifecycle_actions
+                event_surface_router_run36_bridge = EVENT_SURFACE_ROUTER_LIFECYCLE_RUN36_CLOSURE_ACTION in lifecycle_actions
+                requirement_tooltip_surface_run36_bridge = REQUIREMENT_TOOLTIP_SURFACE_LIFECYCLE_RUN36_CLOSURE_ACTION in lifecycle_actions
+                autofix_unknown_event_composition_bridge = AUTOFIX_UNKNOWN_EVENT_COMPOSITION_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                autofix_unknown_event_semantic_companion_bridge = (
+                    AUTOFIX_UNKNOWN_EVENT_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                )
+                autofix_unknown_semantic_companion_building_bridge = (
+                    AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_BUILDING_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                )
+                autofix_unknown_semantic_companion_rule_effect_bridge = (
+                    AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_RULE_EFFECT_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                )
+                autofix_unknown_surface_bridge = AUTOFIX_UNKNOWN_SURFACE_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                autofix_unknown_surface_checkpoint_bridge = (
+                    AUTOFIX_UNKNOWN_SURFACE_CHECKPOINT_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                )
+                autofix_unknown_surface_semantic_bridge = AUTOFIX_UNKNOWN_SURFACE_SEMANTIC_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                autofix_unknown_domain_guarded_bridge = AUTOFIX_UNKNOWN_DOMAIN_GUARDED_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                autofix_unknown_domain_guarded_reviewed_bridge = (
+                    AUTOFIX_UNKNOWN_DOMAIN_GUARDED_REVIEWED_LIFECYCLE_CLOSURE_ACTION in lifecycle_actions
+                )
+                if controlled_token_subpolicy:
+                    closure_reason = "controlled token subpolicy production reconciles this as a safe closure"
+                    closure_state = "closed_auto_confirmed_controlled_token_subpolicy"
+                elif same_token_boundary_repair:
+                    closure_reason = "same-token boundary repair production reconciles this as a safe closure"
+                    closure_state = "closed_auto_confirmed_same_token_boundary_repair"
+                elif same_token_boundary_noop:
+                    closure_reason = "same-token boundary no-op lifecycle observes already aligned trusted output"
+                    closure_state = "closed_auto_confirmed_same_token_boundary_noop"
+                elif select_cstring_bridge:
+                    closure_reason = "Select_CString governed bridge production reconciles this as a safe closure"
+                    closure_state = "closed_auto_confirmed_select_cstring_governed_bridge"
+                elif select_cstring_segment_bridge:
+                    closure_reason = "Select_CString segment-level lifecycle bridge observes mature shadow composition with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_select_cstring_segment_lifecycle_bridge"
+                elif actionable_false_reopen:
+                    closure_reason = "reviewed actionable pending evidence marks this reopen as a false positive"
+                    closure_state = "closed_auto_confirmed_actionable_false_reopen"
+                elif actionable_reviewed_repair:
+                    closure_reason = "reviewed actionable repair production reconciles this as a safe closure"
+                    closure_state = "closed_auto_confirmed_actionable_reviewed_repair"
+                elif actionable_bootstrap_repair:
+                    closure_reason = "reviewed missing-confirmation bootstrap repair reconciles this as a safe closure"
+                    closure_state = "closed_auto_confirmed_actionable_bootstrap_repair"
+                elif short_label_guarded:
+                    closure_reason = "short-label guarded lifecycle checkpoint marks this conservative reopen as safe"
+                    closure_state = "closed_auto_confirmed_short_label_guarded_lifecycle"
+                elif short_label_pure_semantic_bridge:
+                    closure_reason = "short-label pure no-token semantic lifecycle bridge observes full style and semantic issue coverage with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_short_label_pure_no_token_semantic_lifecycle"
+                elif short_label_pure_segment_bridge:
+                    closure_reason = "short-label pure no-token segment lifecycle bridge observes full issue coverage with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_short_label_pure_no_token_segment_lifecycle_bridge"
+                elif short_label_pure_domain_bridge:
+                    closure_reason = "short-label pure no-token domain lifecycle bridge observes nominal no-token checkpoint evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_short_label_pure_no_token_domain_lifecycle"
+                elif short_label_compact_ui_false_reopen_bridge:
+                    closure_reason = "short-label compact UI false-reopen lifecycle bridge observes full issue coverage with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_short_label_compact_ui_false_reopen_lifecycle"
+                elif short_label_compact_ui_semantic_companion_bridge:
+                    closure_reason = "short-label compact UI semantic companion lifecycle bridge observes paired style and companion issue coverage with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_short_label_compact_ui_semantic_companion_lifecycle"
+                elif short_label_dynamic_delegate_bridge:
+                    closure_reason = "short-label dynamic delegate lifecycle bridge observes safe delegation evidence to the dynamic CK3 expression microagent with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_short_label_dynamic_delegate_lifecycle"
+                elif short_label_single_issue_system_tooltip_bridge:
+                    closure_reason = "short-label single-issue system tooltip lifecycle bridge observes clean system tooltip evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_short_label_single_issue_system_tooltip_lifecycle"
+                elif short_label_tokenized_ui_false_reopen_bridge:
+                    closure_reason = "short-label tokenized UI false-reopen lifecycle bridge observes tokenized UI evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_short_label_tokenized_ui_false_reopen_lifecycle"
+                elif dynamic_ck3_pattern_bridge:
+                    closure_reason = "dynamic CK3 pattern lifecycle bridge observes reviewed dynamic-rule tooltip evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_dynamic_ck3_pattern_shadow_lifecycle"
+                elif gender_longform_false_reopen_bridge:
+                    closure_reason = "gender longform false-reopen lifecycle bridge observes routed context evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_gender_longform_false_reopen_context"
+                elif short_label_semantic_tier1_bridge:
+                    closure_reason = "short-label + semantic Tier 1 guarded composition observes full issue coverage with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_short_label_semantic_tier1_guarded_composition"
+                elif semantic_short_label_pair_bridge:
+                    closure_reason = "semantic + short-label pair guarded lifecycle bridge observes audited safe UI-label evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_semantic_short_label_pair_guarded_lifecycle"
+                elif semantic_short_label_blocked_surface_bridge:
+                    closure_reason = "semantic short-label blocked-surface lifecycle bridge observes strict short-label checkpoint evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_semantic_short_label_blocked_surface_lifecycle"
+                elif event_dialogue_option_bridge:
+                    closure_reason = "event dialogue option lifecycle bridge observes audited event-option checkpoint evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_event_dialogue_option_lifecycle"
+                elif event_dialogue_option_boundary_bridge:
+                    closure_reason = "event dialogue option boundary lifecycle bridge observes audited boundary checkpoint evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_event_dialogue_option_boundary_lifecycle"
+                elif event_outcome_short_label_boundary_bridge:
+                    closure_reason = "event outcome short-label boundary lifecycle bridge observes audited boundary checkpoint evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_event_outcome_short_label_boundary_lifecycle"
+                elif event_context_composer_bridge:
+                    closure_reason = "event context composer lifecycle bridge observes audited event-context checkpoint evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_event_context_composer_lifecycle"
+                elif event_context_sentence_boundary_bridge:
+                    closure_reason = "event context sentence boundary lifecycle bridge observes audited sentence-boundary checkpoint evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_event_context_sentence_boundary_lifecycle"
+                elif event_context_composer_batch_bridge:
+                    closure_reason = "event context composer lifecycle batch observes audited event-context checkpoint evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_event_context_composer_lifecycle_batch"
+                elif short_label_style_batch_bridge:
+                    closure_reason = "short-label style lifecycle batch observes audited short-label checkpoint evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_short_label_style_lifecycle_batch"
+                elif event_surface_router_batch_bridge:
+                    closure_reason = "event surface router lifecycle batch observes audited event-surface checkpoint evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_event_surface_router_lifecycle_batch"
+                elif requirement_tooltip_surface_batch_bridge:
+                    closure_reason = "requirement tooltip surface lifecycle batch observes audited requirement-tooltip checkpoint evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_requirement_tooltip_surface_lifecycle_batch"
+                elif event_context_composer_run36_bridge:
+                    closure_reason = "event context composer lifecycle run36 batch observes audited event-context checkpoint evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_event_context_composer_lifecycle_run36"
+                elif short_label_style_run36_bridge:
+                    closure_reason = "short-label style lifecycle run36 batch observes audited short-label checkpoint evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_short_label_style_lifecycle_run36"
+                elif event_surface_router_run36_bridge:
+                    closure_reason = "event surface router lifecycle run36 batch observes audited event-surface checkpoint evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_event_surface_router_lifecycle_run36"
+                elif requirement_tooltip_surface_run36_bridge:
+                    closure_reason = "requirement tooltip surface lifecycle run36 batch observes audited requirement-tooltip checkpoint evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_requirement_tooltip_surface_lifecycle_run36"
+                elif autofix_unknown_event_composition_bridge:
+                    closure_reason = "autofix_unknown event composition lifecycle bridge observes mature event sentence composition evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_autofix_unknown_event_composition_lifecycle"
+                elif autofix_unknown_event_semantic_companion_bridge:
+                    closure_reason = "autofix_unknown event semantic companion lifecycle bridge observes composition-ready event evidence with only the generic semantic companion gate remaining"
+                    closure_state = "closed_auto_confirmed_autofix_unknown_event_semantic_companion_lifecycle"
+                elif autofix_unknown_semantic_companion_building_bridge:
+                    closure_reason = "autofix_unknown semantic companion building lifecycle bridge observes guarded building description evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_autofix_unknown_semantic_companion_building_lifecycle"
+                elif autofix_unknown_semantic_companion_rule_effect_bridge:
+                    closure_reason = "autofix_unknown semantic companion rule/effect lifecycle bridge observes guarded rule/effect/modifier evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_autofix_unknown_semantic_companion_rule_effect_lifecycle"
+                elif autofix_unknown_surface_checkpoint_bridge:
+                    closure_reason = "autofix_unknown surface checkpoint lifecycle observes positive safe-surface evidence as the only open ledger issue with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_autofix_unknown_surface_lifecycle"
+                elif autofix_unknown_surface_bridge:
+                    closure_reason = "autofix_unknown surface lifecycle bridge observes reviewed UI surface evidence with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_autofix_unknown_surface_lifecycle_bridge"
+                elif autofix_unknown_surface_semantic_bridge:
+                    closure_reason = "autofix_unknown surface + semantic lifecycle bridge observes full issue coverage with current confirmation/output alignment"
+                    closure_state = "closed_auto_confirmed_autofix_unknown_surface_semantic_lifecycle"
+                elif autofix_unknown_domain_guarded_bridge:
+                    closure_reason = "autofix_unknown domain guarded lifecycle observes strict guarded-domain false-reopen evidence with current single-issue ledger alignment"
+                    closure_state = "closed_auto_confirmed_autofix_unknown_domain_guarded_lifecycle"
+                elif autofix_unknown_domain_guarded_reviewed_bridge:
+                    closure_reason = "autofix_unknown domain guarded reviewed lifecycle observes human-reviewed false-positive reopen evidence with current single-issue ledger alignment"
+                    closure_state = "closed_auto_confirmed_autofix_unknown_domain_guarded_reviewed_lifecycle"
+                else:
+                    closure_reason = "guarded lifecycle policy reconciles this as a safe closure"
+                    closure_state = "closed_auto_confirmed_guarded_lifecycle"
+                reasons.extend(
+                    [
+                        "auto-confirmed output has guarded lifecycle autofix signal",
+                        closure_reason,
+                    ]
+                )
+                return SegmentState(
+                    final_state=closure_state,
+                    state_group="closed",
+                    output_state="output_present",
+                    review_state=review_state,
+                    apply_state="applied",
+                    has_output=True,
+                    source_blank=source_blank,
+                    confirmed_matches_output=True,
+                    needs_human=False,
+                    needs_output_apply=False,
+                    needs_reopen=False,
+                    is_closed=True,
+                    priority_score=0.0,
+                    reasons=reasons,
+                )
+            if (
+                row["confirmation_source"] == SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH1_CONFIRMATION_SOURCE
+                and row["confirmation_label"] == SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH1_CONFIRMATION_LABEL
+                and danger != "blocked_structure"
+            ):
+                reasons.extend(
+                    [
+                        "auto-confirmed output has single combat signature weapon batch 1 repair confirmation",
+                        "protected batch repair source/label covers the current custom localization reopen signal",
+                    ]
+                )
+                return SegmentState(
+                    final_state="closed_auto_confirmed_single_combat_signature_weapon_composer_batch1_repair",
+                    state_group="closed",
+                    output_state="output_present",
+                    review_state=review_state,
+                    apply_state="applied",
+                    has_output=True,
+                    source_blank=source_blank,
+                    confirmed_matches_output=True,
+                    needs_human=False,
+                    needs_output_apply=False,
+                    needs_reopen=False,
+                    is_closed=True,
+                    priority_score=0.0,
+                    reasons=reasons,
+                )
+            if (
+                row["confirmation_source"] == SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH2_0041_CONFIRMATION_SOURCE
+                and row["confirmation_label"] == SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH2_0041_CONFIRMATION_LABEL
+                and danger != "blocked_structure"
+            ):
+                reasons.extend(
+                    [
+                        "auto-confirmed output has single combat signature weapon batch 2 single_combat.0041 repair confirmation",
+                        "protected batch repair source/label covers the current custom localization reopen signal",
+                    ]
+                )
+                return SegmentState(
+                    final_state="closed_auto_confirmed_single_combat_signature_weapon_composer_batch2_0041_repair",
+                    state_group="closed",
+                    output_state="output_present",
+                    review_state=review_state,
+                    apply_state="applied",
+                    has_output=True,
+                    source_blank=source_blank,
+                    confirmed_matches_output=True,
+                    needs_human=False,
+                    needs_output_apply=False,
+                    needs_reopen=False,
+                    is_closed=True,
+                    priority_score=0.0,
+                    reasons=reasons,
+                )
             reasons.extend(["auto-confirmed output has autofix signal", "requires targeted repair review"])
             return SegmentState(
                 final_state="reopen_auto_confirmed_autofix",
@@ -486,7 +6075,20 @@ def classify(row) -> SegmentState:
     )
 
 
-def iter_segments(conn, active_score_run_id: int | None, candidate_score_run_id: int | None, policy_run_id: int | None, limit: int | None):
+def iter_segments(
+    conn,
+    active_score_run_id: int | None,
+    candidate_score_run_id: int | None,
+    policy_run_id: int | None,
+    reopen_lifecycle_policy_run_ids: list[int],
+    limit: int | None,
+):
+    if reopen_lifecycle_policy_run_ids:
+        lifecycle_filter = "run_id IN ({})".format(", ".join("?" for _ in reopen_lifecycle_policy_run_ids))
+        lifecycle_params = tuple(reopen_lifecycle_policy_run_ids)
+    else:
+        lifecycle_filter = "1 = 0"
+        lifecycle_params = ()
     sql = """
         WITH issue_summary AS (
             SELECT
@@ -495,6 +6097,1976 @@ def iter_segments(conn, active_score_run_id: int | None, candidate_score_run_id:
                 SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count,
                 GROUP_CONCAT(DISTINCT issue_type) AS issue_types
             FROM issues
+            GROUP BY segment_id
+        ),
+        ledger_issue_summary AS (
+            SELECT
+                run_id,
+                segment_id,
+                COUNT(*) AS ledger_issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent' THEN 1 ELSE 0 END) AS autofix_unknown_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_ledger_issue_count,
+                GROUP_CONCAT(DISTINCT issue_family) AS issue_families
+            FROM ml_issue_ledger_items
+            WHERE status = 'open'
+            GROUP BY run_id, segment_id
+        ),
+        short_label_companion_ledger_summary AS (
+            SELECT
+                run_id,
+                segment_id,
+                COUNT(*) AS ledger_issue_count,
+                SUM(CASE WHEN issue_family = 'short_label_style_microagent' THEN 1 ELSE 0 END) AS short_label_issue_count,
+                SUM(
+                    CASE
+                        WHEN issue_family IN (
+                            'religion_semantic_microagent',
+                            'title_policy_microagent',
+                            'culture_semantic_microagent',
+                            'dynamic_ck3_expression_microagent'
+                        )
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS companion_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_ledger_issue_count
+            FROM ml_issue_ledger_items
+            WHERE status = 'open'
+            GROUP BY run_id, segment_id
+        ),
+        previous_segment_state_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        previous_segment_state AS (
+            SELECT item.*
+            FROM segment_state_items item
+            JOIN previous_segment_state_run run ON run.id = item.run_id
+        ),
+        latest_select_cstring_bridge_proposal AS (
+            SELECT run.*
+            FROM ml_issue_select_cstring_governed_bridge_proposal_runs run
+            JOIN ml_issue_select_cstring_final_composition_maturity_audit_runs maturity
+              ON maturity.id = run.source_maturity_audit_run_id
+            JOIN ml_issue_select_cstring_final_composition_overlay_runs overlay
+              ON overlay.id = run.source_final_overlay_run_id
+            WHERE run.finished_at IS NOT NULL
+              AND run.bridge_status = 'ready_for_governed_review'
+              AND run.bridge_candidate = 1
+              AND run.blocked_count = 0
+              AND maturity.bridge_candidate = 1
+              AND maturity.maturity_status = 'bridge_candidate_shadow'
+              AND maturity.blocked_count = 0
+              AND maturity.duplicate_segment_count = 0
+              AND maturity.missing_source_ref_count = 0
+              AND maturity.invalid_source_ref_count = 0
+              AND maturity.unexpected_source_count = 0
+              AND overlay.candidate_count = 56
+              AND overlay.composed_released_count = 56
+              AND overlay.blocked_count = 0
+            ORDER BY run.finished_at DESC, run.id DESC
+            LIMIT 1
+        ),
+        latest_select_cstring_segment_lifecycle_bridge_proposal AS (
+            SELECT run.*
+            FROM ml_issue_select_cstring_segment_lifecycle_bridge_proposal_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.bridge_status = 'proposal_shadow'
+              AND run.bridge_candidate = 1
+              AND run.production_release_allowed = 0
+              AND run.ready_count > 0
+            ORDER BY run.finished_at DESC, run.id DESC
+            LIMIT 1
+        ),
+        valid_short_label_semantic_tier1_guarded_expansions AS (
+            SELECT run.*
+            FROM ml_issue_short_label_semantic_guarded_expansion_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.policy_status = 'shadow'
+              AND run.production_release_allowed = 0
+              AND run.allowed_count > 0
+        ),
+        valid_semantic_short_label_pair_guarded_expansions AS (
+            SELECT run.*
+            FROM ml_issue_semantic_short_label_pair_guarded_expansion_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.policy_name = 'semantic_short_label_pair_guarded_expansion_shadow'
+              AND run.policy_status = 'dry_run'
+              AND run.allowed_count > 0
+              AND (
+                    run.id = (
+                        SELECT MAX(ui_run.id)
+                        FROM ml_issue_semantic_short_label_pair_guarded_expansion_runs ui_run
+                        WHERE ui_run.finished_at IS NOT NULL
+                          AND ui_run.policy_name = 'semantic_short_label_pair_guarded_expansion_shadow'
+                          AND ui_run.policy_status = 'dry_run'
+                          AND ui_run.guard_profile = 'ui_only_v10'
+                          AND ui_run.allowed_count > 0
+                    )
+                 OR (
+                        run.id = 37
+                    AND run.guard_profile = 'balanced_v1'
+                    AND run.opportunity_run_id = 12
+                    AND run.ledger_run_id = 25
+                    AND run.checkpoint_run_id = 18
+                    AND run.allowed_count = 2955
+                    AND run.blocked_count = 2394
+                 )
+              )
+        ),
+        latest_semantic_short_label_blocked_surface_checkpoint AS (
+            SELECT run.*
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.id = 2
+              AND run.policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND run.policy_status = 'shadow'
+              AND run.row_guard_profile = 'strict_label_v1'
+              AND run.dry_run_id = 31
+              AND run.allowed_count = 4065
+              AND run.agent_key = 'micro_short_label_style'
+            ORDER BY run.finished_at DESC, run.id DESC
+            LIMIT 1
+        ),
+        latest_event_dialogue_option_checkpoint AS (
+            SELECT run.*
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.id = 3
+              AND run.policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND run.policy_status = 'shadow'
+              AND run.row_guard_profile = 'legacy'
+              AND run.dry_run_id = 32
+              AND run.allowed_count = 734
+              AND run.agent_key = 'micro_event_dialogue_option'
+            ORDER BY run.finished_at DESC, run.id DESC
+            LIMIT 1
+        ),
+        latest_event_dialogue_option_v2_checkpoint AS (
+            SELECT run.*
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.id = 5
+              AND run.policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND run.policy_status = 'shadow'
+              AND run.row_guard_profile = 'legacy'
+              AND run.dry_run_id = 34
+              AND run.allowed_count = 3878
+              AND run.agent_key = 'micro_event_dialogue_option'
+            ORDER BY run.finished_at DESC, run.id DESC
+            LIMIT 1
+        ),
+        latest_event_context_composer_checkpoint AS (
+            SELECT run.*
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.id = 4
+              AND run.policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND run.policy_status = 'shadow'
+              AND run.row_guard_profile = 'legacy'
+              AND run.dry_run_id = 33
+              AND run.allowed_count = 1558
+              AND run.agent_key = 'micro_event_context_composer'
+            ORDER BY run.finished_at DESC, run.id DESC
+            LIMIT 1
+        ),
+        valid_event_dialogue_option_boundary_checkpoints AS (
+            SELECT run.*
+            FROM ml_issue_event_dialogue_option_boundary_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.policy_status = 'shadow_checkpoint'
+              AND (
+                    (run.id = 4 AND run.queue_run_id = 162 AND run.allowed_count = 178 AND run.blocked_count = 1)
+                 OR (run.id = 5 AND run.queue_run_id = 164 AND run.allowed_count = 161 AND run.blocked_count = 7)
+                 OR (run.id = 6 AND run.queue_run_id = 198 AND run.allowed_count = 422 AND run.blocked_count = 29)
+                 OR (run.id = 7 AND run.queue_run_id = 208 AND run.allowed_count = 265 AND run.blocked_count = 21)
+              )
+        ),
+        valid_event_outcome_short_label_boundary_checkpoint AS (
+            SELECT run.*
+            FROM ml_issue_event_outcome_short_label_boundary_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.policy_status = 'shadow_checkpoint'
+              AND run.id = 3
+              AND run.queue_run_id = 167
+              AND run.allowed_count = 177
+              AND run.blocked_count = 8
+            LIMIT 1
+        ),
+        valid_event_context_sentence_boundary_checkpoint AS (
+            SELECT run.*
+            FROM ml_issue_event_context_sentence_boundary_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.policy_status = 'shadow_checkpoint'
+              AND (
+                    (run.id = 1 AND run.queue_run_id = 165 AND run.allowed_count = 134 AND run.blocked_count = 8)
+                 OR (run.id = 2 AND run.queue_run_id = 199 AND run.allowed_count = 140 AND run.blocked_count = 105)
+                 OR (run.id = 3 AND run.queue_run_id = 207 AND run.allowed_count = 140 AND run.blocked_count = 105)
+              )
+        ),
+        valid_short_label_dynamic_delegate_checkpoints AS MATERIALIZED (
+            SELECT run.*
+            FROM ml_issue_short_label_dynamic_delegate_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.rule_version = 'issue_short_label_dynamic_delegate_checkpoint_v1'
+              AND run.checkpoint_status = 'checkpoint_ready'
+              AND run.policy_name = 'short_label_dynamic_delegate_shadow'
+              AND run.policy_status = 'shadow'
+              AND run.agent_key = 'micro_short_label_style'
+              AND run.allowed_count > 0
+              AND run.id IN (1, 2)
+        ),
+        short_label_dynamic_delegate_allowed AS MATERIALIZED (
+            SELECT *
+            FROM (
+                SELECT
+                    item.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY item.segment_id
+                        ORDER BY item.checkpoint_run_id ASC, item.id ASC
+                    ) AS segment_rank
+                FROM ml_issue_short_label_dynamic_delegate_checkpoint_items item
+                JOIN valid_short_label_dynamic_delegate_checkpoints checkpoint
+                  ON checkpoint.id = item.checkpoint_run_id
+                 AND checkpoint.sublane_run_id = item.sublane_run_id
+                 AND checkpoint.ledger_run_id = item.ledger_run_id
+                WHERE item.checkpoint_allowed = 1
+                  AND COALESCE(TRIM(item.block_reason), '') = ''
+                  AND item.subpolicy_name = 'short_label_dynamic_expression_delegate'
+                  AND item.checkpoint_action = 'cover_short_label_dynamic_delegate_to_dynamic_ck3'
+            )
+            WHERE segment_rank = 1
+        ),
+        valid_short_label_single_issue_system_tooltip_checkpoints AS MATERIALIZED (
+            SELECT run.*
+            FROM ml_issue_short_label_single_issue_system_tooltip_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.rule_version = 'issue_short_label_single_issue_system_tooltip_checkpoint_v1'
+              AND run.checkpoint_status = 'ready_for_shadow_lifecycle_policy'
+              AND run.agent_key = 'micro_short_label_style'
+              AND run.issue_family = 'short_label_style_microagent'
+              AND run.checkpoint_allowed_count > 0
+              AND run.id IN (1)
+        ),
+        short_label_single_issue_system_tooltip_allowed AS MATERIALIZED (
+            SELECT *
+            FROM (
+                SELECT
+                    item.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY item.segment_id
+                        ORDER BY item.checkpoint_run_id ASC, item.id ASC
+                    ) AS segment_rank
+                FROM ml_issue_short_label_single_issue_system_tooltip_checkpoint_items item
+                JOIN valid_short_label_single_issue_system_tooltip_checkpoints checkpoint
+                  ON checkpoint.id = item.checkpoint_run_id
+                 AND checkpoint.ledger_run_id = item.ledger_run_id
+                 AND checkpoint.segment_state_run_id = item.segment_state_run_id
+                WHERE item.checkpoint_allowed = 1
+                  AND COALESCE(TRIM(item.block_reason), '') = ''
+                  AND item.profile = 'system_tooltip_single_issue_clean'
+                  AND item.checkpoint_action = 'close_short_label_single_issue_system_tooltip'
+                  AND item.token_count >= 1
+                  AND item.word_count <= 8
+                  AND (
+                        item.relative_path = 'effects_l_spanish.yml'
+                     OR item.relative_path LIKE 'triggers/%'
+                  )
+            )
+            WHERE segment_rank = 1
+        ),
+        valid_short_label_tokenized_ui_false_reopen_checkpoint AS MATERIALIZED (
+            SELECT run.*
+            FROM ml_issue_short_label_tokenized_ui_false_reopen_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.rule_version = 'issue_short_label_tokenized_ui_false_reopen_checkpoint_v1'
+              AND run.checkpoint_status = 'ready_for_shadow_lifecycle'
+              AND run.agent_key = 'micro_short_label_tokenized_ui'
+              AND run.issue_family = 'short_label_style_microagent'
+              AND run.checkpoint_allowed_count > 0
+              AND run.id = 2
+        ),
+        short_label_tokenized_ui_false_reopen_allowed AS MATERIALIZED (
+            SELECT *
+            FROM (
+                SELECT
+                    item.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY item.segment_id
+                        ORDER BY item.checkpoint_run_id ASC, item.id ASC
+                    ) AS segment_rank
+                FROM ml_issue_short_label_tokenized_ui_false_reopen_checkpoint_items item
+                JOIN valid_short_label_tokenized_ui_false_reopen_checkpoint checkpoint
+                  ON checkpoint.id = item.checkpoint_run_id
+                 AND checkpoint.ledger_run_id = item.ledger_run_id
+                 AND checkpoint.segment_state_run_id = item.segment_state_run_id
+                WHERE item.checkpoint_run_id = 2
+                  AND item.checkpoint_allowed = 1
+                  AND item.checkpoint_action = 'cover_short_label_tokenized_ui_false_reopen'
+                  AND COALESCE(TRIM(item.block_reason), '') = ''
+                  AND item.current_confirmed_text_hash = item.current_output_text_hash
+            )
+            WHERE segment_rank = 1
+        ),
+        semantic_short_label_blocked_surface_batch_checkpoints AS (
+            SELECT run.*
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND run.policy_status = 'shadow'
+              AND run.row_guard_profile = 'legacy'
+              AND run.dry_run_id = 35
+              AND (
+                    (run.id = 6 AND run.agent_key = 'micro_event_context_composer' AND run.allowed_count = 239)
+                 OR (run.id = 7 AND run.agent_key = 'micro_short_label_style' AND run.allowed_count = 625)
+                 OR (run.id = 8 AND run.agent_key = 'micro_event_surface_router' AND run.allowed_count = 391)
+                 OR (run.id = 9 AND run.agent_key = 'micro_requirement_tooltip_surface' AND run.allowed_count = 189)
+              )
+        ),
+        semantic_short_label_blocked_surface_run36_checkpoints AS (
+            SELECT run.*
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND run.policy_status = 'shadow'
+              AND run.row_guard_profile = 'legacy'
+              AND run.dry_run_id = 36
+              AND (
+                    (run.id = 10 AND run.agent_key = 'micro_event_context_composer' AND run.allowed_count = 185)
+                 OR (run.id = 11 AND run.agent_key = 'micro_short_label_style' AND run.allowed_count = 160)
+                 OR (run.id = 12 AND run.agent_key = 'micro_event_surface_router' AND run.allowed_count = 246)
+                 OR (run.id = 13 AND run.agent_key = 'micro_requirement_tooltip_surface' AND run.allowed_count = 68)
+              )
+        ),
+        valid_autofix_unknown_surface_bridge_proposals AS (
+            SELECT run.*
+            FROM ml_issue_autofix_unknown_surface_bridge_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.production_release_allowed = 0
+              AND run.ready_count > 0
+              AND run.blocked_count = 0
+        ),
+        valid_autofix_unknown_surface_checkpoint_lifecycle AS (
+            SELECT run.*
+            FROM ml_issue_autofix_unknown_surface_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.id IN (7, 9)
+              AND run.rule_version = 'issue_autofix_unknown_surface_checkpoint_v1'
+              AND run.source_queue_run_id IN (189, 191)
+              AND run.allowed_count > 0
+              AND COALESCE(run.production_release_allowed, 0) = 0
+        ),
+        valid_autofix_unknown_domain_guarded_reviewed_lifecycle AS (
+            SELECT run.*
+            FROM ml_issue_autofix_unknown_domain_guarded_reviewed_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.allowed_count > 0
+        ),
+        valid_autofix_unknown_domain_guarded_lifecycle AS MATERIALIZED (
+            SELECT run.*
+            FROM ml_issue_autofix_unknown_domain_guarded_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.rule_version = 'issue_autofix_unknown_domain_guarded_checkpoint_v1'
+              AND run.checkpoint_status = 'ready_for_shadow_review'
+              AND run.agent_key = 'micro_autofix_unknown_router'
+              AND run.issue_family = 'autofix_unknown_microagent'
+              AND run.checkpoint_allowed_count > 0
+              AND run.id IN (4)
+        ),
+        autofix_unknown_domain_guarded_allowed AS MATERIALIZED (
+            SELECT *
+            FROM (
+                SELECT
+                    item.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY item.segment_id
+                        ORDER BY item.checkpoint_run_id ASC, item.id ASC
+                    ) AS segment_rank
+                FROM ml_issue_autofix_unknown_domain_guarded_checkpoint_items item
+                JOIN valid_autofix_unknown_domain_guarded_lifecycle checkpoint
+                  ON checkpoint.id = item.checkpoint_run_id
+                 AND checkpoint.ledger_run_id = item.ledger_run_id
+                 AND checkpoint.segment_state_run_id = item.segment_state_run_id
+                WHERE item.checkpoint_allowed = 1
+                  AND COALESCE(TRIM(item.block_reason), '') = ''
+                  AND item.checkpoint_action = 'cover_autofix_unknown_domain_false_reopen'
+                  AND item.open_issue_count = 1
+                  AND item.autofix_unknown_count = 1
+                  AND item.current_confirmed_text_hash = item.current_output_text_hash
+            )
+            WHERE segment_rank = 1
+        ),
+        autofix_unknown_domain_guarded_reviewed_allowed AS (
+            SELECT *
+            FROM (
+                SELECT
+                    item.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY item.segment_id
+                        ORDER BY item.run_id ASC, item.id ASC
+                    ) AS segment_rank
+                FROM ml_issue_autofix_unknown_domain_guarded_reviewed_checkpoint_items item
+                JOIN valid_autofix_unknown_domain_guarded_reviewed_lifecycle checkpoint
+                  ON checkpoint.id = item.run_id
+                 AND checkpoint.ledger_run_id = item.ledger_run_id
+                 AND checkpoint.source_queue_run_id = item.queue_run_id
+                WHERE item.checkpoint_status = 'allowed'
+            )
+            WHERE segment_rank = 1
+        ),
+        valid_autofix_unknown_surface_semantic_coverage AS (
+            SELECT run.*
+            FROM ml_issue_partial_coverage_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.id = 160
+              AND run.ledger_run_id = 31
+              AND run.segment_state_run_id = 215
+        ),
+        latest_autofix_unknown_event_composition_bridge AS (
+            SELECT run.*
+            FROM ml_issue_autofix_unknown_event_composition_bridge_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.id = 2
+              AND run.source_checkpoint_run_id = 2
+              AND run.source_segment_state_run_id = 178
+              AND run.source_ledger_run_id = 21
+              AND run.ready_count = 460
+              AND run.partial_count = 1136
+              AND run.blocked_count = 0
+              AND run.estimated_closed_gain = 460
+              AND run.production_release_allowed = 0
+            ORDER BY run.finished_at DESC, run.id DESC
+            LIMIT 1
+        ),
+        latest_autofix_unknown_event_semantic_companion_bridge AS (
+            SELECT run.*
+            FROM ml_issue_autofix_unknown_event_semantic_companion_bridge_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.ready_count > 0
+              AND run.production_release_allowed = 0
+        ),
+        event_surface_short_label_companion_bridge AS (
+            SELECT run.*
+            FROM ml_issue_event_surface_short_label_companion_bridge_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.id = 1
+              AND run.rule_version = 'issue_event_surface_short_label_companion_bridge_v1'
+              AND run.bridge_name = 'event_surface_short_label_companion_bridge_v1'
+              AND run.source_event_checkpoint_run_id = 13
+              AND run.source_coverage_run_id = 175
+              AND run.source_ledger_run_id = 40
+              AND run.current_segment_state_run_id = 242
+              AND run.candidate_count = 376
+              AND run.ready_count = 376
+              AND run.blocked_count = 0
+              AND run.estimated_closed_gain = 376
+              AND run.production_release_allowed = 0
+            LIMIT 1
+        ),
+        eligible_short_label_pure_no_token_segment_lifecycle_bridge_proposals AS (
+            SELECT run.*
+            FROM ml_issue_short_label_pure_no_token_segment_lifecycle_bridge_proposal_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.bridge_status = 'proposal_shadow'
+              AND run.production_release_allowed = 0
+              AND run.ready_count > 0
+              AND run.review_required_count = 0
+        ),
+        latest_short_label_pure_no_token_semantic_bridge_proposal AS (
+            SELECT run.*
+            FROM ml_issue_short_label_pure_no_token_segment_lifecycle_bridge_proposal_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.id = 9
+              AND run.bridge_status = 'proposal_shadow'
+              AND run.production_release_allowed = 0
+              AND run.bridge_candidate = 0
+              AND run.ready_count > 0
+              AND run.source_coverage_run_id = 143
+              AND run.source_checkpoint_run_id = 6
+            ORDER BY run.finished_at DESC, run.id DESC
+            LIMIT 1
+        ),
+        valid_short_label_pure_no_token_domain_checkpoint AS (
+            SELECT run.*
+            FROM ml_issue_short_label_pure_no_token_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND (
+                    (run.id = 11 AND run.shadow_run_id = 12)
+                 OR (run.id = 14 AND run.shadow_run_id = 15)
+              )
+              AND run.rule_version = 'issue_short_label_pure_no_token_checkpoint_v1'
+              AND run.checkpoint_status = 'ready_for_lifecycle_policy'
+              AND run.production_release_allowed = 0
+              AND run.policy_name = 'short_label_pure_no_token_nominal_shadow'
+              AND run.agent_key = 'micro_short_label_style'
+        ),
+        valid_gender_longform_false_reopen_checkpoint AS (
+            SELECT run.*
+            FROM ml_issue_gender_longform_false_reopen_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.rule_version = 'issue_gender_longform_false_reopen_checkpoint_v1'
+              AND run.checkpoint_status = 'ready_for_shadow_lifecycle_bridge'
+              AND run.production_release_allowed = 0
+              AND run.checkpoint_allowed_count > 0
+        ),
+        valid_dynamic_ck3_pattern_checkpoint AS (
+            SELECT run.*
+            FROM ml_issue_dynamic_ck3_pattern_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.id >= 13
+              AND run.rule_version = 'issue_dynamic_ck3_pattern_checkpoint_v1'
+              AND run.checkpoint_status = 'ready_for_shadow_lifecycle_policy'
+              AND run.policy_name = 'dynamic_ck3_pattern_shadow'
+              AND run.agent_key = 'micro_dynamic_ck3_expression'
+              AND run.checkpoint_allowed_count > 0
+        ),
+        dynamic_ck3_pattern_allowed AS (
+            SELECT *
+            FROM (
+                SELECT
+                    item.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY item.segment_id
+                        ORDER BY item.checkpoint_run_id ASC, item.id ASC
+                    ) AS segment_rank
+                FROM ml_issue_dynamic_ck3_pattern_checkpoint_items item
+                JOIN valid_dynamic_ck3_pattern_checkpoint checkpoint
+                  ON checkpoint.id = item.checkpoint_run_id
+                 AND checkpoint.pattern_run_id = item.pattern_run_id
+                WHERE item.checkpoint_allowed = 1
+                  AND COALESCE(TRIM(item.block_reason), '') = ''
+                  AND item.subpolicy_name = 'dynamic_rule_tooltip_label'
+                  AND item.checkpoint_action = 'checked_dynamic_ck3_pattern_shadow'
+            )
+            WHERE segment_rank = 1
+        ),
+        valid_short_label_compact_ui_false_reopen_checkpoint AS (
+            SELECT run.*
+            FROM ml_issue_short_label_compact_ui_false_reopen_checkpoint_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.rule_version = 'issue_short_label_compact_ui_false_reopen_checkpoint_v1'
+              AND run.checkpoint_status = 'ready_for_lifecycle_policy'
+              AND run.production_release_allowed = 0
+              AND run.checkpoint_allowed_count > 0
+              AND run.agent_key = 'micro_short_label_style'
+        ),
+        valid_short_label_compact_ui_false_reopen_coverage AS (
+            SELECT run.*
+            FROM ml_issue_partial_coverage_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.source_counts_json LIKE '%short_label_compact_ui_false_reopen_checkpoint:exact%'
+            ORDER BY run.finished_at DESC, run.id DESC
+            LIMIT 1
+        ),
+        valid_short_label_compact_ui_semantic_companion_bridge AS (
+            SELECT run.*
+            FROM ml_issue_short_label_compact_ui_semantic_companion_bridge_runs run
+            WHERE run.finished_at IS NOT NULL
+              AND run.ready_count > 0
+        ),
+        short_label_compact_ui_semantic_companion_ready AS (
+            SELECT *
+            FROM (
+                SELECT
+                    item.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY item.segment_id
+                        ORDER BY item.run_id ASC, item.id ASC
+                    ) AS segment_rank
+                FROM ml_issue_short_label_compact_ui_semantic_companion_bridge_items item
+                JOIN valid_short_label_compact_ui_semantic_companion_bridge bridge
+                  ON bridge.id = item.run_id
+                 AND bridge.source_short_label_checkpoint_run_id = item.source_short_label_checkpoint_run_id
+                 AND bridge.source_companion_decision_run_id = item.source_companion_decision_run_id
+                 AND bridge.source_companion_queue_run_id = item.source_companion_queue_run_id
+                 AND bridge.source_ledger_run_id = item.source_ledger_run_id
+                WHERE item.bridge_status = 'ready_for_lifecycle_bridge'
+            )
+            WHERE segment_rank = 1
+        ),
+        lifecycle_allowed_raw AS MATERIALIZED (
+            SELECT
+                segment_id,
+                policy_action AS lifecycle_policy_action
+            FROM auto_confirmation_reopen_lifecycle_policy_items
+            WHERE {lifecycle_filter}
+              AND policy_allowed = 1
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{controlled_token_subpolicy_action}' AS lifecycle_policy_action
+            FROM auto_confirmation_reopen_text_boundary_token_subpolicy_lifecycle_items item
+            JOIN (
+                SELECT id
+                FROM auto_confirmation_reopen_text_boundary_token_subpolicy_lifecycle_runs
+                WHERE finished_at IS NOT NULL
+                  AND policy_status = 'shadow'
+                  AND released_count > 0
+                ORDER BY finished_at DESC, id DESC
+                LIMIT 1
+            ) run ON run.id = item.run_id
+            WHERE item.policy_allowed = 1
+            UNION ALL
+            SELECT
+                item.segment_id,
+                CASE
+                    WHEN shadow.shadow_action = 'would_observe_same_token_noop_shadow'
+                        THEN '{same_token_boundary_noop_action}'
+                    ELSE '{same_token_boundary_repair_action}'
+                END AS lifecycle_policy_action
+            FROM auto_confirmation_reopen_text_boundary_repair_lifecycle_items item
+            JOIN auto_confirmation_reopen_text_boundary_repair_shadow_items shadow
+              ON shadow.id = item.repair_shadow_item_id
+            JOIN (
+                SELECT id
+                FROM auto_confirmation_reopen_text_boundary_repair_lifecycle_runs
+                WHERE finished_at IS NOT NULL
+                  AND policy_status = 'shadow'
+                  AND released_count > 0
+                ORDER BY finished_at DESC, id DESC
+                LIMIT 1
+            ) run ON run.id = item.run_id
+            WHERE item.policy_allowed = 1
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{select_cstring_bridge_action}' AS lifecycle_policy_action
+            FROM ml_issue_select_cstring_governed_bridge_proposal_items item
+            JOIN latest_select_cstring_bridge_proposal proposal
+              ON proposal.id = item.run_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary select_cstring_issues
+              ON select_cstring_issues.segment_id = item.segment_id
+            WHERE item.bridge_status = 'ready_for_governed_bridge_review'
+              AND COALESCE(TRIM(item.blocking_reason), '') = ''
+              AND COALESCE(item.validation_issue_count, 0) = 0
+              AND item.token_status IN ('same_structural_tokens', 'dynamic_literal_payload_only')
+              AND sha256_text(item.corrected_text) = item.corrected_text_hash
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(item.corrected_text)
+              AND canonical_l10n(output.portuguese_text) = canonical_l10n(item.corrected_text)
+              AND COALESCE(select_cstring_issues.high_issue_count, 0) = 0
+              AND (
+                    state.final_state = 'reopen_auto_confirmed_autofix'
+                 OR state.final_state = 'closed_auto_confirmed_select_cstring_governed_bridge'
+                 OR state.final_state = 'closed_auto_confirmed_guarded_lifecycle'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{select_cstring_segment_lifecycle_bridge_action}' AS lifecycle_policy_action
+            FROM ml_issue_select_cstring_segment_lifecycle_bridge_proposal_items item
+            JOIN latest_select_cstring_segment_lifecycle_bridge_proposal proposal
+              ON proposal.id = item.run_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary select_cstring_segment_issues
+              ON select_cstring_segment_issues.segment_id = item.segment_id
+            WHERE item.bridge_status = 'ready_for_lifecycle_bridge'
+              AND item.production_release_allowed = 0
+              AND COALESCE(TRIM(item.blocking_reason), '') = ''
+              AND COALESCE(proposal.review_required_count, 0) = 0
+              AND COALESCE(proposal.blocked_count, 0) = 0
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND COALESCE(select_cstring_segment_issues.issue_count, 0) = 0
+              AND COALESCE(select_cstring_segment_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') NOT IN ('human_locked', 'human_confirmed')
+              AND (
+                    state.state_group = 'pending'
+                 OR state.needs_reopen = 1
+                 OR state.final_state LIKE 'reopen_%'
+                 OR state.final_state = 'closed_auto_confirmed_select_cstring_segment_lifecycle_bridge'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{short_label_pure_no_token_segment_lifecycle_bridge_action}' AS lifecycle_policy_action
+            FROM ml_issue_short_label_pure_no_token_segment_lifecycle_bridge_proposal_items item
+            JOIN eligible_short_label_pure_no_token_segment_lifecycle_bridge_proposals proposal
+              ON proposal.id = item.run_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary short_label_pure_segment_issues
+              ON short_label_pure_segment_issues.segment_id = item.segment_id
+            WHERE item.bridge_status = 'ready_for_lifecycle_bridge'
+              AND item.production_release_allowed = 0
+              AND COALESCE(TRIM(item.blocking_reason), '') = ''
+              AND COALESCE(item.open_issue_count, 0) = 0
+              AND COALESCE(item.blocked_issue_count, 0) = 0
+              AND COALESCE(item.pure_no_token_checkpoint_issue_count, 0) > 0
+              AND COALESCE(proposal.review_required_count, 0) = 0
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(short_label_pure_segment_issues.issue_count, 0) = 0
+              AND COALESCE(short_label_pure_segment_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND (
+                    COALESCE(state.apply_state, '') = 'needs_review'
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_short_label_pure_no_token_segment_lifecycle_bridge'
+              )
+              AND (
+                    COALESCE(state.final_state, '') = 'reopen_auto_confirmed_autofix'
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_short_label_pure_no_token_segment_lifecycle_bridge'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{short_label_pure_no_token_domain_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_short_label_pure_no_token_checkpoint_items item
+            JOIN valid_short_label_pure_no_token_domain_checkpoint checkpoint
+              ON checkpoint.id = item.checkpoint_run_id
+             AND checkpoint.shadow_run_id = item.shadow_run_id
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary short_label_domain_issues
+              ON short_label_domain_issues.segment_id = item.segment_id
+            WHERE item.checkpoint_allowed = 1
+              AND item.checkpoint_action = 'cover_short_label_pure_no_token_nominal'
+              AND item.source_decision = 'safe_short_label'
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND item.issue_family = 'short_label_style_microagent'
+              AND item.agent_key = 'micro_short_label_style'
+              AND COALESCE(TRIM(item.evidence_text), '') <> ''
+              AND instr(item.evidence_text, '[') = 0
+              AND instr(item.evidence_text, ']') = 0
+              AND instr(item.evidence_text, '$') = 0
+              AND instr(item.evidence_text, '{{') = 0
+              AND instr(item.evidence_text, '}}') = 0
+              AND instr(item.evidence_text, '#') = 0
+              AND instr(item.evidence_text, '|') = 0
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(item.evidence_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(short_label_domain_issues.issue_count, 0) = 0
+              AND COALESCE(short_label_domain_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.final_state, '') != 'pending_blocked_structure'
+              AND (
+                    COALESCE(state.state_group, '') = 'pending'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+                 OR COALESCE(state.final_state, '') LIKE 'reopen_%'
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_short_label_pure_no_token_domain_lifecycle'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{dynamic_ck3_pattern_shadow_lifecycle_action}' AS lifecycle_policy_action
+            FROM dynamic_ck3_pattern_allowed item
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            WHERE COALESCE(state.confirmed_matches_output, 0) = 1
+              AND COALESCE(state.needs_output_apply, 0) = 0
+              AND (
+                    (
+                        COALESCE(state.final_state, '') = 'reopen_auto_confirmed_autofix'
+                    AND COALESCE(state.state_group, '') = 'pending'
+                    AND COALESCE(state.review_state, '') = 'auto_confirmed'
+                    AND COALESCE(state.needs_reopen, 0) = 1
+                    )
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_dynamic_ck3_pattern_shadow_lifecycle'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{gender_longform_false_reopen_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_gender_longform_false_reopen_checkpoint_items item
+            JOIN valid_gender_longform_false_reopen_checkpoint checkpoint
+              ON checkpoint.id = item.checkpoint_run_id
+             AND checkpoint.route_run_id = item.route_run_id
+             AND checkpoint.diagnostic_run_id = item.diagnostic_run_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            WHERE item.checkpoint_allowed = 1
+              AND item.route_key IN (
+                    'single_combat_gender_surface_false_reopen_candidate',
+                    'generic_longform_gender_surface_false_reopen_candidate',
+                    'tutorial_help_gender_surface_false_reopen_candidate'
+              )
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND COALESCE(item.confirmed_matches_output, 0) = 1
+              AND COALESCE(item.needs_output_apply, 0) = 0
+              AND COALESCE(TRIM(item.validation_issue_codes), '') = ''
+              AND COALESCE(state.final_state, '') IN (
+                    'reopen_auto_confirmed_autofix',
+                    'closed_auto_confirmed_gender_longform_false_reopen_context'
+              )
+              AND (
+                    COALESCE(state.final_state, '') = 'closed_auto_confirmed_gender_longform_false_reopen_context'
+                 OR COALESCE(state.state_group, '') = 'pending'
+              )
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.confirmed_matches_output, 0) = 1
+              AND COALESCE(state.needs_output_apply, 0) = 0
+              AND (
+                    COALESCE(state.final_state, '') = 'closed_auto_confirmed_gender_longform_false_reopen_context'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{short_label_compact_ui_false_reopen_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_short_label_compact_ui_false_reopen_checkpoint_items item
+            JOIN valid_short_label_compact_ui_false_reopen_checkpoint checkpoint
+              ON checkpoint.id = item.checkpoint_run_id
+             AND checkpoint.queue_run_id = item.queue_run_id
+             AND checkpoint.ledger_run_id = item.ledger_run_id
+            LEFT JOIN ml_issue_partial_coverage_items coverage_item
+              ON coverage_item.segment_id = item.segment_id
+            LEFT JOIN valid_short_label_compact_ui_false_reopen_coverage coverage
+              ON coverage.id = coverage_item.run_id
+             AND coverage.ledger_run_id = coverage_item.ledger_run_id
+             AND coverage.segment_state_run_id = coverage_item.segment_state_run_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            WHERE item.checkpoint_allowed = 1
+              AND item.checkpoint_action = 'cover_short_label_compact_ui_false_reopen'
+              AND item.issue_family = 'short_label_style_microagent'
+              AND item.agent_key = 'micro_short_label_style'
+              AND item.subpolicy_name = 'compact_ui_false_positive_reopen'
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND COALESCE(state.confirmed_matches_output, 0) = 1
+              AND COALESCE(state.needs_output_apply, 0) = 0
+              AND (
+                    COALESCE(state.final_state, '') = 'closed_auto_confirmed_short_label_compact_ui_false_reopen_lifecycle'
+                 OR (
+                        coverage.id IS NOT NULL
+                    AND coverage_item.coverage_state = 'full'
+                    AND COALESCE(coverage_item.open_issue_count, 0) = 0
+                    AND COALESCE(coverage_item.blocked_issue_count, 0) = 0
+                    AND COALESCE(coverage_item.coverage_sources_json, '') LIKE '%short_label_compact_ui_false_reopen_checkpoint%'
+                    AND COALESCE(state.final_state, '') = 'reopen_auto_confirmed_autofix'
+                    AND COALESCE(state.needs_reopen, 0) = 1
+                 )
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{short_label_compact_ui_semantic_companion_lifecycle_action}' AS lifecycle_policy_action
+            FROM short_label_compact_ui_semantic_companion_ready item
+            JOIN valid_short_label_compact_ui_semantic_companion_bridge bridge
+              ON bridge.id = item.run_id
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary compact_semantic_issues
+              ON compact_semantic_issues.segment_id = item.segment_id
+            LEFT JOIN short_label_companion_ledger_summary companion_ledger
+              ON companion_ledger.run_id = item.source_ledger_run_id
+             AND companion_ledger.segment_id = item.segment_id
+            WHERE item.bridge_status = 'ready_for_lifecycle_bridge'
+              AND COALESCE(bridge.ready_count, 0) > 0
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(compact_semantic_issues.high_issue_count, 0) = 0
+              AND COALESCE(item.high_issue_count, 0) = 0
+              AND COALESCE(item.token_not_ok_count, 0) = 0
+              AND COALESCE(companion_ledger.high_ledger_issue_count, 0) = 0
+              AND COALESCE(companion_ledger.ledger_issue_count, 0) = 2
+              AND COALESCE(companion_ledger.short_label_issue_count, 0) = 1
+              AND COALESCE(companion_ledger.companion_issue_count, 0) = 1
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.review_state, '') NOT IN ('human_locked', 'human_confirmed')
+              AND COALESCE(state.confirmed_matches_output, 0) = 1
+              AND COALESCE(state.needs_output_apply, 0) = 0
+              AND (
+                    (
+                        COALESCE(state.state_group, '') = 'pending'
+                    AND COALESCE(state.final_state, '') = 'reopen_auto_confirmed_autofix'
+                    )
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_short_label_compact_ui_semantic_companion_lifecycle'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{short_label_pure_no_token_semantic_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_short_label_pure_no_token_segment_lifecycle_bridge_proposal_items item
+            JOIN latest_short_label_pure_no_token_semantic_bridge_proposal proposal
+              ON proposal.id = item.run_id
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary short_label_pure_semantic_issues
+              ON short_label_pure_semantic_issues.segment_id = item.segment_id
+            WHERE item.bridge_status = 'ready_for_lifecycle_bridge'
+              AND item.production_release_allowed = 0
+              AND COALESCE(TRIM(item.blocking_reason), '') = ''
+              AND COALESCE(item.open_issue_count, 0) = 0
+              AND COALESCE(item.blocked_issue_count, 0) = 0
+              AND COALESCE(item.covered_issue_count, 0) = COALESCE(item.total_issue_count, 0)
+              AND COALESCE(item.coverage_sources_json, '') LIKE '%short_label_pure_no_token_checkpoint%'
+              AND COALESCE(item.coverage_sources_json, '') LIKE '%semantic_review_explained_checkpoint%'
+              AND item.source_coverage_run_id = 143
+              AND item.source_checkpoint_run_id = 6
+              AND COALESCE(item.confirmed_text_hash, '') <> ''
+              AND item.confirmed_text_hash = item.output_text_hash
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(proposal.production_release_allowed, 0) = 0
+              AND COALESCE(proposal.bridge_candidate, 0) = 0
+              AND COALESCE(proposal.review_required_count, 0) = 0
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(short_label_pure_semantic_issues.issue_count, 0) = 0
+              AND COALESCE(short_label_pure_semantic_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.review_state, '') NOT IN ('human_locked', 'human_confirmed')
+              AND COALESCE(state.final_state, '') != 'pending_blocked_structure'
+              AND (
+                    COALESCE(state.state_group, '') = 'pending'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+                 OR COALESCE(state.final_state, '') LIKE 'reopen_%'
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_short_label_pure_no_token_semantic_lifecycle'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{short_label_semantic_tier1_guarded_composition_action}' AS lifecycle_policy_action
+            FROM ml_issue_short_label_semantic_guarded_expansion_items item
+            JOIN valid_short_label_semantic_tier1_guarded_expansions run
+              ON run.id = item.run_id
+            JOIN ml_issue_short_label_semantic_composition_diagnostic_items diagnostic
+              ON diagnostic.id = item.diagnostic_item_id
+             AND diagnostic.run_id = item.diagnostic_run_id
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary short_semantic_issues
+              ON short_semantic_issues.segment_id = item.segment_id
+            WHERE item.dry_run_allowed = 1
+              AND item.dry_run_decision = 'composition_ready'
+              AND item.dry_run_action = 'would_close_short_label_semantic_tier1_composition'
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND item.queue_bucket IN (
+                    'recheck_compact_tokenized',
+                    'recheck_short_tokenized',
+                    'recheck_short_no_token',
+                    'recheck_compact_no_token'
+              )
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(item.confirmed_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(diagnostic.open_issue_count, 0) = 0
+              AND diagnostic.coverage_state = 'full'
+              AND diagnostic.composition_bucket = 'dual_covered_ready_recheck'
+              AND COALESCE(short_semantic_issues.issue_count, 0) = 0
+              AND COALESCE(short_semantic_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.final_state, '') != 'pending_blocked_structure'
+              AND (
+                    COALESCE(state.state_group, '') = 'pending'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+                 OR COALESCE(state.final_state, '') LIKE 'reopen_%'
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_short_label_semantic_tier1_guarded_composition'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{semantic_short_label_pair_guarded_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_semantic_short_label_pair_guarded_expansion_items item
+            JOIN valid_semantic_short_label_pair_guarded_expansions run
+              ON run.id = item.run_id
+            JOIN ml_issue_semantic_short_label_pair_opportunity_items opportunity
+              ON opportunity.id = item.opportunity_item_id
+             AND opportunity.run_id = item.opportunity_run_id
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary semantic_short_label_pair_issues
+              ON semantic_short_label_pair_issues.segment_id = item.segment_id
+            WHERE item.dry_run_allowed = 1
+              AND item.guard_profile IN ('ui_only_v10', 'balanced_v1')
+              AND item.classifier_decision = 'safe_short_label'
+              AND item.dry_run_action = 'would_cover_semantic_short_label_pair_safe'
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND opportunity.issue_kinds_json = '["needs_human_or_semantic_conflict", "short_or_compact_label_reopened"]'
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(semantic_short_label_pair_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.final_state, '') != 'pending_blocked_structure'
+              AND (
+                    COALESCE(state.state_group, '') = 'pending'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+                 OR COALESCE(state.final_state, '') LIKE 'reopen_%'
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_semantic_short_label_pair_guarded_lifecycle'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{semantic_short_label_blocked_surface_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+            JOIN latest_semantic_short_label_blocked_surface_checkpoint checkpoint
+              ON checkpoint.id = item.run_id
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary blocked_surface_issues
+              ON blocked_surface_issues.segment_id = item.segment_id
+            WHERE item.checkpoint_allowed = 1
+              AND item.agent_key = 'micro_short_label_style'
+              AND item.checkpoint_action = 'stage_semantic_short_label_blocked_surface_shadow'
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(item.current_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(blocked_surface_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.final_state, '') != 'pending_blocked_structure'
+              AND (
+                    COALESCE(state.state_group, '') = 'pending'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+                 OR COALESCE(state.final_state, '') LIKE 'reopen_%'
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_semantic_short_label_blocked_surface_lifecycle'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{short_label_dynamic_delegate_lifecycle_action}' AS lifecycle_policy_action
+            FROM short_label_dynamic_delegate_allowed item
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary dynamic_delegate_issues
+              ON dynamic_delegate_issues.segment_id = item.segment_id
+            WHERE COALESCE(source.is_active, 0) = 1
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(dynamic_delegate_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.confirmed_matches_output, 0) = 1
+              AND COALESCE(state.needs_output_apply, 0) = 0
+              AND (
+                    COALESCE(state.final_state, '') = 'closed_auto_confirmed_short_label_dynamic_delegate_lifecycle'
+                 OR (
+                        COALESCE(state.final_state, '') = 'reopen_auto_confirmed_autofix'
+                    AND COALESCE(state.state_group, '') = 'pending'
+                    AND COALESCE(state.needs_reopen, 0) = 1
+                 )
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{short_label_single_issue_system_tooltip_lifecycle_action}' AS lifecycle_policy_action
+            FROM short_label_single_issue_system_tooltip_allowed item
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN ml_issue_ledger_items ledger_item
+              ON ledger_item.id = item.ledger_item_id
+             AND ledger_item.run_id = item.ledger_run_id
+             AND ledger_item.segment_id = item.segment_id
+            JOIN ledger_issue_summary ledger_summary
+              ON ledger_summary.run_id = item.ledger_run_id
+             AND ledger_summary.segment_id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary system_tooltip_issues
+              ON system_tooltip_issues.segment_id = item.segment_id
+            WHERE COALESCE(source.is_active, 0) = 1
+              AND ledger_item.issue_family = 'short_label_style_microagent'
+              AND ledger_item.issue_kind = 'short_or_compact_label_reopened'
+              AND COALESCE(ledger_summary.ledger_issue_count, 0) = 1
+              AND COALESCE(ledger_summary.high_ledger_issue_count, 0) = 0
+              AND COALESCE(system_tooltip_issues.high_issue_count, 0) = 0
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.confirmed_matches_output, 0) = 1
+              AND COALESCE(state.needs_output_apply, 0) = 0
+              AND (
+                    COALESCE(state.final_state, '') = 'closed_auto_confirmed_short_label_single_issue_system_tooltip_lifecycle'
+                 OR (
+                        COALESCE(state.final_state, '') = 'reopen_auto_confirmed_autofix'
+                    AND COALESCE(state.state_group, '') = 'pending'
+                    AND COALESCE(state.needs_reopen, 0) = 1
+                 )
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{short_label_tokenized_ui_false_reopen_lifecycle_action}' AS lifecycle_policy_action
+            FROM short_label_tokenized_ui_false_reopen_allowed item
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN ml_issue_ledger_items ledger_item
+              ON ledger_item.id = item.ledger_item_id
+             AND ledger_item.run_id = item.ledger_run_id
+             AND ledger_item.segment_id = item.segment_id
+            JOIN ledger_issue_summary ledger_summary
+              ON ledger_summary.run_id = item.ledger_run_id
+             AND ledger_summary.segment_id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary tokenized_ui_issues
+              ON tokenized_ui_issues.segment_id = item.segment_id
+            WHERE COALESCE(source.is_active, 0) = 1
+              AND ledger_item.issue_family = 'short_label_style_microagent'
+              AND ledger_item.issue_kind = 'short_or_compact_label_reopened'
+              AND COALESCE(ledger_summary.ledger_issue_count, 0) = 1
+              AND COALESCE(ledger_summary.high_ledger_issue_count, 0) = 0
+              AND COALESCE(tokenized_ui_issues.high_issue_count, 0) = 0
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND confirmation.confirmed_text = item.current_text
+              AND output.portuguese_text = confirmation.confirmed_text
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.confirmed_matches_output, 0) = 1
+              AND COALESCE(state.needs_output_apply, 0) = 0
+              AND (
+                    COALESCE(state.final_state, '') = 'closed_auto_confirmed_short_label_tokenized_ui_false_reopen_lifecycle'
+                 OR (
+                        COALESCE(state.final_state, '') = 'reopen_auto_confirmed_autofix'
+                    AND COALESCE(state.state_group, '') = 'pending'
+                    AND COALESCE(state.needs_reopen, 0) = 1
+                 )
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{event_dialogue_option_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+            JOIN latest_event_dialogue_option_checkpoint checkpoint
+              ON checkpoint.id = item.run_id
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary event_dialogue_issues
+              ON event_dialogue_issues.segment_id = item.segment_id
+            WHERE item.checkpoint_allowed = 1
+              AND item.agent_key = 'micro_event_dialogue_option'
+              AND item.checkpoint_action = 'stage_semantic_short_label_blocked_surface_shadow'
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(item.current_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(event_dialogue_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.final_state, '') != 'pending_blocked_structure'
+              AND (
+                    COALESCE(state.state_group, '') = 'pending'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+                 OR COALESCE(state.final_state, '') LIKE 'reopen_%'
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_event_dialogue_option_lifecycle'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{event_dialogue_option_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+            JOIN latest_event_dialogue_option_v2_checkpoint checkpoint
+              ON checkpoint.id = item.run_id
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary event_dialogue_v2_issues
+              ON event_dialogue_v2_issues.segment_id = item.segment_id
+            WHERE item.checkpoint_allowed = 1
+              AND item.agent_key = 'micro_event_dialogue_option'
+              AND item.checkpoint_action = 'stage_semantic_short_label_blocked_surface_shadow'
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(item.current_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(event_dialogue_v2_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.final_state, '') != 'pending_blocked_structure'
+              AND (
+                    COALESCE(state.state_group, '') = 'pending'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+                 OR COALESCE(state.final_state, '') LIKE 'reopen_%'
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_event_dialogue_option_lifecycle'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{event_context_composer_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+            JOIN latest_event_context_composer_checkpoint checkpoint
+              ON checkpoint.id = item.run_id
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary event_context_issues
+              ON event_context_issues.segment_id = item.segment_id
+            WHERE item.checkpoint_allowed = 1
+              AND item.agent_key = 'micro_event_context_composer'
+              AND item.checkpoint_action = 'stage_semantic_short_label_blocked_surface_shadow'
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(item.current_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(event_context_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.final_state, '') != 'pending_blocked_structure'
+              AND (
+                    COALESCE(state.state_group, '') = 'pending'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+                 OR COALESCE(state.final_state, '') LIKE 'reopen_%'
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_event_context_composer_lifecycle'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{event_dialogue_option_boundary_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_event_dialogue_option_boundary_checkpoint_items item
+            JOIN valid_event_dialogue_option_boundary_checkpoints checkpoint
+              ON checkpoint.id = item.run_id
+             AND checkpoint.queue_run_id = item.queue_run_id
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary event_dialogue_boundary_issues
+              ON event_dialogue_boundary_issues.segment_id = item.segment_id
+            WHERE item.checkpoint_allowed = 1
+              AND item.decision IN ('safe_short_label', 'composition_ready')
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(item.current_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(event_dialogue_boundary_issues.issue_count, 0) = 0
+              AND COALESCE(event_dialogue_boundary_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.confirmed_matches_output, 0) = 1
+              AND COALESCE(state.needs_output_apply, 0) = 0
+              AND (
+                    COALESCE(state.final_state, '') = 'closed_auto_confirmed_event_dialogue_option_boundary_lifecycle'
+                 OR (
+                        COALESCE(state.final_state, '') = 'reopen_auto_confirmed_autofix'
+                    AND COALESCE(state.state_group, '') = 'pending'
+                    AND COALESCE(state.needs_reopen, 0) = 1
+                 )
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{event_outcome_short_label_boundary_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_event_outcome_short_label_boundary_checkpoint_items item
+            JOIN valid_event_outcome_short_label_boundary_checkpoint checkpoint
+              ON checkpoint.id = item.run_id
+             AND checkpoint.queue_run_id = item.queue_run_id
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary event_outcome_boundary_issues
+              ON event_outcome_boundary_issues.segment_id = item.segment_id
+            WHERE item.checkpoint_allowed = 1
+              AND item.decision IN ('safe_short_label', 'composition_ready')
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(item.current_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(event_outcome_boundary_issues.issue_count, 0) = 0
+              AND COALESCE(event_outcome_boundary_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.final_state, '') != 'pending_blocked_structure'
+              AND (
+                    COALESCE(state.state_group, '') = 'pending'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+                 OR COALESCE(state.final_state, '') LIKE 'reopen_%'
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_event_outcome_short_label_boundary_lifecycle'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{event_context_sentence_boundary_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_event_context_sentence_boundary_checkpoint_items item
+            JOIN valid_event_context_sentence_boundary_checkpoint checkpoint
+              ON checkpoint.id = item.run_id
+             AND checkpoint.queue_run_id = item.queue_run_id
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary event_context_sentence_boundary_issues
+              ON event_context_sentence_boundary_issues.segment_id = item.segment_id
+            WHERE item.checkpoint_allowed = 1
+              AND item.decision IN ('safe_short_label', 'composition_ready')
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(item.current_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(event_context_sentence_boundary_issues.issue_count, 0) = 0
+              AND COALESCE(event_context_sentence_boundary_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.confirmed_matches_output, 0) = 1
+              AND COALESCE(state.needs_output_apply, 0) = 0
+              AND (
+                    COALESCE(state.final_state, '') = 'closed_auto_confirmed_event_context_sentence_boundary_lifecycle'
+                 OR (
+                        COALESCE(state.final_state, '') = 'reopen_auto_confirmed_autofix'
+                    AND COALESCE(state.state_group, '') = 'pending'
+                    AND COALESCE(state.needs_reopen, 0) = 1
+                 )
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                CASE item.agent_key
+                    WHEN 'micro_event_context_composer'
+                        THEN '{event_context_composer_lifecycle_batch_action}'
+                    WHEN 'micro_short_label_style'
+                        THEN '{short_label_style_lifecycle_batch_action}'
+                    WHEN 'micro_event_surface_router'
+                        THEN '{event_surface_router_lifecycle_batch_action}'
+                    WHEN 'micro_requirement_tooltip_surface'
+                        THEN '{requirement_tooltip_surface_lifecycle_batch_action}'
+                END AS lifecycle_policy_action
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+            JOIN semantic_short_label_blocked_surface_batch_checkpoints checkpoint
+              ON checkpoint.id = item.run_id
+             AND checkpoint.agent_key = item.agent_key
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary batch_issues
+              ON batch_issues.segment_id = item.segment_id
+            WHERE item.checkpoint_allowed = 1
+              AND item.agent_key IN (
+                    'micro_event_context_composer',
+                    'micro_short_label_style',
+                    'micro_event_surface_router',
+                    'micro_requirement_tooltip_surface'
+              )
+              AND item.checkpoint_action = 'stage_semantic_short_label_blocked_surface_shadow'
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(item.current_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(batch_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.final_state, '') != 'pending_blocked_structure'
+              AND (
+                    COALESCE(state.state_group, '') = 'pending'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+                 OR COALESCE(state.final_state, '') LIKE 'reopen_%'
+                 OR COALESCE(state.final_state, '') IN (
+                        'closed_auto_confirmed_event_context_composer_lifecycle_batch',
+                        'closed_auto_confirmed_short_label_style_lifecycle_batch',
+                        'closed_auto_confirmed_event_surface_router_lifecycle_batch',
+                        'closed_auto_confirmed_requirement_tooltip_surface_lifecycle_batch'
+                    )
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                CASE item.agent_key
+                    WHEN 'micro_event_context_composer'
+                        THEN '{event_context_composer_lifecycle_run36_action}'
+                    WHEN 'micro_short_label_style'
+                        THEN '{short_label_style_lifecycle_run36_action}'
+                    WHEN 'micro_event_surface_router'
+                        THEN '{event_surface_router_lifecycle_run36_action}'
+                    WHEN 'micro_requirement_tooltip_surface'
+                        THEN '{requirement_tooltip_surface_lifecycle_run36_action}'
+                END AS lifecycle_policy_action
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+            JOIN semantic_short_label_blocked_surface_run36_checkpoints checkpoint
+              ON checkpoint.id = item.run_id
+             AND checkpoint.agent_key = item.agent_key
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary run36_issues
+              ON run36_issues.segment_id = item.segment_id
+            WHERE item.checkpoint_allowed = 1
+              AND item.agent_key IN (
+                    'micro_event_context_composer',
+                    'micro_short_label_style',
+                    'micro_event_surface_router',
+                    'micro_requirement_tooltip_surface'
+              )
+              AND item.checkpoint_action = 'stage_semantic_short_label_blocked_surface_shadow'
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(item.current_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(run36_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.final_state, '') != 'pending_blocked_structure'
+              AND (
+                    COALESCE(state.state_group, '') = 'pending'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+                 OR COALESCE(state.final_state, '') LIKE 'reopen_%'
+                 OR COALESCE(state.final_state, '') IN (
+                        'closed_auto_confirmed_event_context_composer_lifecycle_run36',
+                        'closed_auto_confirmed_short_label_style_lifecycle_run36',
+                        'closed_auto_confirmed_event_surface_router_lifecycle_run36',
+                        'closed_auto_confirmed_requirement_tooltip_surface_lifecycle_run36'
+                    )
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{autofix_unknown_surface_checkpoint_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_autofix_unknown_surface_checkpoint_items item
+            JOIN valid_autofix_unknown_surface_checkpoint_lifecycle checkpoint
+              ON checkpoint.id = item.run_id
+             AND checkpoint.ledger_run_id = item.ledger_run_id
+             AND checkpoint.source_queue_run_id = item.queue_run_id
+            JOIN ml_issue_ledger_items ledger_item
+              ON ledger_item.id = item.ledger_item_id
+             AND ledger_item.run_id = item.ledger_run_id
+             AND ledger_item.segment_id = item.segment_id
+            JOIN ledger_issue_summary ledger_summary
+              ON ledger_summary.run_id = item.ledger_run_id
+             AND ledger_summary.segment_id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary autofix_surface_checkpoint_issues
+              ON autofix_surface_checkpoint_issues.segment_id = item.segment_id
+            WHERE item.run_id IN (7, 9)
+              AND item.checkpoint_status = 'allowed'
+              AND item.normalized_decision IN ('safe_short_label', 'safe_surface')
+              AND item.evidence_label = 'positive_evidence'
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND ledger_item.issue_family = 'autofix_unknown_microagent'
+              AND ledger_item.validation_status = 'positive_evidence'
+              AND COALESCE(ledger_summary.ledger_issue_count, 0) = 1
+              AND COALESCE(ledger_summary.autofix_unknown_issue_count, 0) = 1
+              AND COALESCE(ledger_summary.high_ledger_issue_count, 0) = 0
+              AND COALESCE(autofix_surface_checkpoint_issues.issue_count, 0) = 0
+              AND COALESCE(autofix_surface_checkpoint_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.confirmed_matches_output, 0) = 1
+              AND COALESCE(state.needs_output_apply, 0) = 0
+              AND (
+                    (
+                        COALESCE(state.needs_reopen, 0) = 1
+                    AND COALESCE(state.state_group, '') = 'pending'
+                    AND COALESCE(state.final_state, '') = 'reopen_auto_confirmed_autofix'
+                    )
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_surface_lifecycle'
+              )
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{autofix_unknown_domain_guarded_lifecycle_action}' AS lifecycle_policy_action
+            FROM autofix_unknown_domain_guarded_allowed item
+            JOIN ml_issue_ledger_items ledger_item
+              ON ledger_item.id = item.ledger_item_id
+             AND ledger_item.run_id = item.ledger_run_id
+             AND ledger_item.segment_id = item.segment_id
+            JOIN ledger_issue_summary ledger_summary
+              ON ledger_summary.run_id = item.ledger_run_id
+             AND ledger_summary.segment_id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary domain_guarded_issues
+              ON domain_guarded_issues.segment_id = item.segment_id
+            WHERE ledger_item.issue_family = 'autofix_unknown_microagent'
+              AND COALESCE(ledger_summary.ledger_issue_count, 0) = 1
+              AND COALESCE(ledger_summary.autofix_unknown_issue_count, 0) = 1
+              AND COALESCE(ledger_summary.high_ledger_issue_count, 0) = 0
+              AND COALESCE(domain_guarded_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.confirmed_matches_output, 0) = 1
+              AND COALESCE(state.needs_output_apply, 0) = 0
+              AND (
+                    (
+                        COALESCE(state.needs_reopen, 0) = 1
+                    AND COALESCE(state.state_group, '') = 'pending'
+                    AND COALESCE(state.final_state, '') = 'reopen_auto_confirmed_autofix'
+                    )
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_domain_guarded_lifecycle'
+              )
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{autofix_unknown_domain_guarded_reviewed_lifecycle_action}' AS lifecycle_policy_action
+            FROM autofix_unknown_domain_guarded_reviewed_allowed item
+            JOIN ml_issue_ledger_items ledger_item
+              ON ledger_item.id = item.ledger_item_id
+             AND ledger_item.run_id = item.ledger_run_id
+             AND ledger_item.segment_id = item.segment_id
+            JOIN ledger_issue_summary ledger_summary
+              ON ledger_summary.run_id = item.ledger_run_id
+             AND ledger_summary.segment_id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary domain_guarded_issues
+              ON domain_guarded_issues.segment_id = item.segment_id
+            WHERE item.normalized_decision = 'false_positive_reopen'
+              AND item.evidence_label = 'false_positive_reopen'
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND ledger_item.issue_family = 'autofix_unknown_microagent'
+              AND COALESCE(ledger_summary.ledger_issue_count, 0) = 1
+              AND COALESCE(ledger_summary.autofix_unknown_issue_count, 0) = 1
+              AND COALESCE(ledger_summary.high_ledger_issue_count, 0) = 0
+              AND COALESCE(domain_guarded_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.confirmed_matches_output, 0) = 1
+              AND COALESCE(state.needs_output_apply, 0) = 0
+              AND (
+                    (
+                        COALESCE(state.needs_reopen, 0) = 1
+                    AND COALESCE(state.state_group, '') = 'pending'
+                    AND COALESCE(state.final_state, '') = 'reopen_auto_confirmed_autofix'
+                    )
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_domain_guarded_reviewed_lifecycle'
+              )
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{autofix_unknown_surface_lifecycle_bridge_action}' AS lifecycle_policy_action
+            FROM ml_issue_autofix_unknown_surface_bridge_items item
+            JOIN valid_autofix_unknown_surface_bridge_proposals proposal
+              ON proposal.id = item.run_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary autofix_surface_issues
+              ON autofix_surface_issues.segment_id = item.segment_id
+            WHERE item.bridge_status = 'ready_for_lifecycle_bridge'
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND COALESCE(item.segment_open_issue_count, 0) = 1
+              AND COALESCE(item.covered_issue_count, 0) = 1
+              AND COALESCE(proposal.production_release_allowed, 0) = 0
+              AND COALESCE(proposal.blocked_count, 0) = 0
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND COALESCE(autofix_surface_issues.issue_count, 0) = 0
+              AND COALESCE(autofix_surface_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND (
+                    COALESCE(state.state_group, '') = 'pending'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+                 OR COALESCE(state.final_state, '') LIKE 'reopen_%'
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_surface_lifecycle_bridge'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{autofix_unknown_surface_semantic_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_partial_coverage_items item
+            JOIN valid_autofix_unknown_surface_semantic_coverage coverage
+              ON coverage.id = item.run_id
+             AND coverage.ledger_run_id = item.ledger_run_id
+             AND coverage.segment_state_run_id = item.segment_state_run_id
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary autofix_surface_semantic_issues
+              ON autofix_surface_semantic_issues.segment_id = item.segment_id
+            WHERE item.coverage_state = 'full'
+              AND COALESCE(item.open_issue_count, 0) = 0
+              AND COALESCE(item.blocked_issue_count, 0) = 0
+              AND COALESCE(item.segment_id, 0) != 108426
+              AND item.coverage_sources_json LIKE '%autofix_unknown_surface_checkpoint%'
+              AND item.coverage_sources_json LIKE '%semantic_review_explained_checkpoint%'
+              AND item.covered_families_json LIKE '%autofix_unknown_microagent%'
+              AND item.covered_families_json LIKE '%semantic_review_router%'
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(autofix_surface_semantic_issues.issue_count, 0) = 0
+              AND COALESCE(autofix_surface_semantic_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.final_state, '') != 'pending_blocked_structure'
+              AND (
+                    COALESCE(state.state_group, '') = 'pending'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+                 OR COALESCE(state.final_state, '') LIKE 'reopen_%'
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_surface_semantic_lifecycle'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{autofix_unknown_event_composition_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_autofix_unknown_event_composition_bridge_items item
+            JOIN latest_autofix_unknown_event_composition_bridge proposal
+              ON proposal.id = item.run_id
+            JOIN ml_issue_autofix_unknown_event_composition_checkpoint_items checkpoint_item
+              ON checkpoint_item.id = item.checkpoint_item_id
+             AND checkpoint_item.run_id = proposal.source_checkpoint_run_id
+             AND checkpoint_item.segment_id = item.segment_id
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary autofix_event_composition_issues
+              ON autofix_event_composition_issues.segment_id = item.segment_id
+            WHERE item.bridge_status = 'ready_for_lifecycle_bridge'
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND COALESCE(item.segment_open_issue_count, 0) = 1
+              AND COALESCE(item.covered_issue_count, 0) = 1
+              AND item.checkpoint_run_id = 2
+              AND item.ledger_run_id = 21
+              AND item.segment_state_run_id = 178
+              AND checkpoint_item.checkpoint_status = 'allowed'
+              AND checkpoint_item.normalized_decision = 'composition_ready'
+              AND checkpoint_item.evidence_label = 'composition_ready'
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(proposal.production_release_allowed, 0) = 0
+              AND COALESCE(proposal.blocked_count, 0) = 0
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND COALESCE(autofix_event_composition_issues.issue_count, 0) = 0
+              AND COALESCE(autofix_event_composition_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.final_state, '') != 'pending_blocked_structure'
+              AND (
+                    COALESCE(state.state_group, '') = 'pending'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+                 OR COALESCE(state.final_state, '') LIKE 'reopen_%'
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_event_composition_lifecycle'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{autofix_unknown_event_semantic_companion_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_autofix_unknown_event_semantic_companion_bridge_items item
+            JOIN latest_autofix_unknown_event_semantic_companion_bridge proposal
+              ON proposal.id = item.run_id
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary autofix_event_semantic_companion_issues
+              ON autofix_event_semantic_companion_issues.segment_id = item.segment_id
+            WHERE item.bridge_status = 'ready_for_lifecycle_bridge'
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND COALESCE(item.segment_open_issue_count, 0) = 2
+              AND COALESCE(item.autofix_unknown_count, 0) = 1
+              AND COALESCE(item.semantic_review_count, 0) = 1
+              AND COALESCE(item.high_issue_count, 0) = 0
+              AND COALESCE(item.token_not_ok_count, 0) = 0
+              AND item.event_validation_status = 'composition_ready'
+              AND COALESCE(item.semantic_validation_status, '') IN ('not_validated', '')
+              AND COALESCE(item.current_needs_output_apply, 0) = 0
+              AND COALESCE(item.current_confirmed_matches_output, 0) = 1
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(proposal.production_release_allowed, 0) = 0
+              AND COALESCE(proposal.ready_count, 0) > 0
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(autofix_event_semantic_companion_issues.issue_count, 0) = 0
+              AND COALESCE(autofix_event_semantic_companion_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.final_state, '') != 'pending_blocked_structure'
+              AND COALESCE(state.needs_output_apply, 0) = 0
+              AND COALESCE(state.confirmed_matches_output, 0) = 1
+              AND (
+                    COALESCE(state.state_group, '') = 'pending'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+                 OR COALESCE(state.final_state, '') LIKE 'reopen_%'
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_event_semantic_companion_lifecycle'
+              )
+            UNION ALL
+            SELECT
+                item.segment_id,
+                '{event_surface_short_label_companion_lifecycle_action}' AS lifecycle_policy_action
+            FROM ml_issue_event_surface_short_label_companion_bridge_items item
+            JOIN event_surface_short_label_companion_bridge bridge
+              ON bridge.id = item.run_id
+            JOIN source_segments source
+              ON source.id = item.segment_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = item.segment_id
+            LEFT JOIN issue_summary event_surface_short_label_issues
+              ON event_surface_short_label_issues.segment_id = item.segment_id
+            WHERE item.bridge_status = 'ready_for_lifecycle_bridge'
+              AND item.current_segment_state_run_id = 242
+              AND COALESCE(item.current_needs_output_apply, 0) = 0
+              AND COALESCE(item.current_confirmed_matches_output, 0) = 1
+              AND COALESCE(item.total_issue_count, 0) = 2
+              AND COALESCE(item.covered_issue_count, 0) = 1
+              AND COALESCE(item.open_issue_count, 0) = 1
+              AND COALESCE(item.blocked_issue_count, 0) = 0
+              AND COALESCE(source.is_active, 0) = 1
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(event_surface_short_label_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.review_state, '') NOT IN ('human_locked', 'human_confirmed')
+              AND COALESCE(state.needs_output_apply, 0) = 0
+              AND COALESCE(state.confirmed_matches_output, 0) = 1
+              AND COALESCE(state.final_state, '') != 'pending_blocked_structure'
+              AND (
+                    COALESCE(state.state_group, '') = 'pending'
+                 OR COALESCE(state.needs_reopen, 0) = 1
+                 OR COALESCE(state.final_state, '') LIKE 'reopen_%'
+                 OR COALESCE(state.final_state, '') = 'closed_auto_confirmed_event_surface_short_label_companion_lifecycle'
+              )
+            UNION ALL
+            SELECT
+                decision.segment_id,
+                '{actionable_reviewed_repair_action}' AS lifecycle_policy_action
+            FROM ml_issue_review_decisions decision
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = decision.segment_id
+            JOIN output_segments output
+              ON output.segment_id = decision.segment_id
+            LEFT JOIN issue_summary repair_issues
+              ON repair_issues.segment_id = decision.segment_id
+            WHERE decision.queue_run_id = 40
+              AND decision.valid = 1
+              AND decision.reviewer = 'codex_learning_front'
+              AND decision.normalized_decision = 'needs_repair'
+              AND decision.evidence_label = 'repair_required'
+              AND COALESCE(TRIM(decision.corrected_text), '') <> ''
+              AND confirmation.confirmation_source = '{actionable_reviewed_repair_source}'
+              AND confirmation.confirmation_label = '{actionable_reviewed_repair_label}'
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(decision.corrected_text)
+              AND canonical_l10n(output.portuguese_text) = canonical_l10n(decision.corrected_text)
+              AND COALESCE(repair_issues.issue_count, 0) = 0
+              AND COALESCE(repair_issues.high_issue_count, 0) = 0
+            UNION ALL
+            SELECT
+                decision.segment_id,
+                '{actionable_bootstrap_repair_action}' AS lifecycle_policy_action
+            FROM ml_issue_review_decisions decision
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = decision.segment_id
+            JOIN output_segments output
+              ON output.segment_id = decision.segment_id
+            LEFT JOIN issue_summary bootstrap_issues
+              ON bootstrap_issues.segment_id = decision.segment_id
+            WHERE decision.queue_run_id = 40
+              AND decision.valid = 1
+              AND decision.reviewer = 'codex_learning_front'
+              AND decision.normalized_decision = 'needs_repair'
+              AND decision.evidence_label = 'repair_required'
+              AND COALESCE(TRIM(decision.corrected_text), '') <> ''
+              AND confirmation.confirmation_source = '{actionable_bootstrap_repair_source}'
+              AND confirmation.confirmation_label = '{actionable_bootstrap_repair_label}'
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(decision.corrected_text)
+              AND canonical_l10n(output.portuguese_text) = canonical_l10n(decision.corrected_text)
+              AND COALESCE(bootstrap_issues.issue_count, 0) = 0
+              AND COALESCE(bootstrap_issues.high_issue_count, 0) = 0
+        ),
+        lifecycle_allowed AS MATERIALIZED (
+            SELECT
+                segment_id,
+                GROUP_CONCAT(DISTINCT lifecycle_policy_action) AS lifecycle_policy_action,
+                1 AS lifecycle_policy_allowed
+            FROM lifecycle_allowed_raw
             GROUP BY segment_id
         )
         SELECT
@@ -514,6 +8086,13 @@ def iter_segments(conn, active_score_run_id: int | None, candidate_score_run_id:
             active.final_action AS active_action,
             candidate.final_action AS candidate_action,
             policy.policy_action AS policy_action,
+            policy.policy_group AS policy_group,
+            COALESCE(policy.new_safe, 0) AS policy_new_safe,
+            COALESCE(policy.learned_positive, 0) AS policy_learned_positive,
+            COALESCE(policy.learned_negative, 0) AS policy_learned_negative,
+            policy.reasons_json AS policy_reasons_json,
+            lifecycle.lifecycle_policy_action AS lifecycle_policy_action,
+            COALESCE(lifecycle.lifecycle_policy_allowed, 0) AS lifecycle_policy_allowed,
             COALESCE(issue_summary.issue_count, 0) AS issue_count,
             COALESCE(issue_summary.high_issue_count, 0) AS high_issue_count,
             issue_summary.issue_types
@@ -523,15 +8102,85 @@ def iter_segments(conn, active_score_run_id: int | None, candidate_score_run_id:
         LEFT JOIN ml_score_items active ON active.segment_id = s.id AND active.run_id = ?
         LEFT JOIN ml_score_items candidate ON candidate.segment_id = s.id AND candidate.run_id = ?
         LEFT JOIN ml_policy_items policy ON policy.segment_id = s.id AND policy.run_id = ?
+        LEFT JOIN lifecycle_allowed lifecycle ON lifecycle.segment_id = s.id
         LEFT JOIN issue_summary ON issue_summary.segment_id = s.id
         WHERE s.is_active = 1
         ORDER BY s.relative_path, s.source_line_number, s.id
-    """
+    """.format(
+        lifecycle_filter=lifecycle_filter,
+        controlled_token_subpolicy_action=CONTROLLED_TOKEN_SUBPOLICY_CLOSURE_ACTION,
+        same_token_boundary_repair_action=SAME_TOKEN_BOUNDARY_REPAIR_CLOSURE_ACTION,
+        same_token_boundary_noop_action=SAME_TOKEN_BOUNDARY_REPAIR_NOOP_CLOSURE_ACTION,
+        select_cstring_bridge_action=SELECT_CSTRING_GOVERNED_BRIDGE_CLOSURE_ACTION,
+        select_cstring_segment_lifecycle_bridge_action=SELECT_CSTRING_SEGMENT_LIFECYCLE_BRIDGE_CLOSURE_ACTION,
+        short_label_pure_no_token_segment_lifecycle_bridge_action=SHORT_LABEL_PURE_NO_TOKEN_SEGMENT_LIFECYCLE_CLOSURE_ACTION,
+        short_label_pure_no_token_semantic_lifecycle_action=SHORT_LABEL_PURE_NO_TOKEN_SEMANTIC_LIFECYCLE_CLOSURE_ACTION,
+        short_label_pure_no_token_domain_lifecycle_action=SHORT_LABEL_PURE_NO_TOKEN_DOMAIN_LIFECYCLE_CLOSURE_ACTION,
+        short_label_compact_ui_false_reopen_lifecycle_action=SHORT_LABEL_COMPACT_UI_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+        short_label_compact_ui_semantic_companion_lifecycle_action=(
+            SHORT_LABEL_COMPACT_UI_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION
+        ),
+        short_label_dynamic_delegate_lifecycle_action=SHORT_LABEL_DYNAMIC_DELEGATE_LIFECYCLE_CLOSURE_ACTION,
+        short_label_single_issue_system_tooltip_lifecycle_action=(
+            SHORT_LABEL_SINGLE_ISSUE_SYSTEM_TOOLTIP_LIFECYCLE_CLOSURE_ACTION
+        ),
+        short_label_tokenized_ui_false_reopen_lifecycle_action=(
+            SHORT_LABEL_TOKENIZED_UI_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION
+        ),
+        dynamic_ck3_pattern_shadow_lifecycle_action=DYNAMIC_CK3_PATTERN_SHADOW_LIFECYCLE_CLOSURE_ACTION,
+        gender_longform_false_reopen_lifecycle_action=GENDER_LONGFORM_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+        short_label_semantic_tier1_guarded_composition_action=SHORT_LABEL_SEMANTIC_TIER1_GUARDED_COMPOSITION_CLOSURE_ACTION,
+        semantic_short_label_pair_guarded_lifecycle_action=SEMANTIC_SHORT_LABEL_PAIR_GUARDED_LIFECYCLE_CLOSURE_ACTION,
+        semantic_short_label_blocked_surface_lifecycle_action=SEMANTIC_SHORT_LABEL_BLOCKED_SURFACE_LIFECYCLE_CLOSURE_ACTION,
+        event_dialogue_option_lifecycle_action=EVENT_DIALOGUE_OPTION_LIFECYCLE_CLOSURE_ACTION,
+        event_dialogue_option_boundary_lifecycle_action=EVENT_DIALOGUE_OPTION_BOUNDARY_LIFECYCLE_CLOSURE_ACTION,
+        event_outcome_short_label_boundary_lifecycle_action=EVENT_OUTCOME_SHORT_LABEL_BOUNDARY_LIFECYCLE_CLOSURE_ACTION,
+        event_context_composer_lifecycle_action=EVENT_CONTEXT_COMPOSER_LIFECYCLE_CLOSURE_ACTION,
+        event_context_sentence_boundary_lifecycle_action=EVENT_CONTEXT_SENTENCE_BOUNDARY_LIFECYCLE_CLOSURE_ACTION,
+        event_context_composer_lifecycle_batch_action=EVENT_CONTEXT_COMPOSER_LIFECYCLE_BATCH_CLOSURE_ACTION,
+        short_label_style_lifecycle_batch_action=SHORT_LABEL_STYLE_LIFECYCLE_BATCH_CLOSURE_ACTION,
+        event_surface_router_lifecycle_batch_action=EVENT_SURFACE_ROUTER_LIFECYCLE_BATCH_CLOSURE_ACTION,
+        requirement_tooltip_surface_lifecycle_batch_action=REQUIREMENT_TOOLTIP_SURFACE_LIFECYCLE_BATCH_CLOSURE_ACTION,
+        event_context_composer_lifecycle_run36_action=EVENT_CONTEXT_COMPOSER_LIFECYCLE_RUN36_CLOSURE_ACTION,
+        short_label_style_lifecycle_run36_action=SHORT_LABEL_STYLE_LIFECYCLE_RUN36_CLOSURE_ACTION,
+        event_surface_router_lifecycle_run36_action=EVENT_SURFACE_ROUTER_LIFECYCLE_RUN36_CLOSURE_ACTION,
+        requirement_tooltip_surface_lifecycle_run36_action=REQUIREMENT_TOOLTIP_SURFACE_LIFECYCLE_RUN36_CLOSURE_ACTION,
+        autofix_unknown_event_composition_lifecycle_action=AUTOFIX_UNKNOWN_EVENT_COMPOSITION_LIFECYCLE_CLOSURE_ACTION,
+        autofix_unknown_event_semantic_companion_lifecycle_action=AUTOFIX_UNKNOWN_EVENT_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+        autofix_unknown_semantic_companion_building_lifecycle_action=(
+            AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_BUILDING_LIFECYCLE_CLOSURE_ACTION
+        ),
+        event_surface_short_label_companion_lifecycle_action=EVENT_SURFACE_SHORT_LABEL_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+        autofix_unknown_surface_semantic_lifecycle_action=AUTOFIX_UNKNOWN_SURFACE_SEMANTIC_LIFECYCLE_CLOSURE_ACTION,
+        autofix_unknown_surface_lifecycle_bridge_action=AUTOFIX_UNKNOWN_SURFACE_LIFECYCLE_CLOSURE_ACTION,
+        autofix_unknown_surface_checkpoint_lifecycle_action=AUTOFIX_UNKNOWN_SURFACE_CHECKPOINT_LIFECYCLE_CLOSURE_ACTION,
+        autofix_unknown_domain_guarded_lifecycle_action=AUTOFIX_UNKNOWN_DOMAIN_GUARDED_LIFECYCLE_CLOSURE_ACTION,
+        autofix_unknown_domain_guarded_reviewed_lifecycle_action=(
+            AUTOFIX_UNKNOWN_DOMAIN_GUARDED_REVIEWED_LIFECYCLE_CLOSURE_ACTION
+        ),
+        actionable_reviewed_repair_action=ACTIONABLE_REVIEWED_REPAIR_CLOSURE_ACTION,
+        actionable_reviewed_repair_source=ACTIONABLE_REVIEWED_REPAIR_CONFIRMATION_SOURCE,
+        actionable_reviewed_repair_label=ACTIONABLE_REVIEWED_REPAIR_CONFIRMATION_LABEL,
+        actionable_bootstrap_repair_action=ACTIONABLE_BOOTSTRAP_REPAIR_CLOSURE_ACTION,
+        actionable_bootstrap_repair_source=ACTIONABLE_BOOTSTRAP_REPAIR_CONFIRMATION_SOURCE,
+        actionable_bootstrap_repair_label=ACTIONABLE_BOOTSTRAP_REPAIR_CONFIRMATION_LABEL,
+    )
     if limit:
         sql += "\n        LIMIT ?"
-        params = (active_score_run_id, candidate_score_run_id, policy_run_id, limit)
+        params = (
+            *lifecycle_params,
+            active_score_run_id,
+            candidate_score_run_id,
+            policy_run_id,
+            limit,
+        )
     else:
-        params = (active_score_run_id, candidate_score_run_id, policy_run_id)
+        params = (
+            *lifecycle_params,
+            active_score_run_id,
+            candidate_score_run_id,
+            policy_run_id,
+        )
     return conn.execute(sql, params)
 
 
@@ -552,6 +8201,8 @@ def insert_items(conn, rows: list[tuple[Any, ...]]) -> None:
             active_action,
             candidate_action,
             policy_action,
+            lifecycle_policy_action,
+            lifecycle_policy_allowed,
             confirmation_level,
             confirmation_label,
             locked,
@@ -566,10 +8217,1602 @@ def insert_items(conn, rows: list[tuple[Any, ...]]) -> None:
             reasons_json,
             created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
+
+
+def prepare_short_label_single_issue_residual_queue225_repair(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_single_issue_residual_queue225_repair")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_single_issue_residual_queue225_repair AS
+        SELECT sc.segment_id
+        FROM segment_confirmations sc
+        JOIN output_segments output
+          ON output.segment_id = sc.segment_id
+        WHERE sc.confirmation_source = ?
+          AND sc.confirmation_label = ?
+          AND sc.confirmed_text = output.portuguese_text
+          AND COALESCE(sc.locked, 0) = 0
+          AND sc.segment_id IN (
+              2140, 79796, 69453, 78556, 43207,
+              2303, 284330, 2306, 283461, 144513,
+              283532, 284058, 284332, 283689, 283459
+          )
+        """,
+        (
+            SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_QUEUE225_REPAIR_CONFIRMATION_SOURCE,
+            SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_QUEUE225_REPAIR_CONFIRMATION_LABEL,
+        ),
+    )
+
+
+def prepare_short_label_pure_no_token_queue5_microrepair(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_pure_no_token_queue5_microrepair")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_pure_no_token_queue5_microrepair AS
+        SELECT sc.segment_id
+        FROM segment_confirmations sc
+        JOIN output_segments output
+          ON output.segment_id = sc.segment_id
+        WHERE sc.confirmation_source = ?
+          AND sc.confirmation_label = ?
+          AND sc.confirmed_text = output.portuguese_text
+          AND COALESCE(sc.locked, 0) = 0
+          AND sc.segment_id IN (
+              101489, 32707, 33934, 159947, 143231,
+              143232, 143235, 143236, 143238
+          )
+        """,
+        (
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MICROREPAIR_CONFIRMATION_SOURCE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MICROREPAIR_CONFIRMATION_LABEL,
+        ),
+    )
+
+
+def prepare_in_game_feedback_vassal_stances_claim_cb_microfix(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_in_game_feedback_vassal_stances_claim_cb_microfix")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_in_game_feedback_vassal_stances_claim_cb_microfix AS
+        SELECT
+            source.id AS segment_id,
+            source.relative_path,
+            source.source_key,
+            confirmation.confirmation_source,
+            confirmation.confirmation_label,
+            COALESCE(confirmation.locked, 0) AS locked
+        FROM source_segments source
+        JOIN output_segments output
+          ON output.segment_id = source.id
+        JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = source.id
+        WHERE source.id IN (142275, 287381, 287397)
+          AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+          AND (
+                (
+                    source.id = 142275
+                AND source.relative_path = 'game_concepts_l_spanish.yml'
+                AND source.source_key = 'game_concept_vassal_stances'
+                AND output.portuguese_text = 'Posturas'
+                AND confirmation.confirmed_text = 'Posturas'
+                AND confirmation.confirmation_source = ?
+                AND confirmation.confirmation_label = ?
+                AND COALESCE(confirmation.locked, 0) = 1
+                )
+             OR (
+                    source.id IN (287381, 287397)
+                AND source.relative_path = 'wars_l_spanish.yml'
+                AND confirmation.confirmation_source = ?
+                AND confirmation.confirmation_label = ?
+                AND COALESCE(confirmation.locked, 0) = 0
+                )
+          )
+        """,
+        (
+            IN_GAME_FEEDBACK_MANUAL_LOCKED_OVERRIDE_CONFIRMATION_SOURCE,
+            IN_GAME_FEEDBACK_MANUAL_LOCKED_OVERRIDE_CONFIRMATION_LABEL,
+            IN_GAME_FEEDBACK_VASSAL_STANCES_CLAIM_CB_MICROFIX_CONFIRMATION_SOURCE,
+            IN_GAME_FEEDBACK_VASSAL_STANCES_CLAIM_CB_MICROFIX_CONFIRMATION_LABEL,
+        ),
+    )
+
+
+def prepare_gender_es_oa_final_vowel_trim_dryrun3_repair(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_gender_es_oa_final_vowel_trim_dryrun3_repair")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_gender_es_oa_final_vowel_trim_dryrun3_repair AS
+        SELECT sc.segment_id
+        FROM segment_confirmations sc
+        JOIN output_segments output
+          ON output.segment_id = sc.segment_id
+        JOIN ml_issue_gender_es_oa_final_vowel_trim_checkpoint_items item
+          ON item.segment_id = sc.segment_id
+         AND item.checkpoint_run_id = 4
+         AND item.checkpoint_allowed = 1
+        JOIN ml_issue_gender_es_oa_final_vowel_trim_checkpoint_runs run
+          ON run.id = item.checkpoint_run_id
+         AND run.dry_run_id = 3
+         AND run.diagnostic_run_id = 8
+         AND run.checkpoint_allowed_count = 53
+         AND run.checkpoint_blocked_count = 8
+         AND run.production_release_allowed = 0
+        WHERE sc.confirmation_source = ?
+          AND sc.confirmation_label = ?
+          AND sc.confirmed_text = output.portuguese_text
+          AND COALESCE(sc.locked, 0) = 0
+        """,
+        (
+            GENDER_ES_OA_FINAL_VOWEL_TRIM_DRYRUN3_REPAIR_CONFIRMATION_SOURCE,
+            GENDER_ES_OA_FINAL_VOWEL_TRIM_DRYRUN3_REPAIR_CONFIRMATION_LABEL,
+        ),
+    )
+
+
+def prepare_dynamic_acclaimed_knight_requirement_style_watch_lifecycle(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_dynamic_acclaimed_knight_requirement_style_watch_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_dynamic_acclaimed_knight_requirement_style_watch_lifecycle (
+            segment_id INTEGER PRIMARY KEY
+        )
+        """
+    )
+    review_path = db.project_path(DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REVIEWED_JSONL)
+    if not review_path.exists():
+        return
+    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    matches = [
+        row
+        for row in rows
+        if int(row.get("segment_id") or 0) == 601
+        and row.get("source_key") == "thug_attribute.unlock_tt"
+        and row.get("decision") == "acclaimed_knight_requirement_style_watch_lifecycle"
+        and row.get("lifecycle_candidate") is True
+        and row.get("requires_apply_later") is False
+    ]
+    if len(matches) != 1:
+        return
+    conn.execute(
+        """
+        INSERT INTO temp_dynamic_acclaimed_knight_requirement_style_watch_lifecycle (segment_id)
+        SELECT previous.segment_id
+        FROM segment_state_items previous
+        WHERE previous.segment_id = 601
+          AND previous.run_id = (
+              SELECT id
+              FROM segment_state_runs
+              WHERE finished_at IS NOT NULL
+              ORDER BY finished_at DESC, id DESC
+              LIMIT 1
+          )
+          AND previous.state_group = 'pending'
+          AND previous.final_state = 'reopen_auto_confirmed_autofix'
+          AND previous.source_key = 'thug_attribute.unlock_tt'
+          AND previous.needs_output_apply = 0
+          AND previous.confirmed_matches_output = 1
+          AND previous.needs_reopen = 1
+        """
+    )
+
+
+def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: int, created_at: str) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_single_combat_signature_weapon_batch1_repair")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_single_combat_signature_weapon_batch1_repair AS
+        SELECT sc.segment_id
+        FROM segment_confirmations sc
+        JOIN output_segments output
+          ON output.segment_id = sc.segment_id
+        WHERE sc.confirmation_source = ?
+          AND sc.confirmation_label = ?
+          AND sc.confirmed_text = output.portuguese_text
+          AND COALESCE(sc.locked, 0) = 0
+        """,
+        (
+            SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH1_CONFIRMATION_SOURCE,
+            SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH1_CONFIRMATION_LABEL,
+        ),
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_single_combat_signature_weapon_batch2_0041_repair")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_single_combat_signature_weapon_batch2_0041_repair AS
+        SELECT sc.segment_id
+        FROM segment_confirmations sc
+        JOIN output_segments output
+          ON output.segment_id = sc.segment_id
+        WHERE sc.confirmation_source = ?
+          AND sc.confirmation_label = ?
+          AND sc.confirmed_text = output.portuguese_text
+          AND COALESCE(sc.locked, 0) = 0
+        """,
+        (
+            SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH2_0041_CONFIRMATION_SOURCE,
+            SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH2_0041_CONFIRMATION_LABEL,
+        ),
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_semantic_short_label_requirement_tooltip_microrepair")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_semantic_short_label_requirement_tooltip_microrepair AS
+        SELECT sc.segment_id
+        FROM segment_confirmations sc
+        JOIN output_segments output
+          ON output.segment_id = sc.segment_id
+        WHERE sc.confirmation_source = ?
+          AND sc.confirmation_label = ?
+          AND sc.confirmed_text = output.portuguese_text
+          AND COALESCE(sc.locked, 0) = 0
+        """,
+        (
+            SEMANTIC_SHORT_LABEL_REQUIREMENT_TOOLTIP_MICROREPAIR_CONFIRMATION_SOURCE,
+            SEMANTIC_SHORT_LABEL_REQUIREMENT_TOOLTIP_MICROREPAIR_CONFIRMATION_LABEL,
+        ),
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_style_queue220_microrepair")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_style_queue220_microrepair AS
+        SELECT sc.segment_id
+        FROM segment_confirmations sc
+        JOIN output_segments output
+          ON output.segment_id = sc.segment_id
+        WHERE sc.confirmation_source = ?
+          AND sc.confirmation_label = ?
+          AND sc.confirmed_text = output.portuguese_text
+          AND COALESCE(sc.locked, 0) = 0
+          AND sc.segment_id IN (283455, 284472, 283534, 160996)
+        """,
+        (
+            SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_CONFIRMATION_SOURCE,
+            SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_CONFIRMATION_LABEL,
+        ),
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_unknown_ui_surface_queue221_microrepair")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_unknown_ui_surface_queue221_microrepair AS
+        SELECT sc.segment_id
+        FROM segment_confirmations sc
+        JOIN output_segments output
+          ON output.segment_id = sc.segment_id
+        WHERE sc.confirmation_source = ?
+          AND sc.confirmation_label = ?
+          AND sc.confirmed_text = output.portuguese_text
+          AND COALESCE(sc.locked, 0) = 0
+          AND sc.segment_id IN (108426, 14288, 287689, 153798, 153812)
+        """,
+        (
+            AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_MICROREPAIR_CONFIRMATION_SOURCE,
+            AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_MICROREPAIR_CONFIRMATION_LABEL,
+        ),
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_compact_ui_semantic_queue222_microrepair")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_compact_ui_semantic_queue222_microrepair AS
+        SELECT sc.segment_id
+        FROM segment_confirmations sc
+        JOIN output_segments output
+          ON output.segment_id = sc.segment_id
+        WHERE sc.confirmation_source = ?
+          AND sc.confirmation_label = ?
+          AND sc.confirmed_text = output.portuguese_text
+          AND COALESCE(sc.locked, 0) = 0
+          AND sc.segment_id IN (
+              81924, 81925, 81926, 81927,
+              110537, 112343, 115407, 124554,
+              130290, 133196, 286054, 140008
+          )
+        """,
+        (
+            SHORT_LABEL_COMPACT_UI_SEMANTIC_QUEUE222_MICROREPAIR_CONFIRMATION_SOURCE,
+            SHORT_LABEL_COMPACT_UI_SEMANTIC_QUEUE222_MICROREPAIR_CONFIRMATION_LABEL,
+        ),
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_spanish_residual_checkpoint9_safe_repair")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_spanish_residual_checkpoint9_safe_repair AS
+        SELECT sc.segment_id
+        FROM segment_confirmations sc
+        JOIN output_segments output
+          ON output.segment_id = sc.segment_id
+        WHERE sc.confirmation_source = ?
+          AND sc.confirmation_label = ?
+          AND sc.confirmed_text = output.portuguese_text
+          AND COALESCE(sc.locked, 0) = 0
+          AND sc.segment_id IN (67013, 2550, 79741, 51311, 61845, 67478, 60133, 52490)
+        """,
+        (
+            SPANISH_RESIDUAL_CHECKPOINT9_SAFE_REPAIR_CONFIRMATION_SOURCE,
+            SPANISH_RESIDUAL_CHECKPOINT9_SAFE_REPAIR_CONFIRMATION_LABEL,
+        ),
+    )
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_pure_no_token_queue4_microrepair")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_pure_no_token_queue4_microrepair AS
+        SELECT sc.segment_id
+        FROM segment_confirmations sc
+        JOIN output_segments output
+          ON output.segment_id = sc.segment_id
+        WHERE sc.confirmation_source = ?
+          AND sc.confirmation_label = ?
+          AND sc.confirmed_text = output.portuguese_text
+          AND COALESCE(sc.locked, 0) = 0
+          AND sc.segment_id IN (22893, 22899, 142696, 143364, 172777, 172782, 44323, 45187, 53543, 63863)
+        """,
+        (
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_MICROREPAIR_CONFIRMATION_SOURCE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_MICROREPAIR_CONFIRMATION_LABEL,
+        ),
+    )
+    prepare_short_label_pure_no_token_queue5_microrepair(conn)
+    prepare_short_label_single_issue_residual_queue225_repair(conn)
+    prepare_gender_es_oa_final_vowel_trim_dryrun3_repair(conn)
+    prepare_dynamic_acclaimed_knight_requirement_style_watch_lifecycle(conn)
+    building_closure_reason = json.dumps(
+        [
+            "auto-confirmed output has governed lifecycle closure signal",
+            "autofix_unknown semantic companion building lifecycle bridge observes guarded building description evidence with current confirmation/output alignment",
+        ],
+        ensure_ascii=False,
+    )
+    rule_effect_closure_reason = json.dumps(
+        [
+            "auto-confirmed output has governed lifecycle closure signal",
+            "autofix_unknown semantic companion rule/effect lifecycle bridge observes guarded rule/effect/modifier evidence with current confirmation/output alignment",
+        ],
+        ensure_ascii=False,
+    )
+    single_combat_signature_weapon_batch1_reason = json.dumps(
+        [
+            "auto-confirmed output has single combat signature weapon batch 1 repair confirmation",
+            "protected batch repair source/label matches current confirmation and output",
+        ],
+        ensure_ascii=False,
+    )
+    single_combat_signature_weapon_batch2_0041_reason = json.dumps(
+        [
+            "auto-confirmed output has single combat signature weapon batch 2 single_combat.0041 repair confirmation",
+            "protected batch repair source/label matches current confirmation and output",
+        ],
+        ensure_ascii=False,
+    )
+    single_combat_signature_weapon_already_good_reason = json.dumps(
+        [
+            "auto-confirmed output has single combat signature weapon already-good lifecycle review",
+            "ledger run 56 has exactly one open dynamic custom localization issue and review marks segment already_good",
+        ],
+        ensure_ascii=False,
+    )
+    semantic_short_label_domain_context_reason = json.dumps(
+        [
+            "auto-confirmed output has semantic + short-label domain-context reviewed lifecycle evidence",
+            "ledger run 57 has exactly semantic_review_router and short_label_style issues with current confirmation/output alignment",
+        ],
+        ensure_ascii=False,
+    )
+    semantic_short_label_requirement_tooltip_microrepair_reason = json.dumps(
+        [
+            "auto-confirmed output has protected requirement tooltip microrepair confirmation",
+            "protected queue 218 microrepair source/label matches current confirmation and output",
+        ],
+        ensure_ascii=False,
+    )
+    short_label_style_queue220_microrepair_reason = json.dumps(
+        [
+            "auto-confirmed output has protected short-label style queue 220 microrepair confirmation",
+            "protected queue 220 microrepair source/label matches current confirmation and output for allowlisted IDs only",
+        ],
+        ensure_ascii=False,
+    )
+    short_label_style_queue220_strict_reason = json.dumps(
+        [
+            "auto-confirmed output passed strict queue 220 short-label style lifecycle bridge",
+            "review JSONL candidate survived bold-no, punctuation, domain, dynamic, ledger and confirmation/output guards",
+        ],
+        ensure_ascii=False,
+    )
+    autofix_unknown_ui_surface_queue221_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output passed queue 221 autofix_unknown UI surface lifecycle bridge",
+            "review JSONL lifecycle candidate survived confirmation/output, token, pending reopen and ledger guards",
+        ],
+        ensure_ascii=False,
+    )
+    autofix_unknown_ui_surface_queue221_microrepair_reason = json.dumps(
+        [
+            "auto-confirmed output has protected autofix_unknown UI surface queue 221 microrepair confirmation",
+            "protected queue 221 microrepair source/label matches current confirmation and output for allowlisted IDs only",
+        ],
+        ensure_ascii=False,
+    )
+    short_label_compact_ui_semantic_queue222_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output passed queue 222 short-label compact UI semantic lifecycle bridge",
+            "review JSONL lifecycle candidate survived confirmation/output, token, pending reopen and ledger guards",
+        ],
+        ensure_ascii=False,
+    )
+    short_label_compact_ui_semantic_queue222_microrepair_reason = json.dumps(
+        [
+            "auto-confirmed output has protected short-label compact UI semantic queue 222 microrepair confirmation",
+            "protected queue 222 microrepair source/label matches current confirmation and output for allowlisted IDs only",
+        ],
+        ensure_ascii=False,
+    )
+    spanish_residual_checkpoint9_safe_repair_reason = json.dumps(
+        [
+            "auto-confirmed output has protected Spanish residual checkpoint 9 safe repair confirmation",
+            "protected checkpoint 9 source/label matches current confirmation and output for allowlisted IDs only",
+        ],
+        ensure_ascii=False,
+    )
+    short_label_pure_no_token_queue4_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output passed queue 4 short-label pure no-token lifecycle bridge",
+            "review JSONL candidate survived confirmation/output, ledger family and token guards",
+        ],
+        ensure_ascii=False,
+    )
+    short_label_pure_no_token_queue4_microrepair_reason = json.dumps(
+        [
+            "auto-confirmed output has protected short-label pure no-token queue 4 microrepair confirmation",
+            "protected queue 4 microrepair source/label matches current confirmation and output for allowlisted IDs only",
+        ],
+        ensure_ascii=False,
+    )
+    short_label_pure_no_token_queue5_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output passed queue 5 short-label pure no-token lifecycle bridge",
+            "review JSONL candidate survived confirmation/output, ledger family and token guards",
+        ],
+        ensure_ascii=False,
+    )
+    short_label_pure_no_token_queue5_false_reopen_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed reopen passed queue 5 short-label pure no-token false-reopen lifecycle bridge",
+            "review JSONL candidate survived confirmation/output guards and ledger 67 exact short-label plus semantic family gate",
+        ],
+        ensure_ascii=False,
+    )
+    short_label_pure_no_token_queue5_microrepair_reason = json.dumps(
+        [
+            "auto-confirmed output has protected short-label pure no-token queue 5 microrepair confirmation",
+            "protected queue 5 microrepair source/label matches current confirmation and output for allowlisted IDs only",
+        ],
+        ensure_ascii=False,
+    )
+    in_game_feedback_vassal_stances_claim_cb_microfix_reason = json.dumps(
+        [
+            "in-game feedback vassal stances and claim CB microfix confirmation matches output",
+            "allowlisted three-segment microfix includes explicit manual locked override for vassal_stances compact UI label",
+        ],
+        ensure_ascii=False,
+    )
+    trait_description_esta_personagem_lifecycle_reason = json.dumps(
+        [
+            "trait description esta personagem lifecycle bridge accepted PT-BR feminine noun personagem usage",
+            "ledger 67 open issues are restricted to reviewed semantic/short-label and optional gender false-risk for trait descriptions",
+        ],
+        ensure_ascii=False,
+    )
+    short_label_single_issue_residual_queue225_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output passed queue 225 short-label single-issue residual no-op lifecycle bridge",
+            "review JSONL lifecycle candidate survived confirmation/output, ledger family and no-output-apply guards",
+        ],
+        ensure_ascii=False,
+    )
+    short_label_single_issue_residual_queue225_repair_reason = json.dumps(
+        [
+            "auto-confirmed output has protected short-label single-issue residual queue 225 repair confirmation",
+            "protected queue 225 repair source/label matches current confirmation and output for allowlisted IDs only",
+        ],
+        ensure_ascii=False,
+    )
+    gender_es_oa_final_vowel_trim_dryrun3_repair_reason = json.dumps(
+        [
+            "auto-confirmed output has protected ES_OA final-vowel trim dry-run 3 repair confirmation",
+            "protected dry-run 3 source/label matches checkpoint 4 allowed items, current confirmation and output",
+        ],
+        ensure_ascii=False,
+    )
+    dynamic_acclaimed_knight_requirement_repair_reason = json.dumps(
+        [
+            "auto-confirmed output has protected dynamic acclaimed knight requirement repair confirmation",
+            "protected source/label matches current confirmation and output for reviewed v2 apply candidates",
+        ],
+        ensure_ascii=False,
+    )
+    dynamic_acclaimed_knight_requirement_style_watch_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output has reviewed dynamic acclaimed knight requirement style-watch lifecycle evidence",
+            "review JSONL exact segment 601 style-watch candidate governs the false-reopen without output or confirmation writes",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        INSERT INTO segment_state_items (
+            run_id,
+            segment_id,
+            relative_path,
+            source_key,
+            source_line_number,
+            final_state,
+            state_group,
+            output_state,
+            review_state,
+            apply_state,
+            active_action,
+            candidate_action,
+            policy_action,
+            lifecycle_policy_action,
+            lifecycle_policy_allowed,
+            confirmation_level,
+            confirmation_label,
+            locked,
+            has_output,
+            source_blank,
+            confirmed_matches_output,
+            needs_human,
+            needs_output_apply,
+            needs_reopen,
+            is_closed,
+            priority_score,
+            reasons_json,
+            created_at
+        )
+        SELECT
+            ? AS run_id,
+            previous.segment_id,
+            previous.relative_path,
+            previous.source_key,
+            previous.source_line_number,
+            CASE
+                WHEN trait_esta_personagem.bridge_result = 'closed'
+                    THEN ?
+                WHEN in_game_feedback_vassal_stances_claim_cb.segment_id IS NOT NULL
+                    THEN ?
+                WHEN queue5_microrepair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN queue5_false_reopen.bridge_result = 'closed'
+                    THEN queue5_false_reopen.target_state
+                WHEN queue5_lifecycle.bridge_result = 'closed'
+                    THEN queue5_lifecycle.target_state
+                WHEN gender_es_oa_dryrun3_repair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN queue225_repair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN queue225_lifecycle.bridge_result = 'closed'
+                    THEN queue225_lifecycle.target_state
+                WHEN queue4_microrepair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN queue4_lifecycle.bridge_result = 'closed'
+                    THEN queue4_lifecycle.target_state
+                WHEN spanish_residual_checkpoint9_safe_repair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN queue222_lifecycle.bridge_result = 'closed'
+                    THEN ?
+                WHEN queue222_microrepair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN queue221_lifecycle.bridge_result = 'closed'
+                    THEN ?
+                WHEN queue221_microrepair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN queue220_strict.bridge_result = 'closed'
+                    THEN ?
+                WHEN queue220_microrepair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN domain_context_bridge.bridge_result = 'closed'
+                    THEN domain_context_bridge.target_state
+                WHEN requirement_tooltip_microrepair.segment_id IS NOT NULL
+                    THEN 'closed_auto_confirmed_semantic_short_label_requirement_tooltip_microrepair'
+                WHEN single_combat_already_good.bridge_result = 'closed'
+                    THEN 'closed_auto_confirmed_single_combat_signature_weapon_already_good_lifecycle'
+                WHEN single_combat_batch.segment_id IS NOT NULL
+                    THEN 'closed_auto_confirmed_single_combat_signature_weapon_composer_batch1_repair'
+                WHEN single_combat_batch2_0041.segment_id IS NOT NULL
+                    THEN 'closed_auto_confirmed_single_combat_signature_weapon_composer_batch2_0041_repair'
+                WHEN dynamic_acclaimed_repair.segment_id IS NOT NULL
+                    THEN 'closed_auto_confirmed_dynamic_acclaimed_knight_requirement_repair'
+                WHEN dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                    THEN 'closed_auto_confirmed_dynamic_acclaimed_knight_requirement_style_watch_lifecycle'
+                WHEN rule_effect_bridge.segment_id IS NOT NULL
+                    THEN 'closed_auto_confirmed_autofix_unknown_semantic_companion_rule_effect_lifecycle'
+                WHEN building_bridge.segment_id IS NOT NULL
+                    THEN 'closed_auto_confirmed_autofix_unknown_semantic_companion_building_lifecycle'
+                ELSE previous.final_state
+            END AS final_state,
+            CASE
+                WHEN trait_esta_personagem.bridge_result = 'closed'
+                  OR in_game_feedback_vassal_stances_claim_cb.segment_id IS NOT NULL
+                  OR queue5_microrepair.segment_id IS NOT NULL
+                  OR queue5_false_reopen.bridge_result = 'closed'
+                  OR queue5_lifecycle.bridge_result = 'closed'
+                  OR gender_es_oa_dryrun3_repair.segment_id IS NOT NULL
+                  OR queue225_repair.segment_id IS NOT NULL
+                  OR queue225_lifecycle.bridge_result = 'closed'
+                  OR queue4_microrepair.segment_id IS NOT NULL
+                  OR queue4_lifecycle.bridge_result = 'closed'
+                  OR spanish_residual_checkpoint9_safe_repair.segment_id IS NOT NULL
+                  OR queue222_lifecycle.bridge_result = 'closed'
+                  OR queue222_microrepair.segment_id IS NOT NULL
+                  OR queue221_lifecycle.bridge_result = 'closed'
+                  OR queue221_microrepair.segment_id IS NOT NULL
+                  OR queue220_strict.bridge_result = 'closed'
+                  OR queue220_microrepair.segment_id IS NOT NULL
+                  OR domain_context_bridge.bridge_result = 'closed'
+                  OR requirement_tooltip_microrepair.segment_id IS NOT NULL
+                  OR single_combat_already_good.bridge_result = 'closed'
+                  OR single_combat_batch.segment_id IS NOT NULL
+                  OR single_combat_batch2_0041.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_repair.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR rule_effect_bridge.segment_id IS NOT NULL
+                  OR building_bridge.segment_id IS NOT NULL
+                    THEN 'closed'
+                ELSE previous.state_group
+            END AS state_group,
+            previous.output_state,
+            previous.review_state,
+            CASE
+                WHEN trait_esta_personagem.bridge_result = 'closed'
+                  OR in_game_feedback_vassal_stances_claim_cb.segment_id IS NOT NULL
+                  OR queue5_microrepair.segment_id IS NOT NULL
+                  OR queue5_false_reopen.bridge_result = 'closed'
+                  OR queue5_lifecycle.bridge_result = 'closed'
+                  OR gender_es_oa_dryrun3_repair.segment_id IS NOT NULL
+                  OR queue225_repair.segment_id IS NOT NULL
+                  OR queue225_lifecycle.bridge_result = 'closed'
+                  OR queue4_microrepair.segment_id IS NOT NULL
+                  OR queue4_lifecycle.bridge_result = 'closed'
+                  OR spanish_residual_checkpoint9_safe_repair.segment_id IS NOT NULL
+                  OR queue222_lifecycle.bridge_result = 'closed'
+                  OR queue222_microrepair.segment_id IS NOT NULL
+                  OR queue221_lifecycle.bridge_result = 'closed'
+                  OR queue221_microrepair.segment_id IS NOT NULL
+                  OR queue220_strict.bridge_result = 'closed'
+                  OR queue220_microrepair.segment_id IS NOT NULL
+                  OR domain_context_bridge.bridge_result = 'closed'
+                  OR requirement_tooltip_microrepair.segment_id IS NOT NULL
+                  OR single_combat_already_good.bridge_result = 'closed'
+                  OR single_combat_batch.segment_id IS NOT NULL
+                  OR single_combat_batch2_0041.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_repair.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR rule_effect_bridge.segment_id IS NOT NULL
+                  OR building_bridge.segment_id IS NOT NULL
+                    THEN 'applied'
+                ELSE previous.apply_state
+            END AS apply_state,
+            previous.active_action,
+            previous.candidate_action,
+            previous.policy_action,
+            CASE
+                WHEN trait_esta_personagem.bridge_result = 'closed'
+                 AND COALESCE(previous.lifecycle_policy_action, '') = ''
+                    THEN ?
+                WHEN trait_esta_personagem.bridge_result = 'closed'
+                 AND instr(',' || previous.lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN previous.lifecycle_policy_action || ',' || ?
+                WHEN queue5_false_reopen.bridge_result = 'closed'
+                 AND COALESCE(previous.lifecycle_policy_action, '') = ''
+                    THEN ?
+                WHEN queue5_false_reopen.bridge_result = 'closed'
+                 AND instr(',' || previous.lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN previous.lifecycle_policy_action || ',' || ?
+                WHEN queue5_lifecycle.bridge_result = 'closed'
+                 AND COALESCE(previous.lifecycle_policy_action, '') = ''
+                    THEN ?
+                WHEN queue5_lifecycle.bridge_result = 'closed'
+                 AND instr(',' || previous.lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN previous.lifecycle_policy_action || ',' || ?
+                WHEN queue225_lifecycle.bridge_result = 'closed'
+                 AND COALESCE(previous.lifecycle_policy_action, '') = ''
+                    THEN ?
+                WHEN queue225_lifecycle.bridge_result = 'closed'
+                 AND instr(',' || previous.lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN previous.lifecycle_policy_action || ',' || ?
+                WHEN queue4_lifecycle.bridge_result = 'closed'
+                 AND COALESCE(previous.lifecycle_policy_action, '') = ''
+                    THEN ?
+                WHEN queue4_lifecycle.bridge_result = 'closed'
+                 AND instr(',' || previous.lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN previous.lifecycle_policy_action || ',' || ?
+                WHEN queue222_lifecycle.bridge_result = 'closed'
+                 AND COALESCE(previous.lifecycle_policy_action, '') = ''
+                    THEN ?
+                WHEN queue222_lifecycle.bridge_result = 'closed'
+                 AND instr(',' || previous.lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN previous.lifecycle_policy_action || ',' || ?
+                WHEN queue221_lifecycle.bridge_result = 'closed'
+                 AND COALESCE(previous.lifecycle_policy_action, '') = ''
+                    THEN ?
+                WHEN queue221_lifecycle.bridge_result = 'closed'
+                 AND instr(',' || previous.lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN previous.lifecycle_policy_action || ',' || ?
+                WHEN rule_effect_bridge.segment_id IS NOT NULL
+                 AND COALESCE(previous.lifecycle_policy_action, '') = ''
+                    THEN ?
+                WHEN rule_effect_bridge.segment_id IS NOT NULL
+                 AND instr(',' || previous.lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN previous.lifecycle_policy_action || ',' || ?
+                WHEN building_bridge.segment_id IS NOT NULL
+                 AND COALESCE(previous.lifecycle_policy_action, '') = ''
+                    THEN ?
+                WHEN building_bridge.segment_id IS NOT NULL
+                 AND instr(',' || previous.lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN previous.lifecycle_policy_action || ',' || ?
+                ELSE previous.lifecycle_policy_action
+            END AS lifecycle_policy_action,
+            CASE
+                WHEN trait_esta_personagem.bridge_result = 'closed'
+                  OR queue5_false_reopen.bridge_result = 'closed'
+                  OR queue5_lifecycle.bridge_result = 'closed'
+                  OR queue225_lifecycle.bridge_result = 'closed'
+                  OR queue4_lifecycle.bridge_result = 'closed'
+                  OR queue222_lifecycle.bridge_result = 'closed'
+                  OR queue221_lifecycle.bridge_result = 'closed'
+                  OR rule_effect_bridge.segment_id IS NOT NULL
+                  OR building_bridge.segment_id IS NOT NULL
+                    THEN 1
+                ELSE previous.lifecycle_policy_allowed
+            END AS lifecycle_policy_allowed,
+            CASE
+                WHEN trait_esta_personagem.bridge_result = 'closed'
+                  OR in_game_feedback_vassal_stances_claim_cb.segment_id IS NOT NULL
+                  OR queue5_microrepair.segment_id IS NOT NULL
+                  OR queue5_false_reopen.bridge_result = 'closed'
+                  OR queue5_lifecycle.bridge_result = 'closed'
+                  OR gender_es_oa_dryrun3_repair.segment_id IS NOT NULL
+                  OR queue225_repair.segment_id IS NOT NULL
+                  OR queue225_lifecycle.bridge_result = 'closed'
+                  OR queue4_microrepair.segment_id IS NOT NULL
+                  OR queue4_lifecycle.bridge_result = 'closed'
+                  OR spanish_residual_checkpoint9_safe_repair.segment_id IS NOT NULL
+                  OR queue222_lifecycle.bridge_result = 'closed'
+                  OR queue222_microrepair.segment_id IS NOT NULL
+                  OR queue221_lifecycle.bridge_result = 'closed'
+                  OR queue221_microrepair.segment_id IS NOT NULL
+                  OR queue220_strict.bridge_result = 'closed'
+                  OR queue220_microrepair.segment_id IS NOT NULL
+                  OR domain_context_bridge.bridge_result = 'closed'
+                  OR requirement_tooltip_microrepair.segment_id IS NOT NULL
+                  OR single_combat_already_good.bridge_result = 'closed'
+                  OR single_combat_batch.segment_id IS NOT NULL
+                  OR single_combat_batch2_0041.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_repair.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                    THEN 'auto_confirmed'
+                ELSE previous.confirmation_level
+            END AS confirmation_level,
+            CASE
+                WHEN in_game_feedback_vassal_stances_claim_cb.segment_id IS NOT NULL
+                  OR queue5_microrepair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN gender_es_oa_dryrun3_repair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN queue225_repair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN queue4_microrepair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN spanish_residual_checkpoint9_safe_repair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN queue222_microrepair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN queue221_microrepair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN requirement_tooltip_microrepair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN queue220_microrepair.segment_id IS NOT NULL
+                    THEN ?
+                WHEN single_combat_batch.segment_id IS NOT NULL
+                    THEN ?
+                WHEN single_combat_batch2_0041.segment_id IS NOT NULL
+                    THEN ?
+                WHEN dynamic_acclaimed_repair.segment_id IS NOT NULL
+                    THEN 'dynamic_acclaimed_knight_requirement_repair_ready'
+                ELSE previous.confirmation_label
+            END AS confirmation_label,
+            CASE
+                WHEN trait_esta_personagem.bridge_result = 'closed'
+                  OR in_game_feedback_vassal_stances_claim_cb.segment_id IS NOT NULL
+                  OR queue5_microrepair.segment_id IS NOT NULL
+                  OR queue5_false_reopen.bridge_result = 'closed'
+                  OR queue5_lifecycle.bridge_result = 'closed'
+                  OR gender_es_oa_dryrun3_repair.segment_id IS NOT NULL
+                  OR queue225_repair.segment_id IS NOT NULL
+                  OR queue225_lifecycle.bridge_result = 'closed'
+                  OR queue4_microrepair.segment_id IS NOT NULL
+                  OR queue4_lifecycle.bridge_result = 'closed'
+                  OR spanish_residual_checkpoint9_safe_repair.segment_id IS NOT NULL
+                  OR queue222_lifecycle.bridge_result = 'closed'
+                  OR queue222_microrepair.segment_id IS NOT NULL
+                  OR queue221_lifecycle.bridge_result = 'closed'
+                  OR queue221_microrepair.segment_id IS NOT NULL
+                  OR queue220_strict.bridge_result = 'closed'
+                  OR queue220_microrepair.segment_id IS NOT NULL
+                  OR domain_context_bridge.bridge_result = 'closed'
+                  OR requirement_tooltip_microrepair.segment_id IS NOT NULL
+                  OR single_combat_already_good.bridge_result = 'closed'
+                  OR single_combat_batch.segment_id IS NOT NULL
+                  OR single_combat_batch2_0041.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_repair.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                    THEN 0
+                ELSE previous.locked
+            END AS locked,
+            previous.has_output,
+            previous.source_blank,
+            CASE
+                WHEN trait_esta_personagem.bridge_result = 'closed'
+                  OR in_game_feedback_vassal_stances_claim_cb.segment_id IS NOT NULL
+                  OR queue5_microrepair.segment_id IS NOT NULL
+                  OR queue5_false_reopen.bridge_result = 'closed'
+                  OR queue5_lifecycle.bridge_result = 'closed'
+                  OR gender_es_oa_dryrun3_repair.segment_id IS NOT NULL
+                  OR queue225_repair.segment_id IS NOT NULL
+                  OR queue225_lifecycle.bridge_result = 'closed'
+                  OR queue4_microrepair.segment_id IS NOT NULL
+                  OR queue4_lifecycle.bridge_result = 'closed'
+                  OR spanish_residual_checkpoint9_safe_repair.segment_id IS NOT NULL
+                  OR queue222_lifecycle.bridge_result = 'closed'
+                  OR queue222_microrepair.segment_id IS NOT NULL
+                  OR queue221_lifecycle.bridge_result = 'closed'
+                  OR queue221_microrepair.segment_id IS NOT NULL
+                  OR queue220_strict.bridge_result = 'closed'
+                  OR queue220_microrepair.segment_id IS NOT NULL
+                  OR domain_context_bridge.bridge_result = 'closed'
+                  OR requirement_tooltip_microrepair.segment_id IS NOT NULL
+                  OR single_combat_already_good.bridge_result = 'closed'
+                  OR single_combat_batch.segment_id IS NOT NULL
+                  OR single_combat_batch2_0041.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_repair.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                    THEN 1
+                ELSE previous.confirmed_matches_output
+            END AS confirmed_matches_output,
+            CASE
+                WHEN trait_esta_personagem.bridge_result = 'closed'
+                  OR in_game_feedback_vassal_stances_claim_cb.segment_id IS NOT NULL
+                  OR queue5_microrepair.segment_id IS NOT NULL
+                  OR queue5_false_reopen.bridge_result = 'closed'
+                  OR queue5_lifecycle.bridge_result = 'closed'
+                  OR gender_es_oa_dryrun3_repair.segment_id IS NOT NULL
+                  OR queue225_repair.segment_id IS NOT NULL
+                  OR queue225_lifecycle.bridge_result = 'closed'
+                  OR queue4_microrepair.segment_id IS NOT NULL
+                  OR queue4_lifecycle.bridge_result = 'closed'
+                  OR spanish_residual_checkpoint9_safe_repair.segment_id IS NOT NULL
+                  OR queue222_lifecycle.bridge_result = 'closed'
+                  OR queue222_microrepair.segment_id IS NOT NULL
+                  OR queue221_lifecycle.bridge_result = 'closed'
+                  OR queue221_microrepair.segment_id IS NOT NULL
+                  OR queue220_strict.bridge_result = 'closed'
+                  OR queue220_microrepair.segment_id IS NOT NULL
+                  OR domain_context_bridge.bridge_result = 'closed'
+                  OR requirement_tooltip_microrepair.segment_id IS NOT NULL
+                  OR single_combat_already_good.bridge_result = 'closed'
+                  OR single_combat_batch.segment_id IS NOT NULL
+                  OR single_combat_batch2_0041.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_repair.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR rule_effect_bridge.segment_id IS NOT NULL
+                  OR building_bridge.segment_id IS NOT NULL
+                    THEN 0
+                ELSE previous.needs_human
+            END AS needs_human,
+            CASE
+                WHEN trait_esta_personagem.bridge_result = 'closed'
+                  OR in_game_feedback_vassal_stances_claim_cb.segment_id IS NOT NULL
+                  OR queue5_microrepair.segment_id IS NOT NULL
+                  OR queue5_false_reopen.bridge_result = 'closed'
+                  OR queue5_lifecycle.bridge_result = 'closed'
+                  OR gender_es_oa_dryrun3_repair.segment_id IS NOT NULL
+                  OR queue225_repair.segment_id IS NOT NULL
+                  OR queue225_lifecycle.bridge_result = 'closed'
+                  OR queue4_microrepair.segment_id IS NOT NULL
+                  OR queue4_lifecycle.bridge_result = 'closed'
+                  OR spanish_residual_checkpoint9_safe_repair.segment_id IS NOT NULL
+                  OR queue222_lifecycle.bridge_result = 'closed'
+                  OR queue222_microrepair.segment_id IS NOT NULL
+                  OR queue221_lifecycle.bridge_result = 'closed'
+                  OR queue221_microrepair.segment_id IS NOT NULL
+                  OR queue220_strict.bridge_result = 'closed'
+                  OR queue220_microrepair.segment_id IS NOT NULL
+                  OR domain_context_bridge.bridge_result = 'closed'
+                  OR requirement_tooltip_microrepair.segment_id IS NOT NULL
+                  OR single_combat_already_good.bridge_result = 'closed'
+                  OR single_combat_batch.segment_id IS NOT NULL
+                  OR single_combat_batch2_0041.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_repair.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR rule_effect_bridge.segment_id IS NOT NULL
+                  OR building_bridge.segment_id IS NOT NULL
+                    THEN 0
+                ELSE previous.needs_output_apply
+            END AS needs_output_apply,
+            CASE
+                WHEN trait_esta_personagem.bridge_result = 'closed'
+                  OR in_game_feedback_vassal_stances_claim_cb.segment_id IS NOT NULL
+                  OR queue5_microrepair.segment_id IS NOT NULL
+                  OR queue5_false_reopen.bridge_result = 'closed'
+                  OR queue5_lifecycle.bridge_result = 'closed'
+                  OR gender_es_oa_dryrun3_repair.segment_id IS NOT NULL
+                  OR queue225_repair.segment_id IS NOT NULL
+                  OR queue225_lifecycle.bridge_result = 'closed'
+                  OR queue4_microrepair.segment_id IS NOT NULL
+                  OR queue4_lifecycle.bridge_result = 'closed'
+                  OR spanish_residual_checkpoint9_safe_repair.segment_id IS NOT NULL
+                  OR queue222_lifecycle.bridge_result = 'closed'
+                  OR queue222_microrepair.segment_id IS NOT NULL
+                  OR queue221_lifecycle.bridge_result = 'closed'
+                  OR queue221_microrepair.segment_id IS NOT NULL
+                  OR queue220_strict.bridge_result = 'closed'
+                  OR queue220_microrepair.segment_id IS NOT NULL
+                  OR domain_context_bridge.bridge_result = 'closed'
+                  OR requirement_tooltip_microrepair.segment_id IS NOT NULL
+                  OR single_combat_already_good.bridge_result = 'closed'
+                  OR single_combat_batch.segment_id IS NOT NULL
+                  OR single_combat_batch2_0041.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_repair.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR rule_effect_bridge.segment_id IS NOT NULL
+                  OR building_bridge.segment_id IS NOT NULL
+                    THEN 0
+                ELSE previous.needs_reopen
+            END AS needs_reopen,
+            CASE
+                WHEN trait_esta_personagem.bridge_result = 'closed'
+                  OR in_game_feedback_vassal_stances_claim_cb.segment_id IS NOT NULL
+                  OR queue5_microrepair.segment_id IS NOT NULL
+                  OR queue5_false_reopen.bridge_result = 'closed'
+                  OR queue5_lifecycle.bridge_result = 'closed'
+                  OR gender_es_oa_dryrun3_repair.segment_id IS NOT NULL
+                  OR queue225_repair.segment_id IS NOT NULL
+                  OR queue225_lifecycle.bridge_result = 'closed'
+                  OR queue4_microrepair.segment_id IS NOT NULL
+                  OR queue4_lifecycle.bridge_result = 'closed'
+                  OR spanish_residual_checkpoint9_safe_repair.segment_id IS NOT NULL
+                  OR queue222_lifecycle.bridge_result = 'closed'
+                  OR queue222_microrepair.segment_id IS NOT NULL
+                  OR queue221_lifecycle.bridge_result = 'closed'
+                  OR queue221_microrepair.segment_id IS NOT NULL
+                  OR queue220_strict.bridge_result = 'closed'
+                  OR queue220_microrepair.segment_id IS NOT NULL
+                  OR domain_context_bridge.bridge_result = 'closed'
+                  OR requirement_tooltip_microrepair.segment_id IS NOT NULL
+                  OR single_combat_already_good.bridge_result = 'closed'
+                  OR single_combat_batch.segment_id IS NOT NULL
+                  OR single_combat_batch2_0041.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_repair.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR rule_effect_bridge.segment_id IS NOT NULL
+                  OR building_bridge.segment_id IS NOT NULL
+                    THEN 1
+                ELSE previous.is_closed
+            END AS is_closed,
+            CASE
+                WHEN trait_esta_personagem.bridge_result = 'closed'
+                  OR queue5_microrepair.segment_id IS NOT NULL
+                  OR queue5_false_reopen.bridge_result = 'closed'
+                  OR queue5_lifecycle.bridge_result = 'closed'
+                  OR gender_es_oa_dryrun3_repair.segment_id IS NOT NULL
+                  OR queue225_repair.segment_id IS NOT NULL
+                  OR queue225_lifecycle.bridge_result = 'closed'
+                  OR queue4_microrepair.segment_id IS NOT NULL
+                  OR queue4_lifecycle.bridge_result = 'closed'
+                  OR spanish_residual_checkpoint9_safe_repair.segment_id IS NOT NULL
+                  OR queue222_lifecycle.bridge_result = 'closed'
+                  OR queue222_microrepair.segment_id IS NOT NULL
+                  OR queue221_lifecycle.bridge_result = 'closed'
+                  OR queue221_microrepair.segment_id IS NOT NULL
+                  OR domain_context_bridge.bridge_result = 'closed'
+                  OR requirement_tooltip_microrepair.segment_id IS NOT NULL
+                  OR single_combat_already_good.bridge_result = 'closed'
+                  OR single_combat_batch.segment_id IS NOT NULL
+                  OR single_combat_batch2_0041.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_repair.segment_id IS NOT NULL
+                  OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR rule_effect_bridge.segment_id IS NOT NULL
+                  OR building_bridge.segment_id IS NOT NULL
+                    THEN 0.0
+                ELSE previous.priority_score
+            END AS priority_score,
+            CASE
+                WHEN trait_esta_personagem.bridge_result = 'closed' THEN ?
+                WHEN in_game_feedback_vassal_stances_claim_cb.segment_id IS NOT NULL THEN ?
+                WHEN queue5_microrepair.segment_id IS NOT NULL THEN ?
+                WHEN queue5_false_reopen.bridge_result = 'closed' THEN ?
+                WHEN queue5_lifecycle.bridge_result = 'closed' THEN ?
+                WHEN gender_es_oa_dryrun3_repair.segment_id IS NOT NULL THEN ?
+                WHEN queue225_repair.segment_id IS NOT NULL THEN ?
+                WHEN queue225_lifecycle.bridge_result = 'closed' THEN ?
+                WHEN queue4_microrepair.segment_id IS NOT NULL THEN ?
+                WHEN queue4_lifecycle.bridge_result = 'closed' THEN ?
+                WHEN spanish_residual_checkpoint9_safe_repair.segment_id IS NOT NULL THEN ?
+                WHEN queue222_lifecycle.bridge_result = 'closed' THEN ?
+                WHEN queue222_microrepair.segment_id IS NOT NULL THEN ?
+                WHEN queue221_lifecycle.bridge_result = 'closed' THEN ?
+                WHEN queue221_microrepair.segment_id IS NOT NULL THEN ?
+                WHEN queue220_strict.bridge_result = 'closed' THEN ?
+                WHEN queue220_microrepair.segment_id IS NOT NULL THEN ?
+                WHEN domain_context_bridge.bridge_result = 'closed' THEN ?
+                WHEN requirement_tooltip_microrepair.segment_id IS NOT NULL THEN ?
+                WHEN single_combat_already_good.bridge_result = 'closed' THEN ?
+                WHEN single_combat_batch.segment_id IS NOT NULL THEN ?
+                WHEN single_combat_batch2_0041.segment_id IS NOT NULL THEN ?
+                WHEN dynamic_acclaimed_repair.segment_id IS NOT NULL THEN ?
+                WHEN dynamic_acclaimed_style_watch.segment_id IS NOT NULL THEN ?
+                WHEN rule_effect_bridge.segment_id IS NOT NULL THEN ?
+                WHEN building_bridge.segment_id IS NOT NULL THEN ?
+                ELSE previous.reasons_json
+            END AS reasons_json,
+            ? AS created_at
+        FROM segment_state_items previous
+        JOIN (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ) previous_run
+          ON previous_run.id = previous.run_id
+        LEFT JOIN temp_autofix_unknown_semantic_companion_building_lifecycle building_bridge
+          ON building_bridge.segment_id = previous.segment_id
+        LEFT JOIN temp_autofix_unknown_semantic_companion_rule_effect_lifecycle rule_effect_bridge
+          ON rule_effect_bridge.segment_id = previous.segment_id
+        LEFT JOIN temp_single_combat_signature_weapon_already_good_lifecycle single_combat_already_good
+          ON single_combat_already_good.segment_id = previous.segment_id
+        LEFT JOIN temp_semantic_short_label_domain_context_lifecycle domain_context_bridge
+          ON domain_context_bridge.segment_id = previous.segment_id
+        LEFT JOIN temp_trait_description_esta_personagem_lifecycle trait_esta_personagem
+          ON trait_esta_personagem.segment_id = previous.segment_id
+        LEFT JOIN temp_in_game_feedback_vassal_stances_claim_cb_microfix in_game_feedback_vassal_stances_claim_cb
+          ON in_game_feedback_vassal_stances_claim_cb.segment_id = previous.segment_id
+        LEFT JOIN temp_short_label_pure_no_token_queue5_lifecycle queue5_lifecycle
+          ON queue5_lifecycle.segment_id = previous.segment_id
+        LEFT JOIN temp_short_label_pure_no_token_queue5_false_reopen_lifecycle queue5_false_reopen
+          ON queue5_false_reopen.segment_id = previous.segment_id
+        LEFT JOIN temp_short_label_single_issue_residual_queue225_lifecycle queue225_lifecycle
+          ON queue225_lifecycle.segment_id = previous.segment_id
+        LEFT JOIN temp_short_label_pure_no_token_queue4_lifecycle queue4_lifecycle
+          ON queue4_lifecycle.segment_id = previous.segment_id
+        LEFT JOIN temp_short_label_compact_ui_semantic_queue222_lifecycle queue222_lifecycle
+          ON queue222_lifecycle.segment_id = previous.segment_id
+        LEFT JOIN temp_autofix_unknown_ui_surface_queue221_lifecycle queue221_lifecycle
+          ON queue221_lifecycle.segment_id = previous.segment_id
+        LEFT JOIN temp_short_label_style_queue220_strict_lifecycle queue220_strict
+          ON queue220_strict.segment_id = previous.segment_id
+        LEFT JOIN temp_autofix_unknown_ui_surface_queue221_microrepair queue221_microrepair
+          ON queue221_microrepair.segment_id = previous.segment_id
+        LEFT JOIN temp_short_label_compact_ui_semantic_queue222_microrepair queue222_microrepair
+          ON queue222_microrepair.segment_id = previous.segment_id
+        LEFT JOIN temp_short_label_pure_no_token_queue4_microrepair queue4_microrepair
+          ON queue4_microrepair.segment_id = previous.segment_id
+        LEFT JOIN temp_short_label_pure_no_token_queue5_microrepair queue5_microrepair
+          ON queue5_microrepair.segment_id = previous.segment_id
+        LEFT JOIN temp_short_label_single_issue_residual_queue225_repair queue225_repair
+          ON queue225_repair.segment_id = previous.segment_id
+        LEFT JOIN temp_gender_es_oa_final_vowel_trim_dryrun3_repair gender_es_oa_dryrun3_repair
+          ON gender_es_oa_dryrun3_repair.segment_id = previous.segment_id
+        LEFT JOIN temp_spanish_residual_checkpoint9_safe_repair spanish_residual_checkpoint9_safe_repair
+          ON spanish_residual_checkpoint9_safe_repair.segment_id = previous.segment_id
+        LEFT JOIN temp_short_label_style_queue220_microrepair queue220_microrepair
+          ON queue220_microrepair.segment_id = previous.segment_id
+        LEFT JOIN temp_semantic_short_label_requirement_tooltip_microrepair requirement_tooltip_microrepair
+          ON requirement_tooltip_microrepair.segment_id = previous.segment_id
+        LEFT JOIN temp_single_combat_signature_weapon_batch1_repair single_combat_batch
+          ON single_combat_batch.segment_id = previous.segment_id
+        LEFT JOIN temp_single_combat_signature_weapon_batch2_0041_repair single_combat_batch2_0041
+          ON single_combat_batch2_0041.segment_id = previous.segment_id
+        LEFT JOIN segment_confirmations dynamic_acclaimed_repair
+          ON dynamic_acclaimed_repair.segment_id = previous.segment_id
+         AND dynamic_acclaimed_repair.confirmation_source = 'dynamic_acclaimed_knight_requirement_repair_production'
+         AND dynamic_acclaimed_repair.confirmation_label = 'dynamic_acclaimed_knight_requirement_repair_ready'
+         AND COALESCE(dynamic_acclaimed_repair.locked, 0) = 0
+        LEFT JOIN temp_dynamic_acclaimed_knight_requirement_style_watch_lifecycle dynamic_acclaimed_style_watch
+          ON dynamic_acclaimed_style_watch.segment_id = previous.segment_id
+        """,
+        (
+            run_id,
+            TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_STATE,
+            IN_GAME_FEEDBACK_VASSAL_STANCES_CLAIM_CB_MICROFIX_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MICROREPAIR_STATE,
+            GENDER_ES_OA_FINAL_VOWEL_TRIM_DRYRUN3_REPAIR_STATE,
+            SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_QUEUE225_REPAIR_STATE,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_MICROREPAIR_STATE,
+            SPANISH_RESIDUAL_CHECKPOINT9_SAFE_REPAIR_STATE,
+            SHORT_LABEL_COMPACT_UI_SEMANTIC_QUEUE222_LIFECYCLE_STATE,
+            SHORT_LABEL_COMPACT_UI_SEMANTIC_QUEUE222_MICROREPAIR_STATE,
+            AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_MICROREPAIR_STATE,
+            SHORT_LABEL_STYLE_QUEUE220_STRICT_LIFECYCLE_STATE,
+            SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_STATE,
+            TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_CLOSURE_ACTION,
+            TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_CLOSURE_ACTION,
+            TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_QUEUE225_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_QUEUE225_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_QUEUE225_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_COMPACT_UI_SEMANTIC_QUEUE222_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_COMPACT_UI_SEMANTIC_QUEUE222_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_COMPACT_UI_SEMANTIC_QUEUE222_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_RULE_EFFECT_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_RULE_EFFECT_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_RULE_EFFECT_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_BUILDING_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_BUILDING_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_BUILDING_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MICROREPAIR_CONFIRMATION_LABEL,
+            GENDER_ES_OA_FINAL_VOWEL_TRIM_DRYRUN3_REPAIR_CONFIRMATION_LABEL,
+            SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_QUEUE225_REPAIR_CONFIRMATION_LABEL,
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_MICROREPAIR_CONFIRMATION_LABEL,
+            SPANISH_RESIDUAL_CHECKPOINT9_SAFE_REPAIR_CONFIRMATION_LABEL,
+            SHORT_LABEL_COMPACT_UI_SEMANTIC_QUEUE222_MICROREPAIR_CONFIRMATION_LABEL,
+            AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_MICROREPAIR_CONFIRMATION_LABEL,
+            SEMANTIC_SHORT_LABEL_REQUIREMENT_TOOLTIP_MICROREPAIR_CONFIRMATION_LABEL,
+            SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_CONFIRMATION_LABEL,
+            SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH1_CONFIRMATION_LABEL,
+            SINGLE_COMBAT_SIGNATURE_WEAPON_BATCH2_0041_CONFIRMATION_LABEL,
+            trait_description_esta_personagem_lifecycle_reason,
+            in_game_feedback_vassal_stances_claim_cb_microfix_reason,
+            short_label_pure_no_token_queue5_microrepair_reason,
+            short_label_pure_no_token_queue5_false_reopen_lifecycle_reason,
+            short_label_pure_no_token_queue5_lifecycle_reason,
+            gender_es_oa_final_vowel_trim_dryrun3_repair_reason,
+            short_label_single_issue_residual_queue225_repair_reason,
+            short_label_single_issue_residual_queue225_lifecycle_reason,
+            short_label_pure_no_token_queue4_microrepair_reason,
+            short_label_pure_no_token_queue4_lifecycle_reason,
+            spanish_residual_checkpoint9_safe_repair_reason,
+            short_label_compact_ui_semantic_queue222_lifecycle_reason,
+            short_label_compact_ui_semantic_queue222_microrepair_reason,
+            autofix_unknown_ui_surface_queue221_lifecycle_reason,
+            autofix_unknown_ui_surface_queue221_microrepair_reason,
+            short_label_style_queue220_strict_reason,
+            short_label_style_queue220_microrepair_reason,
+            semantic_short_label_domain_context_reason,
+            semantic_short_label_requirement_tooltip_microrepair_reason,
+            single_combat_signature_weapon_already_good_reason,
+            single_combat_signature_weapon_batch1_reason,
+            single_combat_signature_weapon_batch2_0041_reason,
+            dynamic_acclaimed_knight_requirement_repair_reason,
+            dynamic_acclaimed_knight_requirement_style_watch_lifecycle_reason,
+            rule_effect_closure_reason,
+            building_closure_reason,
+            created_at,
+        ),
+    )
+    autofix_unknown_plain_event_queue226_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output passed queue 226 autofix_unknown plain/event lifecycle bridge",
+            "review JSONL candidate survived confirmation/output, token, pending reopen and ledger 68 single-family guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = (
+                SELECT bridge.target_state
+                FROM temp_autofix_unknown_plain_event_queue226_lifecycle bridge
+                WHERE bridge.segment_id = segment_state_items.segment_id
+            ),
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN (
+                    SELECT bridge.target_action
+                    FROM temp_autofix_unknown_plain_event_queue226_lifecycle bridge
+                    WHERE bridge.segment_id = segment_state_items.segment_id
+                )
+                WHEN instr(
+                    ',' || lifecycle_policy_action || ',',
+                    ',' || (
+                        SELECT bridge.target_action
+                        FROM temp_autofix_unknown_plain_event_queue226_lifecycle bridge
+                        WHERE bridge.segment_id = segment_state_items.segment_id
+                    ) || ','
+                ) = 0 THEN lifecycle_policy_action || ',' || (
+                    SELECT bridge.target_action
+                    FROM temp_autofix_unknown_plain_event_queue226_lifecycle bridge
+                    WHERE bridge.segment_id = segment_state_items.segment_id
+                )
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'auto_confirmed',
+            locked = 0,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND segment_id IN (
+              SELECT segment_id
+              FROM temp_autofix_unknown_plain_event_queue226_lifecycle
+              WHERE bridge_result = 'closed'
+          )
+        """,
+        (autofix_unknown_plain_event_queue226_lifecycle_reason, run_id),
+    )
+    autofix_unknown_plain_event_queue226_semantic_companion_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output passed queue 226 autofix_unknown plain/event semantic companion lifecycle bridge",
+            "review JSONL candidate survived confirmation/output, token, pending reopen and exact autofix_unknown plus semantic_review ledger 68 pair guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = (
+                SELECT bridge.target_state
+                FROM temp_autofix_unknown_plain_event_queue226_semantic_companion_lifecycle bridge
+                WHERE bridge.segment_id = segment_state_items.segment_id
+            ),
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN (
+                    SELECT bridge.target_action
+                    FROM temp_autofix_unknown_plain_event_queue226_semantic_companion_lifecycle bridge
+                    WHERE bridge.segment_id = segment_state_items.segment_id
+                )
+                WHEN instr(
+                    ',' || lifecycle_policy_action || ',',
+                    ',' || (
+                        SELECT bridge.target_action
+                        FROM temp_autofix_unknown_plain_event_queue226_semantic_companion_lifecycle bridge
+                        WHERE bridge.segment_id = segment_state_items.segment_id
+                    ) || ','
+                ) = 0 THEN lifecycle_policy_action || ',' || (
+                    SELECT bridge.target_action
+                    FROM temp_autofix_unknown_plain_event_queue226_semantic_companion_lifecycle bridge
+                    WHERE bridge.segment_id = segment_state_items.segment_id
+                )
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'auto_confirmed',
+            locked = 0,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND segment_id IN (
+              SELECT segment_id
+              FROM temp_autofix_unknown_plain_event_queue226_semantic_companion_lifecycle
+              WHERE bridge_result = 'closed'
+          )
+        """,
+        (autofix_unknown_plain_event_queue226_semantic_companion_lifecycle_reason, run_id),
+    )
+    autofix_unknown_plain_event_context_composer_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output passed autofix_unknown plain/event context composer lifecycle bridge",
+            "composition_ready review survived dedupe, confirmation/output, token, pending reopen and ledger 69 allowed issue-set guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = (
+                SELECT bridge.target_state
+                FROM temp_autofix_unknown_plain_event_context_composer_lifecycle bridge
+                WHERE bridge.segment_id = segment_state_items.segment_id
+            ),
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN (
+                    SELECT bridge.target_action
+                    FROM temp_autofix_unknown_plain_event_context_composer_lifecycle bridge
+                    WHERE bridge.segment_id = segment_state_items.segment_id
+                )
+                WHEN instr(
+                    ',' || lifecycle_policy_action || ',',
+                    ',' || (
+                        SELECT bridge.target_action
+                        FROM temp_autofix_unknown_plain_event_context_composer_lifecycle bridge
+                        WHERE bridge.segment_id = segment_state_items.segment_id
+                    ) || ','
+                ) = 0 THEN lifecycle_policy_action || ',' || (
+                    SELECT bridge.target_action
+                    FROM temp_autofix_unknown_plain_event_context_composer_lifecycle bridge
+                    WHERE bridge.segment_id = segment_state_items.segment_id
+                )
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'auto_confirmed',
+            locked = 0,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND segment_id IN (
+              SELECT segment_id
+              FROM temp_autofix_unknown_plain_event_context_composer_lifecycle
+              WHERE bridge_result = 'closed'
+          )
+        """,
+        (autofix_unknown_plain_event_context_composer_lifecycle_reason, run_id),
+    )
+    conn.execute(
+        """
+        UPDATE temp_short_label_semantic_pair_lifecycle
+        SET bridge_result = 'blocked_preserved',
+            block_reason = 'already_closed_elsewhere'
+        WHERE bridge_result = 'closed'
+          AND EXISTS (
+              SELECT 1
+              FROM segment_state_items state
+              WHERE state.run_id = ?
+                AND state.segment_id = temp_short_label_semantic_pair_lifecycle.segment_id
+                AND state.state_group = 'closed'
+                AND state.final_state NOT IN (
+                    ?,
+                    ?,
+                    ?,
+                    ?
+                )
+          )
+        """,
+        (
+            run_id,
+            SHORT_LABEL_SEMANTIC_PAIR_QUOTE_FRAGMENT_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_NOMINAL_LABEL_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_SHORT_PHRASE_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_PAIR_COMPACT_OPTION_LIFECYCLE_STATE,
+        ),
+    )
+    short_label_semantic_pair_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output passed short-label semantic pair lifecycle bridge",
+            "reviewed lifecycle candidate survived bridge, confirmation/output, token, pending reopen and exact ledger 70 two-issue guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = (
+                SELECT bridge.target_state
+                FROM temp_short_label_semantic_pair_lifecycle bridge
+                WHERE bridge.segment_id = segment_state_items.segment_id
+            ),
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN (
+                    SELECT bridge.target_action
+                    FROM temp_short_label_semantic_pair_lifecycle bridge
+                    WHERE bridge.segment_id = segment_state_items.segment_id
+                )
+                WHEN instr(
+                    ',' || lifecycle_policy_action || ',',
+                    ',' || (
+                        SELECT bridge.target_action
+                        FROM temp_short_label_semantic_pair_lifecycle bridge
+                        WHERE bridge.segment_id = segment_state_items.segment_id
+                    ) || ','
+                ) = 0 THEN lifecycle_policy_action || ',' || (
+                    SELECT bridge.target_action
+                    FROM temp_short_label_semantic_pair_lifecycle bridge
+                    WHERE bridge.segment_id = segment_state_items.segment_id
+                )
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'auto_confirmed',
+            locked = 0,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND segment_id IN (
+              SELECT segment_id
+              FROM temp_short_label_semantic_pair_lifecycle
+              WHERE bridge_result = 'closed'
+          )
+        """,
+        (short_label_semantic_pair_lifecycle_reason, run_id),
+    )
+    conn.execute(
+        """
+        UPDATE temp_short_label_semantic_load_tips_lifecycle
+        SET bridge_result = 'blocked_preserved',
+            block_reason = 'already_closed_elsewhere'
+        WHERE bridge_result = 'closed'
+          AND EXISTS (
+              SELECT 1
+              FROM segment_state_items state
+              WHERE state.run_id = ?
+                AND state.segment_id = temp_short_label_semantic_load_tips_lifecycle.segment_id
+                AND state.state_group = 'closed'
+                AND state.final_state != ?
+          )
+        """,
+        (run_id, SHORT_LABEL_SEMANTIC_LOAD_TIPS_LIFECYCLE_STATE),
+    )
+    short_label_semantic_load_tips_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed structural load tip passed short-label semantic lifecycle bridge",
+            "load_tips pattern kept only #T game_concept token plus matching game_concept desc token under exact ledger pair guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = ?,
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'auto_confirmed',
+            locked = 0,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND segment_id IN (
+              SELECT segment_id
+              FROM temp_short_label_semantic_load_tips_lifecycle
+              WHERE bridge_result = 'closed'
+          )
+        """,
+        (
+            SHORT_LABEL_SEMANTIC_LOAD_TIPS_LIFECYCLE_STATE,
+            SHORT_LABEL_SEMANTIC_LOAD_TIPS_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_SEMANTIC_LOAD_TIPS_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_SEMANTIC_LOAD_TIPS_LIFECYCLE_CLOSURE_ACTION,
+            short_label_semantic_load_tips_lifecycle_reason,
+            run_id,
+        ),
+    )
+    diarchy_extravagance_description_lifecycle_reason = json.dumps(
+        [
+            "reviewed diarchy extravagance description microagent lifecycle candidate",
+            "closed only when current pending reopen, confirmation/output alignment, no output apply, and ledger issues are restricted to autofix_unknown with optional semantic companion",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = (
+                SELECT target_state
+                FROM temp_diarchy_extravagance_description_lifecycle bridge
+                WHERE bridge.segment_id = segment_state_items.segment_id
+                  AND bridge.bridge_result = 'closed'
+            ),
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = ''
+                    THEN (
+                        SELECT target_action
+                        FROM temp_diarchy_extravagance_description_lifecycle bridge
+                        WHERE bridge.segment_id = segment_state_items.segment_id
+                          AND bridge.bridge_result = 'closed'
+                    )
+                WHEN instr(
+                    ',' || lifecycle_policy_action || ',',
+                    ',' || (
+                        SELECT target_action
+                        FROM temp_diarchy_extravagance_description_lifecycle bridge
+                        WHERE bridge.segment_id = segment_state_items.segment_id
+                          AND bridge.bridge_result = 'closed'
+                    ) || ','
+                ) = 0
+                    THEN lifecycle_policy_action || ',' || (
+                        SELECT target_action
+                        FROM temp_diarchy_extravagance_description_lifecycle bridge
+                        WHERE bridge.segment_id = segment_state_items.segment_id
+                          AND bridge.bridge_result = 'closed'
+                    )
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'auto_confirmed',
+            locked = 0,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND segment_id IN (
+              SELECT segment_id
+              FROM temp_diarchy_extravagance_description_lifecycle
+              WHERE bridge_result = 'closed'
+          )
+        """,
+        (diarchy_extravagance_description_lifecycle_reason, run_id),
+    )
+
+
+def counters_from_run(conn, run_id: int) -> dict[str, Counter]:
+    counters: dict[str, Counter] = defaultdict(Counter)
+    for key, column in (
+        ("final_state", "final_state"),
+        ("state_group", "state_group"),
+        ("output_state", "output_state"),
+        ("review_state", "review_state"),
+        ("apply_state", "apply_state"),
+        ("needs_reopen", "needs_reopen"),
+    ):
+        rows = conn.execute(
+            f"""
+            SELECT CAST({column} AS TEXT) AS value, COUNT(*) AS count
+            FROM segment_state_items
+            WHERE run_id = ?
+            GROUP BY CAST({column} AS TEXT)
+            """,
+            (run_id,),
+        ).fetchall()
+        for row in rows:
+            counters[key][str(row["value"])] = int(row["count"] or 0)
+    return counters
 
 
 def update_run_summary(conn, run_id: int, finished_at: str, counters: dict[str, Counter]) -> None:
@@ -619,6 +9862,8 @@ def top_rows(conn, run_id: int, where_sql: str, limit: int = 12) -> list[dict[st
             active_action,
             candidate_action,
             policy_action,
+            lifecycle_policy_action,
+            lifecycle_policy_allowed,
             priority_score
         FROM segment_state_items
         WHERE run_id = ?
@@ -660,6 +9905,5651 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
         """,
         (run_id,),
     ).fetchall()
+    single_combat_already_good_rows = conn.execute(
+        """
+        SELECT
+            segment_id,
+            source_key,
+            bridge_result,
+            block_reason,
+            open_issue_count,
+            dynamic_issue_count,
+            open_issues
+        FROM temp_single_combat_signature_weapon_already_good_lifecycle
+        ORDER BY segment_id
+        """
+    ).fetchall()
+    single_combat_already_good_closed = [
+        dict(row) for row in single_combat_already_good_rows if row["bridge_result"] == "closed"
+    ]
+    single_combat_already_good_blocked = [
+        dict(row) for row in single_combat_already_good_rows if row["bridge_result"] != "closed"
+    ]
+    semantic_short_label_domain_context_rows = conn.execute(
+        """
+        SELECT
+            queue_run_id,
+            segment_id,
+            agent_key,
+            source_key,
+            relative_path,
+            decision,
+            suggested_subpolicy,
+            target_state,
+            bridge_family,
+            bridge_result,
+            block_reason,
+            open_issue_count,
+            open_issues
+        FROM temp_semantic_short_label_domain_context_lifecycle
+        ORDER BY queue_run_id, segment_id
+        """
+    ).fetchall()
+    semantic_domain_closed_by_queue = Counter(
+        int(row["queue_run_id"])
+        for row in semantic_short_label_domain_context_rows
+        if row["bridge_result"] == "closed"
+    )
+    semantic_domain_blocked_by_queue = Counter(
+        int(row["queue_run_id"])
+        for row in semantic_short_label_domain_context_rows
+        if row["bridge_result"] != "closed"
+    )
+    short_label_style_queue220_rows = conn.execute(
+        """
+        SELECT
+            queue_run_id,
+            segment_id,
+            agent_key,
+            source_key,
+            relative_path,
+            decision,
+            suggested_subpolicy,
+            current_text,
+            bridge_result,
+            block_reason,
+            open_issue_count,
+            open_issues
+        FROM temp_short_label_style_queue220_strict_lifecycle
+        ORDER BY segment_id
+        """
+    ).fetchall()
+    short_label_style_queue220_closed = [
+        dict(row) for row in short_label_style_queue220_rows if row["bridge_result"] == "closed"
+    ]
+    short_label_style_queue220_blocked = [
+        dict(row) for row in short_label_style_queue220_rows if row["bridge_result"] != "closed"
+    ]
+    short_label_style_queue220_block_reasons = Counter(
+        row["block_reason"] for row in short_label_style_queue220_blocked
+    )
+    short_label_style_queue220_bold_no_examples = [
+        row for row in short_label_style_queue220_blocked if "bold" in (row["block_reason"] or "")
+    ][:5]
+    short_label_style_queue220_punctuation_examples = [
+        row for row in short_label_style_queue220_blocked if "space_before" in (row["block_reason"] or "")
+    ][:5]
+    autofix_unknown_ui_surface_queue221_rows = conn.execute(
+        """
+        SELECT
+            queue_run_id,
+            ledger_run_id,
+            segment_id,
+            source_key,
+            relative_path,
+            decision,
+            suggested_subpolicy,
+            current_text,
+            bridge_result,
+            block_reason,
+            open_issue_count,
+            open_issues
+        FROM temp_autofix_unknown_ui_surface_queue221_lifecycle
+        ORDER BY segment_id
+        """
+    ).fetchall()
+    autofix_unknown_ui_surface_queue221_closed = [
+        dict(row) for row in autofix_unknown_ui_surface_queue221_rows if row["bridge_result"] == "closed"
+    ]
+    autofix_unknown_ui_surface_queue221_blocked = [
+        dict(row) for row in autofix_unknown_ui_surface_queue221_rows if row["bridge_result"] != "closed"
+    ]
+    autofix_unknown_ui_surface_queue221_block_reasons = Counter(
+        row["block_reason"] for row in autofix_unknown_ui_surface_queue221_blocked
+    )
+    autofix_unknown_plain_event_queue226_rows = conn.execute(
+        """
+        SELECT
+            queue_run_id,
+            ledger_run_id,
+            segment_id,
+            source_key,
+            relative_path,
+            decision,
+            subpolicy,
+            route_to_agent,
+            baseline_run_id,
+            target_state,
+            target_action,
+            bridge_result,
+            block_reason,
+            open_issue_count,
+            open_issues
+        FROM temp_autofix_unknown_plain_event_queue226_lifecycle
+        ORDER BY segment_id
+        """
+    ).fetchall()
+    autofix_unknown_plain_event_queue226_closed = [
+        dict(row) for row in autofix_unknown_plain_event_queue226_rows if row["bridge_result"] == "closed"
+    ]
+    autofix_unknown_plain_event_queue226_blocked = [
+        dict(row) for row in autofix_unknown_plain_event_queue226_rows if row["bridge_result"] != "closed"
+    ]
+    autofix_unknown_plain_event_queue226_candidates_by_decision = Counter(
+        row["decision"] for row in autofix_unknown_plain_event_queue226_rows
+    )
+    autofix_unknown_plain_event_queue226_closed_by_decision = Counter(
+        row["decision"] for row in autofix_unknown_plain_event_queue226_closed
+    )
+    autofix_unknown_plain_event_queue226_blocked_by_decision = Counter(
+        row["decision"] for row in autofix_unknown_plain_event_queue226_blocked
+    )
+    autofix_unknown_plain_event_queue226_block_reasons = Counter(
+        row["block_reason"] for row in autofix_unknown_plain_event_queue226_blocked
+    )
+    autofix_unknown_plain_event_queue226_baseline_run = (
+        autofix_unknown_plain_event_queue226_rows[0]["baseline_run_id"]
+        if autofix_unknown_plain_event_queue226_rows
+        else None
+    )
+    autofix_unknown_plain_event_queue226_semantic_companion_rows = conn.execute(
+        """
+        SELECT
+            queue_run_id,
+            ledger_run_id,
+            segment_id,
+            source_key,
+            relative_path,
+            decision,
+            subpolicy,
+            route_to_agent,
+            baseline_run_id,
+            target_state,
+            target_action,
+            bridge_result,
+            block_reason,
+            open_issue_count,
+            open_issues
+        FROM temp_autofix_unknown_plain_event_queue226_semantic_companion_lifecycle
+        ORDER BY segment_id
+        """
+    ).fetchall()
+    autofix_unknown_plain_event_queue226_semantic_companion_closed = [
+        dict(row)
+        for row in autofix_unknown_plain_event_queue226_semantic_companion_rows
+        if row["bridge_result"] == "closed"
+    ]
+    autofix_unknown_plain_event_queue226_semantic_companion_blocked = [
+        dict(row)
+        for row in autofix_unknown_plain_event_queue226_semantic_companion_rows
+        if row["bridge_result"] != "closed"
+    ]
+    autofix_unknown_plain_event_queue226_semantic_companion_candidates_by_decision = Counter(
+        row["decision"] for row in autofix_unknown_plain_event_queue226_semantic_companion_rows
+    )
+    autofix_unknown_plain_event_queue226_semantic_companion_closed_by_decision = Counter(
+        row["decision"] for row in autofix_unknown_plain_event_queue226_semantic_companion_closed
+    )
+    autofix_unknown_plain_event_queue226_semantic_companion_blocked_by_decision = Counter(
+        row["decision"] for row in autofix_unknown_plain_event_queue226_semantic_companion_blocked
+    )
+    autofix_unknown_plain_event_queue226_semantic_companion_block_reasons = Counter(
+        row["block_reason"] for row in autofix_unknown_plain_event_queue226_semantic_companion_blocked
+    )
+    autofix_unknown_plain_event_queue226_semantic_companion_baseline_run = (
+        autofix_unknown_plain_event_queue226_semantic_companion_rows[0]["baseline_run_id"]
+        if autofix_unknown_plain_event_queue226_semantic_companion_rows
+        else None
+    )
+    autofix_unknown_plain_event_context_composer_rows = conn.execute(
+        """
+        SELECT
+            source_queue_run_id,
+            ledger_run_id,
+            segment_id,
+            relative_path,
+            source_key,
+            composer_family,
+            composer_decision,
+            subpolicy,
+            duplicate_review_line_count,
+            baseline_run_id,
+            target_state,
+            target_action,
+            bridge_result,
+            block_reason,
+            open_issue_count,
+            open_issues
+        FROM temp_autofix_unknown_plain_event_context_composer_lifecycle
+        ORDER BY segment_id
+        """
+    ).fetchall()
+    autofix_unknown_plain_event_context_composer_closed = [
+        dict(row) for row in autofix_unknown_plain_event_context_composer_rows if row["bridge_result"] == "closed"
+    ]
+    autofix_unknown_plain_event_context_composer_blocked = [
+        dict(row) for row in autofix_unknown_plain_event_context_composer_rows if row["bridge_result"] != "closed"
+    ]
+    autofix_unknown_plain_event_context_composer_candidate_lines = sum(
+        1 + int(row["duplicate_review_line_count"] or 0)
+        for row in autofix_unknown_plain_event_context_composer_rows
+    )
+    autofix_unknown_plain_event_context_composer_duplicates_ignored = sum(
+        int(row["duplicate_review_line_count"] or 0)
+        for row in autofix_unknown_plain_event_context_composer_rows
+    )
+    autofix_unknown_plain_event_context_composer_candidates_by_decision = Counter(
+        row["composer_decision"] for row in autofix_unknown_plain_event_context_composer_rows
+    )
+    autofix_unknown_plain_event_context_composer_closed_by_decision = Counter(
+        row["composer_decision"] for row in autofix_unknown_plain_event_context_composer_closed
+    )
+    autofix_unknown_plain_event_context_composer_blocked_by_decision = Counter(
+        row["composer_decision"] for row in autofix_unknown_plain_event_context_composer_blocked
+    )
+    autofix_unknown_plain_event_context_composer_block_reasons = Counter(
+        row["block_reason"] for row in autofix_unknown_plain_event_context_composer_blocked
+    )
+    autofix_unknown_plain_event_context_composer_baseline_run = (
+        autofix_unknown_plain_event_context_composer_rows[0]["baseline_run_id"]
+        if autofix_unknown_plain_event_context_composer_rows
+        else None
+    )
+    short_label_semantic_pair_rows = conn.execute(
+        """
+        SELECT *
+        FROM temp_short_label_semantic_pair_lifecycle
+        ORDER BY segment_id
+        """
+    ).fetchall()
+    short_label_semantic_pair_closed = [
+        dict(row) for row in short_label_semantic_pair_rows if row["bridge_result"] == "closed"
+    ]
+    short_label_semantic_pair_blocked = [
+        dict(row) for row in short_label_semantic_pair_rows if row["bridge_result"] != "closed"
+    ]
+    short_label_semantic_pair_bridge_run_ids = ",".join(
+        str(value)
+        for value in sorted(
+            {
+                int(row["bridge_run_id"])
+                for row in short_label_semantic_pair_rows
+                if row["bridge_run_id"] is not None
+            }
+        )
+    )
+    short_label_semantic_pair_review_jsonl = (
+        as_text(short_label_semantic_pair_rows[0]["reviewed_jsonl"])
+        if short_label_semantic_pair_rows
+        else ""
+    )
+    short_label_semantic_pair_closed_by_decision = Counter(
+        row["decision"] for row in short_label_semantic_pair_closed
+    )
+    short_label_semantic_pair_block_reasons = Counter(
+        row["block_reason"] for row in short_label_semantic_pair_blocked
+    )
+    short_label_semantic_load_tips_rows = conn.execute(
+        """
+        SELECT *
+        FROM temp_short_label_semantic_load_tips_lifecycle
+        ORDER BY segment_id
+        """
+    ).fetchall()
+    short_label_semantic_load_tips_closed = [
+        dict(row) for row in short_label_semantic_load_tips_rows if row["bridge_result"] == "closed"
+    ]
+    short_label_semantic_load_tips_blocked = [
+        dict(row) for row in short_label_semantic_load_tips_rows if row["bridge_result"] != "closed"
+    ]
+    short_label_semantic_load_tips_bridge_run_ids = ",".join(
+        str(value)
+        for value in sorted(
+            {
+                int(row["bridge_run_id"])
+                for row in short_label_semantic_load_tips_rows
+                if row["bridge_run_id"] is not None
+            }
+        )
+    )
+    short_label_semantic_load_tips_ready = sum(
+        1 for row in short_label_semantic_load_tips_rows if row["bridge_status"] == "ready_for_lifecycle_bridge"
+    )
+    short_label_semantic_load_tips_block_reasons = Counter(
+        row["block_reason"] for row in short_label_semantic_load_tips_blocked
+    )
+    select_cstring_pending_rows = conn.execute(
+        """
+        SELECT
+            item.id AS bridge_item_id,
+            item.segment_id,
+            item.relative_path,
+            item.source_line_number,
+            item.source_key,
+            state.final_state,
+            state.confirmed_matches_output,
+            CASE
+                WHEN canonical_l10n(confirmation.confirmed_text) = canonical_l10n(item.corrected_text)
+                    THEN 1 ELSE 0
+            END AS confirmed_matches_corrected,
+            CASE
+                WHEN canonical_l10n(output.portuguese_text) = canonical_l10n(item.corrected_text)
+                    THEN 1 ELSE 0
+            END AS output_matches_corrected,
+            confirmation.confirmation_source,
+            confirmation.confirmation_label
+        FROM ml_issue_select_cstring_governed_bridge_proposal_items item
+        JOIN (
+            SELECT id
+            FROM ml_issue_select_cstring_governed_bridge_proposal_runs
+            WHERE finished_at IS NOT NULL
+              AND bridge_status = 'ready_for_governed_review'
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ) proposal ON proposal.id = item.run_id
+        LEFT JOIN segment_state_items state
+          ON state.segment_id = item.segment_id
+         AND state.run_id = ?
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = item.segment_id
+        LEFT JOIN output_segments output
+          ON output.segment_id = item.segment_id
+        WHERE COALESCE(state.final_state, '') != 'closed_auto_confirmed_select_cstring_governed_bridge'
+        ORDER BY item.id
+        LIMIT 25
+        """,
+        (run_id,),
+    ).fetchall()
+    select_cstring_segment_bridge_row = conn.execute(
+        """
+        WITH proposal AS (
+            SELECT *
+            FROM ml_issue_select_cstring_segment_lifecycle_bridge_proposal_runs
+            WHERE finished_at IS NOT NULL
+              AND bridge_status = 'proposal_shadow'
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        item_eval AS (
+            SELECT
+                item.id,
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_select_cstring_segment_lifecycle_bridge'
+                        THEN 'closed'
+                    WHEN item.bridge_status != 'ready_for_lifecycle_bridge'
+                      OR COALESCE(TRIM(item.blocking_reason), '') <> ''
+                      OR proposal.bridge_candidate != 1
+                      OR proposal.production_release_allowed != 0
+                      OR item.production_release_allowed != 0
+                        THEN 'stale_proposal'
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_proposal'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                        THEN 'has_issue'
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_select_cstring_segment_lifecycle_bridge'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'stale_proposal'
+                END AS bridge_result
+            FROM ml_issue_select_cstring_segment_lifecycle_bridge_proposal_items item
+            JOIN proposal ON proposal.id = item.run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        ),
+        segment_eval AS (
+            SELECT
+                segment_id,
+                CASE
+                    WHEN SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) > 0 THEN 'closed'
+                    ELSE 'blocked'
+                END AS bridge_result
+            FROM item_eval
+            GROUP BY segment_id
+        ),
+        counts AS (
+            SELECT
+                COUNT(*) AS candidates,
+                SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+                SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge
+            FROM segment_eval
+        )
+        SELECT
+            proposal.id AS proposal_run_id,
+            proposal.production_release_allowed,
+            proposal.review_required_count,
+            counts.candidates,
+            counts.closed_by_bridge,
+            counts.blocked_by_bridge
+        FROM proposal, counts
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    select_cstring_segment_bridge_blocks = conn.execute(
+        """
+        WITH proposal AS (
+            SELECT *
+            FROM ml_issue_select_cstring_segment_lifecycle_bridge_proposal_runs
+            WHERE finished_at IS NOT NULL
+              AND bridge_status = 'proposal_shadow'
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        item_eval AS (
+            SELECT
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_select_cstring_segment_lifecycle_bridge'
+                        THEN 'closed'
+                    WHEN item.bridge_status != 'ready_for_lifecycle_bridge'
+                      OR COALESCE(TRIM(item.blocking_reason), '') <> ''
+                      OR proposal.bridge_candidate != 1
+                      OR proposal.production_release_allowed != 0
+                      OR item.production_release_allowed != 0
+                        THEN 'stale_proposal'
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_proposal'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                        THEN 'has_issue'
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_select_cstring_segment_lifecycle_bridge'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'stale_proposal'
+                END AS bridge_result
+            FROM ml_issue_select_cstring_segment_lifecycle_bridge_proposal_items item
+            JOIN proposal ON proposal.id = item.run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM (
+            SELECT
+                segment_id,
+                CASE
+                    WHEN SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) > 0 THEN 'closed'
+                    ELSE MIN(bridge_result)
+                END AS bridge_result
+            FROM item_eval
+            GROUP BY segment_id
+        )
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        LIMIT 10
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    short_label_compact_ui_false_reopen_bridge_row = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_short_label_compact_ui_false_reopen_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND rule_version = 'issue_short_label_compact_ui_false_reopen_checkpoint_v1'
+              AND checkpoint_status = 'ready_for_lifecycle_policy'
+              AND production_release_allowed = 0
+              AND checkpoint_allowed_count > 0
+              AND agent_key = 'micro_short_label_style'
+        ),
+        coverage AS (
+            SELECT *
+            FROM ml_issue_partial_coverage_runs
+            WHERE finished_at IS NOT NULL
+              AND source_counts_json LIKE '%short_label_compact_ui_false_reopen_checkpoint:exact%'
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        item_eval AS (
+            SELECT
+                item.segment_id,
+                item.checkpoint_run_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_short_label_compact_ui_false_reopen_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.checkpoint_action != 'cover_short_label_compact_ui_false_reopen'
+                      OR item.issue_family != 'short_label_style_microagent'
+                      OR item.agent_key != 'micro_short_label_style'
+                      OR item.subpolicy_name != 'compact_ui_false_positive_reopen'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN coverage_item.segment_id IS NULL
+                      OR COALESCE(coverage_item.coverage_state, '') != 'full'
+                        THEN 'coverage_not_full'
+                    WHEN COALESCE(coverage_item.coverage_sources_json, '') NOT LIKE '%short_label_compact_ui_false_reopen_checkpoint%'
+                        THEN 'coverage_source_missing'
+                    WHEN COALESCE(current_state.final_state, '') != 'reopen_auto_confirmed_autofix'
+                        THEN 'not_current_reopen_auto_confirmed_autofix'
+                    WHEN COALESCE(current_state.confirmed_matches_output, 0) != 1
+                        THEN 'confirmed_output_mismatch'
+                    WHEN COALESCE(current_state.needs_output_apply, 0) != 0
+                        THEN 'needs_output_apply'
+                    WHEN COALESCE(current_state.needs_reopen, 0) != 1
+                        THEN 'not_marked_as_reopen'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_short_label_compact_ui_false_reopen_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.checkpoint_run_id
+             AND checkpoint.queue_run_id = item.queue_run_id
+             AND checkpoint.ledger_run_id = item.ledger_run_id
+            LEFT JOIN ml_issue_partial_coverage_items coverage_item
+              ON coverage_item.segment_id = item.segment_id
+             AND coverage_item.run_id = (SELECT id FROM coverage)
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+        )
+        SELECT
+            (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+            (SELECT id FROM coverage) AS coverage_run_id,
+            (SELECT SUM(candidate_count) FROM checkpoint) AS candidates,
+            (SELECT SUM(checkpoint_allowed_count) FROM checkpoint) AS allowed,
+            (SELECT SUM(checkpoint_blocked_count) FROM checkpoint) AS checkpoint_blocked,
+            COUNT(DISTINCT CASE WHEN bridge_result = 'closed' THEN segment_id END) AS closed_by_bridge,
+            COUNT(DISTINCT CASE WHEN bridge_result != 'closed' THEN segment_id END) AS blocked_by_bridge
+        FROM item_eval
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    short_label_compact_ui_false_reopen_bridge_blocks = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_short_label_compact_ui_false_reopen_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND rule_version = 'issue_short_label_compact_ui_false_reopen_checkpoint_v1'
+              AND checkpoint_status = 'ready_for_lifecycle_policy'
+              AND production_release_allowed = 0
+              AND checkpoint_allowed_count > 0
+              AND agent_key = 'micro_short_label_style'
+        ),
+        coverage AS (
+            SELECT *
+            FROM ml_issue_partial_coverage_runs
+            WHERE finished_at IS NOT NULL
+              AND source_counts_json LIKE '%short_label_compact_ui_false_reopen_checkpoint:exact%'
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        item_eval AS (
+            SELECT
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_short_label_compact_ui_false_reopen_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.checkpoint_action != 'cover_short_label_compact_ui_false_reopen'
+                      OR item.issue_family != 'short_label_style_microagent'
+                      OR item.agent_key != 'micro_short_label_style'
+                      OR item.subpolicy_name != 'compact_ui_false_positive_reopen'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN coverage_item.segment_id IS NULL
+                      OR COALESCE(coverage_item.coverage_state, '') != 'full'
+                        THEN 'coverage_not_full'
+                    WHEN COALESCE(coverage_item.coverage_sources_json, '') NOT LIKE '%short_label_compact_ui_false_reopen_checkpoint%'
+                        THEN 'coverage_source_missing'
+                    WHEN COALESCE(current_state.final_state, '') != 'reopen_auto_confirmed_autofix'
+                        THEN 'not_current_reopen_auto_confirmed_autofix'
+                    WHEN COALESCE(current_state.confirmed_matches_output, 0) != 1
+                        THEN 'confirmed_output_mismatch'
+                    WHEN COALESCE(current_state.needs_output_apply, 0) != 0
+                        THEN 'needs_output_apply'
+                    WHEN COALESCE(current_state.needs_reopen, 0) != 1
+                        THEN 'not_marked_as_reopen'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_short_label_compact_ui_false_reopen_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.checkpoint_run_id
+             AND checkpoint.queue_run_id = item.queue_run_id
+             AND checkpoint.ledger_run_id = item.ledger_run_id
+            LEFT JOIN ml_issue_partial_coverage_items coverage_item
+              ON coverage_item.segment_id = item.segment_id
+             AND coverage_item.run_id = (SELECT id FROM coverage)
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    short_label_compact_ui_semantic_companion_row = conn.execute(
+        """
+        WITH bridge AS (
+            SELECT *
+            FROM ml_issue_short_label_compact_ui_semantic_companion_bridge_runs
+            WHERE finished_at IS NOT NULL
+              AND ready_count > 0
+        ),
+        all_raw AS (
+            SELECT
+                item.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY item.segment_id
+                    ORDER BY item.run_id ASC, item.id ASC
+                ) AS segment_rank
+            FROM ml_issue_short_label_compact_ui_semantic_companion_bridge_items item
+            JOIN bridge
+              ON bridge.id = item.run_id
+             AND bridge.source_short_label_checkpoint_run_id = item.source_short_label_checkpoint_run_id
+             AND bridge.source_companion_decision_run_id = item.source_companion_decision_run_id
+             AND bridge.source_companion_queue_run_id = item.source_companion_queue_run_id
+             AND bridge.source_ledger_run_id = item.source_ledger_run_id
+        ),
+        all_items AS (
+            SELECT *
+            FROM all_raw
+            WHERE segment_rank = 1
+        ),
+        ledger AS (
+            SELECT
+                run_id,
+                segment_id,
+                COUNT(*) AS issue_count,
+                SUM(CASE WHEN issue_family = 'short_label_style_microagent' THEN 1 ELSE 0 END) AS short_label_issue_count,
+                SUM(
+                    CASE
+                        WHEN issue_family IN (
+                            'religion_semantic_microagent',
+                            'title_policy_microagent',
+                            'culture_semantic_microagent',
+                            'dynamic_ck3_expression_microagent'
+                        )
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS companion_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+            FROM ml_issue_ledger_items
+            WHERE status = 'open'
+            GROUP BY run_id, segment_id
+        ),
+        item_eval AS (
+            SELECT
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_short_label_compact_ui_semantic_companion_lifecycle'
+                        THEN 'closed'
+                    WHEN item.bridge_status != 'ready_for_lifecycle_bridge'
+                        THEN COALESCE(NULLIF(item.block_reason, ''), item.bridge_status)
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN COALESCE(current_state.state_group, '') != 'pending'
+                      AND COALESCE(current_state.final_state, '') != 'closed_auto_confirmed_short_label_compact_ui_semantic_companion_lifecycle'
+                        THEN 'not_pending'
+                    WHEN COALESCE(current_state.final_state, '') != 'reopen_auto_confirmed_autofix'
+                        THEN 'state_not_reopen_auto_confirmed_autofix'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                        THEN 'review_state_not_auto_confirmed'
+                    WHEN COALESCE(current_state.needs_output_apply, 0) != 0
+                        THEN 'needs_output_apply'
+                    WHEN COALESCE(current_state.confirmed_matches_output, 0) != 1
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_status_not_ok'
+                    WHEN COALESCE(item.token_not_ok_count, 0) != 0
+                        THEN 'token_status_not_ok'
+                    WHEN COALESCE(item.high_issue_count, 0) != 0
+                      OR COALESCE(ledger.high_issue_count, 0) != 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) != 0
+                        THEN 'high_issue_present'
+                    WHEN COALESCE(ledger.issue_count, 0) != 2
+                        THEN 'open_issue_count_not_two'
+                    WHEN COALESCE(ledger.short_label_issue_count, 0) != 1
+                        THEN 'short_label_issue_count_not_one'
+                    WHEN COALESCE(ledger.companion_issue_count, 0) != 1
+                        THEN 'companion_issue_count_not_one'
+                    WHEN COALESCE(state.final_state, '') != 'closed_auto_confirmed_short_label_compact_ui_semantic_companion_lifecycle'
+                      AND COALESCE(state.state_group, '') = 'closed'
+                        THEN 'already_closed_elsewhere'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM all_items item
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output
+              ON output.segment_id = item.segment_id
+            LEFT JOIN ledger
+              ON ledger.run_id = item.source_ledger_run_id
+             AND ledger.segment_id = item.segment_id
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT
+            (SELECT GROUP_CONCAT(id) FROM bridge) AS bridge_run_ids,
+            (SELECT COUNT(*) FROM all_items) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked
+        FROM item_eval
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    short_label_compact_ui_semantic_companion_blocks = conn.execute(
+        """
+        WITH bridge AS (
+            SELECT *
+            FROM ml_issue_short_label_compact_ui_semantic_companion_bridge_runs
+            WHERE finished_at IS NOT NULL
+              AND ready_count > 0
+        ),
+        all_raw AS (
+            SELECT
+                item.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY item.segment_id
+                    ORDER BY item.run_id ASC, item.id ASC
+                ) AS segment_rank
+            FROM ml_issue_short_label_compact_ui_semantic_companion_bridge_items item
+            JOIN bridge
+              ON bridge.id = item.run_id
+             AND bridge.source_short_label_checkpoint_run_id = item.source_short_label_checkpoint_run_id
+             AND bridge.source_companion_decision_run_id = item.source_companion_decision_run_id
+             AND bridge.source_companion_queue_run_id = item.source_companion_queue_run_id
+             AND bridge.source_ledger_run_id = item.source_ledger_run_id
+        ),
+        all_items AS (
+            SELECT *
+            FROM all_raw
+            WHERE segment_rank = 1
+        ),
+        ledger AS (
+            SELECT
+                run_id,
+                segment_id,
+                COUNT(*) AS issue_count,
+                SUM(CASE WHEN issue_family = 'short_label_style_microagent' THEN 1 ELSE 0 END) AS short_label_issue_count,
+                SUM(
+                    CASE
+                        WHEN issue_family IN (
+                            'religion_semantic_microagent',
+                            'title_policy_microagent',
+                            'culture_semantic_microagent',
+                            'dynamic_ck3_expression_microagent'
+                        )
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS companion_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+            FROM ml_issue_ledger_items
+            WHERE status = 'open'
+            GROUP BY run_id, segment_id
+        ),
+        item_eval AS (
+            SELECT
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_short_label_compact_ui_semantic_companion_lifecycle'
+                        THEN 'closed'
+                    WHEN item.bridge_status != 'ready_for_lifecycle_bridge'
+                        THEN COALESCE(NULLIF(item.block_reason, ''), item.bridge_status)
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN COALESCE(current_state.state_group, '') != 'pending'
+                      AND COALESCE(current_state.final_state, '') != 'closed_auto_confirmed_short_label_compact_ui_semantic_companion_lifecycle'
+                        THEN 'not_pending'
+                    WHEN COALESCE(current_state.final_state, '') != 'reopen_auto_confirmed_autofix'
+                        THEN 'state_not_reopen_auto_confirmed_autofix'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                        THEN 'review_state_not_auto_confirmed'
+                    WHEN COALESCE(current_state.needs_output_apply, 0) != 0
+                        THEN 'needs_output_apply'
+                    WHEN COALESCE(current_state.confirmed_matches_output, 0) != 1
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_status_not_ok'
+                    WHEN COALESCE(item.token_not_ok_count, 0) != 0
+                        THEN 'token_status_not_ok'
+                    WHEN COALESCE(item.high_issue_count, 0) != 0
+                      OR COALESCE(ledger.high_issue_count, 0) != 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) != 0
+                        THEN 'high_issue_present'
+                    WHEN COALESCE(ledger.issue_count, 0) != 2
+                        THEN 'open_issue_count_not_two'
+                    WHEN COALESCE(ledger.short_label_issue_count, 0) != 1
+                        THEN 'short_label_issue_count_not_one'
+                    WHEN COALESCE(ledger.companion_issue_count, 0) != 1
+                        THEN 'companion_issue_count_not_one'
+                    WHEN COALESCE(state.final_state, '') != 'closed_auto_confirmed_short_label_compact_ui_semantic_companion_lifecycle'
+                      AND COALESCE(state.state_group, '') = 'closed'
+                        THEN 'already_closed_elsewhere'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM all_items item
+            LEFT JOIN segment_state_items state ON state.segment_id = item.segment_id AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state ON current_state.segment_id = item.segment_id AND current_state.run_id = ?
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN ledger ON ledger.run_id = item.source_ledger_run_id AND ledger.segment_id = item.segment_id
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    short_label_pure_no_token_domain_bridge_row = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_short_label_pure_no_token_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND (
+                    (id = 11 AND shadow_run_id = 12)
+                 OR (id = 14 AND shadow_run_id = 15)
+              )
+              AND rule_version = 'issue_short_label_pure_no_token_checkpoint_v1'
+              AND checkpoint_status = 'ready_for_lifecycle_policy'
+              AND production_release_allowed = 0
+              AND policy_name = 'short_label_pure_no_token_nominal_shadow'
+              AND agent_key = 'micro_short_label_style'
+        ),
+        item_eval AS (
+            SELECT
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_short_label_pure_no_token_domain_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.checkpoint_action != 'cover_short_label_pure_no_token_nominal'
+                      OR item.source_decision != 'safe_short_label'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN item.issue_family != 'short_label_style_microagent'
+                      OR item.agent_key != 'micro_short_label_style'
+                        THEN 'wrong_agent_or_family'
+                    WHEN COALESCE(TRIM(item.evidence_text), '') = ''
+                      OR instr(item.evidence_text, '[') > 0
+                      OR instr(item.evidence_text, ']') > 0
+                      OR instr(item.evidence_text, '$') > 0
+                      OR instr(item.evidence_text, '{') > 0
+                      OR instr(item.evidence_text, '}') > 0
+                      OR instr(item.evidence_text, '#') > 0
+                      OR instr(item.evidence_text, '|') > 0
+                        THEN 'structural_marker_in_evidence'
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'not_auto_confirmed_or_locked'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.evidence_text)
+                        THEN 'stale_evidence_text'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_short_label_pure_no_token_domain_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_short_label_pure_no_token_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.checkpoint_run_id
+             AND checkpoint.shadow_run_id = item.shadow_run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT
+            (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_ids,
+            (SELECT GROUP_CONCAT(shadow_run_id) FROM checkpoint) AS shadow_run_ids,
+            (SELECT SUM(candidate_count) FROM checkpoint) AS candidates,
+            (SELECT SUM(checkpoint_allowed_count) FROM checkpoint) AS allowed,
+            (SELECT SUM(checkpoint_blocked_count) FROM checkpoint) AS checkpoint_blocked,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+            SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge
+        FROM item_eval
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    short_label_pure_no_token_domain_bridge_blocks = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_short_label_pure_no_token_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND (
+                    (id = 11 AND shadow_run_id = 12)
+                 OR (id = 14 AND shadow_run_id = 15)
+              )
+              AND rule_version = 'issue_short_label_pure_no_token_checkpoint_v1'
+              AND checkpoint_status = 'ready_for_lifecycle_policy'
+              AND production_release_allowed = 0
+              AND policy_name = 'short_label_pure_no_token_nominal_shadow'
+              AND agent_key = 'micro_short_label_style'
+        ),
+        item_eval AS (
+            SELECT
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_short_label_pure_no_token_domain_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.checkpoint_action != 'cover_short_label_pure_no_token_nominal'
+                      OR item.source_decision != 'safe_short_label'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.evidence_text)
+                        THEN 'stale_evidence_text'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_short_label_pure_no_token_domain_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_short_label_pure_no_token_checkpoint_items item
+            JOIN checkpoint ON checkpoint.id = item.checkpoint_run_id AND checkpoint.shadow_run_id = item.shadow_run_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state ON state.segment_id = item.segment_id AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state ON current_state.segment_id = item.segment_id AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT segment_id, COUNT(*) AS issue_count,
+                       SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        LIMIT 20
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    dynamic_ck3_pattern_bridge_row = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_dynamic_ck3_pattern_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND id >= 13
+              AND rule_version = 'issue_dynamic_ck3_pattern_checkpoint_v1'
+              AND checkpoint_status = 'ready_for_shadow_lifecycle_policy'
+              AND policy_name = 'dynamic_ck3_pattern_shadow'
+              AND agent_key = 'micro_dynamic_ck3_expression'
+              AND checkpoint_allowed_count > 0
+        ),
+        item_raw AS (
+            SELECT
+                item.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY item.segment_id
+                    ORDER BY item.checkpoint_run_id ASC, item.id ASC
+                ) AS segment_rank
+            FROM ml_issue_dynamic_ck3_pattern_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.checkpoint_run_id
+             AND checkpoint.pattern_run_id = item.pattern_run_id
+            WHERE item.subpolicy_name = 'dynamic_rule_tooltip_label'
+              AND item.checkpoint_action = 'checked_dynamic_ck3_pattern_shadow'
+        ),
+        item_eval AS (
+            SELECT
+                item.segment_id,
+                item.subpolicy_name,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_dynamic_ck3_pattern_shadow_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN COALESCE(current_state.final_state, '') != 'reopen_auto_confirmed_autofix'
+                        THEN 'not_false_reopen_or_already_resolved'
+                    WHEN COALESCE(current_state.state_group, '') != 'pending'
+                        THEN 'not_pending'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                        THEN 'review_state_not_auto_confirmed'
+                    WHEN COALESCE(current_state.confirmed_matches_output, 0) != 1
+                        THEN 'confirmed_output_mismatch'
+                    WHEN COALESCE(current_state.needs_output_apply, 0) != 0
+                        THEN 'needs_output_apply'
+                    WHEN COALESCE(current_state.needs_reopen, 0) != 1
+                        THEN 'not_marked_as_reopen'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM item_raw item
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            WHERE item.segment_rank = 1
+        )
+        SELECT
+            (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+            (SELECT SUM(total_candidates) FROM checkpoint) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            (SELECT SUM(total_candidates) FROM checkpoint) - SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS blocked
+        FROM item_eval
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    dynamic_ck3_pattern_bridge_blocks = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_dynamic_ck3_pattern_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND id >= 13
+              AND rule_version = 'issue_dynamic_ck3_pattern_checkpoint_v1'
+              AND checkpoint_status = 'ready_for_shadow_lifecycle_policy'
+              AND policy_name = 'dynamic_ck3_pattern_shadow'
+              AND agent_key = 'micro_dynamic_ck3_expression'
+              AND checkpoint_allowed_count > 0
+        ),
+        item_raw AS (
+            SELECT
+                item.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY item.segment_id
+                    ORDER BY item.checkpoint_run_id ASC, item.id ASC
+                ) AS segment_rank
+            FROM ml_issue_dynamic_ck3_pattern_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.checkpoint_run_id
+             AND checkpoint.pattern_run_id = item.pattern_run_id
+            WHERE item.subpolicy_name = 'dynamic_rule_tooltip_label'
+              AND item.checkpoint_action = 'checked_dynamic_ck3_pattern_shadow'
+        ),
+        item_eval AS (
+            SELECT
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_dynamic_ck3_pattern_shadow_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN COALESCE(current_state.final_state, '') != 'reopen_auto_confirmed_autofix'
+                        THEN 'not_false_reopen_or_already_resolved'
+                    WHEN COALESCE(current_state.state_group, '') != 'pending'
+                        THEN 'not_pending'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                        THEN 'review_state_not_auto_confirmed'
+                    WHEN COALESCE(current_state.confirmed_matches_output, 0) != 1
+                        THEN 'confirmed_output_mismatch'
+                    WHEN COALESCE(current_state.needs_output_apply, 0) != 0
+                        THEN 'needs_output_apply'
+                    WHEN COALESCE(current_state.needs_reopen, 0) != 1
+                        THEN 'not_marked_as_reopen'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM item_raw item
+            LEFT JOIN segment_state_items state ON state.segment_id = item.segment_id AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state ON current_state.segment_id = item.segment_id AND current_state.run_id = ?
+            WHERE item.segment_rank = 1
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        LIMIT 20
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    dynamic_ck3_pattern_subpolicies_closed = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_dynamic_ck3_pattern_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND id >= 13
+              AND rule_version = 'issue_dynamic_ck3_pattern_checkpoint_v1'
+              AND checkpoint_status = 'ready_for_shadow_lifecycle_policy'
+              AND policy_name = 'dynamic_ck3_pattern_shadow'
+              AND agent_key = 'micro_dynamic_ck3_expression'
+              AND checkpoint_allowed_count > 0
+        )
+        SELECT item.subpolicy_name, COUNT(*) AS count
+        FROM ml_issue_dynamic_ck3_pattern_checkpoint_items item
+        JOIN checkpoint
+          ON checkpoint.id = item.checkpoint_run_id
+         AND checkpoint.pattern_run_id = item.pattern_run_id
+        JOIN segment_state_items state
+          ON state.segment_id = item.segment_id
+         AND state.run_id = ?
+        WHERE state.final_state = 'closed_auto_confirmed_dynamic_ck3_pattern_shadow_lifecycle'
+        GROUP BY item.subpolicy_name
+        ORDER BY count DESC, item.subpolicy_name
+        """,
+        (run_id,),
+    ).fetchall()
+    gender_longform_false_reopen_bridge_row = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_gender_longform_false_reopen_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND rule_version = 'issue_gender_longform_false_reopen_checkpoint_v1'
+              AND checkpoint_status = 'ready_for_shadow_lifecycle_bridge'
+              AND production_release_allowed = 0
+              AND checkpoint_allowed_count > 0
+        ),
+        item_eval AS (
+            SELECT
+                item.segment_id,
+                item.route_key,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_gender_longform_false_reopen_context'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.route_key NOT IN (
+                            'single_combat_gender_surface_false_reopen_candidate',
+                            'generic_longform_gender_surface_false_reopen_candidate',
+                            'tutorial_help_gender_surface_false_reopen_candidate'
+                      )
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN COALESCE(item.confirmed_matches_output, 0) != 1
+                        THEN 'confirmed_output_mismatch'
+                    WHEN COALESCE(item.needs_output_apply, 0) != 0
+                        THEN 'needs_output_apply'
+                    WHEN COALESCE(TRIM(item.validation_issue_codes), '') <> ''
+                        THEN 'validation_issues_present'
+                    WHEN COALESCE(current_state.final_state, '') NOT IN (
+                            'reopen_auto_confirmed_autofix',
+                            'closed_auto_confirmed_gender_longform_false_reopen_context'
+                    )
+                        THEN 'not_false_reopen_or_already_resolved'
+                    WHEN COALESCE(current_state.final_state, '') != 'closed_auto_confirmed_gender_longform_false_reopen_context'
+                      AND COALESCE(current_state.state_group, '') != 'pending'
+                        THEN 'not_pending'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                        THEN 'review_state_not_auto_confirmed'
+                    WHEN COALESCE(current_state.confirmed_matches_output, 0) != 1
+                        THEN 'current_confirmed_output_mismatch'
+                    WHEN COALESCE(current_state.needs_output_apply, 0) != 0
+                        THEN 'current_needs_output_apply'
+                    WHEN COALESCE(current_state.final_state, '') != 'closed_auto_confirmed_gender_longform_false_reopen_context'
+                      AND COALESCE(current_state.needs_reopen, 0) != 1
+                        THEN 'not_marked_as_reopen'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_gender_longform_false_reopen_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.checkpoint_run_id
+             AND checkpoint.route_run_id = item.route_run_id
+             AND checkpoint.diagnostic_run_id = item.diagnostic_run_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+        )
+        SELECT
+            (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_ids,
+            (SELECT GROUP_CONCAT(route_run_id) FROM checkpoint) AS route_run_ids,
+            (SELECT GROUP_CONCAT(diagnostic_run_id) FROM checkpoint) AS diagnostic_run_ids,
+            (SELECT SUM(total_candidates) FROM checkpoint) AS candidates,
+            (SELECT SUM(checkpoint_allowed_count) FROM checkpoint) AS allowed,
+            (SELECT SUM(checkpoint_blocked_count) FROM checkpoint) AS checkpoint_blocked,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+            SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge
+        FROM item_eval
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    gender_longform_false_reopen_bridge_blocks = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_gender_longform_false_reopen_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND rule_version = 'issue_gender_longform_false_reopen_checkpoint_v1'
+              AND checkpoint_status = 'ready_for_shadow_lifecycle_bridge'
+              AND production_release_allowed = 0
+              AND checkpoint_allowed_count > 0
+        ),
+        item_eval AS (
+            SELECT
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_gender_longform_false_reopen_context'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.route_key NOT IN (
+                            'single_combat_gender_surface_false_reopen_candidate',
+                            'generic_longform_gender_surface_false_reopen_candidate',
+                            'tutorial_help_gender_surface_false_reopen_candidate'
+                      )
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN COALESCE(item.confirmed_matches_output, 0) != 1
+                        THEN 'confirmed_output_mismatch'
+                    WHEN COALESCE(item.needs_output_apply, 0) != 0
+                        THEN 'needs_output_apply'
+                    WHEN COALESCE(TRIM(item.validation_issue_codes), '') <> ''
+                        THEN 'validation_issues_present'
+                    WHEN COALESCE(current_state.final_state, '') NOT IN (
+                            'reopen_auto_confirmed_autofix',
+                            'closed_auto_confirmed_gender_longform_false_reopen_context'
+                    )
+                        THEN 'not_false_reopen_or_already_resolved'
+                    WHEN COALESCE(current_state.final_state, '') != 'closed_auto_confirmed_gender_longform_false_reopen_context'
+                      AND COALESCE(current_state.state_group, '') != 'pending'
+                        THEN 'not_pending'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                        THEN 'review_state_not_auto_confirmed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_gender_longform_false_reopen_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.checkpoint_run_id
+             AND checkpoint.route_run_id = item.route_run_id
+             AND checkpoint.diagnostic_run_id = item.diagnostic_run_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        LIMIT 20
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    gender_longform_false_reopen_bridge_routes = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_gender_longform_false_reopen_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND rule_version = 'issue_gender_longform_false_reopen_checkpoint_v1'
+              AND checkpoint_status = 'ready_for_shadow_lifecycle_bridge'
+              AND production_release_allowed = 0
+              AND checkpoint_allowed_count > 0
+        )
+        SELECT item.route_key, COUNT(*) AS count
+        FROM ml_issue_gender_longform_false_reopen_checkpoint_items item
+        JOIN checkpoint
+          ON checkpoint.id = item.checkpoint_run_id
+         AND checkpoint.route_run_id = item.route_run_id
+         AND checkpoint.diagnostic_run_id = item.diagnostic_run_id
+        JOIN segment_state_items state
+          ON state.segment_id = item.segment_id
+         AND state.run_id = ?
+        WHERE state.final_state = 'closed_auto_confirmed_gender_longform_false_reopen_context'
+        GROUP BY item.route_key
+        ORDER BY count DESC, item.route_key
+        """,
+        (run_id,),
+    ).fetchall()
+    short_label_pure_no_token_semantic_bridge_row = conn.execute(
+        """
+        WITH proposal AS (
+            SELECT *
+            FROM ml_issue_short_label_pure_no_token_segment_lifecycle_bridge_proposal_runs
+            WHERE finished_at IS NOT NULL
+              AND id = 9
+              AND bridge_status = 'proposal_shadow'
+              AND production_release_allowed = 0
+              AND bridge_candidate = 0
+              AND ready_count > 0
+              AND source_coverage_run_id = 143
+              AND source_checkpoint_run_id = 6
+            LIMIT 1
+        ),
+        item_eval AS (
+            SELECT
+                item.id,
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_short_label_pure_no_token_semantic_lifecycle'
+                        THEN 'closed'
+                    WHEN item.bridge_status != 'ready_for_lifecycle_bridge'
+                      OR item.production_release_allowed != 0
+                      OR COALESCE(TRIM(item.blocking_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.blocking_reason, ''), 'proposal_blocked')
+                    WHEN COALESCE(item.open_issue_count, 0) != 0
+                        THEN 'open_issue_count_not_zero'
+                    WHEN COALESCE(item.blocked_issue_count, 0) != 0
+                        THEN 'blocked_issue_count_not_zero'
+                    WHEN COALESCE(item.covered_issue_count, 0) != COALESCE(item.total_issue_count, 0)
+                        THEN 'coverage_not_full'
+                    WHEN COALESCE(item.coverage_sources_json, '') NOT LIKE '%short_label_pure_no_token_checkpoint%'
+                      OR COALESCE(item.coverage_sources_json, '') NOT LIKE '%semantic_review_explained_checkpoint%'
+                        THEN 'missing_required_coverage'
+                    WHEN COALESCE(item.confirmed_text_hash, '') = ''
+                      OR item.confirmed_text_hash != item.output_text_hash
+                        THEN 'hash_mismatch'
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'inactive_or_missing_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR output.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_confirmation_or_output'
+                    WHEN COALESCE(confirmation.locked, 0) = 1
+                      OR COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_short_label_pure_no_token_semantic_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'guard_blocked'
+                END AS bridge_result
+            FROM ml_issue_short_label_pure_no_token_segment_lifecycle_bridge_proposal_items item
+            JOIN proposal ON proposal.id = item.run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        ),
+        counts AS (
+            SELECT
+                COUNT(*) AS candidates,
+                SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+                SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge
+            FROM item_eval
+        )
+        SELECT
+            proposal.id AS bridge_run_id,
+            proposal.source_coverage_run_id AS coverage_run_id,
+            proposal.source_checkpoint_run_id AS checkpoint_run_id,
+            proposal.source_ledger_run_id AS ledger_run_id,
+            proposal.source_segment_state_run_id AS source_segment_state_run_id,
+            proposal.total_candidates,
+            proposal.ready_count,
+            proposal.blocked_count,
+            proposal.review_required_count,
+            proposal.estimated_closed_gain,
+            proposal.production_release_allowed,
+            proposal.source_counts_json,
+            counts.closed_by_bridge,
+            counts.blocked_by_bridge
+        FROM proposal, counts
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    short_label_pure_no_token_semantic_bridge_blocks = conn.execute(
+        """
+        WITH proposal AS (
+            SELECT *
+            FROM ml_issue_short_label_pure_no_token_segment_lifecycle_bridge_proposal_runs
+            WHERE finished_at IS NOT NULL
+              AND id = 9
+              AND bridge_status = 'proposal_shadow'
+              AND production_release_allowed = 0
+              AND bridge_candidate = 0
+              AND ready_count > 0
+              AND source_coverage_run_id = 143
+              AND source_checkpoint_run_id = 6
+            LIMIT 1
+        ),
+        item_eval AS (
+            SELECT
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_short_label_pure_no_token_semantic_lifecycle'
+                        THEN 'closed'
+                    WHEN item.bridge_status != 'ready_for_lifecycle_bridge'
+                      OR item.production_release_allowed != 0
+                      OR COALESCE(TRIM(item.blocking_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.blocking_reason, ''), 'proposal_blocked')
+                    WHEN COALESCE(item.open_issue_count, 0) != 0
+                        THEN 'open_issue_count_not_zero'
+                    WHEN COALESCE(item.blocked_issue_count, 0) != 0
+                        THEN 'blocked_issue_count_not_zero'
+                    WHEN COALESCE(item.covered_issue_count, 0) != COALESCE(item.total_issue_count, 0)
+                        THEN 'coverage_not_full'
+                    WHEN COALESCE(item.coverage_sources_json, '') NOT LIKE '%short_label_pure_no_token_checkpoint%'
+                      OR COALESCE(item.coverage_sources_json, '') NOT LIKE '%semantic_review_explained_checkpoint%'
+                        THEN 'missing_required_coverage'
+                    WHEN COALESCE(item.confirmed_text_hash, '') = ''
+                      OR item.confirmed_text_hash != item.output_text_hash
+                        THEN 'hash_mismatch'
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'inactive_or_missing_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR output.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_confirmation_or_output'
+                    WHEN COALESCE(confirmation.locked, 0) = 1
+                      OR COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_short_label_pure_no_token_semantic_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'guard_blocked'
+                END AS bridge_result
+            FROM ml_issue_short_label_pure_no_token_segment_lifecycle_bridge_proposal_items item
+            JOIN proposal ON proposal.id = item.run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        LIMIT 10
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    short_semantic_tier1_bridge_row = conn.execute(
+        """
+        WITH expansion AS (
+            SELECT *
+            FROM ml_issue_short_label_semantic_guarded_expansion_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_status = 'shadow'
+              AND production_release_allowed = 0
+              AND allowed_count > 0
+        ),
+        item_eval AS (
+            SELECT
+                item.id,
+                item.segment_id,
+                item.queue_bucket,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_short_label_semantic_tier1_guarded_composition'
+                        THEN 'closed'
+                    WHEN item.queue_bucket IN ('recheck_long_or_special', 'recheck_long_event_or_dlc')
+                        THEN 'long_bucket_not_allowed'
+                    WHEN COALESCE(item.block_reason, '') = 'visible_text_matches_english_reference'
+                        THEN 'english_visible_block'
+                    WHEN COALESCE(item.block_reason, '') = 'dynamic_marker_requires_specific_composition_policy'
+                        THEN 'dynamic_marker_block'
+                    WHEN item.dry_run_allowed != 1
+                      OR item.dry_run_decision != 'composition_ready'
+                      OR item.dry_run_action != 'would_close_short_label_semantic_tier1_composition'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN 'dry_run_blocked'
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_or_hash_missing'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.confirmed_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(diagnostic.open_issue_count, 0) != 0
+                      OR COALESCE(diagnostic.coverage_state, '') != 'full'
+                      OR COALESCE(diagnostic.composition_bucket, '') != 'dual_covered_ready_recheck'
+                        THEN 'stale_or_hash_missing'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'high_issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_short_label_semantic_tier1_guarded_composition'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'stale_or_hash_missing'
+                END AS bridge_result
+            FROM ml_issue_short_label_semantic_guarded_expansion_items item
+            JOIN expansion ON expansion.id = item.run_id
+            LEFT JOIN ml_issue_short_label_semantic_composition_diagnostic_items diagnostic
+              ON diagnostic.id = item.diagnostic_item_id
+             AND diagnostic.run_id = item.diagnostic_run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        ),
+        segment_eval AS (
+            SELECT
+                segment_id,
+                CASE
+                    WHEN SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) > 0 THEN 'closed'
+                    ELSE 'blocked'
+                END AS bridge_result
+            FROM item_eval
+            GROUP BY segment_id
+        ),
+        counts AS (
+            SELECT
+                COUNT(*) AS candidates,
+                SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+                SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge
+            FROM segment_eval
+        )
+        SELECT
+            GROUP_CONCAT(DISTINCT expansion.id) AS dry_run_ids,
+            GROUP_CONCAT(DISTINCT expansion.checkpoint_run_id) AS checkpoint_run_ids,
+            SUM(DISTINCT expansion.candidate_count) AS candidate_count,
+            SUM(DISTINCT expansion.allowed_count) AS allowed_count,
+            SUM(DISTINCT expansion.blocked_count) AS blocked_count,
+            MAX(expansion.production_release_allowed) AS production_release_allowed,
+            counts.candidates,
+            counts.closed_by_bridge,
+            counts.blocked_by_bridge
+        FROM expansion, counts
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    short_semantic_tier1_bridge_buckets = conn.execute(
+        """
+        SELECT item.queue_bucket, COUNT(*) AS count
+        FROM ml_issue_short_label_semantic_guarded_expansion_items item
+        JOIN (
+            SELECT id
+            FROM ml_issue_short_label_semantic_guarded_expansion_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_status = 'shadow'
+              AND production_release_allowed = 0
+              AND allowed_count > 0
+        ) expansion ON expansion.id = item.run_id
+        JOIN segment_state_items state
+          ON state.segment_id = item.segment_id
+         AND state.run_id = ?
+        WHERE state.final_state = 'closed_auto_confirmed_short_label_semantic_tier1_guarded_composition'
+        GROUP BY item.queue_bucket
+        ORDER BY count DESC, item.queue_bucket
+        """,
+        (run_id,),
+    ).fetchall()
+    short_semantic_tier1_bridge_blocks = conn.execute(
+        """
+        WITH expansion AS (
+            SELECT *
+            FROM ml_issue_short_label_semantic_guarded_expansion_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_status = 'shadow'
+              AND production_release_allowed = 0
+              AND allowed_count > 0
+        ),
+        item_eval AS (
+            SELECT
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_short_label_semantic_tier1_guarded_composition'
+                        THEN 'closed'
+                    WHEN item.queue_bucket IN ('recheck_long_or_special', 'recheck_long_event_or_dlc')
+                        THEN 'long_bucket_not_allowed'
+                    WHEN COALESCE(item.block_reason, '') = 'visible_text_matches_english_reference'
+                        THEN 'english_visible_block'
+                    WHEN COALESCE(item.block_reason, '') = 'dynamic_marker_requires_specific_composition_policy'
+                        THEN 'dynamic_marker_block'
+                    WHEN item.dry_run_allowed != 1
+                      OR item.dry_run_decision != 'composition_ready'
+                      OR item.dry_run_action != 'would_close_short_label_semantic_tier1_composition'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN 'dry_run_blocked'
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_or_hash_missing'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.confirmed_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(diagnostic.open_issue_count, 0) != 0
+                      OR COALESCE(diagnostic.coverage_state, '') != 'full'
+                      OR COALESCE(diagnostic.composition_bucket, '') != 'dual_covered_ready_recheck'
+                        THEN 'stale_or_hash_missing'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'high_issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_short_label_semantic_tier1_guarded_composition'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'stale_or_hash_missing'
+                END AS bridge_result
+            FROM ml_issue_short_label_semantic_guarded_expansion_items item
+            JOIN expansion ON expansion.id = item.run_id
+            LEFT JOIN ml_issue_short_label_semantic_composition_diagnostic_items diagnostic
+              ON diagnostic.id = item.diagnostic_item_id
+             AND diagnostic.run_id = item.diagnostic_run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        LIMIT 20
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    short_semantic_tier1_ignored_runs = conn.execute(
+        """
+        SELECT id, allowed_count
+        FROM ml_issue_short_label_semantic_guarded_expansion_runs
+        WHERE finished_at IS NOT NULL
+          AND policy_status = 'shadow'
+          AND production_release_allowed = 0
+          AND COALESCE(allowed_count, 0) = 0
+        ORDER BY id
+        """
+    ).fetchall()
+    semantic_short_label_pair_bridge_row = conn.execute(
+        """
+        WITH expansion AS (
+            SELECT *
+            FROM ml_issue_semantic_short_label_pair_guarded_expansion_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_name = 'semantic_short_label_pair_guarded_expansion_shadow'
+              AND policy_status = 'dry_run'
+              AND allowed_count > 0
+              AND (
+                    id = (
+                        SELECT MAX(ui_run.id)
+                        FROM ml_issue_semantic_short_label_pair_guarded_expansion_runs ui_run
+                        WHERE ui_run.finished_at IS NOT NULL
+                          AND ui_run.policy_name = 'semantic_short_label_pair_guarded_expansion_shadow'
+                          AND ui_run.policy_status = 'dry_run'
+                          AND ui_run.guard_profile = 'ui_only_v10'
+                          AND ui_run.allowed_count > 0
+                    )
+                 OR (
+                        id = 37
+                    AND guard_profile = 'balanced_v1'
+                    AND opportunity_run_id = 12
+                    AND ledger_run_id = 25
+                    AND checkpoint_run_id = 18
+                    AND allowed_count = 2955
+                    AND blocked_count = 2394
+                 )
+              )
+        ),
+        checkpoint AS (
+            SELECT *
+            FROM ml_issue_semantic_short_label_pair_checkpoint_runs
+            WHERE id IN (SELECT checkpoint_run_id FROM expansion WHERE checkpoint_run_id IS NOT NULL)
+        ),
+        item_eval AS (
+            SELECT
+                item.id,
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_semantic_short_label_pair_guarded_lifecycle'
+                        THEN 'closed'
+                    WHEN item.dry_run_allowed != 1
+                      OR item.guard_profile NOT IN ('ui_only_v10', 'balanced_v1')
+                      OR item.classifier_decision != 'safe_short_label'
+                      OR item.dry_run_action != 'would_cover_semantic_short_label_pair_safe'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN 'dry_run_blocked'
+                    WHEN COALESCE(opportunity.issue_kinds_json, '') != '["needs_human_or_semantic_conflict", "short_or_compact_label_reopened"]'
+                        THEN 'wrong_issue_pair'
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'high_issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_semantic_short_label_pair_guarded_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_semantic_short_label_pair_guarded_expansion_items item
+            JOIN expansion ON expansion.id = item.run_id
+            LEFT JOIN ml_issue_semantic_short_label_pair_opportunity_items opportunity
+              ON opportunity.id = item.opportunity_item_id
+             AND opportunity.run_id = item.opportunity_run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        ),
+        counts AS (
+            SELECT
+                COUNT(*) AS candidates,
+                SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+                SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge
+            FROM (
+                SELECT
+                    segment_id,
+                    CASE
+                        WHEN SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) > 0 THEN 'closed'
+                        ELSE 'blocked'
+                    END AS bridge_result
+                FROM item_eval
+                GROUP BY segment_id
+            )
+        )
+        SELECT
+            GROUP_CONCAT(DISTINCT expansion.id) AS dry_run_ids,
+            GROUP_CONCAT(DISTINCT expansion.guard_profile) AS guard_profiles,
+            GROUP_CONCAT(DISTINCT expansion.checkpoint_run_id) AS checkpoint_run_ids,
+            SUM(expansion.allowed_count) AS allowed_count,
+            SUM(expansion.blocked_count) AS blocked_count,
+            SUM(expansion.candidate_count) AS candidate_count,
+            CASE
+                WHEN SUM(COALESCE(checkpoint.decision_count, 0)) > 0
+                    THEN ROUND(100.0 * SUM(COALESCE(checkpoint.safe_decision_count, 0)) / SUM(COALESCE(checkpoint.decision_count, 0)), 2)
+                ELSE 0
+            END AS precision_proxy,
+            counts.candidates,
+            counts.closed_by_bridge,
+            counts.blocked_by_bridge
+        FROM expansion
+        LEFT JOIN checkpoint ON checkpoint.id = expansion.checkpoint_run_id
+        CROSS JOIN counts
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    semantic_short_label_pair_bridge_blocks = conn.execute(
+        """
+        WITH expansion AS (
+            SELECT *
+            FROM ml_issue_semantic_short_label_pair_guarded_expansion_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_name = 'semantic_short_label_pair_guarded_expansion_shadow'
+              AND policy_status = 'dry_run'
+              AND allowed_count > 0
+              AND (
+                    id = (
+                        SELECT MAX(ui_run.id)
+                        FROM ml_issue_semantic_short_label_pair_guarded_expansion_runs ui_run
+                        WHERE ui_run.finished_at IS NOT NULL
+                          AND ui_run.policy_name = 'semantic_short_label_pair_guarded_expansion_shadow'
+                          AND ui_run.policy_status = 'dry_run'
+                          AND ui_run.guard_profile = 'ui_only_v10'
+                          AND ui_run.allowed_count > 0
+                    )
+                 OR (
+                        id = 37
+                    AND guard_profile = 'balanced_v1'
+                    AND opportunity_run_id = 12
+                    AND ledger_run_id = 25
+                    AND checkpoint_run_id = 18
+                    AND allowed_count = 2955
+                    AND blocked_count = 2394
+                 )
+              )
+        ),
+        item_eval AS (
+            SELECT
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_semantic_short_label_pair_guarded_lifecycle'
+                        THEN 'closed'
+                    WHEN item.dry_run_allowed != 1
+                      OR item.guard_profile NOT IN ('ui_only_v10', 'balanced_v1')
+                      OR item.classifier_decision != 'safe_short_label'
+                      OR item.dry_run_action != 'would_cover_semantic_short_label_pair_safe'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'dry_run_blocked')
+                    WHEN COALESCE(opportunity.issue_kinds_json, '') != '["needs_human_or_semantic_conflict", "short_or_compact_label_reopened"]'
+                        THEN 'wrong_issue_pair'
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'high_issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_semantic_short_label_pair_guarded_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_semantic_short_label_pair_guarded_expansion_items item
+            JOIN expansion ON expansion.id = item.run_id
+            LEFT JOIN ml_issue_semantic_short_label_pair_opportunity_items opportunity
+              ON opportunity.id = item.opportunity_item_id
+             AND opportunity.run_id = item.opportunity_run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        LIMIT 20
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    semantic_short_label_pair_bridge_examples = conn.execute(
+        """
+        WITH expansion AS (
+            SELECT id
+            FROM ml_issue_semantic_short_label_pair_guarded_expansion_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_name = 'semantic_short_label_pair_guarded_expansion_shadow'
+              AND guard_profile = 'ui_only_v10'
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        )
+        SELECT
+            item.segment_id,
+            item.relative_path,
+            item.source_line_number,
+            item.source_key,
+            COALESCE(NULLIF(item.block_reason, ''), 'not_closed_by_current_state') AS block_reason,
+            item.text_sample
+        FROM ml_issue_semantic_short_label_pair_guarded_expansion_items item
+        JOIN expansion ON expansion.id = item.run_id
+        LEFT JOIN segment_state_items state
+          ON state.segment_id = item.segment_id
+         AND state.run_id = ?
+        WHERE COALESCE(state.final_state, '') != 'closed_auto_confirmed_semantic_short_label_pair_guarded_lifecycle'
+        ORDER BY item.dry_run_allowed DESC, item.block_reason, item.relative_path, item.source_line_number
+        LIMIT 8
+        """,
+        (run_id,),
+    ).fetchall()
+    semantic_short_label_blocked_surface_bridge_row = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND id = 2
+              AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND policy_status = 'shadow'
+              AND row_guard_profile = 'strict_label_v1'
+              AND dry_run_id = 31
+              AND allowed_count = 4065
+            LIMIT 1
+        ),
+        item_eval AS (
+            SELECT
+                item.id,
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_semantic_short_label_blocked_surface_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.agent_key != 'micro_short_label_style'
+                      OR item.checkpoint_action != 'stage_semantic_short_label_blocked_surface_shadow'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.current_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'high_issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_semantic_short_label_blocked_surface_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+            JOIN checkpoint ON checkpoint.id = item.run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        ),
+        counts AS (
+            SELECT
+                COUNT(*) AS candidates,
+                SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+                SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge
+            FROM item_eval
+        )
+        SELECT
+            checkpoint.id AS checkpoint_id,
+            checkpoint.dry_run_id,
+            checkpoint.row_guard_profile,
+            checkpoint.allowed_count,
+            checkpoint.blocked_count,
+            checkpoint.candidate_count,
+            counts.candidates,
+            counts.closed_by_bridge,
+            counts.blocked_by_bridge
+        FROM checkpoint, counts
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    semantic_short_label_blocked_surface_bridge_blocks = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND id = 2
+              AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND policy_status = 'shadow'
+              AND row_guard_profile = 'strict_label_v1'
+              AND dry_run_id = 31
+              AND allowed_count = 4065
+            LIMIT 1
+        ),
+        item_eval AS (
+            SELECT
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_semantic_short_label_blocked_surface_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.agent_key != 'micro_short_label_style'
+                      OR item.checkpoint_action != 'stage_semantic_short_label_blocked_surface_shadow'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.current_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'high_issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_semantic_short_label_blocked_surface_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+            JOIN checkpoint ON checkpoint.id = item.run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        LIMIT 20
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    semantic_short_label_blocked_surface_bridge_examples = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT id
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND id = 2
+              AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND policy_status = 'shadow'
+              AND row_guard_profile = 'strict_label_v1'
+              AND dry_run_id = 31
+              AND allowed_count = 4065
+            LIMIT 1
+        )
+        SELECT
+            item.segment_id,
+            item.relative_path,
+            item.source_line_number,
+            item.source_key,
+            COALESCE(NULLIF(item.block_reason, ''), 'not_closed_by_current_state') AS block_reason,
+            item.current_text
+        FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+        JOIN checkpoint ON checkpoint.id = item.run_id
+        LEFT JOIN segment_state_items state
+          ON state.segment_id = item.segment_id
+         AND state.run_id = ?
+        WHERE COALESCE(state.final_state, '') != 'closed_auto_confirmed_semantic_short_label_blocked_surface_lifecycle'
+        ORDER BY item.checkpoint_allowed DESC, item.block_reason, item.relative_path, item.source_line_number
+        LIMIT 8
+        """,
+        (run_id,),
+    ).fetchall()
+    event_dialogue_option_bridge_row = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND policy_status = 'shadow'
+              AND row_guard_profile = 'legacy'
+              AND agent_key = 'micro_event_dialogue_option'
+              AND (
+                    (id = 3 AND dry_run_id = 32 AND allowed_count = 734)
+                 OR (id = 5 AND dry_run_id = 34 AND allowed_count = 3878)
+              )
+        ),
+        item_eval AS (
+            SELECT
+                item.id,
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_event_dialogue_option_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.agent_key != 'micro_event_dialogue_option'
+                      OR item.checkpoint_action != 'stage_semantic_short_label_blocked_surface_shadow'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.current_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'high_issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_event_dialogue_option_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+            JOIN checkpoint ON checkpoint.id = item.run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        ),
+        segment_eval AS (
+            SELECT
+                segment_id,
+                CASE
+                    WHEN SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) > 0 THEN 'closed'
+                    ELSE 'blocked'
+                END AS bridge_result
+            FROM item_eval
+            GROUP BY segment_id
+        ),
+        counts AS (
+            SELECT
+                COUNT(*) AS candidates,
+                SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+                SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge
+            FROM segment_eval
+        )
+        SELECT
+            GROUP_CONCAT(checkpoint.id, ',') AS checkpoint_id,
+            GROUP_CONCAT(checkpoint.dry_run_id, ',') AS dry_run_id,
+            MAX(checkpoint.agent_key) AS agent_key,
+            MAX(checkpoint.row_guard_profile) AS row_guard_profile,
+            SUM(checkpoint.allowed_count) AS allowed_count,
+            SUM(checkpoint.blocked_count) AS blocked_count,
+            SUM(checkpoint.candidate_count) AS candidate_count,
+            counts.candidates,
+            counts.closed_by_bridge,
+            counts.blocked_by_bridge
+        FROM checkpoint, counts
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    event_dialogue_option_bridge_blocks = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND policy_status = 'shadow'
+              AND row_guard_profile = 'legacy'
+              AND agent_key = 'micro_event_dialogue_option'
+              AND (
+                    (id = 3 AND dry_run_id = 32 AND allowed_count = 734)
+                 OR (id = 5 AND dry_run_id = 34 AND allowed_count = 3878)
+              )
+        ),
+        item_eval AS (
+            SELECT
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_event_dialogue_option_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.agent_key != 'micro_event_dialogue_option'
+                      OR item.checkpoint_action != 'stage_semantic_short_label_blocked_surface_shadow'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.current_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'high_issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_event_dialogue_option_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+            JOIN checkpoint ON checkpoint.id = item.run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        LIMIT 20
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    event_dialogue_option_bridge_examples = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT id
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND policy_status = 'shadow'
+              AND row_guard_profile = 'legacy'
+              AND agent_key = 'micro_event_dialogue_option'
+              AND (
+                    (id = 3 AND dry_run_id = 32 AND allowed_count = 734)
+                 OR (id = 5 AND dry_run_id = 34 AND allowed_count = 3878)
+              )
+        )
+        SELECT
+            item.segment_id,
+            item.relative_path,
+            item.source_line_number,
+            item.source_key,
+            COALESCE(NULLIF(item.block_reason, ''), 'not_closed_by_current_state') AS block_reason,
+            item.current_text
+        FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+        JOIN checkpoint ON checkpoint.id = item.run_id
+        LEFT JOIN segment_state_items state
+          ON state.segment_id = item.segment_id
+         AND state.run_id = ?
+        WHERE COALESCE(state.final_state, '') != 'closed_auto_confirmed_event_dialogue_option_lifecycle'
+        ORDER BY item.checkpoint_allowed DESC, item.block_reason, item.relative_path, item.source_line_number
+        LIMIT 8
+        """,
+        (run_id,),
+    ).fetchall()
+    event_context_composer_bridge_row = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND id = 4
+              AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND policy_status = 'shadow'
+              AND row_guard_profile = 'legacy'
+              AND dry_run_id = 33
+              AND allowed_count = 1558
+              AND agent_key = 'micro_event_context_composer'
+            LIMIT 1
+        ),
+        item_eval AS (
+            SELECT
+                item.id,
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_event_context_composer_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.agent_key != 'micro_event_context_composer'
+                      OR item.checkpoint_action != 'stage_semantic_short_label_blocked_surface_shadow'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.current_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'high_issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_event_context_composer_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+            JOIN checkpoint ON checkpoint.id = item.run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        ),
+        counts AS (
+            SELECT
+                COUNT(*) AS candidates,
+                SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+                SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge
+            FROM item_eval
+        )
+        SELECT
+            checkpoint.id AS checkpoint_id,
+            checkpoint.dry_run_id,
+            checkpoint.agent_key,
+            checkpoint.row_guard_profile,
+            checkpoint.allowed_count,
+            checkpoint.blocked_count,
+            checkpoint.candidate_count,
+            counts.candidates,
+            counts.closed_by_bridge,
+            counts.blocked_by_bridge
+        FROM checkpoint, counts
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    event_context_composer_bridge_blocks = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND id = 4
+              AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND policy_status = 'shadow'
+              AND row_guard_profile = 'legacy'
+              AND dry_run_id = 33
+              AND allowed_count = 1558
+              AND agent_key = 'micro_event_context_composer'
+            LIMIT 1
+        ),
+        item_eval AS (
+            SELECT
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_event_context_composer_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.agent_key != 'micro_event_context_composer'
+                      OR item.checkpoint_action != 'stage_semantic_short_label_blocked_surface_shadow'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.current_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'high_issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_event_context_composer_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+            JOIN checkpoint ON checkpoint.id = item.run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        LIMIT 20
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    event_context_composer_bridge_examples = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT id
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND id = 4
+              AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND policy_status = 'shadow'
+              AND row_guard_profile = 'legacy'
+              AND dry_run_id = 33
+              AND allowed_count = 1558
+              AND agent_key = 'micro_event_context_composer'
+            LIMIT 1
+        )
+        SELECT
+            item.segment_id,
+            item.relative_path,
+            item.source_line_number,
+            item.source_key,
+            COALESCE(NULLIF(item.block_reason, ''), 'not_closed_by_current_state') AS block_reason,
+            item.current_text
+        FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+        JOIN checkpoint ON checkpoint.id = item.run_id
+        LEFT JOIN segment_state_items state
+          ON state.segment_id = item.segment_id
+         AND state.run_id = ?
+        WHERE COALESCE(state.final_state, '') != 'closed_auto_confirmed_event_context_composer_lifecycle'
+        ORDER BY item.checkpoint_allowed DESC, item.block_reason, item.relative_path, item.source_line_number
+        LIMIT 8
+        """,
+        (run_id,),
+    ).fetchall()
+    semantic_short_label_blocked_surface_batch_rows = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND policy_status = 'shadow'
+              AND row_guard_profile = 'legacy'
+              AND dry_run_id = 35
+              AND (
+                    (id = 6 AND agent_key = 'micro_event_context_composer' AND allowed_count = 239)
+                 OR (id = 7 AND agent_key = 'micro_short_label_style' AND allowed_count = 625)
+                 OR (id = 8 AND agent_key = 'micro_event_surface_router' AND allowed_count = 391)
+                 OR (id = 9 AND agent_key = 'micro_requirement_tooltip_surface' AND allowed_count = 189)
+              )
+        ),
+        item_eval AS (
+            SELECT
+                checkpoint.id AS checkpoint_run_id,
+                checkpoint.dry_run_id,
+                checkpoint.agent_key,
+                checkpoint.allowed_count,
+                checkpoint.blocked_count,
+                checkpoint.candidate_count,
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = CASE item.agent_key
+                        WHEN 'micro_event_context_composer'
+                            THEN 'closed_auto_confirmed_event_context_composer_lifecycle_batch'
+                        WHEN 'micro_short_label_style'
+                            THEN 'closed_auto_confirmed_short_label_style_lifecycle_batch'
+                        WHEN 'micro_event_surface_router'
+                            THEN 'closed_auto_confirmed_event_surface_router_lifecycle_batch'
+                        WHEN 'micro_requirement_tooltip_surface'
+                            THEN 'closed_auto_confirmed_requirement_tooltip_surface_lifecycle_batch'
+                    END
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.checkpoint_action != 'stage_semantic_short_label_blocked_surface_shadow'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.current_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'high_issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') IN (
+                                'closed_auto_confirmed_event_context_composer_lifecycle_batch',
+                                'closed_auto_confirmed_short_label_style_lifecycle_batch',
+                                'closed_auto_confirmed_event_surface_router_lifecycle_batch',
+                                'closed_auto_confirmed_requirement_tooltip_surface_lifecycle_batch'
+                            )
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.run_id
+             AND checkpoint.agent_key = item.agent_key
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT
+            checkpoint_run_id,
+            dry_run_id,
+            agent_key,
+            MAX(candidate_count) AS candidate_count,
+            MAX(allowed_count) AS allowed_count,
+            COUNT(*) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+            SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge,
+            SUM(CASE WHEN bridge_result = 'not_pending_or_already_closed' THEN 1 ELSE 0 END) AS already_closed_or_not_pending
+        FROM item_eval
+        GROUP BY checkpoint_run_id, dry_run_id, agent_key
+        ORDER BY checkpoint_run_id
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    semantic_short_label_blocked_surface_batch_blocks = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND policy_status = 'shadow'
+              AND row_guard_profile = 'legacy'
+              AND dry_run_id = 35
+              AND id IN (6, 7, 8, 9)
+        ),
+        item_eval AS (
+            SELECT
+                checkpoint.agent_key,
+                CASE
+                    WHEN state.final_state = CASE item.agent_key
+                        WHEN 'micro_event_context_composer' THEN 'closed_auto_confirmed_event_context_composer_lifecycle_batch'
+                        WHEN 'micro_short_label_style' THEN 'closed_auto_confirmed_short_label_style_lifecycle_batch'
+                        WHEN 'micro_event_surface_router' THEN 'closed_auto_confirmed_event_surface_router_lifecycle_batch'
+                        WHEN 'micro_requirement_tooltip_surface' THEN 'closed_auto_confirmed_requirement_tooltip_surface_lifecycle_batch'
+                    END
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.checkpoint_action != 'stage_semantic_short_label_blocked_surface_shadow'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.current_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'high_issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') IN (
+                                'closed_auto_confirmed_event_context_composer_lifecycle_batch',
+                                'closed_auto_confirmed_short_label_style_lifecycle_batch',
+                                'closed_auto_confirmed_event_surface_router_lifecycle_batch',
+                                'closed_auto_confirmed_requirement_tooltip_surface_lifecycle_batch'
+                            )
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.run_id
+             AND checkpoint.agent_key = item.agent_key
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT agent_key, bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY agent_key, bridge_result
+        ORDER BY agent_key, count DESC, bridge_result
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    semantic_short_label_blocked_surface_batch_examples = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND policy_status = 'shadow'
+              AND row_guard_profile = 'legacy'
+              AND dry_run_id = 35
+              AND id IN (6, 7, 8, 9)
+        )
+        SELECT
+            item.agent_key,
+            item.segment_id,
+            item.relative_path,
+            item.source_line_number,
+            item.source_key,
+            COALESCE(NULLIF(item.block_reason, ''), 'not_closed_by_current_state') AS block_reason,
+            item.current_text
+        FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+        JOIN checkpoint
+          ON checkpoint.id = item.run_id
+         AND checkpoint.agent_key = item.agent_key
+        LEFT JOIN segment_state_items state
+          ON state.segment_id = item.segment_id
+         AND state.run_id = ?
+        WHERE COALESCE(state.final_state, '') NOT IN (
+            'closed_auto_confirmed_event_context_composer_lifecycle_batch',
+            'closed_auto_confirmed_short_label_style_lifecycle_batch',
+            'closed_auto_confirmed_event_surface_router_lifecycle_batch',
+            'closed_auto_confirmed_requirement_tooltip_surface_lifecycle_batch'
+        )
+        ORDER BY item.agent_key, item.checkpoint_allowed DESC, item.block_reason, item.relative_path, item.source_line_number
+        LIMIT 12
+        """,
+        (run_id,),
+    ).fetchall()
+    semantic_short_label_blocked_surface_run36_rows = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND policy_status = 'shadow'
+              AND row_guard_profile = 'legacy'
+              AND dry_run_id = 36
+              AND (
+                    (id = 10 AND agent_key = 'micro_event_context_composer' AND allowed_count = 185)
+                 OR (id = 11 AND agent_key = 'micro_short_label_style' AND allowed_count = 160)
+                 OR (id = 12 AND agent_key = 'micro_event_surface_router' AND allowed_count = 246)
+                 OR (id = 13 AND agent_key = 'micro_requirement_tooltip_surface' AND allowed_count = 68)
+              )
+        ),
+        item_eval AS (
+            SELECT
+                checkpoint.id AS checkpoint_run_id,
+                checkpoint.dry_run_id,
+                checkpoint.agent_key,
+                checkpoint.allowed_count,
+                checkpoint.blocked_count,
+                checkpoint.candidate_count,
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = CASE item.agent_key
+                        WHEN 'micro_event_context_composer'
+                            THEN 'closed_auto_confirmed_event_context_composer_lifecycle_run36'
+                        WHEN 'micro_short_label_style'
+                            THEN 'closed_auto_confirmed_short_label_style_lifecycle_run36'
+                        WHEN 'micro_event_surface_router'
+                            THEN 'closed_auto_confirmed_event_surface_router_lifecycle_run36'
+                        WHEN 'micro_requirement_tooltip_surface'
+                            THEN 'closed_auto_confirmed_requirement_tooltip_surface_lifecycle_run36'
+                    END
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.checkpoint_action != 'stage_semantic_short_label_blocked_surface_shadow'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.current_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'high_issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') IN (
+                                'closed_auto_confirmed_event_context_composer_lifecycle_run36',
+                                'closed_auto_confirmed_short_label_style_lifecycle_run36',
+                                'closed_auto_confirmed_event_surface_router_lifecycle_run36',
+                                'closed_auto_confirmed_requirement_tooltip_surface_lifecycle_run36'
+                            )
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.run_id
+             AND checkpoint.agent_key = item.agent_key
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT
+            checkpoint_run_id,
+            dry_run_id,
+            agent_key,
+            MAX(candidate_count) AS candidate_count,
+            MAX(allowed_count) AS allowed_count,
+            COUNT(*) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+            SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge,
+            SUM(CASE WHEN bridge_result = 'not_pending_or_already_closed' THEN 1 ELSE 0 END) AS already_closed_or_not_pending
+        FROM item_eval
+        GROUP BY checkpoint_run_id, dry_run_id, agent_key
+        ORDER BY checkpoint_run_id
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    semantic_short_label_blocked_surface_run36_blocks = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND policy_status = 'shadow'
+              AND row_guard_profile = 'legacy'
+              AND dry_run_id = 36
+              AND id IN (10, 11, 12, 13)
+        ),
+        item_eval AS (
+            SELECT
+                checkpoint.agent_key,
+                CASE
+                    WHEN state.final_state = CASE item.agent_key
+                        WHEN 'micro_event_context_composer' THEN 'closed_auto_confirmed_event_context_composer_lifecycle_run36'
+                        WHEN 'micro_short_label_style' THEN 'closed_auto_confirmed_short_label_style_lifecycle_run36'
+                        WHEN 'micro_event_surface_router' THEN 'closed_auto_confirmed_event_surface_router_lifecycle_run36'
+                        WHEN 'micro_requirement_tooltip_surface' THEN 'closed_auto_confirmed_requirement_tooltip_surface_lifecycle_run36'
+                    END
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.checkpoint_action != 'stage_semantic_short_label_blocked_surface_shadow'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.current_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'high_issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') IN (
+                                'closed_auto_confirmed_event_context_composer_lifecycle_run36',
+                                'closed_auto_confirmed_short_label_style_lifecycle_run36',
+                                'closed_auto_confirmed_event_surface_router_lifecycle_run36',
+                                'closed_auto_confirmed_requirement_tooltip_surface_lifecycle_run36'
+                            )
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.run_id
+             AND checkpoint.agent_key = item.agent_key
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT agent_key, bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY agent_key, bridge_result
+        ORDER BY agent_key, count DESC, bridge_result
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    semantic_short_label_blocked_surface_run36_examples = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+              AND policy_status = 'shadow'
+              AND row_guard_profile = 'legacy'
+              AND dry_run_id = 36
+              AND id IN (10, 11, 12, 13)
+        )
+        SELECT
+            item.agent_key,
+            item.segment_id,
+            item.relative_path,
+            item.source_line_number,
+            item.source_key,
+            COALESCE(NULLIF(item.block_reason, ''), 'not_closed_by_current_state') AS block_reason,
+            item.current_text
+        FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+        JOIN checkpoint
+          ON checkpoint.id = item.run_id
+         AND checkpoint.agent_key = item.agent_key
+        LEFT JOIN segment_state_items state
+          ON state.segment_id = item.segment_id
+         AND state.run_id = ?
+        WHERE COALESCE(state.final_state, '') NOT IN (
+            'closed_auto_confirmed_event_context_composer_lifecycle_run36',
+            'closed_auto_confirmed_short_label_style_lifecycle_run36',
+            'closed_auto_confirmed_event_surface_router_lifecycle_run36',
+            'closed_auto_confirmed_requirement_tooltip_surface_lifecycle_run36'
+        )
+        ORDER BY item.agent_key, item.checkpoint_allowed DESC, item.block_reason, item.relative_path, item.source_line_number
+        LIMIT 12
+        """,
+        (run_id,),
+    ).fetchall()
+    event_dialogue_boundary_bridge_row = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_event_dialogue_option_boundary_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_status = 'shadow_checkpoint'
+              AND (
+                    (id = 4 AND queue_run_id = 162 AND allowed_count = 178 AND blocked_count = 1)
+                 OR (id = 5 AND queue_run_id = 164 AND allowed_count = 161 AND blocked_count = 7)
+                 OR (id = 6 AND queue_run_id = 198 AND allowed_count = 422 AND blocked_count = 29)
+                 OR (id = 7 AND queue_run_id = 208 AND allowed_count = 265 AND blocked_count = 21)
+              )
+        ),
+        item_eval AS (
+            SELECT
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_event_dialogue_option_boundary_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.decision NOT IN ('safe_short_label', 'composition_ready')
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'not_auto_confirmed_or_locked'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.current_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_event_dialogue_option_boundary_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_event_dialogue_option_boundary_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.run_id
+             AND checkpoint.queue_run_id = item.queue_run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT
+            (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+            (SELECT GROUP_CONCAT(queue_run_id) FROM checkpoint) AS queue_run_ids,
+            (SELECT SUM(candidate_count) FROM checkpoint) AS candidates,
+            (SELECT SUM(allowed_count) FROM checkpoint) AS allowed,
+            (SELECT SUM(blocked_count) FROM checkpoint) AS checkpoint_blocked,
+            SUM(CASE WHEN item_eval.bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+            SUM(CASE WHEN item_eval.bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge
+        FROM item_eval
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    event_dialogue_boundary_bridge_blocks = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_event_dialogue_option_boundary_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_status = 'shadow_checkpoint'
+              AND id IN (4, 5, 6, 7)
+        ),
+        item_eval AS (
+            SELECT
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_event_dialogue_option_boundary_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.decision NOT IN ('safe_short_label', 'composition_ready')
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'not_auto_confirmed_or_locked'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.current_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_event_dialogue_option_boundary_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_event_dialogue_option_boundary_checkpoint_items item
+            JOIN checkpoint ON checkpoint.id = item.run_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state ON state.segment_id = item.segment_id AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state ON current_state.segment_id = item.segment_id AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT segment_id, COUNT(*) AS issue_count,
+                       SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    event_outcome_boundary_bridge_row = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_event_outcome_short_label_boundary_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_status = 'shadow_checkpoint'
+              AND id = 3
+              AND queue_run_id = 167
+              AND allowed_count = 177
+              AND blocked_count = 8
+            LIMIT 1
+        ),
+        item_eval AS (
+            SELECT
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_event_outcome_short_label_boundary_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.decision NOT IN ('safe_short_label', 'composition_ready')
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'not_auto_confirmed_or_locked'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.current_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_event_outcome_short_label_boundary_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_event_outcome_short_label_boundary_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.run_id
+             AND checkpoint.queue_run_id = item.queue_run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT
+            (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+            (SELECT GROUP_CONCAT(queue_run_id) FROM checkpoint) AS queue_run_ids,
+            (SELECT SUM(candidate_count) FROM checkpoint) AS candidates,
+            (SELECT SUM(allowed_count) FROM checkpoint) AS allowed,
+            (SELECT SUM(blocked_count) FROM checkpoint) AS checkpoint_blocked,
+            SUM(CASE WHEN item_eval.bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+            SUM(CASE WHEN item_eval.bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge
+        FROM item_eval
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    event_outcome_boundary_bridge_blocks = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_event_outcome_short_label_boundary_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_status = 'shadow_checkpoint'
+              AND id = 3
+              AND queue_run_id = 167
+              AND allowed_count = 177
+              AND blocked_count = 8
+            LIMIT 1
+        ),
+        item_eval AS (
+            SELECT
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_event_outcome_short_label_boundary_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.decision NOT IN ('safe_short_label', 'composition_ready')
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'not_auto_confirmed_or_locked'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.current_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_event_outcome_short_label_boundary_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_event_outcome_short_label_boundary_checkpoint_items item
+            JOIN checkpoint ON checkpoint.id = item.run_id AND checkpoint.queue_run_id = item.queue_run_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state ON state.segment_id = item.segment_id AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state ON current_state.segment_id = item.segment_id AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT segment_id, COUNT(*) AS issue_count,
+                       SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    event_context_sentence_boundary_bridge_row = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_event_context_sentence_boundary_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_status = 'shadow_checkpoint'
+              AND (
+                    (id = 1 AND queue_run_id = 165 AND allowed_count = 134 AND blocked_count = 8)
+                 OR (id = 2 AND queue_run_id = 199 AND allowed_count = 140 AND blocked_count = 105)
+                 OR (id = 3 AND queue_run_id = 207 AND allowed_count = 140 AND blocked_count = 105)
+              )
+        ),
+        item_eval AS (
+            SELECT
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_event_context_sentence_boundary_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.decision NOT IN ('safe_short_label', 'composition_ready')
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'not_auto_confirmed_or_locked'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.current_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_event_context_sentence_boundary_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_event_context_sentence_boundary_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.run_id
+             AND checkpoint.queue_run_id = item.queue_run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state ON state.segment_id = item.segment_id AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state ON current_state.segment_id = item.segment_id AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT segment_id, COUNT(*) AS issue_count,
+                       SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT
+            (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+            (SELECT GROUP_CONCAT(queue_run_id) FROM checkpoint) AS queue_run_ids,
+            (SELECT SUM(candidate_count) FROM checkpoint) AS candidates,
+            (SELECT SUM(allowed_count) FROM checkpoint) AS allowed,
+            (SELECT SUM(blocked_count) FROM checkpoint) AS checkpoint_blocked,
+            SUM(CASE WHEN item_eval.bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+            SUM(CASE WHEN item_eval.bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge
+        FROM item_eval
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    event_context_sentence_boundary_bridge_blocks = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_event_context_sentence_boundary_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND policy_status = 'shadow_checkpoint'
+              AND id IN (1, 2, 3)
+        ),
+        item_eval AS (
+            SELECT
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_event_context_sentence_boundary_lifecycle'
+                        THEN 'closed'
+                    WHEN item.checkpoint_allowed != 1
+                      OR item.decision NOT IN ('safe_short_label', 'composition_ready')
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'not_auto_confirmed_or_locked'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(item.current_text)
+                        THEN 'stale_confirmed_text'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_event_context_sentence_boundary_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_event_context_sentence_boundary_checkpoint_items item
+            JOIN checkpoint ON checkpoint.id = item.run_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state ON state.segment_id = item.segment_id AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state ON current_state.segment_id = item.segment_id AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT segment_id, COUNT(*) AS issue_count,
+                       SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    autofix_unknown_surface_bridge_row = conn.execute(
+        """
+        WITH proposal AS (
+            SELECT *
+            FROM ml_issue_autofix_unknown_surface_bridge_runs
+            WHERE finished_at IS NOT NULL
+              AND production_release_allowed = 0
+              AND ready_count > 0
+              AND blocked_count = 0
+        ),
+        item_eval AS (
+            SELECT
+                item.id,
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_autofix_unknown_surface_lifecycle_bridge'
+                        THEN 'closed'
+                    WHEN item.bridge_status != 'ready_for_lifecycle_bridge'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                      OR proposal.production_release_allowed != 0
+                      OR proposal.blocked_count != 0
+                      OR COALESCE(item.segment_open_issue_count, 0) != 1
+                      OR COALESCE(item.covered_issue_count, 0) != 1
+                        THEN 'not_ready_or_partial'
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_proposal'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                        THEN 'has_issue'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'not_auto_confirmed_or_locked'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_surface_lifecycle_bridge'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_autofix_unknown_surface_bridge_items item
+            JOIN proposal ON proposal.id = item.run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        ),
+        segment_eval AS (
+            SELECT
+                segment_id,
+                CASE
+                    WHEN SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) > 0 THEN 'closed'
+                    ELSE 'blocked'
+                END AS bridge_result
+            FROM item_eval
+            GROUP BY segment_id
+        ),
+        counts AS (
+            SELECT
+                COUNT(*) AS candidates,
+                SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+                SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge
+            FROM segment_eval
+        ),
+        proposal_counts AS (
+            SELECT
+                GROUP_CONCAT(DISTINCT id) AS proposal_run_ids,
+                GROUP_CONCAT(DISTINCT source_checkpoint_run_id) AS checkpoint_run_ids,
+                SUM(total_candidates) AS total_candidates,
+                SUM(ready_count) AS ready_count,
+                SUM(partial_count) AS partial_count,
+                SUM(blocked_count) AS blocked_count,
+                MAX(production_release_allowed) AS production_release_allowed
+            FROM proposal
+        ),
+        ready_dedup AS (
+            SELECT
+                COUNT(*) AS ready_items_total,
+                COUNT(DISTINCT item.segment_id) AS ready_segments_distinct
+            FROM ml_issue_autofix_unknown_surface_bridge_items item
+            JOIN proposal ON proposal.id = item.run_id
+            WHERE item.bridge_status = 'ready_for_lifecycle_bridge'
+        )
+        SELECT
+            proposal_counts.proposal_run_ids,
+            proposal_counts.checkpoint_run_ids,
+            proposal_counts.production_release_allowed,
+            proposal_counts.total_candidates,
+            proposal_counts.ready_count,
+            proposal_counts.partial_count,
+            proposal_counts.blocked_count,
+            ready_dedup.ready_items_total,
+            ready_dedup.ready_segments_distinct,
+            counts.candidates,
+            counts.closed_by_bridge,
+            counts.blocked_by_bridge
+        FROM proposal_counts, ready_dedup, counts
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    autofix_unknown_surface_bridge_blocks = conn.execute(
+        """
+        WITH proposal AS (
+            SELECT *
+            FROM ml_issue_autofix_unknown_surface_bridge_runs
+            WHERE finished_at IS NOT NULL
+              AND production_release_allowed = 0
+              AND ready_count > 0
+              AND blocked_count = 0
+        ),
+        item_eval AS (
+            SELECT
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_autofix_unknown_surface_lifecycle_bridge'
+                        THEN 'closed'
+                    WHEN item.bridge_status != 'ready_for_lifecycle_bridge'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                      OR proposal.production_release_allowed != 0
+                      OR proposal.blocked_count != 0
+                      OR COALESCE(item.segment_open_issue_count, 0) != 1
+                      OR COALESCE(item.covered_issue_count, 0) != 1
+                        THEN 'not_ready_or_partial'
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_proposal'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                        THEN 'has_issue'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'not_auto_confirmed_or_locked'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_surface_lifecycle_bridge'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_autofix_unknown_surface_bridge_items item
+            JOIN proposal ON proposal.id = item.run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT bridge_result, COUNT(DISTINCT segment_id) AS count
+        FROM (
+            SELECT
+                segment_id,
+                CASE
+                    WHEN SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) > 0 THEN 'closed'
+                    ELSE MIN(bridge_result)
+                END AS bridge_result
+            FROM item_eval
+            GROUP BY segment_id
+        )
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        LIMIT 10
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    autofix_unknown_surface_semantic_bridge_row = conn.execute(
+        """
+        WITH coverage AS (
+            SELECT *
+            FROM ml_issue_partial_coverage_runs
+            WHERE finished_at IS NOT NULL
+              AND id = 160
+              AND ledger_run_id = 31
+              AND segment_state_run_id = 215
+            LIMIT 1
+        ),
+        candidate AS (
+            SELECT item.*
+            FROM ml_issue_partial_coverage_items item
+            JOIN coverage
+              ON coverage.id = item.run_id
+             AND coverage.ledger_run_id = item.ledger_run_id
+             AND coverage.segment_state_run_id = item.segment_state_run_id
+            WHERE item.coverage_state = 'full'
+              AND COALESCE(item.open_issue_count, 0) = 0
+              AND COALESCE(item.blocked_issue_count, 0) = 0
+              AND item.coverage_sources_json LIKE '%autofix_unknown_surface_checkpoint%'
+              AND item.coverage_sources_json LIKE '%semantic_review_explained_checkpoint%'
+              AND item.covered_families_json LIKE '%autofix_unknown_microagent%'
+              AND item.covered_families_json LIKE '%semantic_review_router%'
+        ),
+        item_eval AS (
+            SELECT
+                candidate.segment_id,
+                CASE
+                    WHEN candidate.segment_id = 108426
+                        THEN 'semantic_checkpoint_block_preserved'
+                    WHEN state.final_state = 'closed_auto_confirmed_autofix_unknown_surface_semantic_lifecycle'
+                        THEN 'closed'
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'not_auto_confirmed_or_locked'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_mismatch'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_surface_semantic_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM candidate
+            LEFT JOIN source_segments source ON source.id = candidate.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = candidate.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = candidate.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = candidate.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = candidate.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = candidate.segment_id
+        )
+        SELECT
+            (SELECT GROUP_CONCAT(id) FROM coverage) AS coverage_run_ids,
+            5 AS autofix_checkpoint_run_id,
+            4 AS semantic_checkpoint_run_id,
+            COUNT(*) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+            SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge,
+            SUM(CASE WHEN segment_id = 108426 THEN 1 ELSE 0 END) AS preserved_semantic_block_count
+        FROM item_eval
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    autofix_unknown_surface_semantic_bridge_blocks = conn.execute(
+        """
+        WITH coverage AS (
+            SELECT *
+            FROM ml_issue_partial_coverage_runs
+            WHERE finished_at IS NOT NULL
+              AND id = 160
+              AND ledger_run_id = 31
+              AND segment_state_run_id = 215
+            LIMIT 1
+        ),
+        candidate AS (
+            SELECT item.*
+            FROM ml_issue_partial_coverage_items item
+            JOIN coverage
+              ON coverage.id = item.run_id
+             AND coverage.ledger_run_id = item.ledger_run_id
+             AND coverage.segment_state_run_id = item.segment_state_run_id
+            WHERE item.coverage_state = 'full'
+              AND COALESCE(item.open_issue_count, 0) = 0
+              AND COALESCE(item.blocked_issue_count, 0) = 0
+              AND item.coverage_sources_json LIKE '%autofix_unknown_surface_checkpoint%'
+              AND item.coverage_sources_json LIKE '%semantic_review_explained_checkpoint%'
+              AND item.covered_families_json LIKE '%autofix_unknown_microagent%'
+              AND item.covered_families_json LIKE '%semantic_review_router%'
+        ),
+        item_eval AS (
+            SELECT
+                CASE
+                    WHEN candidate.segment_id = 108426 THEN 'semantic_checkpoint_block_preserved'
+                    WHEN state.final_state = 'closed_auto_confirmed_autofix_unknown_surface_semantic_lifecycle' THEN 'closed'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                      OR COALESCE(confirmation.locked, 0) = 1 THEN 'not_auto_confirmed_or_locked'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text) THEN 'confirmed_output_mismatch'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(current_state.final_state, '') = 'pending_blocked_structure' THEN 'issue_or_structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_surface_semantic_lifecycle'
+                    ) THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM candidate
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = candidate.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = candidate.segment_id
+            LEFT JOIN segment_state_items state ON state.segment_id = candidate.segment_id AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state ON current_state.segment_id = candidate.segment_id AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT segment_id, COUNT(*) AS issue_count,
+                       SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = candidate.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    autofix_unknown_event_composition_bridge_row = conn.execute(
+        """
+        WITH proposal AS (
+            SELECT *
+            FROM ml_issue_autofix_unknown_event_composition_bridge_runs
+            WHERE finished_at IS NOT NULL
+              AND id = 2
+              AND source_checkpoint_run_id = 2
+              AND source_segment_state_run_id = 178
+              AND source_ledger_run_id = 21
+              AND ready_count = 460
+              AND partial_count = 1136
+              AND blocked_count = 0
+              AND estimated_closed_gain = 460
+              AND production_release_allowed = 0
+            LIMIT 1
+        ),
+        item_eval AS (
+            SELECT
+                item.id,
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_autofix_unknown_event_composition_lifecycle'
+                        THEN 'closed'
+                    WHEN item.bridge_status != 'ready_for_lifecycle_bridge'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                      OR proposal.production_release_allowed != 0
+                      OR proposal.blocked_count != 0
+                      OR COALESCE(item.segment_open_issue_count, 0) != 1
+                      OR COALESCE(item.covered_issue_count, 0) != 1
+                      OR item.checkpoint_run_id != 2
+                      OR item.ledger_run_id != 21
+                      OR item.segment_state_run_id != 178
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'not_ready_or_partial')
+                    WHEN checkpoint_item.id IS NULL
+                      OR checkpoint_item.checkpoint_status != 'allowed'
+                      OR checkpoint_item.normalized_decision != 'composition_ready'
+                      OR checkpoint_item.evidence_label != 'composition_ready'
+                        THEN 'checkpoint_not_composition_ready'
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'not_auto_confirmed_or_locked'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                        THEN 'has_uncovered_issue'
+                    WHEN COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_event_composition_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_autofix_unknown_event_composition_bridge_items item
+            JOIN proposal ON proposal.id = item.run_id
+            LEFT JOIN ml_issue_autofix_unknown_event_composition_checkpoint_items checkpoint_item
+              ON checkpoint_item.id = item.checkpoint_item_id
+             AND checkpoint_item.run_id = proposal.source_checkpoint_run_id
+             AND checkpoint_item.segment_id = item.segment_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        ),
+        counts AS (
+            SELECT
+                COUNT(*) AS candidates,
+                SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+                SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge
+            FROM item_eval
+        )
+        SELECT
+            proposal.id AS bridge_run_id,
+            proposal.source_checkpoint_run_id AS checkpoint_run_id,
+            proposal.total_candidates,
+            proposal.ready_count,
+            proposal.partial_count,
+            proposal.blocked_count,
+            proposal.estimated_closed_gain,
+            proposal.production_release_allowed,
+            counts.candidates,
+            counts.closed_by_bridge,
+            counts.blocked_by_bridge
+        FROM proposal, counts
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    autofix_unknown_event_composition_bridge_blocks = conn.execute(
+        """
+        WITH proposal AS (
+            SELECT *
+            FROM ml_issue_autofix_unknown_event_composition_bridge_runs
+            WHERE finished_at IS NOT NULL
+              AND id = 2
+              AND source_checkpoint_run_id = 2
+              AND source_segment_state_run_id = 178
+              AND source_ledger_run_id = 21
+              AND production_release_allowed = 0
+            LIMIT 1
+        ),
+        item_eval AS (
+            SELECT
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_autofix_unknown_event_composition_lifecycle'
+                        THEN 'closed'
+                    WHEN item.bridge_status != 'ready_for_lifecycle_bridge'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                      OR proposal.production_release_allowed != 0
+                      OR proposal.blocked_count != 0
+                      OR COALESCE(item.segment_open_issue_count, 0) != 1
+                      OR COALESCE(item.covered_issue_count, 0) != 1
+                      OR item.checkpoint_run_id != 2
+                      OR item.ledger_run_id != 21
+                      OR item.segment_state_run_id != 178
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'not_ready_or_partial')
+                    WHEN checkpoint_item.id IS NULL
+                      OR checkpoint_item.checkpoint_status != 'allowed'
+                      OR checkpoint_item.normalized_decision != 'composition_ready'
+                      OR checkpoint_item.evidence_label != 'composition_ready'
+                        THEN 'checkpoint_not_composition_ready'
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'not_auto_confirmed_or_locked'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                        THEN 'has_uncovered_issue'
+                    WHEN COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_event_composition_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_autofix_unknown_event_composition_bridge_items item
+            JOIN proposal ON proposal.id = item.run_id
+            LEFT JOIN ml_issue_autofix_unknown_event_composition_checkpoint_items checkpoint_item
+              ON checkpoint_item.id = item.checkpoint_item_id
+             AND checkpoint_item.run_id = proposal.source_checkpoint_run_id
+             AND checkpoint_item.segment_id = item.segment_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        LIMIT 20
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    autofix_unknown_event_semantic_companion_bridge_row = conn.execute(
+        """
+        WITH proposal AS (
+            SELECT *
+            FROM ml_issue_autofix_unknown_event_semantic_companion_bridge_runs
+            WHERE finished_at IS NOT NULL
+              AND ready_count > 0
+              AND production_release_allowed = 0
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        item_eval AS (
+            SELECT
+                item.id,
+                item.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_autofix_unknown_event_semantic_companion_lifecycle'
+                        THEN 'closed'
+                    WHEN item.bridge_status != 'ready_for_lifecycle_bridge'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                      OR proposal.production_release_allowed != 0
+                      OR COALESCE(item.segment_open_issue_count, 0) != 2
+                      OR COALESCE(item.autofix_unknown_count, 0) != 1
+                      OR COALESCE(item.semantic_review_count, 0) != 1
+                      OR COALESCE(item.high_issue_count, 0) != 0
+                      OR COALESCE(item.token_not_ok_count, 0) != 0
+                      OR item.event_validation_status != 'composition_ready'
+                      OR COALESCE(item.semantic_validation_status, '') NOT IN ('not_validated', '')
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'not_ready_or_not_companion_ready')
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'not_auto_confirmed_or_locked'
+                    WHEN COALESCE(current_state.needs_output_apply, 0) != 0
+                      OR COALESCE(item.current_needs_output_apply, 0) != 0
+                        THEN 'needs_output_apply'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                      OR COALESCE(item.current_confirmed_matches_output, 0) != 1
+                        THEN 'confirmed_output_mismatch'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'protected_token_signature_mismatch'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                        THEN 'has_uncovered_issue'
+                    WHEN COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_event_semantic_companion_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_autofix_unknown_event_semantic_companion_bridge_items item
+            JOIN proposal ON proposal.id = item.run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        ),
+        counts AS (
+            SELECT
+                COUNT(*) AS candidates,
+                SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+                SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge
+            FROM item_eval
+        )
+        SELECT
+            proposal.id AS bridge_run_id,
+            proposal.source_event_bridge_run_id AS event_bridge_run_id,
+            proposal.source_event_checkpoint_run_id AS event_checkpoint_run_id,
+            proposal.candidate_count,
+            proposal.ready_count,
+            proposal.blocked_count,
+            proposal.estimated_closed_gain,
+            proposal.production_release_allowed,
+            counts.candidates,
+            counts.closed_by_bridge,
+            counts.blocked_by_bridge
+        FROM proposal, counts
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    autofix_unknown_event_semantic_companion_bridge_blocks = conn.execute(
+        """
+        WITH proposal AS (
+            SELECT *
+            FROM ml_issue_autofix_unknown_event_semantic_companion_bridge_runs
+            WHERE finished_at IS NOT NULL
+              AND production_release_allowed = 0
+              AND ready_count > 0
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        ),
+        item_eval AS (
+            SELECT
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_autofix_unknown_event_semantic_companion_lifecycle'
+                        THEN 'closed'
+                    WHEN item.bridge_status != 'ready_for_lifecycle_bridge'
+                      OR COALESCE(TRIM(item.block_reason), '') <> ''
+                      OR proposal.production_release_allowed != 0
+                      OR COALESCE(item.segment_open_issue_count, 0) != 2
+                      OR COALESCE(item.autofix_unknown_count, 0) != 1
+                      OR COALESCE(item.semantic_review_count, 0) != 1
+                      OR COALESCE(item.high_issue_count, 0) != 0
+                      OR COALESCE(item.token_not_ok_count, 0) != 0
+                      OR item.event_validation_status != 'composition_ready'
+                      OR COALESCE(item.semantic_validation_status, '') NOT IN ('not_validated', '')
+                        THEN COALESCE(NULLIF(item.block_reason, ''), 'not_ready_or_not_companion_ready')
+                    WHEN source.id IS NULL OR COALESCE(source.is_active, 0) != 1
+                        THEN 'stale_source'
+                    WHEN confirmation.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                        THEN 'missing_confirmation'
+                    WHEN output.segment_id IS NULL
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_output'
+                    WHEN COALESCE(current_state.review_state, '') != 'auto_confirmed'
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'not_auto_confirmed_or_locked'
+                    WHEN COALESCE(current_state.needs_output_apply, 0) != 0
+                      OR COALESCE(item.current_needs_output_apply, 0) != 0
+                        THEN 'needs_output_apply'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                      OR COALESCE(item.current_confirmed_matches_output, 0) != 1
+                        THEN 'confirmed_output_mismatch'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'protected_token_signature_mismatch'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                        THEN 'has_uncovered_issue'
+                    WHEN COALESCE(current_state.final_state, '') = 'pending_blocked_structure'
+                        THEN 'structure_block'
+                    WHEN NOT (
+                            COALESCE(current_state.state_group, '') = 'pending'
+                         OR COALESCE(current_state.needs_reopen, 0) = 1
+                         OR COALESCE(current_state.final_state, '') LIKE 'reopen_%'
+                         OR COALESCE(current_state.final_state, '') = 'closed_auto_confirmed_autofix_unknown_event_semantic_companion_lifecycle'
+                    )
+                        THEN 'not_pending_or_already_closed'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM ml_issue_autofix_unknown_event_semantic_companion_bridge_items item
+            JOIN proposal ON proposal.id = item.run_id
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = item.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = item.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = item.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        LIMIT 20
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    autofix_unknown_domain_guarded_reviewed_row = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_autofix_unknown_domain_guarded_reviewed_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND allowed_count > 0
+        ),
+        allowed_raw AS (
+            SELECT
+                item.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY item.segment_id
+                    ORDER BY item.run_id ASC, item.id ASC
+                ) AS segment_rank
+            FROM ml_issue_autofix_unknown_domain_guarded_reviewed_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.run_id
+             AND checkpoint.ledger_run_id = item.ledger_run_id
+             AND checkpoint.source_queue_run_id = item.queue_run_id
+            WHERE item.checkpoint_status = 'allowed'
+        ),
+        allowed AS (
+            SELECT *
+            FROM allowed_raw
+            WHERE segment_rank = 1
+        ),
+        ledger_summary AS (
+            SELECT
+                run_id,
+                segment_id,
+                COUNT(*) AS issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent' THEN 1 ELSE 0 END) AS autofix_unknown_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+            FROM ml_issue_ledger_items
+            WHERE status = 'open'
+            GROUP BY run_id, segment_id
+        ),
+        item_eval AS (
+            SELECT
+                allowed.segment_id,
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_autofix_unknown_domain_guarded_reviewed_lifecycle'
+                        THEN 'closed'
+                    WHEN current_state.review_state IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN current_state.state_group != 'pending'
+                        THEN 'state_not_pending'
+                    WHEN current_state.final_state != 'reopen_auto_confirmed_autofix'
+                        THEN 'state_not_reopen_auto_confirmed_autofix'
+                    WHEN current_state.review_state != 'auto_confirmed'
+                        THEN 'review_state_not_auto_confirmed'
+                    WHEN current_state.needs_output_apply != 0
+                        THEN 'needs_output_apply'
+                    WHEN current_state.confirmed_matches_output != 1
+                        THEN 'confirmation_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmation_output_mismatch'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_or_structure_issue_present'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(ledger_summary.high_issue_count, 0) > 0
+                        THEN 'high_issue_present'
+                    WHEN COALESCE(ledger_summary.issue_count, 0) != 1
+                        THEN 'other_open_issues_remain'
+                    WHEN COALESCE(ledger_summary.autofix_unknown_issue_count, 0) != 1
+                        THEN 'not_autofix_unknown_single_issue'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM allowed
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = allowed.segment_id
+             AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = allowed.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = allowed.segment_id
+            LEFT JOIN output_segments output
+              ON output.segment_id = allowed.segment_id
+            LEFT JOIN ledger_summary
+              ON ledger_summary.run_id = allowed.ledger_run_id
+             AND ledger_summary.segment_id = allowed.segment_id
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = allowed.segment_id
+        )
+        SELECT
+            (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+            (SELECT COUNT(*) FROM allowed) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked
+        FROM item_eval
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    autofix_unknown_domain_guarded_reviewed_blocks = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_autofix_unknown_domain_guarded_reviewed_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND allowed_count > 0
+        ),
+        allowed_raw AS (
+            SELECT
+                item.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY item.segment_id
+                    ORDER BY item.run_id ASC, item.id ASC
+                ) AS segment_rank
+            FROM ml_issue_autofix_unknown_domain_guarded_reviewed_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.run_id
+             AND checkpoint.ledger_run_id = item.ledger_run_id
+             AND checkpoint.source_queue_run_id = item.queue_run_id
+            WHERE item.checkpoint_status = 'allowed'
+        ),
+        allowed AS (
+            SELECT *
+            FROM allowed_raw
+            WHERE segment_rank = 1
+        ),
+        ledger_summary AS (
+            SELECT
+                run_id,
+                segment_id,
+                COUNT(*) AS issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent' THEN 1 ELSE 0 END) AS autofix_unknown_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+            FROM ml_issue_ledger_items
+            WHERE status = 'open'
+            GROUP BY run_id, segment_id
+        ),
+        item_eval AS (
+            SELECT
+                CASE
+                    WHEN state.final_state = 'closed_auto_confirmed_autofix_unknown_domain_guarded_reviewed_lifecycle'
+                        THEN 'closed'
+                    WHEN current_state.review_state IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN current_state.state_group != 'pending'
+                        THEN 'state_not_pending'
+                    WHEN current_state.final_state != 'reopen_auto_confirmed_autofix'
+                        THEN 'state_not_reopen_auto_confirmed_autofix'
+                    WHEN current_state.review_state != 'auto_confirmed'
+                        THEN 'review_state_not_auto_confirmed'
+                    WHEN current_state.needs_output_apply != 0
+                        THEN 'needs_output_apply'
+                    WHEN current_state.confirmed_matches_output != 1
+                        THEN 'confirmation_output_mismatch'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmation_output_mismatch'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_or_structure_issue_present'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR COALESCE(ledger_summary.high_issue_count, 0) > 0
+                        THEN 'high_issue_present'
+                    WHEN COALESCE(ledger_summary.issue_count, 0) != 1
+                        THEN 'other_open_issues_remain'
+                    WHEN COALESCE(ledger_summary.autofix_unknown_issue_count, 0) != 1
+                        THEN 'not_autofix_unknown_single_issue'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM allowed
+            LEFT JOIN segment_state_items state ON state.segment_id = allowed.segment_id AND state.run_id = ?
+            LEFT JOIN segment_state_items current_state ON current_state.segment_id = allowed.segment_id AND current_state.run_id = ?
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = allowed.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = allowed.segment_id
+            LEFT JOIN ledger_summary
+              ON ledger_summary.run_id = allowed.ledger_run_id
+             AND ledger_summary.segment_id = allowed.segment_id
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = allowed.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result != 'closed'
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    autofix_unknown_semantic_companion_building_row = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_autofix_unknown_semantic_companion_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND id = 3
+              AND rule_version = 'issue_autofix_unknown_semantic_companion_checkpoint_v2_building_first'
+              AND checkpoint_name = 'autofix_unknown_semantic_companion_checkpoint_v2_building_first'
+              AND checkpoint_status = 'ready_for_shadow_lifecycle'
+              AND agent_key = 'micro_autofix_unknown_semantic_companion'
+              AND total_candidates = 3185
+              AND checkpoint_allowed_count = 468
+              AND checkpoint_blocked_count = 2717
+        ),
+        allowed_rows AS (
+            SELECT item.*
+            FROM ml_issue_autofix_unknown_semantic_companion_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.checkpoint_run_id
+             AND checkpoint.ledger_run_id = item.ledger_run_id
+             AND checkpoint.segment_state_run_id = item.segment_state_run_id
+            WHERE item.checkpoint_run_id = 3
+              AND item.checkpoint_allowed = 1
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND item.subpolicy_name = 'building_description_guarded'
+              AND item.checkpoint_action = 'cover_autofix_unknown_semantic_companion_false_reopen'
+              AND (
+                    item.current_confirmed_text_hash IS NULL
+                 OR item.current_output_text_hash IS NULL
+                 OR item.current_confirmed_text_hash = item.current_output_text_hash
+              )
+        ),
+        allowed AS (
+            SELECT *
+            FROM (
+                SELECT
+                    allowed_rows.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY allowed_rows.segment_id
+                        ORDER BY allowed_rows.checkpoint_run_id ASC, allowed_rows.id ASC
+                    ) AS segment_rank
+                FROM allowed_rows
+            )
+            WHERE segment_rank = 1
+        ),
+        ledger_summary AS (
+            SELECT
+                run_id,
+                segment_id,
+                COUNT(*) AS ledger_issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent' THEN 1 ELSE 0 END) AS autofix_unknown_issue_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router' THEN 1 ELSE 0 END) AS semantic_review_issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent' AND issue_kind = 'needs_autofix_unclassified' THEN 1 ELSE 0 END) AS autofix_unknown_unclassified_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router' AND issue_kind = 'needs_human_or_semantic_conflict' THEN 1 ELSE 0 END) AS semantic_review_conflict_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_ledger_issue_count,
+                SUM(CASE WHEN COALESCE(token_status, '') NOT IN ('', 'ok') THEN 1 ELSE 0 END) AS token_issue_count
+            FROM ml_issue_ledger_items
+            WHERE status = 'open'
+            GROUP BY run_id, segment_id
+        ),
+        issue_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS issue_count,
+                SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+            FROM issues
+            GROUP BY segment_id
+        ),
+        item_eval AS (
+            SELECT
+                allowed.segment_id,
+                CASE
+                    WHEN current_state.final_state = 'closed_auto_confirmed_autofix_unknown_semantic_companion_building_lifecycle'
+                        THEN 'closed'
+                    WHEN previous_state.state_group = 'closed'
+                        THEN 'already_closed_before'
+                    WHEN previous_state.review_state IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(previous_state.locked, 0) = 1
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN previous_state.final_state != 'reopen_auto_confirmed_autofix'
+                        THEN 'state_not_reopen_auto_confirmed_autofix'
+                    WHEN previous_state.state_group != 'pending'
+                        THEN 'state_not_pending'
+                    WHEN previous_state.review_state != 'auto_confirmed'
+                        THEN 'review_state_not_auto_confirmed'
+                    WHEN previous_state.confirmed_matches_output != 1
+                        THEN 'confirmation_output_mismatch'
+                    WHEN previous_state.needs_output_apply != 0
+                        THEN 'needs_output_apply'
+                    WHEN previous_state.needs_reopen != 1
+                        THEN 'needs_reopen_not_set'
+                    WHEN COALESCE(ledger_summary.ledger_issue_count, 0) != 2
+                      OR COALESCE(ledger_summary.autofix_unknown_issue_count, 0) != 1
+                      OR COALESCE(ledger_summary.semantic_review_issue_count, 0) != 1
+                      OR COALESCE(ledger_summary.autofix_unknown_unclassified_count, 0) != 1
+                      OR COALESCE(ledger_summary.semantic_review_conflict_count, 0) != 1
+                        THEN 'ledger_pair_not_exact'
+                    WHEN COALESCE(ledger_summary.high_ledger_issue_count, 0) > 0
+                        THEN 'high_ledger_issue'
+                    WHEN COALESCE(ledger_summary.token_issue_count, 0) > 0
+                        THEN 'token_issue_open'
+                    WHEN COALESCE(issue_summary.issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                        THEN 'has_uncovered_issue'
+                    WHEN confirmation.segment_id IS NULL
+                      OR output.segment_id IS NULL
+                      OR COALESCE(TRIM(confirmation.confirmed_text), '') = ''
+                      OR COALESCE(TRIM(output.portuguese_text), '') = ''
+                        THEN 'missing_confirmation_or_output'
+                    WHEN canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                        THEN 'confirmed_output_mismatch'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'protected_token_signature_mismatch'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM allowed
+            LEFT JOIN segment_state_items previous_state
+              ON previous_state.segment_id = allowed.segment_id
+             AND previous_state.run_id = allowed.segment_state_run_id
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = allowed.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = allowed.segment_id
+            LEFT JOIN output_segments output
+              ON output.segment_id = allowed.segment_id
+            LEFT JOIN ledger_summary
+              ON ledger_summary.run_id = allowed.ledger_run_id
+             AND ledger_summary.segment_id = allowed.segment_id
+            LEFT JOIN issue_summary ON issue_summary.segment_id = allowed.segment_id
+        )
+        SELECT
+            (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+            (SELECT SUM(total_candidates) FROM checkpoint) AS candidates,
+            (SELECT COUNT(*) FROM allowed_rows) AS allowed,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            (SELECT SUM(checkpoint_blocked_count) FROM checkpoint) AS blocked,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS net_gain
+        FROM item_eval
+        """,
+        (run_id,),
+    ).fetchone()
+    autofix_unknown_semantic_companion_building_subpolicy_split = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(subpolicy_name, ''), 'unknown') AS subpolicy_name, COUNT(*) AS count
+        FROM ml_issue_autofix_unknown_semantic_companion_checkpoint_items
+        WHERE checkpoint_run_id = 3
+          AND checkpoint_allowed = 1
+        GROUP BY COALESCE(NULLIF(subpolicy_name, ''), 'unknown')
+        ORDER BY count DESC, subpolicy_name
+        """
+    ).fetchall()
+    autofix_unknown_semantic_companion_building_blocks = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM ml_issue_autofix_unknown_semantic_companion_checkpoint_items
+        WHERE checkpoint_run_id = 3
+          AND checkpoint_allowed = 0
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    autofix_unknown_semantic_companion_rule_effect_row = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_autofix_unknown_semantic_companion_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND id = 5
+              AND rule_version = 'issue_autofix_unknown_semantic_companion_checkpoint_v3_rule_effect_second'
+              AND checkpoint_name = 'autofix_unknown_semantic_companion_checkpoint_v3_rule_effect_second'
+              AND checkpoint_status = 'ready_for_shadow_lifecycle'
+              AND agent_key = 'micro_autofix_unknown_semantic_companion'
+              AND total_candidates = 2717
+              AND checkpoint_allowed_count = 465
+              AND checkpoint_blocked_count = 2252
+        ),
+        allowed_rows AS (
+            SELECT item.*
+            FROM ml_issue_autofix_unknown_semantic_companion_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.checkpoint_run_id
+             AND checkpoint.ledger_run_id = item.ledger_run_id
+             AND checkpoint.segment_state_run_id = item.segment_state_run_id
+            WHERE item.checkpoint_run_id = 5
+              AND item.checkpoint_allowed = 1
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND item.subpolicy_name = 'rule_effect_modifier_guarded'
+              AND item.checkpoint_action = 'cover_autofix_unknown_semantic_companion_false_reopen'
+              AND (
+                    item.current_confirmed_text_hash IS NULL
+                 OR item.current_output_text_hash IS NULL
+                 OR item.current_confirmed_text_hash = item.current_output_text_hash
+              )
+        )
+        SELECT
+            (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+            (SELECT SUM(total_candidates) FROM checkpoint) AS candidates,
+            (SELECT SUM(checkpoint_allowed_count) FROM checkpoint) AS allowed,
+            (
+                SELECT COUNT(*)
+                FROM segment_state_items state
+                WHERE state.run_id = ?
+                  AND state.final_state = 'closed_auto_confirmed_autofix_unknown_semantic_companion_rule_effect_lifecycle'
+            ) AS closed,
+            (SELECT SUM(checkpoint_blocked_count) FROM checkpoint) AS blocked,
+            (
+                SELECT COUNT(*)
+                FROM segment_state_items state
+                WHERE state.run_id = ?
+                  AND state.final_state = 'closed_auto_confirmed_autofix_unknown_semantic_companion_rule_effect_lifecycle'
+            ) AS net_gain
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    autofix_unknown_semantic_companion_rule_effect_subpolicy_split = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(subpolicy_name, ''), 'unknown') AS subpolicy_name, COUNT(*) AS count
+        FROM ml_issue_autofix_unknown_semantic_companion_checkpoint_items
+        WHERE checkpoint_run_id = 5
+          AND checkpoint_allowed = 1
+        GROUP BY COALESCE(NULLIF(subpolicy_name, ''), 'unknown')
+        ORDER BY count DESC, subpolicy_name
+        """
+    ).fetchall()
+    autofix_unknown_semantic_companion_rule_effect_blocks = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM ml_issue_autofix_unknown_semantic_companion_checkpoint_items
+        WHERE checkpoint_run_id = 5
+          AND checkpoint_allowed = 0
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    autofix_unknown_domain_guarded_row = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_autofix_unknown_domain_guarded_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND rule_version = 'issue_autofix_unknown_domain_guarded_checkpoint_v1'
+              AND checkpoint_status = 'ready_for_shadow_review'
+              AND agent_key = 'micro_autofix_unknown_router'
+              AND issue_family = 'autofix_unknown_microagent'
+              AND checkpoint_allowed_count > 0
+              AND id IN (4)
+        ),
+        allowed_rows AS (
+            SELECT item.*
+            FROM ml_issue_autofix_unknown_domain_guarded_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.checkpoint_run_id
+             AND checkpoint.ledger_run_id = item.ledger_run_id
+             AND checkpoint.segment_state_run_id = item.segment_state_run_id
+            WHERE item.checkpoint_allowed = 1
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND item.checkpoint_action = 'cover_autofix_unknown_domain_false_reopen'
+              AND item.open_issue_count = 1
+              AND item.autofix_unknown_count = 1
+              AND item.current_confirmed_text_hash = item.current_output_text_hash
+        ),
+        allowed AS (
+            SELECT *
+            FROM (
+                SELECT
+                    allowed_rows.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY allowed_rows.segment_id
+                        ORDER BY allowed_rows.checkpoint_run_id ASC, allowed_rows.id ASC
+                    ) AS segment_rank
+                FROM allowed_rows
+            )
+            WHERE segment_rank = 1
+        ),
+        item_eval AS (
+            SELECT
+                allowed.segment_id,
+                CASE
+                    WHEN previous_state.state_group = 'closed'
+                        THEN 'already_closed_before'
+                    WHEN current_state.final_state = 'closed_auto_confirmed_autofix_unknown_domain_guarded_lifecycle'
+                        THEN 'closed'
+                    WHEN previous_state.review_state IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN previous_state.final_state != 'reopen_auto_confirmed_autofix'
+                        THEN 'state_not_reopen_auto_confirmed_autofix'
+                    WHEN previous_state.state_group != 'pending'
+                        THEN 'state_not_pending'
+                    WHEN previous_state.review_state != 'auto_confirmed'
+                        THEN 'review_state_not_auto_confirmed'
+                    WHEN previous_state.confirmed_matches_output != 1
+                        THEN 'confirmation_output_mismatch'
+                    WHEN previous_state.needs_output_apply != 0
+                        THEN 'needs_output_apply'
+                    WHEN previous_state.needs_reopen != 1
+                        THEN 'needs_reopen_not_set'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                        THEN 'high_issue_or_structure_block'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM allowed
+            LEFT JOIN segment_state_items previous_state
+              ON previous_state.segment_id = allowed.segment_id
+             AND previous_state.run_id = allowed.segment_state_run_id
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = allowed.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = allowed.segment_id
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = allowed.segment_id
+        )
+        SELECT
+            (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+            (SELECT COUNT(*) FROM allowed_rows) AS allowed_rows,
+            (SELECT COUNT(*) FROM allowed) AS distinct_allowed_segments,
+            SUM(CASE WHEN bridge_result = 'already_closed_before' THEN 1 ELSE 0 END) AS already_closed_before,
+            SUM(CASE WHEN bridge_result IN ('closed', 'eligible_but_not_closed') THEN 1 ELSE 0 END) AS pending_before,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result NOT IN ('closed', 'already_closed_before') THEN 1 ELSE 0 END) AS blocked,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS net_gain
+        FROM item_eval
+        """,
+        (run_id,),
+    ).fetchone()
+    autofix_unknown_domain_guarded_subpolicy_split = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_autofix_unknown_domain_guarded_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND rule_version = 'issue_autofix_unknown_domain_guarded_checkpoint_v1'
+              AND checkpoint_status = 'ready_for_shadow_review'
+              AND agent_key = 'micro_autofix_unknown_router'
+              AND issue_family = 'autofix_unknown_microagent'
+              AND checkpoint_allowed_count > 0
+              AND id IN (4)
+        ),
+        allowed AS (
+            SELECT *
+            FROM (
+                SELECT
+                    item.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY item.segment_id
+                        ORDER BY item.checkpoint_run_id ASC, item.id ASC
+                    ) AS segment_rank
+                FROM ml_issue_autofix_unknown_domain_guarded_checkpoint_items item
+                JOIN checkpoint
+                  ON checkpoint.id = item.checkpoint_run_id
+                 AND checkpoint.ledger_run_id = item.ledger_run_id
+                 AND checkpoint.segment_state_run_id = item.segment_state_run_id
+                WHERE item.checkpoint_allowed = 1
+                  AND COALESCE(TRIM(item.block_reason), '') = ''
+                  AND item.checkpoint_action = 'cover_autofix_unknown_domain_false_reopen'
+                  AND item.open_issue_count = 1
+                  AND item.autofix_unknown_count = 1
+                  AND item.current_confirmed_text_hash = item.current_output_text_hash
+            )
+            WHERE segment_rank = 1
+        )
+        SELECT COALESCE(NULLIF(subpolicy_name, ''), 'unknown') AS subpolicy_name, COUNT(*) AS count
+        FROM allowed
+        GROUP BY COALESCE(NULLIF(subpolicy_name, ''), 'unknown')
+        ORDER BY count DESC, subpolicy_name
+        """
+    ).fetchall()
+    autofix_unknown_domain_guarded_cluster_split = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_autofix_unknown_domain_guarded_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND rule_version = 'issue_autofix_unknown_domain_guarded_checkpoint_v1'
+              AND checkpoint_status = 'ready_for_shadow_review'
+              AND agent_key = 'micro_autofix_unknown_router'
+              AND issue_family = 'autofix_unknown_microagent'
+              AND checkpoint_allowed_count > 0
+              AND id IN (4)
+        ),
+        allowed AS (
+            SELECT *
+            FROM (
+                SELECT
+                    item.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY item.segment_id
+                        ORDER BY item.checkpoint_run_id ASC, item.id ASC
+                    ) AS segment_rank
+                FROM ml_issue_autofix_unknown_domain_guarded_checkpoint_items item
+                JOIN checkpoint
+                  ON checkpoint.id = item.checkpoint_run_id
+                 AND checkpoint.ledger_run_id = item.ledger_run_id
+                 AND checkpoint.segment_state_run_id = item.segment_state_run_id
+                WHERE item.checkpoint_allowed = 1
+                  AND COALESCE(TRIM(item.block_reason), '') = ''
+                  AND item.checkpoint_action = 'cover_autofix_unknown_domain_false_reopen'
+                  AND item.open_issue_count = 1
+                  AND item.autofix_unknown_count = 1
+                  AND item.current_confirmed_text_hash = item.current_output_text_hash
+            )
+            WHERE segment_rank = 1
+        )
+        SELECT COALESCE(NULLIF(cluster, ''), 'unknown') AS cluster, COUNT(*) AS count
+        FROM allowed
+        GROUP BY COALESCE(NULLIF(cluster, ''), 'unknown')
+        ORDER BY count DESC, cluster
+        """
+    ).fetchall()
+    autofix_unknown_domain_guarded_blocks = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM ml_issue_autofix_unknown_domain_guarded_checkpoint_items
+        WHERE checkpoint_run_id = 4
+          AND checkpoint_allowed = 0
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    short_label_single_issue_system_tooltip_row = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_short_label_single_issue_system_tooltip_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND rule_version = 'issue_short_label_single_issue_system_tooltip_checkpoint_v1'
+              AND checkpoint_status = 'ready_for_shadow_lifecycle_policy'
+              AND agent_key = 'micro_short_label_style'
+              AND issue_family = 'short_label_style_microagent'
+              AND checkpoint_allowed_count > 0
+              AND id IN (1)
+        ),
+        allowed_rows AS (
+            SELECT item.*
+            FROM ml_issue_short_label_single_issue_system_tooltip_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.checkpoint_run_id
+             AND checkpoint.ledger_run_id = item.ledger_run_id
+             AND checkpoint.segment_state_run_id = item.segment_state_run_id
+            WHERE item.checkpoint_allowed = 1
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND item.profile = 'system_tooltip_single_issue_clean'
+              AND item.checkpoint_action = 'close_short_label_single_issue_system_tooltip'
+              AND item.token_count >= 1
+              AND item.word_count <= 8
+              AND (
+                    item.relative_path = 'effects_l_spanish.yml'
+                 OR item.relative_path LIKE 'triggers/%'
+              )
+        ),
+        allowed AS (
+            SELECT *
+            FROM (
+                SELECT
+                    allowed_rows.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY allowed_rows.segment_id
+                        ORDER BY allowed_rows.checkpoint_run_id ASC, allowed_rows.id ASC
+                    ) AS segment_rank
+                FROM allowed_rows
+            )
+            WHERE segment_rank = 1
+        ),
+        ledger_summary AS (
+            SELECT
+                run_id,
+                segment_id,
+                COUNT(*) AS ledger_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_ledger_issue_count
+            FROM ml_issue_ledger_items
+            WHERE status = 'open'
+            GROUP BY run_id, segment_id
+        ),
+        item_eval AS (
+            SELECT
+                allowed.segment_id,
+                CASE
+                    WHEN previous_state.state_group = 'closed'
+                        THEN 'already_closed_before'
+                    WHEN current_state.final_state = 'closed_auto_confirmed_short_label_single_issue_system_tooltip_lifecycle'
+                        THEN 'closed'
+                    WHEN previous_state.review_state IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN previous_state.final_state != 'reopen_auto_confirmed_autofix'
+                        THEN 'state_not_reopen_auto_confirmed_autofix'
+                    WHEN previous_state.state_group != 'pending'
+                        THEN 'state_not_pending'
+                    WHEN previous_state.review_state != 'auto_confirmed'
+                        THEN 'review_state_not_auto_confirmed'
+                    WHEN previous_state.confirmed_matches_output != 1
+                        THEN 'confirmation_output_mismatch'
+                    WHEN previous_state.needs_output_apply != 0
+                        THEN 'needs_output_apply'
+                    WHEN previous_state.needs_reopen != 1
+                        THEN 'needs_reopen_not_set'
+                    WHEN ledger_item.issue_family != 'short_label_style_microagent'
+                      OR ledger_item.issue_kind != 'short_or_compact_label_reopened'
+                        THEN 'ledger_issue_not_short_label_single_issue'
+                    WHEN COALESCE(ledger_summary.ledger_issue_count, 0) != 1
+                        THEN 'other_open_issues_remain'
+                    WHEN COALESCE(ledger_summary.high_ledger_issue_count, 0) > 0
+                      OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                        THEN 'high_issue_or_structure_block'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM allowed
+            LEFT JOIN segment_state_items previous_state
+              ON previous_state.segment_id = allowed.segment_id
+             AND previous_state.run_id = allowed.segment_state_run_id
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = allowed.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = allowed.segment_id
+            LEFT JOIN ml_issue_ledger_items ledger_item
+              ON ledger_item.id = allowed.ledger_item_id
+             AND ledger_item.run_id = allowed.ledger_run_id
+             AND ledger_item.segment_id = allowed.segment_id
+            LEFT JOIN ledger_summary
+              ON ledger_summary.run_id = allowed.ledger_run_id
+             AND ledger_summary.segment_id = allowed.segment_id
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = allowed.segment_id
+        )
+        SELECT
+            (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+            (SELECT COUNT(*) FROM allowed_rows) AS allowed_rows,
+            (SELECT COUNT(*) FROM allowed) AS distinct_allowed_segments,
+            SUM(CASE WHEN bridge_result = 'already_closed_before' THEN 1 ELSE 0 END) AS already_closed_before,
+            SUM(CASE WHEN bridge_result IN ('closed', 'eligible_but_not_closed') THEN 1 ELSE 0 END) AS pending_before,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result NOT IN ('closed', 'already_closed_before') THEN 1 ELSE 0 END) AS blocked,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS net_gain
+        FROM item_eval
+        """,
+        (run_id,),
+    ).fetchone()
+    short_label_single_issue_system_tooltip_profile_split = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(profile, ''), 'unknown') AS profile, COUNT(*) AS count
+        FROM ml_issue_short_label_single_issue_system_tooltip_checkpoint_items
+        WHERE checkpoint_run_id = 1
+          AND checkpoint_allowed = 1
+          AND COALESCE(TRIM(block_reason), '') = ''
+          AND profile = 'system_tooltip_single_issue_clean'
+          AND checkpoint_action = 'close_short_label_single_issue_system_tooltip'
+          AND token_count >= 1
+          AND word_count <= 8
+          AND (
+                relative_path = 'effects_l_spanish.yml'
+             OR relative_path LIKE 'triggers/%'
+          )
+        GROUP BY COALESCE(NULLIF(profile, ''), 'unknown')
+        ORDER BY count DESC, profile
+        """
+    ).fetchall()
+    short_label_single_issue_system_tooltip_path_split = conn.execute(
+        """
+        SELECT relative_path, COUNT(*) AS count
+        FROM ml_issue_short_label_single_issue_system_tooltip_checkpoint_items
+        WHERE checkpoint_run_id = 1
+          AND checkpoint_allowed = 1
+          AND COALESCE(TRIM(block_reason), '') = ''
+          AND profile = 'system_tooltip_single_issue_clean'
+          AND checkpoint_action = 'close_short_label_single_issue_system_tooltip'
+          AND token_count >= 1
+          AND word_count <= 8
+          AND (
+                relative_path = 'effects_l_spanish.yml'
+             OR relative_path LIKE 'triggers/%'
+          )
+        GROUP BY relative_path
+        ORDER BY count DESC, relative_path
+        """
+    ).fetchall()
+    short_label_single_issue_system_tooltip_blocks = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM ml_issue_short_label_single_issue_system_tooltip_checkpoint_items
+        WHERE checkpoint_run_id = 1
+          AND checkpoint_allowed = 0
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    short_label_tokenized_ui_false_reopen_row = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_short_label_tokenized_ui_false_reopen_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND rule_version = 'issue_short_label_tokenized_ui_false_reopen_checkpoint_v1'
+              AND checkpoint_status = 'ready_for_shadow_lifecycle'
+              AND agent_key = 'micro_short_label_tokenized_ui'
+              AND issue_family = 'short_label_style_microagent'
+              AND checkpoint_allowed_count > 0
+              AND id = 2
+        ),
+        allowed_rows AS (
+            SELECT item.*
+            FROM ml_issue_short_label_tokenized_ui_false_reopen_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.checkpoint_run_id
+             AND checkpoint.ledger_run_id = item.ledger_run_id
+             AND checkpoint.segment_state_run_id = item.segment_state_run_id
+            WHERE item.checkpoint_run_id = 2
+              AND item.checkpoint_allowed = 1
+              AND item.checkpoint_action = 'cover_short_label_tokenized_ui_false_reopen'
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND item.current_confirmed_text_hash = item.current_output_text_hash
+        ),
+        allowed AS (
+            SELECT *
+            FROM (
+                SELECT
+                    allowed_rows.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY allowed_rows.segment_id
+                        ORDER BY allowed_rows.checkpoint_run_id ASC, allowed_rows.id ASC
+                    ) AS segment_rank
+                FROM allowed_rows
+            )
+            WHERE segment_rank = 1
+        ),
+        item_eval AS (
+            SELECT
+                allowed.segment_id,
+                CASE
+                    WHEN previous_state.state_group = 'closed'
+                        THEN 'already_closed_before'
+                    WHEN current_state.final_state = 'closed_auto_confirmed_short_label_tokenized_ui_false_reopen_lifecycle'
+                        THEN 'closed'
+                    WHEN previous_state.review_state IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN previous_state.final_state != 'reopen_auto_confirmed_autofix'
+                        THEN 'state_not_reopen_auto_confirmed_autofix'
+                    WHEN previous_state.state_group != 'pending'
+                        THEN 'state_not_pending'
+                    WHEN previous_state.review_state != 'auto_confirmed'
+                        THEN 'review_state_not_auto_confirmed'
+                    WHEN previous_state.confirmed_matches_output != 1
+                        THEN 'confirmation_output_mismatch'
+                    WHEN previous_state.needs_output_apply != 0
+                        THEN 'needs_output_apply'
+                    WHEN previous_state.needs_reopen != 1
+                        THEN 'needs_reopen_not_set'
+                    WHEN confirmation.confirmed_text != allowed.current_text
+                        THEN 'checkpoint_text_drift'
+                    WHEN output.portuguese_text != confirmation.confirmed_text
+                        THEN 'output_confirmation_drift'
+                    WHEN protected_tokens_signature(confirmation.confirmed_text) != protected_tokens_signature(output.portuguese_text)
+                        THEN 'token_or_structure_issue_present'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                        THEN 'high_issue_or_structure_block'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM allowed
+            LEFT JOIN segment_state_items previous_state
+              ON previous_state.segment_id = allowed.segment_id
+             AND previous_state.run_id = allowed.segment_state_run_id
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = allowed.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = allowed.segment_id
+            LEFT JOIN output_segments output
+              ON output.segment_id = allowed.segment_id
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = allowed.segment_id
+        )
+        SELECT
+            (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+            (SELECT SUM(total_candidates) FROM checkpoint) AS candidates,
+            (SELECT SUM(checkpoint_allowed_count) FROM checkpoint) AS checkpoint_allowed,
+            (SELECT COUNT(*) FROM allowed_rows) AS allowed_rows,
+            (SELECT COUNT(*) FROM allowed) AS distinct_allowed_segments,
+            SUM(CASE WHEN bridge_result = 'already_closed_before' THEN 1 ELSE 0 END) AS already_closed_before,
+            SUM(CASE WHEN bridge_result IN ('closed', 'eligible_but_not_closed') THEN 1 ELSE 0 END) AS pending_before,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result NOT IN ('closed', 'already_closed_before') THEN 1 ELSE 0 END) AS blocked,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS net_gain
+        FROM item_eval
+        """,
+        (run_id,),
+    ).fetchone()
+    short_label_tokenized_ui_false_reopen_blocks = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM ml_issue_short_label_tokenized_ui_false_reopen_checkpoint_items
+        WHERE checkpoint_run_id = 2
+          AND checkpoint_allowed = 0
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    short_label_tokenized_ui_false_reopen_lane_split = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(lane, ''), 'unknown') AS lane, COUNT(*) AS count
+        FROM ml_issue_short_label_tokenized_ui_false_reopen_checkpoint_items
+        WHERE checkpoint_run_id = 2
+          AND checkpoint_allowed = 1
+          AND checkpoint_action = 'cover_short_label_tokenized_ui_false_reopen'
+          AND COALESCE(TRIM(block_reason), '') = ''
+        GROUP BY COALESCE(NULLIF(lane, ''), 'unknown')
+        ORDER BY count DESC, lane
+        """
+    ).fetchall()
+    short_label_dynamic_delegate_row = conn.execute(
+        """
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND id < ?
+            ORDER BY id DESC
+            LIMIT 1
+        ),
+        checkpoint AS (
+            SELECT *
+            FROM ml_issue_short_label_dynamic_delegate_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND rule_version = 'issue_short_label_dynamic_delegate_checkpoint_v1'
+              AND checkpoint_status = 'checkpoint_ready'
+              AND policy_name = 'short_label_dynamic_delegate_shadow'
+              AND policy_status = 'shadow'
+              AND agent_key = 'micro_short_label_style'
+              AND allowed_count > 0
+              AND id IN (1, 2)
+        ),
+        allowed_rows AS (
+            SELECT item.*
+            FROM ml_issue_short_label_dynamic_delegate_checkpoint_items item
+            JOIN checkpoint
+              ON checkpoint.id = item.checkpoint_run_id
+             AND checkpoint.sublane_run_id = item.sublane_run_id
+             AND checkpoint.ledger_run_id = item.ledger_run_id
+            WHERE item.checkpoint_allowed = 1
+              AND COALESCE(TRIM(item.block_reason), '') = ''
+              AND item.subpolicy_name = 'short_label_dynamic_expression_delegate'
+              AND item.checkpoint_action = 'cover_short_label_dynamic_delegate_to_dynamic_ck3'
+        ),
+        allowed AS (
+            SELECT *
+            FROM (
+                SELECT
+                    allowed_rows.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY allowed_rows.segment_id
+                        ORDER BY allowed_rows.checkpoint_run_id ASC, allowed_rows.id ASC
+                    ) AS segment_rank
+                FROM allowed_rows
+            )
+            WHERE segment_rank = 1
+        ),
+        item_eval AS (
+            SELECT
+                allowed.segment_id,
+                CASE
+                    WHEN current_state.final_state = 'closed_auto_confirmed_short_label_dynamic_delegate_lifecycle'
+                        THEN 'closed'
+                    WHEN previous_state.state_group = 'closed'
+                        THEN 'already_closed_before'
+                    WHEN previous_state.review_state IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN previous_state.final_state != 'reopen_auto_confirmed_autofix'
+                        THEN 'state_not_reopen_auto_confirmed_autofix'
+                    WHEN previous_state.state_group != 'pending'
+                        THEN 'state_not_pending'
+                    WHEN previous_state.review_state != 'auto_confirmed'
+                        THEN 'review_state_not_auto_confirmed'
+                    WHEN previous_state.confirmed_matches_output != 1
+                        THEN 'confirmation_output_mismatch'
+                    WHEN previous_state.needs_output_apply != 0
+                        THEN 'needs_output_apply'
+                    WHEN previous_state.needs_reopen != 1
+                        THEN 'needs_reopen_not_set'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR previous_state.final_state = 'pending_blocked_structure'
+                        THEN 'high_issue_or_structure_block'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM allowed
+            LEFT JOIN previous_run ON 1 = 1
+            LEFT JOIN segment_state_items previous_state
+              ON previous_state.segment_id = allowed.segment_id
+             AND previous_state.run_id = previous_run.id
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = allowed.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = allowed.segment_id
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = allowed.segment_id
+        )
+        SELECT
+            (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+            (SELECT COUNT(*) FROM allowed_rows) AS allowed_rows,
+            (SELECT COUNT(*) FROM allowed) AS distinct_allowed_segments,
+            SUM(CASE WHEN bridge_result = 'already_closed_before' THEN 1 ELSE 0 END) AS already_closed_before,
+            SUM(CASE WHEN bridge_result IN ('closed', 'eligible_but_not_closed') THEN 1 ELSE 0 END) AS pending_before,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result NOT IN ('closed', 'already_closed_before') THEN 1 ELSE 0 END) AS blocked,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS net_gain
+        FROM item_eval
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    short_label_dynamic_delegate_blocks = conn.execute(
+        """
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND id < ?
+            ORDER BY id DESC
+            LIMIT 1
+        ),
+        checkpoint AS (
+            SELECT *
+            FROM ml_issue_short_label_dynamic_delegate_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND rule_version = 'issue_short_label_dynamic_delegate_checkpoint_v1'
+              AND checkpoint_status = 'checkpoint_ready'
+              AND policy_name = 'short_label_dynamic_delegate_shadow'
+              AND policy_status = 'shadow'
+              AND agent_key = 'micro_short_label_style'
+              AND allowed_count > 0
+              AND id IN (1, 2)
+        ),
+        allowed AS (
+            SELECT *
+            FROM (
+                SELECT
+                    item.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY item.segment_id
+                        ORDER BY item.checkpoint_run_id ASC, item.id ASC
+                    ) AS segment_rank
+                FROM ml_issue_short_label_dynamic_delegate_checkpoint_items item
+                JOIN checkpoint
+                  ON checkpoint.id = item.checkpoint_run_id
+                 AND checkpoint.sublane_run_id = item.sublane_run_id
+                 AND checkpoint.ledger_run_id = item.ledger_run_id
+                WHERE item.checkpoint_allowed = 1
+                  AND COALESCE(TRIM(item.block_reason), '') = ''
+                  AND item.subpolicy_name = 'short_label_dynamic_expression_delegate'
+                  AND item.checkpoint_action = 'cover_short_label_dynamic_delegate_to_dynamic_ck3'
+            )
+            WHERE segment_rank = 1
+        ),
+        item_eval AS (
+            SELECT
+                CASE
+                    WHEN current_state.final_state = 'closed_auto_confirmed_short_label_dynamic_delegate_lifecycle'
+                        THEN 'closed'
+                    WHEN previous_state.state_group = 'closed'
+                        THEN 'already_closed_before'
+                    WHEN previous_state.review_state IN ('human_locked', 'human_confirmed')
+                      OR COALESCE(confirmation.locked, 0) = 1
+                        THEN 'human_locked_or_confirmed'
+                    WHEN previous_state.final_state != 'reopen_auto_confirmed_autofix'
+                        THEN 'state_not_reopen_auto_confirmed_autofix'
+                    WHEN previous_state.state_group != 'pending'
+                        THEN 'state_not_pending'
+                    WHEN previous_state.review_state != 'auto_confirmed'
+                        THEN 'review_state_not_auto_confirmed'
+                    WHEN previous_state.confirmed_matches_output != 1
+                        THEN 'confirmation_output_mismatch'
+                    WHEN previous_state.needs_output_apply != 0
+                        THEN 'needs_output_apply'
+                    WHEN previous_state.needs_reopen != 1
+                        THEN 'needs_reopen_not_set'
+                    WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                      OR previous_state.final_state = 'pending_blocked_structure'
+                        THEN 'high_issue_or_structure_block'
+                    ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+            FROM allowed
+            LEFT JOIN previous_run ON 1 = 1
+            LEFT JOIN segment_state_items previous_state
+              ON previous_state.segment_id = allowed.segment_id
+             AND previous_state.run_id = previous_run.id
+            LEFT JOIN segment_state_items current_state
+              ON current_state.segment_id = allowed.segment_id
+             AND current_state.run_id = ?
+            LEFT JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = allowed.segment_id
+            LEFT JOIN (
+                SELECT
+                    segment_id,
+                    COUNT(*) AS issue_count,
+                    SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+            ) issue_summary ON issue_summary.segment_id = allowed.segment_id
+        )
+        SELECT bridge_result, COUNT(*) AS count
+        FROM item_eval
+        WHERE bridge_result NOT IN ('closed', 'already_closed_before')
+        GROUP BY bridge_result
+        ORDER BY count DESC, bridge_result
+        """,
+        (run_id, run_id),
+    ).fetchall()
+    short_label_dynamic_delegate_kind_split = conn.execute(
+        """
+        WITH checkpoint AS (
+            SELECT *
+            FROM ml_issue_short_label_dynamic_delegate_checkpoint_runs
+            WHERE finished_at IS NOT NULL
+              AND rule_version = 'issue_short_label_dynamic_delegate_checkpoint_v1'
+              AND checkpoint_status = 'checkpoint_ready'
+              AND policy_name = 'short_label_dynamic_delegate_shadow'
+              AND policy_status = 'shadow'
+              AND agent_key = 'micro_short_label_style'
+              AND allowed_count > 0
+              AND id IN (1, 2)
+        ),
+        allowed AS (
+            SELECT *
+            FROM (
+                SELECT
+                    item.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY item.segment_id
+                        ORDER BY item.checkpoint_run_id ASC, item.id ASC
+                    ) AS segment_rank
+                FROM ml_issue_short_label_dynamic_delegate_checkpoint_items item
+                JOIN checkpoint
+                  ON checkpoint.id = item.checkpoint_run_id
+                 AND checkpoint.sublane_run_id = item.sublane_run_id
+                 AND checkpoint.ledger_run_id = item.ledger_run_id
+                WHERE item.checkpoint_allowed = 1
+                  AND COALESCE(TRIM(item.block_reason), '') = ''
+                  AND item.subpolicy_name = 'short_label_dynamic_expression_delegate'
+                  AND item.checkpoint_action = 'cover_short_label_dynamic_delegate_to_dynamic_ck3'
+            )
+            WHERE segment_rank = 1
+        )
+        SELECT COALESCE(NULLIF(dynamic_issue_kind, ''), 'unknown') AS dynamic_issue_kind, COUNT(*) AS count
+        FROM allowed
+        GROUP BY COALESCE(NULLIF(dynamic_issue_kind, ''), 'unknown')
+        ORDER BY count DESC, dynamic_issue_kind
+        """
+    ).fetchall()
     lines = [
         "Segment State Snapshot",
         f"Rule version: {RULE_VERSION}",
@@ -674,12 +15564,1274 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
         f"- Precisam aplicar output confirmado: {counters['apply_state'].get('needs_apply', 0):,}",
         f"- Blanks válidos/intencionais: {counters['final_state'].get('closed_valid_blank', 0) + counters['final_state'].get('closed_intentional_blank', 0):,}",
         f"- Reabertura recomendada: {counters['needs_reopen'].get('1', 0):,}",
+        f"- Fechados por política guardada de lifecycle: {counters['final_state'].get('closed_auto_confirmed_guarded_lifecycle', 0):,}",
+        f"- Fechados por ponte governada Select_CString: {counters['final_state'].get('closed_auto_confirmed_select_cstring_governed_bridge', 0):,}",
+        f"- Fechados por ponte segment-level Select_CString: {counters['final_state'].get('closed_auto_confirmed_select_cstring_segment_lifecycle_bridge', 0):,}",
+        f"- Fechados por ponte short-label pure no-token: {counters['final_state'].get('closed_auto_confirmed_short_label_pure_no_token_segment_lifecycle_bridge', 0):,}",
+        f"- Fechados por ponte short-label pure no-token domain: {counters['final_state'].get('closed_auto_confirmed_short_label_pure_no_token_domain_lifecycle', 0):,}",
+        f"- Fechados por ponte short-label compact UI false-reopen: {counters['final_state'].get('closed_auto_confirmed_short_label_compact_ui_false_reopen_lifecycle', 0):,}",
+        f"- Fechados por ponte short-label compact UI semantic companion: {counters['final_state'].get('closed_auto_confirmed_short_label_compact_ui_semantic_companion_lifecycle', 0):,}",
+        f"- Fechados por ponte short-label dynamic delegate: {counters['final_state'].get('closed_auto_confirmed_short_label_dynamic_delegate_lifecycle', 0):,}",
+        f"- Fechados por ponte short-label single-issue system tooltip: {counters['final_state'].get('closed_auto_confirmed_short_label_single_issue_system_tooltip_lifecycle', 0):,}",
+        f"- Fechados por ponte short-label tokenized UI false-reopen: {counters['final_state'].get('closed_auto_confirmed_short_label_tokenized_ui_false_reopen_lifecycle', 0):,}",
+        f"- Fechados por ponte dynamic CK3 pattern: {counters['final_state'].get('closed_auto_confirmed_dynamic_ck3_pattern_shadow_lifecycle', 0):,}",
+        f"- Fechados por ponte gender longform false-reopen: {counters['final_state'].get('closed_auto_confirmed_gender_longform_false_reopen_context', 0):,}",
+        f"- Fechados por ponte short-label pure no-token + semantic: {counters['final_state'].get('closed_auto_confirmed_short_label_pure_no_token_semantic_lifecycle', 0):,}",
+        f"- Fechados por ponte short-label + semantic Tier 1: {counters['final_state'].get('closed_auto_confirmed_short_label_semantic_tier1_guarded_composition', 0):,}",
+        f"- Fechados por ponte semantic + short-label pair: {counters['final_state'].get('closed_auto_confirmed_semantic_short_label_pair_guarded_lifecycle', 0):,}",
+        f"- Fechados por ponte semantic short-label blocked surface: {counters['final_state'].get('closed_auto_confirmed_semantic_short_label_blocked_surface_lifecycle', 0):,}",
+        f"- Fechados por ponte event dialogue option: {counters['final_state'].get('closed_auto_confirmed_event_dialogue_option_lifecycle', 0):,}",
+        f"- Fechados por ponte event dialogue boundary: {counters['final_state'].get('closed_auto_confirmed_event_dialogue_option_boundary_lifecycle', 0):,}",
+        f"- Fechados por ponte event outcome boundary: {counters['final_state'].get('closed_auto_confirmed_event_outcome_short_label_boundary_lifecycle', 0):,}",
+        f"- Fechados por ponte event context composer: {counters['final_state'].get('closed_auto_confirmed_event_context_composer_lifecycle', 0):,}",
+        f"- Fechados por ponte event context sentence boundary: {counters['final_state'].get('closed_auto_confirmed_event_context_sentence_boundary_lifecycle', 0):,}",
+        f"- Fechados por batch event context composer: {counters['final_state'].get('closed_auto_confirmed_event_context_composer_lifecycle_batch', 0):,}",
+        f"- Fechados por batch short-label style: {counters['final_state'].get('closed_auto_confirmed_short_label_style_lifecycle_batch', 0):,}",
+        f"- Fechados por batch event surface router: {counters['final_state'].get('closed_auto_confirmed_event_surface_router_lifecycle_batch', 0):,}",
+        f"- Fechados por batch requirement tooltip surface: {counters['final_state'].get('closed_auto_confirmed_requirement_tooltip_surface_lifecycle_batch', 0):,}",
+        f"- Fechados por batch run36 event context composer: {counters['final_state'].get('closed_auto_confirmed_event_context_composer_lifecycle_run36', 0):,}",
+        f"- Fechados por batch run36 short-label style: {counters['final_state'].get('closed_auto_confirmed_short_label_style_lifecycle_run36', 0):,}",
+        f"- Fechados por batch run36 event surface router: {counters['final_state'].get('closed_auto_confirmed_event_surface_router_lifecycle_run36', 0):,}",
+        f"- Fechados por batch run36 requirement tooltip surface: {counters['final_state'].get('closed_auto_confirmed_requirement_tooltip_surface_lifecycle_run36', 0):,}",
+        f"- Fechados por ponte autofix_unknown event composition: {counters['final_state'].get('closed_auto_confirmed_autofix_unknown_event_composition_lifecycle', 0):,}",
+        f"- Fechados por ponte autofix_unknown event + semantic companion: {counters['final_state'].get('closed_auto_confirmed_autofix_unknown_event_semantic_companion_lifecycle', 0):,}",
+        f"- Fechados por ponte autofix_unknown semantic companion building: {counters['final_state'].get('closed_auto_confirmed_autofix_unknown_semantic_companion_building_lifecycle', 0):,}",
+        f"- Fechados por ponte autofix_unknown semantic companion rule/effect: {counters['final_state'].get('closed_auto_confirmed_autofix_unknown_semantic_companion_rule_effect_lifecycle', 0):,}",
+        f"- Fechados por ponte event surface + short-label companion: {counters['final_state'].get('closed_auto_confirmed_event_surface_short_label_companion_lifecycle', 0):,}",
+        f"- Fechados por ponte autofix_unknown surface: {counters['final_state'].get('closed_auto_confirmed_autofix_unknown_surface_lifecycle_bridge', 0):,}",
+        f"- Fechados por ponte autofix_unknown surface checkpoint: {counters['final_state'].get('closed_auto_confirmed_autofix_unknown_surface_lifecycle', 0):,}",
+        f"- Fechados por ponte autofix_unknown surface + semantic: {counters['final_state'].get('closed_auto_confirmed_autofix_unknown_surface_semantic_lifecycle', 0):,}",
+        f"- Fechados por ponte autofix_unknown domain guarded: {counters['final_state'].get('closed_auto_confirmed_autofix_unknown_domain_guarded_lifecycle', 0):,}",
+        f"- Fechados por ponte autofix_unknown domain guarded reviewed: {counters['final_state'].get('closed_auto_confirmed_autofix_unknown_domain_guarded_reviewed_lifecycle', 0):,}",
+        f"- Fechados por reparo Select_CString residual literal: {counters['final_state'].get('closed_auto_confirmed_select_cstring_residual_literal_repair', 0):,}",
+        f"- Fechados por reparo Select_CString possessivo contextual: {counters['final_state'].get('closed_auto_confirmed_select_cstring_possessive_context_repair', 0):,}",
+        f"- Fechados por reparo Select_CString auxiliar contextual: {counters['final_state'].get('closed_auto_confirmed_select_cstring_auxiliary_context_repair', 0):,}",
+        f"- Fechados por compositor Select_CString pronome objeto: {counters['final_state'].get('closed_auto_confirmed_select_cstring_object_pronoun_sentence_composer', 0):,}",
+        f"- Fechados por compositor Select_CString confisco passivo: {counters['final_state'].get('closed_auto_confirmed_select_cstring_passive_confiscation_composer', 0):,}",
+        f"- Fechados por reparo Select_CString pretérito transferiu: {counters['final_state'].get('closed_auto_confirmed_select_cstring_preterite_transfer_repair', 0):,}",
+        f"- Fechados por lote seguro Select_CString pretérito: {counters['final_state'].get('closed_auto_confirmed_select_cstring_preterite_safe_batch_repair', 0):,}",
+        f"- Fechados por reparo short-label compact UI óbvio: {counters['final_state'].get('closed_auto_confirmed_short_label_compact_ui_obvious_repair', 0):,}",
+        f"- Fechados por reparo short-label single-issue residual: {counters['final_state'].get('closed_auto_confirmed_short_label_single_issue_residual_repair', 0):,}",
+        f"- Fechados por reparo parcial ES_OA final-vowel trim: {counters['final_state'].get('closed_auto_confirmed_gender_es_oa_final_vowel_trim_partial_repair', 0):,}",
+        f"- Fechados por microreparo parentesco/posse: {counters['final_state'].get('closed_auto_confirmed_relation_possessive_boundary_microrepair', 0):,}",
+        f"- Fechados por compositor semantico de parentesco: {counters['final_state'].get('closed_auto_confirmed_relation_semantic_composer_reviewed_repair', 0):,}",
+        f"- Dynamic acclaimed knight requirement style-watch lifecycle closed: {counters['final_state'].get(DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_STYLE_WATCH_LIFECYCLE_STATE, 0):,}",
+        f"- Single combat signature weapon already-good lifecycle closed: {len(single_combat_already_good_closed):,}",
+        f"- Single combat signature weapon already-good blocked/preserved: {len(single_combat_already_good_blocked):,}",
+        f"- Semantic short-label domain-context event closed: {semantic_domain_closed_by_queue.get(219, 0):,}",
+        f"- Semantic short-label domain-context event blocked: {semantic_domain_blocked_by_queue.get(219, 0):,}",
+        f"- Semantic short-label domain-context tooltip closed: {semantic_domain_closed_by_queue.get(218, 0):,}",
+        f"- Semantic short-label domain-context tooltip blocked: {semantic_domain_blocked_by_queue.get(218, 0):,}",
+        f"- Short-label style queue 220 strict lifecycle closed: {len(short_label_style_queue220_closed):,}",
+        f"- Short-label style queue 220 strict lifecycle blocked: {len(short_label_style_queue220_blocked):,}",
+        f"- Autofix unknown UI surface queue 221 lifecycle closed: {len(autofix_unknown_ui_surface_queue221_closed):,}",
+        f"- Autofix unknown UI surface queue 221 lifecycle blocked: {len(autofix_unknown_ui_surface_queue221_blocked):,}",
+        f"- Autofix unknown plain/event queue 226 lifecycle closed: {len(autofix_unknown_plain_event_queue226_closed):,}",
+        f"- Autofix unknown plain/event queue 226 lifecycle blocked: {len(autofix_unknown_plain_event_queue226_blocked):,}",
+        f"- Autofix unknown plain/event queue 226 semantic companion lifecycle closed: {len(autofix_unknown_plain_event_queue226_semantic_companion_closed):,}",
+        f"- Autofix unknown plain/event queue 226 semantic companion lifecycle blocked: {len(autofix_unknown_plain_event_queue226_semantic_companion_blocked):,}",
+        f"- Autofix unknown plain/event context composer lifecycle closed: {len(autofix_unknown_plain_event_context_composer_closed):,}",
+        f"- Autofix unknown plain/event context composer lifecycle blocked: {len(autofix_unknown_plain_event_context_composer_blocked):,}",
+        f"- Short-label semantic pair lifecycle closed: {len(short_label_semantic_pair_closed):,}",
+        f"- Short-label semantic pair lifecycle blocked: {len(short_label_semantic_pair_blocked):,}",
+        f"- Short-label semantic load tips lifecycle closed: {len(short_label_semantic_load_tips_closed):,}",
+        f"- Short-label semantic load tips lifecycle blocked: {len(short_label_semantic_load_tips_blocked):,}",
+        f"- Select_CString bridge pending: {len(select_cstring_pending_rows):,}",
     ]
     lines.extend(format_counter("Por grupo", counters["state_group"], total))
     lines.extend(format_counter("Por estado final", counters["final_state"], total))
     lines.extend(format_counter("Por estado de output", counters["output_state"], total))
     lines.extend(format_counter("Por estado de revisão", counters["review_state"], total))
     lines.extend(format_counter("Por estado de aplicação", counters["apply_state"], total))
+
+    if select_cstring_segment_bridge_row:
+        bridge_candidates = int(select_cstring_segment_bridge_row["candidates"] or 0)
+        bridge_closed = int(select_cstring_segment_bridge_row["closed_by_bridge"] or 0)
+        bridge_review = int(select_cstring_segment_bridge_row["review_required_count"] or 0)
+        bridge_blocked = max(bridge_candidates - bridge_closed - bridge_review, 0)
+        lines.extend(
+            [
+                "",
+                "Select_CString segment lifecycle bridge:",
+                f"- proposal_run_id: {select_cstring_segment_bridge_row['proposal_run_id']}",
+                f"- candidates: {bridge_candidates:,}",
+                f"- closed_by_bridge: {bridge_closed:,}",
+                f"- blocked_by_bridge: {bridge_blocked:,}",
+                f"- review_required: {bridge_review:,}",
+                f"- production_release_allowed: {int(select_cstring_segment_bridge_row['production_release_allowed'] or 0)}",
+                "- validation_scope: proposal table has no hash/text payload columns; "
+                "consumer validates segment_id, current confirmation/output canonical match and current issue gates.",
+            ]
+        )
+        if select_cstring_segment_bridge_blocks:
+            lines.append("- block reasons:")
+        for row in select_cstring_segment_bridge_blocks:
+            lines.append(f"  - {row['bridge_result']}: {int(row['count'] or 0):,}")
+
+    if short_label_compact_ui_false_reopen_bridge_row:
+        compact_candidates = int(short_label_compact_ui_false_reopen_bridge_row["candidates"] or 0)
+        compact_allowed = int(short_label_compact_ui_false_reopen_bridge_row["allowed"] or 0)
+        compact_checkpoint_blocked = int(short_label_compact_ui_false_reopen_bridge_row["checkpoint_blocked"] or 0)
+        compact_closed = int(short_label_compact_ui_false_reopen_bridge_row["closed_by_bridge"] or 0)
+        compact_blocked = int(short_label_compact_ui_false_reopen_bridge_row["blocked_by_bridge"] or 0)
+        compact_blocks = ", ".join(
+            f"{row['bridge_result']}={int(row['count'] or 0):,}"
+            for row in short_label_compact_ui_false_reopen_bridge_blocks
+        )
+        lines.extend(
+            [
+                "",
+                "Short-label compact UI false-reopen lifecycle bridge:",
+                f"- checkpoint_run_ids: {short_label_compact_ui_false_reopen_bridge_row['checkpoint_run_ids']}",
+                f"- coverage_run_id: {short_label_compact_ui_false_reopen_bridge_row['coverage_run_id']}",
+                f"- candidates: {compact_candidates:,}",
+                f"- checkpoint_allowed: {compact_allowed:,}",
+                f"- checkpoint_blocked: {compact_checkpoint_blocked:,}",
+                f"- closed_by_bridge: {compact_closed:,}",
+                f"- blocked_or_preserved: {compact_blocked:,}",
+                f"- block_reasons: {compact_blocks or 'none'}",
+                "- lifecycle_policy_action: close_reopen_short_label_compact_ui_false_reopen_lifecycle",
+                "- scope: read-only segment-state closure; no output write and no confirmation write.",
+            ]
+        )
+
+    if short_label_compact_ui_semantic_companion_row:
+        compact_semantic_candidates = int(short_label_compact_ui_semantic_companion_row["candidates"] or 0)
+        compact_semantic_closed = int(short_label_compact_ui_semantic_companion_row["closed"] or 0)
+        compact_semantic_blocked = int(short_label_compact_ui_semantic_companion_row["blocked"] or 0)
+        lines.extend(
+            [
+                "",
+                "Short-label compact UI semantic companion lifecycle:",
+                f"- bridge_run_ids: {short_label_compact_ui_semantic_companion_row['bridge_run_ids'] or ''}",
+                f"- candidates: {compact_semantic_candidates:,}",
+                f"- closed: {compact_semantic_closed:,}",
+                f"- blocked: {compact_semantic_blocked:,}",
+                "- status: shadow_lifecycle_bridge_cumulative",
+                "- validation_scope: reviewed compact UI short-label evidence paired with a semantic companion; "
+                "consumer validates current pending reopen state, auto confirmation, output alignment, token status, "
+                "exactly one short-label issue and exactly one companion issue.",
+            ]
+        )
+        lines.append("- block reasons:")
+        if short_label_compact_ui_semantic_companion_blocks:
+            for row in short_label_compact_ui_semantic_companion_blocks:
+                lines.append(f"  - {row['bridge_result']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none")
+
+    if short_label_dynamic_delegate_row:
+        dynamic_delegate_kind_split = {
+            str(row["dynamic_issue_kind"]): int(row["count"] or 0)
+            for row in short_label_dynamic_delegate_kind_split
+        }
+        dynamic_delegate_block_reasons = {
+            str(row["bridge_result"]): int(row["count"] or 0)
+            for row in short_label_dynamic_delegate_blocks
+        }
+        lines.extend(
+            [
+                "",
+                "Short label dynamic delegate lifecycle:",
+                f"- checkpoint_run_ids: {short_label_dynamic_delegate_row['checkpoint_run_ids'] or ''}",
+                f"- allowed_rows: {int(short_label_dynamic_delegate_row['allowed_rows'] or 0):,}",
+                f"- distinct_allowed_segments: {int(short_label_dynamic_delegate_row['distinct_allowed_segments'] or 0):,}",
+                f"- already_closed_before: {int(short_label_dynamic_delegate_row['already_closed_before'] or 0):,}",
+                f"- pending_before: {int(short_label_dynamic_delegate_row['pending_before'] or 0):,}",
+                f"- closed: {int(short_label_dynamic_delegate_row['closed'] or 0):,}",
+                f"- blocked: {int(short_label_dynamic_delegate_row['blocked'] or 0):,}",
+                f"- net_gain: {int(short_label_dynamic_delegate_row['net_gain'] or 0):,}",
+                f"- blocked reasons: {json.dumps(dynamic_delegate_block_reasons, ensure_ascii=False, sort_keys=True)}",
+                f"- dynamic_issue_kind split: {json.dumps(dynamic_delegate_kind_split, ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+
+    if short_label_single_issue_system_tooltip_row:
+        system_tooltip_profile_split = {
+            str(row["profile"]): int(row["count"] or 0)
+            for row in short_label_single_issue_system_tooltip_profile_split
+        }
+        system_tooltip_path_split = {
+            str(row["relative_path"]): int(row["count"] or 0)
+            for row in short_label_single_issue_system_tooltip_path_split
+        }
+        system_tooltip_block_reasons = {
+            str(row["block_reason"]): int(row["count"] or 0)
+            for row in short_label_single_issue_system_tooltip_blocks
+        }
+        lines.extend(
+            [
+                "",
+                "Short label single-issue system tooltip lifecycle:",
+                f"- checkpoint_run_ids: {short_label_single_issue_system_tooltip_row['checkpoint_run_ids'] or ''}",
+                f"- allowed_rows: {int(short_label_single_issue_system_tooltip_row['allowed_rows'] or 0):,}",
+                f"- distinct_allowed_segments: {int(short_label_single_issue_system_tooltip_row['distinct_allowed_segments'] or 0):,}",
+                f"- already_closed_before: {int(short_label_single_issue_system_tooltip_row['already_closed_before'] or 0):,}",
+                f"- pending_before: {int(short_label_single_issue_system_tooltip_row['pending_before'] or 0):,}",
+                f"- closed: {int(short_label_single_issue_system_tooltip_row['closed'] or 0):,}",
+                f"- blocked: {int(short_label_single_issue_system_tooltip_row['blocked'] or 0):,}",
+                f"- net_gain: {int(short_label_single_issue_system_tooltip_row['net_gain'] or 0):,}",
+                f"- profile split: {json.dumps(system_tooltip_profile_split, ensure_ascii=False, sort_keys=True)}",
+                f"- path split: {json.dumps(system_tooltip_path_split, ensure_ascii=False, sort_keys=True)}",
+                f"- blocked reasons: {json.dumps(system_tooltip_block_reasons, ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+
+    if short_label_tokenized_ui_false_reopen_row:
+        tokenized_ui_lane_split = {
+            str(row["lane"]): int(row["count"] or 0)
+            for row in short_label_tokenized_ui_false_reopen_lane_split
+        }
+        tokenized_ui_block_reasons = {
+            str(row["block_reason"]): int(row["count"] or 0)
+            for row in short_label_tokenized_ui_false_reopen_blocks
+        }
+        lines.extend(
+            [
+                "",
+                "Short label tokenized UI false-reopen lifecycle:",
+                f"- checkpoint_run_ids: {short_label_tokenized_ui_false_reopen_row['checkpoint_run_ids'] or ''}",
+                f"- candidates: {int(short_label_tokenized_ui_false_reopen_row['candidates'] or 0):,}",
+                f"- checkpoint_allowed: {int(short_label_tokenized_ui_false_reopen_row['checkpoint_allowed'] or 0):,}",
+                f"- allowed_rows: {int(short_label_tokenized_ui_false_reopen_row['allowed_rows'] or 0):,}",
+                f"- distinct_allowed_segments: {int(short_label_tokenized_ui_false_reopen_row['distinct_allowed_segments'] or 0):,}",
+                f"- already_closed_before: {int(short_label_tokenized_ui_false_reopen_row['already_closed_before'] or 0):,}",
+                f"- pending_before: {int(short_label_tokenized_ui_false_reopen_row['pending_before'] or 0):,}",
+                f"- closed: {int(short_label_tokenized_ui_false_reopen_row['closed'] or 0):,}",
+                f"- blocked: {int(short_label_tokenized_ui_false_reopen_row['blocked'] or 0):,}",
+                f"- net_gain: {int(short_label_tokenized_ui_false_reopen_row['net_gain'] or 0):,}",
+                f"- lane split: {json.dumps(tokenized_ui_lane_split, ensure_ascii=False, sort_keys=True)}",
+                f"- blocked reasons: {json.dumps(tokenized_ui_block_reasons, ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+
+    if short_label_pure_no_token_domain_bridge_row:
+        domain_candidates = int(short_label_pure_no_token_domain_bridge_row["candidates"] or 0)
+        domain_allowed = int(short_label_pure_no_token_domain_bridge_row["allowed"] or 0)
+        domain_checkpoint_blocked = int(short_label_pure_no_token_domain_bridge_row["checkpoint_blocked"] or 0)
+        domain_closed = int(short_label_pure_no_token_domain_bridge_row["closed_by_bridge"] or 0)
+        domain_blocked = int(short_label_pure_no_token_domain_bridge_row["blocked_by_bridge"] or 0)
+        domain_block_reasons = {
+            str(row["bridge_result"]): int(row["count"] or 0)
+            for row in short_label_pure_no_token_domain_bridge_blocks
+        }
+        lines.extend(
+            [
+                "",
+                "Short-label pure no-token domain lifecycle bridge:",
+                f"- checkpoint_ids: {short_label_pure_no_token_domain_bridge_row['checkpoint_ids']}",
+                f"- shadow_run_ids: {short_label_pure_no_token_domain_bridge_row['shadow_run_ids']}",
+                f"- candidates: {domain_candidates:,}",
+                f"- candidates_allowed: {domain_allowed:,}",
+                f"- checkpoint_blocked_preserved: {domain_checkpoint_blocked:,}",
+                f"- closed_by_bridge: {domain_closed:,}",
+                f"- blocked_by_bridge: {domain_blocked:,}",
+                "- validation_scope: nominal short-label, no-token checkpoint evidence; consumer validates "
+                "current auto confirmation, output canonical match, evidence canonical match, zero current issues "
+                "and non-human-lock status.",
+                f"- block reasons: {json.dumps(domain_block_reasons, ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+
+    if dynamic_ck3_pattern_bridge_row:
+        dynamic_candidates = int(dynamic_ck3_pattern_bridge_row["candidates"] or 0)
+        dynamic_closed = int(dynamic_ck3_pattern_bridge_row["closed"] or 0)
+        dynamic_blocked = int(dynamic_ck3_pattern_bridge_row["blocked"] or 0)
+        dynamic_block_reasons = {
+            str(row["bridge_result"]): int(row["count"] or 0)
+            for row in dynamic_ck3_pattern_bridge_blocks
+        }
+        dynamic_subpolicies = {
+            str(row["subpolicy_name"]): int(row["count"] or 0)
+            for row in dynamic_ck3_pattern_subpolicies_closed
+        }
+        lines.extend(
+            [
+                "",
+                "Dynamic CK3 pattern shadow lifecycle:",
+                f"- checkpoint_run_ids: {dynamic_ck3_pattern_bridge_row['checkpoint_run_ids'] or ''}",
+                f"- candidates: {dynamic_candidates:,}",
+                f"- closed: {dynamic_closed:,}",
+                f"- blocked: {dynamic_blocked:,}",
+                "- status: shadow_lifecycle_bridge_cumulative",
+                f"- subpolicies_closed: {json.dumps(dynamic_subpolicies, ensure_ascii=False, sort_keys=True)}",
+                "- validation_scope: dynamic_rule_tooltip_label checkpoint evidence; consumer validates current "
+                "pending false-reopen state, auto confirmation, output alignment and no pending output apply.",
+                f"- block reasons: {json.dumps(dynamic_block_reasons, ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+
+    if gender_longform_false_reopen_bridge_row:
+        gender_candidates = int(gender_longform_false_reopen_bridge_row["candidates"] or 0)
+        gender_allowed = int(gender_longform_false_reopen_bridge_row["allowed"] or 0)
+        gender_checkpoint_blocked = int(gender_longform_false_reopen_bridge_row["checkpoint_blocked"] or 0)
+        gender_closed = int(gender_longform_false_reopen_bridge_row["closed_by_bridge"] or 0)
+        gender_blocked = int(gender_longform_false_reopen_bridge_row["blocked_by_bridge"] or 0)
+        gender_block_reasons = {
+            str(row["bridge_result"]): int(row["count"] or 0)
+            for row in gender_longform_false_reopen_bridge_blocks
+        }
+        gender_routes = {
+            str(row["route_key"]): int(row["count"] or 0)
+            for row in gender_longform_false_reopen_bridge_routes
+        }
+        lines.extend(
+            [
+                "",
+                "Gender longform false-reopen lifecycle bridge:",
+                f"- checkpoint_ids: {gender_longform_false_reopen_bridge_row['checkpoint_ids']}",
+                f"- route_run_ids: {gender_longform_false_reopen_bridge_row['route_run_ids']}",
+                f"- diagnostic_run_ids: {gender_longform_false_reopen_bridge_row['diagnostic_run_ids']}",
+                f"- candidates: {gender_candidates:,}",
+                f"- candidates_allowed: {gender_allowed:,}",
+                f"- checkpoint_blocked_preserved: {gender_checkpoint_blocked:,}",
+                f"- closed_by_bridge: {gender_closed:,}",
+                f"- blocked_by_bridge: {gender_blocked:,}",
+                "- validation_scope: longform gender false-reopen checkpoint; consumer validates "
+                "approved route, current reopen state, confirmation/output alignment, no pending output "
+                "apply and empty validation issue codes.",
+                f"- closed routes: {json.dumps(gender_routes, ensure_ascii=False, sort_keys=True)}",
+                f"- block reasons: {json.dumps(gender_block_reasons, ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+
+    if short_label_pure_no_token_semantic_bridge_row:
+        pure_semantic_candidates = int(short_label_pure_no_token_semantic_bridge_row["total_candidates"] or 0)
+        pure_semantic_closed = int(short_label_pure_no_token_semantic_bridge_row["closed_by_bridge"] or 0)
+        pure_semantic_blocked = int(short_label_pure_no_token_semantic_bridge_row["blocked_by_bridge"] or 0)
+        pure_semantic_sources = {}
+        try:
+            pure_semantic_sources = json.loads(short_label_pure_no_token_semantic_bridge_row["source_counts_json"] or "{}")
+        except json.JSONDecodeError:
+            pure_semantic_sources = {"raw": short_label_pure_no_token_semantic_bridge_row["source_counts_json"] or ""}
+        pure_semantic_block_reasons = {
+            str(row["bridge_result"]): int(row["count"] or 0)
+            for row in short_label_pure_no_token_semantic_bridge_blocks
+        }
+        lines.extend(
+            [
+                "",
+                "Short-label pure no-token + semantic lifecycle bridge:",
+                f"- bridge_proposal_run_id: {short_label_pure_no_token_semantic_bridge_row['bridge_run_id']}",
+                f"- coverage_run_id: {short_label_pure_no_token_semantic_bridge_row['coverage_run_id']}",
+                f"- pure_no_token_checkpoint_run_id: {short_label_pure_no_token_semantic_bridge_row['checkpoint_run_id']}",
+                "- semantic_explained_run: semantic_review_explained_checkpoint (from coverage_sources_json/source_counts_json)",
+                f"- source_segment_state_run_id: {short_label_pure_no_token_semantic_bridge_row['source_segment_state_run_id']}",
+                f"- ledger_run_id: {short_label_pure_no_token_semantic_bridge_row['ledger_run_id']}",
+                f"- candidates: {pure_semantic_candidates:,}",
+                f"- ready_count: {int(short_label_pure_no_token_semantic_bridge_row['ready_count'] or 0):,}",
+                f"- closed_by_bridge: {pure_semantic_closed:,}",
+                f"- blocked_by_bridge: {pure_semantic_blocked:,}",
+                f"- proposal_blocked_count: {int(short_label_pure_no_token_semantic_bridge_row['blocked_count'] or 0):,}",
+                f"- review_required: {int(short_label_pure_no_token_semantic_bridge_row['review_required_count'] or 0):,}",
+                f"- estimated_closed_gain: {int(short_label_pure_no_token_semantic_bridge_row['estimated_closed_gain'] or 0):,}",
+                f"- production_release_allowed: {int(short_label_pure_no_token_semantic_bridge_row['production_release_allowed'] or 0)}",
+                f"- coverage_sources: {json.dumps(pure_semantic_sources, ensure_ascii=False, sort_keys=True)}",
+                f"- block reasons: {json.dumps(pure_semantic_block_reasons, ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+
+    if short_semantic_tier1_bridge_row:
+        short_semantic_candidates = int(short_semantic_tier1_bridge_row["candidate_count"] or short_semantic_tier1_bridge_row["candidates"] or 0)
+        short_semantic_allowed = int(short_semantic_tier1_bridge_row["allowed_count"] or 0)
+        short_semantic_closed = int(short_semantic_tier1_bridge_row["closed_by_bridge"] or 0)
+        short_semantic_blocked = max(short_semantic_candidates - short_semantic_closed, 0)
+        closed_buckets = {
+            str(row["queue_bucket"]): int(row["count"] or 0)
+            for row in short_semantic_tier1_bridge_buckets
+        }
+        block_reasons = {
+            str(row["bridge_result"]): int(row["count"] or 0)
+            for row in short_semantic_tier1_bridge_blocks
+        }
+        lines.extend(
+            [
+                "",
+                "Short-label + semantic Tier 1 guarded composition bridge (cumulative):",
+                f"- dry_run_ids: {short_semantic_tier1_bridge_row['dry_run_ids']}",
+                f"- checkpoint_run_ids: {short_semantic_tier1_bridge_row['checkpoint_run_ids']}",
+                f"- candidates: {short_semantic_candidates:,}",
+                f"- dry_run_allowed: {short_semantic_allowed:,}",
+                f"- closed_by_bridge: {short_semantic_closed:,}",
+                f"- blocked_by_bridge: {short_semantic_blocked:,}",
+                f"- production_release_allowed: {int(short_semantic_tier1_bridge_row['production_release_allowed'] or 0)}",
+                f"- buckets closed: {json.dumps(closed_buckets, ensure_ascii=False, sort_keys=True)}",
+                f"- block reasons: {json.dumps(block_reasons, ensure_ascii=False, sort_keys=True)}",
+                f"- ignored_zero_allowed_runs: {json.dumps([dict(row) for row in short_semantic_tier1_ignored_runs], ensure_ascii=False)}",
+            ]
+        )
+
+    if semantic_short_label_pair_bridge_row:
+        pair_candidates = int(semantic_short_label_pair_bridge_row["candidate_count"] or semantic_short_label_pair_bridge_row["candidates"] or 0)
+        pair_allowed = int(semantic_short_label_pair_bridge_row["allowed_count"] or 0)
+        pair_closed = int(semantic_short_label_pair_bridge_row["closed_by_bridge"] or 0)
+        pair_blocked = max(pair_candidates - pair_closed, 0)
+        pair_block_reasons = {
+            str(row["bridge_result"]): int(row["count"] or 0)
+            for row in semantic_short_label_pair_bridge_blocks
+        }
+        lines.extend(
+            [
+                "",
+                "Semantic + short-label pair guarded bridge (cumulative balanced):",
+                f"- dry_run_ids: {semantic_short_label_pair_bridge_row['dry_run_ids']}",
+                f"- guard_profiles: {semantic_short_label_pair_bridge_row['guard_profiles']}",
+                f"- checkpoint_ids: {semantic_short_label_pair_bridge_row['checkpoint_run_ids']}",
+                f"- candidates: {pair_candidates:,}",
+                f"- candidates_allowed: {pair_allowed:,}",
+                f"- closed_by_bridge: {pair_closed:,}",
+                f"- blocked_by_bridge: {pair_blocked:,}",
+                f"- checkpoint_precision_proxy: {float(semantic_short_label_pair_bridge_row['precision_proxy'] or 0):.2f}% (calibration proxy, not absolute final precision)",
+                "- balanced_v1_expansion_audit: 150/150 safe_short_label",
+                f"- block reasons: {json.dumps(pair_block_reasons, ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+        if semantic_short_label_pair_bridge_examples:
+            lines.append("- blocked examples:")
+            for row in semantic_short_label_pair_bridge_examples:
+                lines.append(
+                    "  - "
+                    f"segment={row['segment_id']} | {row['relative_path']}:{row['source_line_number']} | "
+                    f"{row['source_key']} | reason={row['block_reason']} | sample={row['text_sample']}"
+                )
+
+    if semantic_short_label_blocked_surface_bridge_row:
+        blocked_surface_candidates = int(
+            semantic_short_label_blocked_surface_bridge_row["candidate_count"]
+            or semantic_short_label_blocked_surface_bridge_row["candidates"]
+            or 0
+        )
+        blocked_surface_allowed = int(semantic_short_label_blocked_surface_bridge_row["allowed_count"] or 0)
+        blocked_surface_closed = int(semantic_short_label_blocked_surface_bridge_row["closed_by_bridge"] or 0)
+        blocked_surface_blocked = max(blocked_surface_candidates - blocked_surface_closed, 0)
+        blocked_surface_reasons = {
+            str(row["bridge_result"]): int(row["count"] or 0)
+            for row in semantic_short_label_blocked_surface_bridge_blocks
+        }
+        lines.extend(
+            [
+                "",
+                "Semantic short-label blocked surface bridge:",
+                f"- checkpoint_id: {semantic_short_label_blocked_surface_bridge_row['checkpoint_id']}",
+                f"- dry_run_id: {semantic_short_label_blocked_surface_bridge_row['dry_run_id']}",
+                f"- row_guard_profile: {semantic_short_label_blocked_surface_bridge_row['row_guard_profile']}",
+                f"- candidates: {blocked_surface_candidates:,}",
+                f"- candidates_allowed: {blocked_surface_allowed:,}",
+                f"- closed_by_bridge: {blocked_surface_closed:,}",
+                f"- blocked_by_bridge: {blocked_surface_blocked:,}",
+                "- precision_proxy: 100.00% (audit sample proxy 180/180, not absolute final precision)",
+                f"- block reasons: {json.dumps(blocked_surface_reasons, ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+        if semantic_short_label_blocked_surface_bridge_examples:
+            lines.append("- blocked examples:")
+            for row in semantic_short_label_blocked_surface_bridge_examples:
+                lines.append(
+                    "  - "
+                    f"segment={row['segment_id']} | {row['relative_path']}:{row['source_line_number']} | "
+                    f"{row['source_key']} | reason={row['block_reason']} | text={row['current_text']}"
+                )
+
+    if event_dialogue_option_bridge_row:
+        event_candidates = int(event_dialogue_option_bridge_row["candidate_count"] or event_dialogue_option_bridge_row["candidates"] or 0)
+        event_allowed = int(event_dialogue_option_bridge_row["allowed_count"] or 0)
+        event_closed = int(event_dialogue_option_bridge_row["closed_by_bridge"] or 0)
+        event_blocked = max(event_candidates - event_closed, 0)
+        event_reasons = {
+            str(row["bridge_result"]): int(row["count"] or 0)
+            for row in event_dialogue_option_bridge_blocks
+        }
+        lines.extend(
+            [
+                "",
+                "Event dialogue option lifecycle bridge:",
+                f"- checkpoint_runs: {event_dialogue_option_bridge_row['checkpoint_id']}",
+                f"- dry_run_ids: {event_dialogue_option_bridge_row['dry_run_id']}",
+                f"- agent_key: {event_dialogue_option_bridge_row['agent_key']}",
+                f"- row_guard_profile: {event_dialogue_option_bridge_row['row_guard_profile']}",
+                f"- candidates: {event_candidates:,}",
+                f"- candidates_allowed: {event_allowed:,}",
+                f"- closed_by_bridge: {event_closed:,}",
+                f"- blocked_by_bridge: {event_blocked:,}",
+                "- precision_proxy: 99.67% (audit sample proxy 299/300 from queue 129, not absolute final precision)",
+                f"- block reasons: {json.dumps(event_reasons, ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+        if event_dialogue_option_bridge_examples:
+            lines.append("- blocked examples:")
+            for row in event_dialogue_option_bridge_examples:
+                lines.append(
+                    "  - "
+                    f"segment={row['segment_id']} | {row['relative_path']}:{row['source_line_number']} | "
+                    f"{row['source_key']} | reason={row['block_reason']} | text={row['current_text']}"
+                )
+
+    if event_context_composer_bridge_row:
+        event_context_candidates = int(
+            event_context_composer_bridge_row["candidate_count"]
+            or event_context_composer_bridge_row["candidates"]
+            or 0
+        )
+        event_context_allowed = int(event_context_composer_bridge_row["allowed_count"] or 0)
+        event_context_closed = int(event_context_composer_bridge_row["closed_by_bridge"] or 0)
+        event_context_blocked = max(event_context_candidates - event_context_closed, 0)
+        event_context_reasons = {
+            str(row["bridge_result"]): int(row["count"] or 0)
+            for row in event_context_composer_bridge_blocks
+        }
+        lines.extend(
+            [
+                "",
+                "Event context composer lifecycle bridge:",
+                f"- checkpoint_id: {event_context_composer_bridge_row['checkpoint_id']}",
+                f"- dry_run_id: {event_context_composer_bridge_row['dry_run_id']}",
+                f"- agent_key: {event_context_composer_bridge_row['agent_key']}",
+                f"- row_guard_profile: {event_context_composer_bridge_row['row_guard_profile']}",
+                f"- candidates: {event_context_candidates:,}",
+                f"- candidates_allowed: {event_context_allowed:,}",
+                f"- closed_by_bridge: {event_context_closed:,}",
+                f"- blocked_by_bridge: {event_context_blocked:,}",
+                "- precision_proxy: 99.17% (audit sample proxy 238/240, not absolute final precision)",
+                f"- block reasons: {json.dumps(event_context_reasons, ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+        if event_context_composer_bridge_examples:
+            lines.append("- blocked examples:")
+            for row in event_context_composer_bridge_examples:
+                lines.append(
+                    "  - "
+                    f"segment={row['segment_id']} | {row['relative_path']}:{row['source_line_number']} | "
+                    f"{row['source_key']} | reason={row['block_reason']} | text={row['current_text']}"
+                )
+
+    if event_dialogue_boundary_bridge_row:
+        event_boundary_candidates = int(event_dialogue_boundary_bridge_row["candidates"] or 0)
+        event_boundary_allowed = int(event_dialogue_boundary_bridge_row["allowed"] or 0)
+        event_boundary_checkpoint_blocked = int(event_dialogue_boundary_bridge_row["checkpoint_blocked"] or 0)
+        event_boundary_closed = int(event_dialogue_boundary_bridge_row["closed_by_bridge"] or 0)
+        event_boundary_blocked = int(event_dialogue_boundary_bridge_row["blocked_by_bridge"] or 0)
+        event_boundary_reasons = {
+            str(row["bridge_result"]): int(row["count"] or 0)
+            for row in event_dialogue_boundary_bridge_blocks
+        }
+        lines.extend(
+            [
+                "",
+                "Event dialogue option boundary lifecycle bridge:",
+                f"- checkpoint_runs: {event_dialogue_boundary_bridge_row['checkpoint_run_ids']}",
+                f"- queue_run_ids: {event_dialogue_boundary_bridge_row['queue_run_ids']}",
+                f"- candidates: {event_boundary_candidates:,}",
+                f"- candidates_allowed: {event_boundary_allowed:,}",
+                f"- closed_by_bridge: {event_boundary_closed:,}",
+                f"- blocked_by_bridge: {event_boundary_blocked:,}",
+                f"- checkpoint_blocked_preserved: {event_boundary_checkpoint_blocked:,}",
+                f"- block reasons: {json.dumps(event_boundary_reasons, ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+
+    if event_outcome_boundary_bridge_row:
+        event_outcome_candidates = int(event_outcome_boundary_bridge_row["candidates"] or 0)
+        event_outcome_allowed = int(event_outcome_boundary_bridge_row["allowed"] or 0)
+        event_outcome_checkpoint_blocked = int(event_outcome_boundary_bridge_row["checkpoint_blocked"] or 0)
+        event_outcome_closed = int(event_outcome_boundary_bridge_row["closed_by_bridge"] or 0)
+        event_outcome_blocked = int(event_outcome_boundary_bridge_row["blocked_by_bridge"] or 0)
+        event_outcome_reasons = {
+            str(row["bridge_result"]): int(row["count"] or 0)
+            for row in event_outcome_boundary_bridge_blocks
+        }
+        lines.extend(
+            [
+                "",
+                "Event outcome short-label boundary lifecycle bridge:",
+                f"- checkpoint_runs: {event_outcome_boundary_bridge_row['checkpoint_run_ids']}",
+                f"- queue_run_ids: {event_outcome_boundary_bridge_row['queue_run_ids']}",
+                f"- candidates: {event_outcome_candidates:,}",
+                f"- candidates_allowed: {event_outcome_allowed:,}",
+                f"- closed_by_bridge: {event_outcome_closed:,}",
+                f"- blocked_by_bridge: {event_outcome_blocked:,}",
+                f"- checkpoint_blocked_preserved: {event_outcome_checkpoint_blocked:,}",
+                f"- block reasons: {json.dumps(event_outcome_reasons, ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+
+    if event_context_sentence_boundary_bridge_row:
+        event_context_sentence_candidates = int(event_context_sentence_boundary_bridge_row["candidates"] or 0)
+        event_context_sentence_allowed = int(event_context_sentence_boundary_bridge_row["allowed"] or 0)
+        event_context_sentence_checkpoint_blocked = int(
+            event_context_sentence_boundary_bridge_row["checkpoint_blocked"] or 0
+        )
+        event_context_sentence_closed = int(event_context_sentence_boundary_bridge_row["closed_by_bridge"] or 0)
+        event_context_sentence_blocked = int(event_context_sentence_boundary_bridge_row["blocked_by_bridge"] or 0)
+        event_context_sentence_reasons = {
+            str(row["bridge_result"]): int(row["count"] or 0)
+            for row in event_context_sentence_boundary_bridge_blocks
+        }
+        lines.extend(
+            [
+                "",
+                "Event context sentence boundary lifecycle bridge:",
+                f"- checkpoint_runs: {event_context_sentence_boundary_bridge_row['checkpoint_run_ids']}",
+                f"- queue_run_ids: {event_context_sentence_boundary_bridge_row['queue_run_ids']}",
+                f"- candidates: {event_context_sentence_candidates:,}",
+                f"- candidates_allowed: {event_context_sentence_allowed:,}",
+                f"- closed_by_bridge: {event_context_sentence_closed:,}",
+                f"- blocked_by_bridge: {event_context_sentence_blocked:,}",
+                f"- checkpoint_blocked_preserved: {event_context_sentence_checkpoint_blocked:,}",
+                f"- block reasons: {json.dumps(event_context_sentence_reasons, ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+
+    if semantic_short_label_blocked_surface_batch_rows:
+        batch_allowed = sum(int(row["allowed_count"] or 0) for row in semantic_short_label_blocked_surface_batch_rows)
+        batch_closed = sum(int(row["closed_by_bridge"] or 0) for row in semantic_short_label_blocked_surface_batch_rows)
+        batch_blocked = sum(int(row["blocked_by_bridge"] or 0) for row in semantic_short_label_blocked_surface_batch_rows)
+        batch_already = sum(int(row["already_closed_or_not_pending"] or 0) for row in semantic_short_label_blocked_surface_batch_rows)
+        batch_blocks = defaultdict(dict)
+        for row in semantic_short_label_blocked_surface_batch_blocks:
+            batch_blocks[str(row["agent_key"])][str(row["bridge_result"])] = int(row["count"] or 0)
+        lines.extend(
+            [
+                "",
+                "Semantic short-label blocked surface lifecycle batch:",
+                "- dry_run_id: 35",
+                "- checkpoint_runs: 6,7,8,9",
+                "- expected_allowed_total: 1,444",
+                f"- allowed_total: {batch_allowed:,}",
+                f"- actual_closed_total: {batch_closed:,}",
+                f"- blocked_total: {batch_blocked:,}",
+                f"- already_closed_or_not_pending: {batch_already:,}",
+                f"- needs_apply: {counters['apply_state'].get('needs_apply', 0):,}",
+                "- by_agent:",
+            ]
+        )
+        for row in semantic_short_label_blocked_surface_batch_rows:
+            agent_key = str(row["agent_key"])
+            lines.append(
+                "  - "
+                f"{agent_key}: checkpoint={row['checkpoint_run_id']}, "
+                f"candidates={int(row['candidate_count'] or row['candidates'] or 0):,}, "
+                f"allowed={int(row['allowed_count'] or 0):,}, "
+                f"closed={int(row['closed_by_bridge'] or 0):,}, "
+                f"blocked={int(row['blocked_by_bridge'] or 0):,}, "
+                f"already_closed_or_not_pending={int(row['already_closed_or_not_pending'] or 0):,}"
+            )
+        lines.append(f"- block reasons: {json.dumps(batch_blocks, ensure_ascii=False, sort_keys=True)}")
+        if semantic_short_label_blocked_surface_batch_examples:
+            lines.append("- blocked examples:")
+            for row in semantic_short_label_blocked_surface_batch_examples:
+                lines.append(
+                    "  - "
+                    f"agent={row['agent_key']} | segment={row['segment_id']} | "
+                    f"{row['relative_path']}:{row['source_line_number']} | "
+                    f"{row['source_key']} | reason={row['block_reason']} | text={row['current_text']}"
+                )
+
+    if semantic_short_label_blocked_surface_run36_rows:
+        run36_allowed = sum(int(row["allowed_count"] or 0) for row in semantic_short_label_blocked_surface_run36_rows)
+        run36_closed = sum(int(row["closed_by_bridge"] or 0) for row in semantic_short_label_blocked_surface_run36_rows)
+        run36_blocked = sum(int(row["blocked_by_bridge"] or 0) for row in semantic_short_label_blocked_surface_run36_rows)
+        run36_already = sum(int(row["already_closed_or_not_pending"] or 0) for row in semantic_short_label_blocked_surface_run36_rows)
+        run36_blocks = defaultdict(dict)
+        for row in semantic_short_label_blocked_surface_run36_blocks:
+            run36_blocks[str(row["agent_key"])][str(row["bridge_result"])] = int(row["count"] or 0)
+        lines.extend(
+            [
+                "",
+                "Semantic short-label blocked surface lifecycle run36 batch:",
+                "- dry_run_id: 36",
+                "- checkpoint_runs: 10,11,12,13",
+                "- expected_allowed_total: 659",
+                f"- allowed_total: {run36_allowed:,}",
+                f"- actual_closed_total: {run36_closed:,}",
+                f"- blocked_total: {run36_blocked:,}",
+                f"- already_closed_or_not_pending: {run36_already:,}",
+                f"- needs_apply: {counters['apply_state'].get('needs_apply', 0):,}",
+                "- by_agent:",
+            ]
+        )
+        for row in semantic_short_label_blocked_surface_run36_rows:
+            agent_key = str(row["agent_key"])
+            lines.append(
+                "  - "
+                f"{agent_key}: checkpoint={row['checkpoint_run_id']}, "
+                f"candidates={int(row['candidate_count'] or row['candidates'] or 0):,}, "
+                f"allowed={int(row['allowed_count'] or 0):,}, "
+                f"closed={int(row['closed_by_bridge'] or 0):,}, "
+                f"blocked={int(row['blocked_by_bridge'] or 0):,}, "
+                f"already_closed_or_not_pending={int(row['already_closed_or_not_pending'] or 0):,}"
+            )
+        lines.append(f"- block reasons: {json.dumps(run36_blocks, ensure_ascii=False, sort_keys=True)}")
+        if semantic_short_label_blocked_surface_run36_examples:
+            lines.append("- blocked examples:")
+            for row in semantic_short_label_blocked_surface_run36_examples:
+                lines.append(
+                    "  - "
+                    f"agent={row['agent_key']} | segment={row['segment_id']} | "
+                    f"{row['relative_path']}:{row['source_line_number']} | "
+                    f"{row['source_key']} | reason={row['block_reason']} | text={row['current_text']}"
+                )
+
+    if autofix_unknown_surface_bridge_row:
+        autofix_candidates = int(autofix_unknown_surface_bridge_row["candidates"] or 0)
+        autofix_closed = int(autofix_unknown_surface_bridge_row["closed_by_bridge"] or 0)
+        autofix_blocked = int(autofix_unknown_surface_bridge_row["blocked_by_bridge"] or 0)
+        ready_items_total = int(autofix_unknown_surface_bridge_row["ready_items_total"] or 0)
+        ready_segments_distinct = int(autofix_unknown_surface_bridge_row["ready_segments_distinct"] or 0)
+        duplicate_ready_items = max(ready_items_total - ready_segments_distinct, 0)
+        lines.extend(
+            [
+                "",
+                "Autofix unknown surface lifecycle bridge (cumulative):",
+                f"- proposal_run_ids: {autofix_unknown_surface_bridge_row['proposal_run_ids']}",
+                f"- checkpoint_run_ids: {autofix_unknown_surface_bridge_row['checkpoint_run_ids']}",
+                f"- candidate_segments_deduplicated: {autofix_candidates:,}",
+                f"- ready_count: {int(autofix_unknown_surface_bridge_row['ready_count'] or 0):,}",
+                f"- ready_items_total: {ready_items_total:,}",
+                f"- ready_segments_distinct: {ready_segments_distinct:,}",
+                f"- duplicate_ready_items_ignored: {duplicate_ready_items:,}",
+                f"- partial_count: {int(autofix_unknown_surface_bridge_row['partial_count'] or 0):,}",
+                f"- closed_by_bridge: {autofix_closed:,}",
+                f"- blocked_by_bridge: {autofix_blocked:,}",
+                f"- production_release_allowed: {int(autofix_unknown_surface_bridge_row['production_release_allowed'] or 0)}",
+                "- validation_scope: reviewed positive surface evidence; consumer validates current "
+                "auto confirmation, output canonical match, zero current issues and non-human-lock status.",
+            ]
+        )
+        if autofix_unknown_surface_bridge_blocks:
+            lines.append("- block reasons:")
+            for row in autofix_unknown_surface_bridge_blocks:
+                lines.append(f"  - {row['bridge_result']}: {int(row['count'] or 0):,}")
+
+    if autofix_unknown_surface_semantic_bridge_row:
+        autofix_semantic_candidates = int(autofix_unknown_surface_semantic_bridge_row["candidates"] or 0)
+        autofix_semantic_closed = int(autofix_unknown_surface_semantic_bridge_row["closed_by_bridge"] or 0)
+        autofix_semantic_blocked = int(autofix_unknown_surface_semantic_bridge_row["blocked_by_bridge"] or 0)
+        preserved_semantic_block = int(
+            autofix_unknown_surface_semantic_bridge_row["preserved_semantic_block_count"] or 0
+        )
+        lines.extend(
+            [
+                "",
+                "Autofix unknown surface + semantic lifecycle bridge:",
+                f"- coverage_run_ids: {autofix_unknown_surface_semantic_bridge_row['coverage_run_ids']}",
+                f"- autofix_checkpoint_run_id: {autofix_unknown_surface_semantic_bridge_row['autofix_checkpoint_run_id']}",
+                f"- semantic_checkpoint_run_id: {autofix_unknown_surface_semantic_bridge_row['semantic_checkpoint_run_id']}",
+                f"- candidates: {autofix_semantic_candidates:,}",
+                f"- closed_by_bridge: {autofix_semantic_closed:,}",
+                f"- blocked_or_preserved: {autofix_semantic_blocked:,}",
+                f"- semantic_block_108426_preserved: {preserved_semantic_block:,}",
+                "- validation_scope: full partial-coverage composition with autofix_unknown surface "
+                "and semantic review evidence; consumer validates current auto confirmation, output canonical match, "
+                "zero current issues and non-human-lock status.",
+            ]
+        )
+        if autofix_unknown_surface_semantic_bridge_blocks:
+            lines.append("- block reasons:")
+            for row in autofix_unknown_surface_semantic_bridge_blocks:
+                lines.append(f"  - {row['bridge_result']}: {int(row['count'] or 0):,}")
+
+    if autofix_unknown_domain_guarded_row:
+        domain_guarded_subpolicy = {
+            str(row["subpolicy_name"]): int(row["count"] or 0)
+            for row in autofix_unknown_domain_guarded_subpolicy_split
+        }
+        domain_guarded_cluster = {
+            str(row["cluster"]): int(row["count"] or 0)
+            for row in autofix_unknown_domain_guarded_cluster_split
+        }
+        domain_guarded_block_reasons = {
+            str(row["block_reason"]): int(row["count"] or 0)
+            for row in autofix_unknown_domain_guarded_blocks
+        }
+        lines.extend(
+            [
+                "",
+                "Autofix unknown domain guarded lifecycle:",
+                f"- checkpoint_run_ids: {autofix_unknown_domain_guarded_row['checkpoint_run_ids'] or ''}",
+                f"- allowed_rows: {int(autofix_unknown_domain_guarded_row['allowed_rows'] or 0):,}",
+                f"- distinct_allowed_segments: {int(autofix_unknown_domain_guarded_row['distinct_allowed_segments'] or 0):,}",
+                f"- already_closed_before: {int(autofix_unknown_domain_guarded_row['already_closed_before'] or 0):,}",
+                f"- pending_before: {int(autofix_unknown_domain_guarded_row['pending_before'] or 0):,}",
+                f"- closed: {int(autofix_unknown_domain_guarded_row['closed'] or 0):,}",
+                f"- blocked: {int(autofix_unknown_domain_guarded_row['blocked'] or 0):,}",
+                f"- net_gain: {int(autofix_unknown_domain_guarded_row['net_gain'] or 0):,}",
+                f"- subpolicy split: {json.dumps(domain_guarded_subpolicy, ensure_ascii=False, sort_keys=True)}",
+                f"- cluster split: {json.dumps(domain_guarded_cluster, ensure_ascii=False, sort_keys=True)}",
+                f"- blocked reasons: {json.dumps(domain_guarded_block_reasons, ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+
+    if autofix_unknown_domain_guarded_reviewed_row:
+        domain_guarded_candidates = int(autofix_unknown_domain_guarded_reviewed_row["candidates"] or 0)
+        domain_guarded_closed = int(autofix_unknown_domain_guarded_reviewed_row["closed"] or 0)
+        domain_guarded_blocked = int(autofix_unknown_domain_guarded_reviewed_row["blocked"] or 0)
+        lines.extend(
+            [
+                "",
+                "Autofix unknown domain guarded reviewed lifecycle:",
+                f"- checkpoint_run_ids: {autofix_unknown_domain_guarded_reviewed_row['checkpoint_run_ids'] or ''}",
+                f"- candidates: {domain_guarded_candidates:,}",
+                f"- closed: {domain_guarded_closed:,}",
+                f"- blocked: {domain_guarded_blocked:,}",
+                "- status: shadow_lifecycle_bridge_cumulative",
+                "- validation_scope: reviewed false-positive reopen domain evidence; consumer validates current "
+                "single autofix_unknown ledger issue, auto confirmation, output canonical/token match, "
+                "no high issues and non-human-lock status.",
+            ]
+        )
+        lines.append("- block reasons:")
+        if autofix_unknown_domain_guarded_reviewed_blocks:
+            for row in autofix_unknown_domain_guarded_reviewed_blocks:
+                lines.append(f"  - {row['bridge_result']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none")
+
+    if autofix_unknown_event_composition_bridge_row:
+        event_composition_candidates = int(autofix_unknown_event_composition_bridge_row["candidates"] or 0)
+        event_composition_closed = int(autofix_unknown_event_composition_bridge_row["closed_by_bridge"] or 0)
+        event_composition_blocked = int(autofix_unknown_event_composition_bridge_row["blocked_by_bridge"] or 0)
+        lines.extend(
+            [
+                "",
+                "Autofix unknown event composition lifecycle bridge:",
+                f"- bridge_run_id: {autofix_unknown_event_composition_bridge_row['bridge_run_id']}",
+                f"- checkpoint_run_id: {autofix_unknown_event_composition_bridge_row['checkpoint_run_id']}",
+                f"- candidates: {event_composition_candidates:,}",
+                f"- ready_count: {int(autofix_unknown_event_composition_bridge_row['ready_count'] or 0):,}",
+                f"- partial_count: {int(autofix_unknown_event_composition_bridge_row['partial_count'] or 0):,}",
+                f"- bridge_blocked_count: {int(autofix_unknown_event_composition_bridge_row['blocked_count'] or 0):,}",
+                f"- estimated_closed_gain: {int(autofix_unknown_event_composition_bridge_row['estimated_closed_gain'] or 0):,}",
+                f"- closed_by_bridge: {event_composition_closed:,}",
+                f"- blocked_or_preserved: {event_composition_blocked:,}",
+                f"- production_release_allowed: {int(autofix_unknown_event_composition_bridge_row['production_release_allowed'] or 0)}",
+                "- validation_scope: ready event_sentence_or_description composition evidence; consumer validates "
+                "current auto confirmation, output canonical match, zero current issues and non-human-lock status.",
+            ]
+        )
+        if autofix_unknown_event_composition_bridge_blocks:
+            lines.append("- block reasons:")
+            for row in autofix_unknown_event_composition_bridge_blocks:
+                lines.append(f"  - {row['bridge_result']}: {int(row['count'] or 0):,}")
+
+    if autofix_unknown_event_semantic_companion_bridge_row:
+        event_semantic_companion_candidates = int(
+            autofix_unknown_event_semantic_companion_bridge_row["candidates"] or 0
+        )
+        event_semantic_companion_closed = int(
+            autofix_unknown_event_semantic_companion_bridge_row["closed_by_bridge"] or 0
+        )
+        event_semantic_companion_blocked = int(
+            autofix_unknown_event_semantic_companion_bridge_row["blocked_by_bridge"] or 0
+        )
+        lines.extend(
+            [
+                "",
+                "Autofix unknown event + semantic companion lifecycle bridge:",
+                f"- bridge_run_id: {autofix_unknown_event_semantic_companion_bridge_row['bridge_run_id']}",
+                f"- event_bridge_run_id: {autofix_unknown_event_semantic_companion_bridge_row['event_bridge_run_id']}",
+                f"- event_checkpoint_run_id: {autofix_unknown_event_semantic_companion_bridge_row['event_checkpoint_run_id']}",
+                f"- candidates: {event_semantic_companion_candidates:,}",
+                f"- ready_count: {int(autofix_unknown_event_semantic_companion_bridge_row['ready_count'] or 0):,}",
+                f"- bridge_blocked_count: {int(autofix_unknown_event_semantic_companion_bridge_row['blocked_count'] or 0):,}",
+                f"- estimated_closed_gain: {int(autofix_unknown_event_semantic_companion_bridge_row['estimated_closed_gain'] or 0):,}",
+                f"- closed_by_bridge: {event_semantic_companion_closed:,}",
+                f"- blocked_or_preserved: {event_semantic_companion_blocked:,}",
+                f"- production_release_allowed: {int(autofix_unknown_event_semantic_companion_bridge_row['production_release_allowed'] or 0)}",
+                "- validation_scope: companion bridge for event composition partial coverage where "
+                "autofix_unknown_microagent is composition_ready and the only remaining companion is "
+                "semantic_review_router not_validated; consumer validates current auto confirmation, "
+                "output canonical/token alignment, zero current issues and non-human-lock status.",
+            ]
+        )
+        if autofix_unknown_event_semantic_companion_bridge_blocks:
+            lines.append("- block reasons:")
+            for row in autofix_unknown_event_semantic_companion_bridge_blocks:
+                lines.append(f"  - {row['bridge_result']}: {int(row['count'] or 0):,}")
+
+    if autofix_unknown_semantic_companion_building_row:
+        building_subpolicy = {
+            str(row["subpolicy_name"]): int(row["count"] or 0)
+            for row in autofix_unknown_semantic_companion_building_subpolicy_split
+        }
+        building_block_reasons = {
+            str(row["block_reason"]): int(row["count"] or 0)
+            for row in autofix_unknown_semantic_companion_building_blocks
+        }
+        lines.extend(
+            [
+                "",
+                "Autofix unknown semantic companion building lifecycle:",
+                f"- checkpoint_run_ids: {autofix_unknown_semantic_companion_building_row['checkpoint_run_ids'] or ''}",
+                f"- candidates: {int(autofix_unknown_semantic_companion_building_row['candidates'] or 0):,}",
+                f"- allowed: {int(autofix_unknown_semantic_companion_building_row['allowed'] or 0):,}",
+                f"- closed_by_bridge: {int(autofix_unknown_semantic_companion_building_row['closed'] or 0):,}",
+                f"- blocked_preserved: {int(autofix_unknown_semantic_companion_building_row['blocked'] or 0):,}",
+                f"- net_gain: {int(autofix_unknown_semantic_companion_building_row['net_gain'] or 0):,}",
+                f"- subpolicy counts: {json.dumps(building_subpolicy, ensure_ascii=False, sort_keys=True)}",
+                f"- block reasons: {json.dumps(building_block_reasons, ensure_ascii=False, sort_keys=True)}",
+                "- status: shadow_lifecycle_bridge",
+                "- validation_scope: checkpoint 3 building_description_guarded only; consumer validates the exact "
+                "autofix_unknown + semantic_review ledger pair, current pending auto-confirmed reopen, "
+                "output canonical/token alignment, no high ledger issue, no token ledger issue and no current issue.",
+            ]
+        )
+
+    if autofix_unknown_semantic_companion_rule_effect_row:
+        rule_effect_subpolicy = {
+            str(row["subpolicy_name"]): int(row["count"] or 0)
+            for row in autofix_unknown_semantic_companion_rule_effect_subpolicy_split
+        }
+        rule_effect_block_reasons = {
+            str(row["block_reason"]): int(row["count"] or 0)
+            for row in autofix_unknown_semantic_companion_rule_effect_blocks
+        }
+        lines.extend(
+            [
+                "",
+                "Autofix unknown semantic companion rule/effect lifecycle:",
+                f"- checkpoint_run_ids: {autofix_unknown_semantic_companion_rule_effect_row['checkpoint_run_ids'] or ''}",
+                f"- candidates: {int(autofix_unknown_semantic_companion_rule_effect_row['candidates'] or 0):,}",
+                f"- allowed: {int(autofix_unknown_semantic_companion_rule_effect_row['allowed'] or 0):,}",
+                f"- closed_by_bridge: {int(autofix_unknown_semantic_companion_rule_effect_row['closed'] or 0):,}",
+                f"- blocked_preserved: {int(autofix_unknown_semantic_companion_rule_effect_row['blocked'] or 0):,}",
+                f"- net_gain: {int(autofix_unknown_semantic_companion_rule_effect_row['net_gain'] or 0):,}",
+                f"- subpolicy counts: {json.dumps(rule_effect_subpolicy, ensure_ascii=False, sort_keys=True)}",
+                f"- block reasons: {json.dumps(rule_effect_block_reasons, ensure_ascii=False, sort_keys=True)}",
+                "- status: shadow_lifecycle_bridge",
+                "- validation_scope: checkpoint 5 rule_effect_modifier_guarded only; consumer validates the exact "
+                "autofix_unknown + semantic_review ledger pair, current pending auto-confirmed reopen, "
+                "output canonical/token alignment, no high ledger issue, no token ledger issue and no current issue.",
+            ]
+        )
+
+    if single_combat_already_good_rows:
+        closed_ids = ", ".join(str(row["segment_id"]) for row in single_combat_already_good_closed) or "none"
+        preserved_ids = ", ".join(str(row["segment_id"]) for row in single_combat_already_good_blocked) or "none"
+        lines.extend(
+            [
+                "",
+                "Single combat signature weapon already-good lifecycle:",
+                f"- closed: {len(single_combat_already_good_closed):,}",
+                f"- blocked/preserved: {len(single_combat_already_good_blocked):,}",
+                f"- closed_ids: {closed_ids}",
+                f"- preserved_ids: {preserved_ids}",
+                "- validation_scope: reviewed already_good single_combat.0031/0041 items only; consumer validates "
+                "previous pending reopen state, confirmed output alignment, no output apply, ledger run 56 exact "
+                "single dynamic custom localization issue, package/path/key guards, and explicit preservation of "
+                "246266/246357.",
+            ]
+        )
+        if single_combat_already_good_blocked:
+            lines.append("- preserved reasons:")
+            for row in single_combat_already_good_blocked:
+                lines.append(
+                    "  - "
+                    f"{row['segment_id']}: {row['block_reason']} | issues={row['open_issues']}"
+                )
+
+    if semantic_short_label_domain_context_rows:
+        semantic_block_reasons: dict[int, Counter] = defaultdict(Counter)
+        semantic_subpolicies: dict[int, Counter] = defaultdict(Counter)
+        for row in semantic_short_label_domain_context_rows:
+            queue_id = int(row["queue_run_id"])
+            if row["bridge_result"] != "closed":
+                semantic_block_reasons[queue_id][row["block_reason"]] += 1
+            semantic_subpolicies[queue_id][row["suggested_subpolicy"]] += 1
+        lines.extend(
+            [
+                "",
+                "Semantic short-label domain-context lifecycle:",
+                "- event_queue_id: 219",
+                "- event_candidates: 172",
+                f"- event_closed: {semantic_domain_closed_by_queue.get(219, 0):,}",
+                f"- event_blocked: {semantic_domain_blocked_by_queue.get(219, 0):,}",
+                "- tooltip_queue_id: 218",
+                "- tooltip_candidates: 106",
+                f"- tooltip_closed: {semantic_domain_closed_by_queue.get(218, 0):,}",
+                f"- tooltip_blocked: {semantic_domain_blocked_by_queue.get(218, 0):,}",
+                "- validation_scope: exact reviewed JSONLs for queues 218/219 only; lifecycle_candidate=true, "
+                "requires_apply_later=false, tokens_preserved=true, allowlisted decisions, previous pending reopen, "
+                "confirmation/output canonical and token alignment, and ledger 57 semantic+short-label issue pair.",
+                f"- event_subpolicies: {json.dumps(dict(semantic_subpolicies[219]), ensure_ascii=False, sort_keys=True)}",
+                f"- tooltip_subpolicies: {json.dumps(dict(semantic_subpolicies[218]), ensure_ascii=False, sort_keys=True)}",
+                f"- event_block_reasons: {json.dumps(dict(semantic_block_reasons[219]), ensure_ascii=False, sort_keys=True)}",
+                f"- tooltip_block_reasons: {json.dumps(dict(semantic_block_reasons[218]), ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+
+    if short_label_style_queue220_rows:
+        lines.extend(
+            [
+                "",
+                "Short-label style queue 220 strict lifecycle:",
+                "- queue_id: 220",
+                "- reviewed_jsonl: reports/20260617_220200_short_label_style_queue_220_reviewed_chat.jsonl",
+                f"- candidates_read: {len(short_label_style_queue220_rows):,}",
+                f"- closed: {len(short_label_style_queue220_closed):,}",
+                f"- blocked: {len(short_label_style_queue220_blocked):,}",
+                f"- block_reasons: {json.dumps(short_label_style_queue220_block_reasons, ensure_ascii=False, sort_keys=True)}",
+                "- validation_scope: exact reviewed JSONL only; existing confirmation, confirmation/output canonical match, pending reopen state, token alignment, ledger 58 single short-label issue, no high issue, no other open issue, and strict visible-text guards.",
+            ]
+        )
+        if short_label_style_queue220_bold_no_examples:
+            lines.append("- blocked #bold no examples:")
+            for row in short_label_style_queue220_bold_no_examples:
+                lines.append(
+                    f"  - {row['segment_id']}: {row['block_reason']} | {row['source_key']} | {row['current_text']}"
+                )
+        if short_label_style_queue220_punctuation_examples:
+            lines.append("- blocked punctuation examples:")
+            for row in short_label_style_queue220_punctuation_examples:
+                lines.append(
+                    f"  - {row['segment_id']}: {row['block_reason']} | {row['source_key']} | {row['current_text']}"
+                )
+
+    if autofix_unknown_ui_surface_queue221_rows:
+        lines.extend(
+            [
+                "",
+                "Autofix unknown UI surface queue 221 lifecycle:",
+                "- queue_id: 221",
+                "- reviewed_jsonl: reports/20260617_233004_autofix_unknown_ui_surface_queue_221_reviewed_chat.jsonl",
+                f"- candidates_read: {len(autofix_unknown_ui_surface_queue221_rows):,}",
+                f"- closed: {len(autofix_unknown_ui_surface_queue221_closed):,}",
+                f"- blocked: {len(autofix_unknown_ui_surface_queue221_blocked):,}",
+                f"- block_reasons: {json.dumps(autofix_unknown_ui_surface_queue221_block_reasons, ensure_ascii=False, sort_keys=True)}",
+                "- validation_scope: exact reviewed JSONL only; allowlisted lifecycle IDs, lifecycle_candidate=true, requires_apply_later=false, tokens_preserved=true, allowed UI decisions, previous pending reopen, confirmation/output canonical and token alignment, ledger 59 with no non-autofix open issue and no high issue.",
+            ]
+        )
+
+    if autofix_unknown_plain_event_queue226_rows:
+        expected_delta = len(autofix_unknown_plain_event_queue226_rows)
+        real_delta = len(autofix_unknown_plain_event_queue226_closed)
+        lines.extend(
+            [
+                "",
+                "Autofix unknown plain/event queue 226 lifecycle:",
+                "- queue_id: 226",
+                "- reviewed_jsonl: reports/20260618_180523_016737_autofix_unknown_plain_event_queue_226_reviewed_chat.jsonl",
+                f"- baseline_run: {autofix_unknown_plain_event_queue226_baseline_run}",
+                f"- candidates_by_decision: {json.dumps(dict(autofix_unknown_plain_event_queue226_candidates_by_decision), ensure_ascii=False, sort_keys=True)}",
+                f"- closed_by_decision: {json.dumps(dict(autofix_unknown_plain_event_queue226_closed_by_decision), ensure_ascii=False, sort_keys=True)}",
+                f"- blocked_by_decision: {json.dumps(dict(autofix_unknown_plain_event_queue226_blocked_by_decision), ensure_ascii=False, sort_keys=True)}",
+                f"- blocked_reasons: {json.dumps(dict(autofix_unknown_plain_event_queue226_block_reasons), ensure_ascii=False, sort_keys=True)}",
+                f"- expected_delta_max: {expected_delta:,}",
+                f"- real_delta_closed: {real_delta:,}",
+                "- validation_scope: exact reviewed JSONL only; queue_run_id=226, ledger_run_id=68, lifecycle_ready decisions only, lifecycle_candidate=true, requires_apply_later=false, corrected_text empty, tokens_preserved=true, previous pending reopen, confirmation/output canonical and token alignment, no output apply, no high issue, and ledger 68 with no non-autofix open issue.",
+            ]
+        )
+        if autofix_unknown_plain_event_queue226_blocked:
+            lines.append("- blocked ids:")
+            for row in autofix_unknown_plain_event_queue226_blocked[:20]:
+                lines.append(
+                    f"  - {row['segment_id']}: {row['decision']} | {row['block_reason']} | issues={row['open_issues']}"
+                )
+            if len(autofix_unknown_plain_event_queue226_blocked) > 20:
+                lines.append(
+                    f"  - ... {len(autofix_unknown_plain_event_queue226_blocked) - 20:,} additional blocked items omitted"
+                )
+
+    if autofix_unknown_plain_event_queue226_semantic_companion_rows:
+        expected_delta = min(50, len(autofix_unknown_plain_event_queue226_semantic_companion_rows))
+        real_delta = len(autofix_unknown_plain_event_queue226_semantic_companion_closed)
+        lines.extend(
+            [
+                "",
+                "Autofix unknown plain/event queue 226 semantic companion lifecycle:",
+                "- queue_id: 226",
+                "- reviewed_jsonl: reports/20260618_180523_016737_autofix_unknown_plain_event_queue_226_reviewed_chat.jsonl",
+                f"- baseline_run: {autofix_unknown_plain_event_queue226_semantic_companion_baseline_run}",
+                f"- candidates_by_decision: {json.dumps(dict(autofix_unknown_plain_event_queue226_semantic_companion_candidates_by_decision), ensure_ascii=False, sort_keys=True)}",
+                f"- closed_by_decision: {json.dumps(dict(autofix_unknown_plain_event_queue226_semantic_companion_closed_by_decision), ensure_ascii=False, sort_keys=True)}",
+                f"- blocked_by_decision: {json.dumps(dict(autofix_unknown_plain_event_queue226_semantic_companion_blocked_by_decision), ensure_ascii=False, sort_keys=True)}",
+                f"- blocked_reasons: {json.dumps(dict(autofix_unknown_plain_event_queue226_semantic_companion_block_reasons), ensure_ascii=False, sort_keys=True)}",
+                f"- expected_delta_max: {expected_delta:,}",
+                f"- real_delta_closed: {real_delta:,}",
+                "- validation_scope: exact reviewed JSONL only; queue_run_id=226, ledger_run_id=68, lifecycle_ready decisions only, lifecycle_candidate=true, requires_apply_later=false, corrected_text empty, tokens_preserved=true, previous pending reopen, excludes previous plain/event lifecycle closures, confirmation/output canonical and token alignment, no output apply, no high issue, and ledger 68 exact autofix_unknown + semantic_review open issue pair.",
+            ]
+        )
+        if autofix_unknown_plain_event_queue226_semantic_companion_blocked:
+            lines.append("- blocked ids:")
+            for row in autofix_unknown_plain_event_queue226_semantic_companion_blocked[:20]:
+                lines.append(
+                    f"  - {row['segment_id']}: {row['decision']} | {row['block_reason']} | issues={row['open_issues']}"
+                )
+            if len(autofix_unknown_plain_event_queue226_semantic_companion_blocked) > 20:
+                lines.append(
+                    f"  - ... {len(autofix_unknown_plain_event_queue226_semantic_companion_blocked) - 20:,} additional blocked items omitted"
+                )
+
+    if autofix_unknown_plain_event_context_composer_rows:
+        expected_delta = min(76, len(autofix_unknown_plain_event_context_composer_rows))
+        real_delta = len(autofix_unknown_plain_event_context_composer_closed)
+        lines.extend(
+            [
+                "",
+                "Autofix unknown plain/event context composer lifecycle:",
+                "- reviewed_jsonl: reports/20260618_190926_595844_autofix_unknown_plain_event_context_composer_reviewed_chat.jsonl",
+                f"- baseline_run: {autofix_unknown_plain_event_context_composer_baseline_run}",
+                f"- candidate_lines: {autofix_unknown_plain_event_context_composer_candidate_lines:,}",
+                f"- distinct_candidates: {len(autofix_unknown_plain_event_context_composer_rows):,}",
+                f"- duplicate_review_lines_ignored: {autofix_unknown_plain_event_context_composer_duplicates_ignored:,}",
+                f"- candidates_by_composer_decision: {json.dumps(dict(autofix_unknown_plain_event_context_composer_candidates_by_decision), ensure_ascii=False, sort_keys=True)}",
+                f"- closed_by_composer_decision: {json.dumps(dict(autofix_unknown_plain_event_context_composer_closed_by_decision), ensure_ascii=False, sort_keys=True)}",
+                f"- blocked_by_composer_decision: {json.dumps(dict(autofix_unknown_plain_event_context_composer_blocked_by_decision), ensure_ascii=False, sort_keys=True)}",
+                f"- blocked_reasons: {json.dumps(dict(autofix_unknown_plain_event_context_composer_block_reasons), ensure_ascii=False, sort_keys=True)}",
+                f"- expected_max_close: {expected_delta:,}",
+                f"- real_delta_closed: {real_delta:,}",
+                "- validation_scope: exact composer reviewed JSONL only; composition_ready_plain_prose/event_context only, deduped by segment_id, lifecycle_candidate=true, requires_apply_later=false, corrected_text empty, tokens_preserved=true, previous reopen_auto_confirmed_autofix, confirmation/output canonical and token alignment, no output apply, no high issue, no banned issue families, and ledger 69 issue set A or B only.",
+            ]
+        )
+        if autofix_unknown_plain_event_context_composer_blocked:
+            lines.append("- blocked ids:")
+            for row in autofix_unknown_plain_event_context_composer_blocked[:20]:
+                lines.append(
+                    f"  - {row['segment_id']}: {row['composer_decision']} | {row['block_reason']} | issues={row['open_issues']}"
+                )
+            if len(autofix_unknown_plain_event_context_composer_blocked) > 20:
+                lines.append(
+                    f"  - ... {len(autofix_unknown_plain_event_context_composer_blocked) - 20:,} additional blocked items omitted"
+                )
+
+    if short_label_semantic_pair_rows:
+        lines.extend(
+            [
+                "",
+                "Short-label semantic pair lifecycle:",
+                f"- bridge_run_ids: {short_label_semantic_pair_bridge_run_ids}",
+                f"- reviewed_jsonl: {short_label_semantic_pair_review_jsonl}",
+                f"- candidates: {len(short_label_semantic_pair_rows):,}",
+                f"- closed_total: {len(short_label_semantic_pair_closed):,}",
+                f"- closed_quote_fragment: {short_label_semantic_pair_closed_by_decision.get('lifecycle_ready_quote_fragment', 0):,}",
+                f"- closed_nominal_label: {short_label_semantic_pair_closed_by_decision.get('lifecycle_ready_nominal_label', 0):,}",
+                f"- closed_short_phrase: {short_label_semantic_pair_closed_by_decision.get('lifecycle_ready_short_phrase', 0):,}",
+                f"- closed_compact_option: {short_label_semantic_pair_closed_by_decision.get('lifecycle_ready_compact_option', 0):,}",
+                f"- blocked: {len(short_label_semantic_pair_blocked):,}",
+                f"- block reasons: {json.dumps(dict(short_label_semantic_pair_block_reasons), ensure_ascii=False, sort_keys=True)}",
+                "- validation_scope: cumulative ready bridge items only; reviewed JSONL lifecycle_candidate=true, requires_apply_later=false, corrected_text empty, tokens_preserved=true, current pending auto-confirmed reopen, confirmation/output canonical and token alignment, no output apply, no human/confirmation lock, and ledger 70 exactly short_label_style_microagent + semantic_review_router.",
+            ]
+        )
+        if short_label_semantic_pair_blocked:
+            lines.append("- blocked ids:")
+            for row in short_label_semantic_pair_blocked[:20]:
+                lines.append(
+                    f"  - {row['segment_id']}: {row['decision']} | {row['block_reason']} | issues={row['open_issues']}"
+                )
+            if len(short_label_semantic_pair_blocked) > 20:
+                lines.append(
+                    f"  - ... {len(short_label_semantic_pair_blocked) - 20:,} additional blocked items omitted"
+                )
+
+    if short_label_semantic_load_tips_rows:
+        lines.extend(
+            [
+                "",
+                "Short-label semantic load tips lifecycle:",
+                f"- bridge_run_ids: {short_label_semantic_load_tips_bridge_run_ids}",
+                f"- candidates: {len(short_label_semantic_load_tips_rows):,}",
+                f"- ready: {short_label_semantic_load_tips_ready:,}",
+                f"- closed: {len(short_label_semantic_load_tips_closed):,}",
+                f"- blocked: {len(short_label_semantic_load_tips_blocked):,}",
+                f"- block reasons: {json.dumps(dict(short_label_semantic_load_tips_block_reasons), ensure_ascii=False, sort_keys=True)}",
+                "- validation_scope: cumulative ready load_tips bridge items only; current pending auto-confirmed reopen, confirmation/output alignment, no output apply, no human/confirmation lock, ledger exact short_label_style_microagent + semantic_review_router pair, and structural #T game_concept + game_concept_desc token pattern.",
+            ]
+        )
+        if short_label_semantic_load_tips_closed:
+            lines.append("- closed samples:")
+            for row in short_label_semantic_load_tips_closed[:10]:
+                lines.append(f"  - {row['segment_id']}: {row['source_key']} | {row['relative_path']}")
+        if short_label_semantic_load_tips_blocked:
+            lines.append("- blocked ids:")
+            for row in short_label_semantic_load_tips_blocked[:20]:
+                lines.append(
+                    f"  - {row['segment_id']}: {row['block_reason']} | issues={row['open_issues']}"
+                )
+            if len(short_label_semantic_load_tips_blocked) > 20:
+                lines.append(
+                    f"  - ... {len(short_label_semantic_load_tips_blocked) - 20:,} additional blocked items omitted"
+                )
+
+    diarchy_extravagance_description_rows = conn.execute(
+        """
+        SELECT *
+        FROM temp_diarchy_extravagance_description_lifecycle
+        ORDER BY segment_id
+        """
+    ).fetchall()
+    if diarchy_extravagance_description_rows:
+        diarchy_closed = [
+            row for row in diarchy_extravagance_description_rows if row["bridge_result"] == "closed"
+        ]
+        diarchy_blocked = [
+            row for row in diarchy_extravagance_description_rows if row["bridge_result"] != "closed"
+        ]
+        diarchy_candidates_by_decision = Counter(row["decision"] for row in diarchy_extravagance_description_rows)
+        diarchy_closed_by_decision = Counter(row["decision"] for row in diarchy_closed)
+        diarchy_blocked_by_decision = Counter(row["decision"] for row in diarchy_blocked)
+        diarchy_block_reasons = Counter(row["block_reason"] for row in diarchy_blocked)
+        diarchy_tiers = Counter(row["extravagance_tier"] for row in diarchy_extravagance_description_rows)
+        diarchy_lanes = Counter(row["extravagance_lane"] for row in diarchy_extravagance_description_rows)
+        candidate_line_count = max(
+            int(row["candidate_line_count"] or 0) for row in diarchy_extravagance_description_rows
+        )
+        duplicate_count = max(
+            int(row["duplicate_review_line_ignored"] or 0) for row in diarchy_extravagance_description_rows
+        )
+        baseline_run = as_text(diarchy_extravagance_description_rows[0]["baseline_run_id"])
+        lines.extend(
+            [
+                "",
+                "Diarchy extravagance description lifecycle:",
+                f"- reviewed_jsonl: {DIARCHY_EXTRAVAGANCE_DESCRIPTION_REVIEWED_JSONL}",
+                f"- baseline run: {baseline_run}",
+                f"- candidate lines: {candidate_line_count:,}",
+                f"- distinct candidates: {len(diarchy_extravagance_description_rows):,}",
+                f"- duplicate lines ignored: {duplicate_count:,}",
+                f"- candidates_by_decision: {json.dumps(dict(diarchy_candidates_by_decision), ensure_ascii=False, sort_keys=True)}",
+                f"- closed_by_decision: {json.dumps(dict(diarchy_closed_by_decision), ensure_ascii=False, sort_keys=True)}",
+                f"- blocked_by_decision: {json.dumps(dict(diarchy_blocked_by_decision), ensure_ascii=False, sort_keys=True)}",
+                f"- blocked reasons: {json.dumps(dict(diarchy_block_reasons), ensure_ascii=False, sort_keys=True)}",
+                "- expected max close: 32",
+                f"- real delta closed: {len(diarchy_closed):,}",
+                f"- split por extravagance_tier: {json.dumps(dict(diarchy_tiers), ensure_ascii=False, sort_keys=True)}",
+                f"- split por extravagance_lane: {json.dumps(dict(diarchy_lanes), ensure_ascii=False, sort_keys=True)}",
+            ]
+        )
+        if diarchy_blocked:
+            lines.append("- blocked ids:")
+            for row in diarchy_blocked[:20]:
+                lines.append(
+                    f"  - {row['segment_id']}: {row['decision']} | {row['block_reason']} | issues={row['open_issues']}"
+                )
+
+    trait_description_rows = conn.execute(
+        """
+        SELECT *
+        FROM temp_trait_description_esta_personagem_lifecycle
+        ORDER BY segment_id
+        """
+    ).fetchall()
+    if trait_description_rows:
+        trait_closed = [row for row in trait_description_rows if row["bridge_result"] == "closed"]
+        trait_blocked = [row for row in trait_description_rows if row["bridge_result"] != "closed"]
+        trait_combo_counts = Counter(str(row["issue_combo"]) for row in trait_closed)
+        trait_block_reasons = Counter(str(row["block_reason"]) for row in trait_blocked)
+        lines.extend(
+            [
+                "",
+                "Trait description esta personagem lifecycle:",
+                f"- candidates: {len(trait_description_rows):,}",
+                f"- closed: {len(trait_closed):,}",
+                f"- blocked: {len(trait_blocked):,}",
+                f"- issue_combinations: {json.dumps(dict(trait_combo_counts), ensure_ascii=False, sort_keys=True)}",
+                f"- block_reasons: {json.dumps(dict(trait_block_reasons), ensure_ascii=False, sort_keys=True)}",
+                "- validation_scope: reviewed queue 5 trait_description_esta_personagem_pattern only; traits_l_spanish.yml trait_*_desc keys, current pending auto-confirmed reopen, confirmation/output alignment, no output apply, no source/output write, and ledger 67 restricted to semantic_review_router + short_label_style_microagent with optional gender_token false-risk.",
+            ]
+        )
+        if trait_blocked:
+            lines.append("- blocked ids:")
+            for row in trait_blocked:
+                lines.append(f"  - {row['segment_id']}: {row['block_reason']} | issues={row['open_issues']}")
 
     if package_rows:
         lines.append("\nPacotes com mais pendência:")
@@ -688,6 +16840,26 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
                 "- "
                 f"{row['package_name']}: pending={row['pending']:,}, "
                 f"needs_apply={row['needs_apply']:,}, reopen={row['needs_reopen']:,}, total={row['total']:,}"
+            )
+
+    if select_cstring_pending_rows:
+        lines.append("\nPonte Select_CString ainda pendente:")
+        for row in select_cstring_pending_rows:
+            blockers = []
+            if not int(row["confirmed_matches_corrected"] or 0):
+                blockers.append("confirmed_text != corrected_text")
+            if not int(row["output_matches_corrected"] or 0):
+                blockers.append("output_text != corrected_text")
+            if not int(row["confirmed_matches_output"] or 0):
+                blockers.append("confirmed_text != output_text")
+            if not blockers:
+                blockers.append("state_not_closed_by_bridge")
+            lines.append(
+                "- "
+                f"bridge_item={row['bridge_item_id']} segment={row['segment_id']} | "
+                f"{row['relative_path']}:{row['source_line_number']} | {row['source_key']} | "
+                f"state={row['final_state']} | source={row['confirmation_source']} | "
+                f"blockers={', '.join(blockers)}"
             )
 
     apply_rows = top_rows(conn, run_id, "needs_output_apply = 1", limit=15)
@@ -722,16 +16894,239 @@ def main(limit: int | None = None) -> int:
     started_at = db.utc_now()
     with db.connect(settings) as conn:
         db.ensure_database(conn)
+        ensure_short_label_bridge_tables(conn)
+        ensure_autofix_unknown_surface_bridge_tables(conn)
+        register_sql_functions(conn)
         active_score_run_id = latest_active_score_run(conn)
         candidate_score_run_id = latest_candidate_score_run(conn)
         policy_run_id = latest_policy_run(conn)
         agent_routing_run_id = latest_agent_routing_run(conn)
+        reopen_lifecycle_policy_run_ids = latest_reopen_lifecycle_policy_runs(conn)
+        prepare_autofix_unknown_semantic_companion_building_lifecycle(conn)
+        prepare_autofix_unknown_semantic_companion_rule_effect_lifecycle(conn)
+        prepare_single_combat_signature_weapon_already_good_lifecycle(conn)
+        prepare_semantic_short_label_domain_context_lifecycle(conn)
+        prepare_short_label_style_queue220_strict_lifecycle(conn)
+        prepare_autofix_unknown_ui_surface_queue221_lifecycle(conn)
+        prepare_autofix_unknown_plain_event_queue226_lifecycle(conn)
+        prepare_autofix_unknown_plain_event_queue226_semantic_companion_lifecycle(conn)
+        prepare_autofix_unknown_plain_event_context_composer_lifecycle(conn)
+        prepare_short_label_compact_ui_semantic_queue222_lifecycle(conn)
+        prepare_short_label_pure_no_token_queue4_lifecycle(conn)
+        prepare_short_label_pure_no_token_queue5_lifecycle(conn)
+        prepare_short_label_pure_no_token_queue5_false_reopen_lifecycle(conn)
+        prepare_trait_description_esta_personagem_lifecycle(conn)
+        prepare_diarchy_extravagance_description_lifecycle(conn)
+        prepare_short_label_pure_no_token_queue5_microrepair(conn)
+        prepare_in_game_feedback_vassal_stances_claim_cb_microfix(conn)
+        prepare_short_label_single_issue_residual_queue225_lifecycle(conn)
+        prepare_short_label_single_issue_residual_queue225_repair(conn)
+        prepare_gender_es_oa_final_vowel_trim_dryrun3_repair(conn)
+        prepare_short_label_semantic_pair_lifecycle(conn)
+        prepare_short_label_semantic_load_tips_lifecycle(conn)
+        autofix_unknown_semantic_companion_building_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                "SELECT segment_id FROM temp_autofix_unknown_semantic_companion_building_lifecycle"
+            )
+        }
+        autofix_unknown_semantic_companion_rule_effect_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                "SELECT segment_id FROM temp_autofix_unknown_semantic_companion_rule_effect_lifecycle"
+            )
+        }
+        single_combat_signature_weapon_already_good_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_single_combat_signature_weapon_already_good_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
+        semantic_short_label_domain_context_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_semantic_short_label_domain_context_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
+        short_label_style_queue220_strict_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_short_label_style_queue220_strict_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
+        autofix_unknown_ui_surface_queue221_lifecycle_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_autofix_unknown_ui_surface_queue221_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
+        autofix_unknown_plain_event_queue226_lifecycle_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_autofix_unknown_plain_event_queue226_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
+        autofix_unknown_plain_event_queue226_semantic_companion_lifecycle_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_autofix_unknown_plain_event_queue226_semantic_companion_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
+        autofix_unknown_plain_event_context_composer_lifecycle_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_autofix_unknown_plain_event_context_composer_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
+        short_label_compact_ui_semantic_queue222_lifecycle_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_short_label_compact_ui_semantic_queue222_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
+        short_label_pure_no_token_queue4_lifecycle_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_short_label_pure_no_token_queue4_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
+        short_label_pure_no_token_queue5_lifecycle_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_short_label_pure_no_token_queue5_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
+        short_label_pure_no_token_queue5_false_reopen_lifecycle_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_short_label_pure_no_token_queue5_false_reopen_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
+        trait_description_esta_personagem_lifecycle_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_trait_description_esta_personagem_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
+        diarchy_extravagance_description_lifecycle_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_diarchy_extravagance_description_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
+        short_label_pure_no_token_queue5_microrepair_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                "SELECT segment_id FROM temp_short_label_pure_no_token_queue5_microrepair"
+            )
+        }
+        in_game_feedback_vassal_stances_claim_cb_microfix_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                "SELECT segment_id FROM temp_in_game_feedback_vassal_stances_claim_cb_microfix"
+            )
+        }
+        short_label_single_issue_residual_queue225_lifecycle_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_short_label_single_issue_residual_queue225_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
+        short_label_semantic_pair_lifecycle_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_short_label_semantic_pair_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
+        short_label_semantic_load_tips_lifecycle_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_short_label_semantic_load_tips_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
+        short_label_single_issue_residual_queue225_repair_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                "SELECT segment_id FROM temp_short_label_single_issue_residual_queue225_repair"
+            )
+        }
+        gender_es_oa_final_vowel_trim_dryrun3_repair_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                "SELECT segment_id FROM temp_gender_es_oa_final_vowel_trim_dryrun3_repair"
+            )
+        }
         run_id = insert_run(
             conn,
             active_score_run_id=active_score_run_id,
             candidate_score_run_id=candidate_score_run_id,
             policy_run_id=policy_run_id,
             agent_routing_run_id=agent_routing_run_id,
+            reopen_lifecycle_policy_run_ids=reopen_lifecycle_policy_run_ids,
             started_at=started_at,
         )
         conn.commit()
@@ -739,51 +17134,106 @@ def main(limit: int | None = None) -> int:
         counters: dict[str, Counter] = defaultdict(Counter)
         batch: list[tuple[Any, ...]] = []
         created_at = started_at
-        for row in iter_segments(conn, active_score_run_id, candidate_score_run_id, policy_run_id, limit):
-            state = classify(row)
-            counters["final_state"][state.final_state] += 1
-            counters["state_group"][state.state_group] += 1
-            counters["output_state"][state.output_state] += 1
-            counters["review_state"][state.review_state] += 1
-            counters["apply_state"][state.apply_state] += 1
-            counters["needs_reopen"]["1" if state.needs_reopen else "0"] += 1
-            batch.append(
-                (
-                    run_id,
-                    int(row["segment_id"]),
-                    row["relative_path"],
-                    row["source_key"],
-                    row["source_line_number"],
-                    state.final_state,
-                    state.state_group,
-                    state.output_state,
-                    state.review_state,
-                    state.apply_state,
-                    row["active_action"],
-                    row["candidate_action"],
-                    row["policy_action"],
-                    row["confirmation_level"],
-                    row["confirmation_label"],
-                    int(row["locked"] or 0),
-                    1 if state.has_output else 0,
-                    1 if state.source_blank else 0,
-                    1 if state.confirmed_matches_output else 0,
-                    1 if state.needs_human else 0,
-                    1 if state.needs_output_apply else 0,
-                    1 if state.needs_reopen else 0,
-                    1 if state.is_closed else 0,
-                    state.priority_score,
-                    json.dumps(state.reasons, ensure_ascii=False),
-                    created_at,
+        if limit is None and (
+            autofix_unknown_semantic_companion_building_segments
+            or autofix_unknown_semantic_companion_rule_effect_segments
+            or single_combat_signature_weapon_already_good_segments
+            or semantic_short_label_domain_context_segments
+            or short_label_style_queue220_strict_segments
+            or autofix_unknown_ui_surface_queue221_lifecycle_segments
+            or autofix_unknown_plain_event_queue226_lifecycle_segments
+            or autofix_unknown_plain_event_queue226_semantic_companion_lifecycle_segments
+            or autofix_unknown_plain_event_context_composer_lifecycle_segments
+            or short_label_compact_ui_semantic_queue222_lifecycle_segments
+            or short_label_pure_no_token_queue4_lifecycle_segments
+            or short_label_pure_no_token_queue5_lifecycle_segments
+            or short_label_pure_no_token_queue5_false_reopen_lifecycle_segments
+            or trait_description_esta_personagem_lifecycle_segments
+            or diarchy_extravagance_description_lifecycle_segments
+            or short_label_pure_no_token_queue5_microrepair_segments
+            or in_game_feedback_vassal_stances_claim_cb_microfix_segments
+            or short_label_single_issue_residual_queue225_lifecycle_segments
+            or short_label_semantic_pair_lifecycle_segments
+            or short_label_semantic_load_tips_lifecycle_segments
+            or short_label_single_issue_residual_queue225_repair_segments
+            or gender_es_oa_final_vowel_trim_dryrun3_repair_segments
+        ):
+            insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id, created_at)
+            conn.commit()
+            counters = counters_from_run(conn, run_id)
+        else:
+            for row in iter_segments(
+                conn,
+                active_score_run_id,
+                candidate_score_run_id,
+                policy_run_id,
+                reopen_lifecycle_policy_run_ids,
+                limit,
+            ):
+                if int(row["segment_id"]) in autofix_unknown_semantic_companion_building_segments:
+                    row = dict(row)
+                    lifecycle_actions = [
+                        action.strip()
+                        for action in as_text(row["lifecycle_policy_action"]).split(",")
+                        if action.strip()
+                    ]
+                    if AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_BUILDING_LIFECYCLE_CLOSURE_ACTION not in lifecycle_actions:
+                        lifecycle_actions.append(AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_BUILDING_LIFECYCLE_CLOSURE_ACTION)
+                    row["lifecycle_policy_action"] = ",".join(lifecycle_actions)
+                    row["lifecycle_policy_allowed"] = 1
+                if int(row["segment_id"]) in autofix_unknown_semantic_companion_rule_effect_segments:
+                    row = dict(row)
+                    lifecycle_actions = [
+                        action.strip()
+                        for action in as_text(row["lifecycle_policy_action"]).split(",")
+                        if action.strip()
+                    ]
+                    if AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_RULE_EFFECT_LIFECYCLE_CLOSURE_ACTION not in lifecycle_actions:
+                        lifecycle_actions.append(AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_RULE_EFFECT_LIFECYCLE_CLOSURE_ACTION)
+                    row["lifecycle_policy_action"] = ",".join(lifecycle_actions)
+                    row["lifecycle_policy_allowed"] = 1
+                state = classify(row)
+                counters["final_state"][state.final_state] += 1
+                counters["state_group"][state.state_group] += 1
+                counters["output_state"][state.output_state] += 1
+                counters["review_state"][state.review_state] += 1
+                counters["apply_state"][state.apply_state] += 1
+                counters["needs_reopen"]["1" if state.needs_reopen else "0"] += 1
+                batch.append(
+                    (
+                        run_id,
+                        int(row["segment_id"]),
+                        row["relative_path"],
+                        row["source_key"],
+                        row["source_line_number"],
+                        state.final_state,
+                        state.state_group,
+                        state.output_state,
+                        state.review_state,
+                        state.apply_state,
+                        row["active_action"],
+                        row["candidate_action"],
+                        row["policy_action"],
+                        row["lifecycle_policy_action"],
+                        int(row["lifecycle_policy_allowed"] or 0),
+                        row["confirmation_level"],
+                        row["confirmation_label"],
+                        int(row["locked"] or 0),
+                        1 if state.has_output else 0,
+                        1 if state.source_blank else 0,
+                        1 if state.confirmed_matches_output else 0,
+                        1 if state.needs_human else 0,
+                        1 if state.needs_output_apply else 0,
+                        1 if state.needs_reopen else 0,
+                        1 if state.is_closed else 0,
+                        state.priority_score,
+                        json.dumps(state.reasons, ensure_ascii=False),
+                        created_at,
+                    )
                 )
-            )
-            if len(batch) >= 5000:
+            if batch:
                 insert_items(conn, batch)
                 conn.commit()
-                batch.clear()
-        if batch:
-            insert_items(conn, batch)
-            conn.commit()
 
         finished_at = db.utc_now()
         update_run_summary(conn, run_id, finished_at, counters)

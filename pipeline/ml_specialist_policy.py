@@ -15,6 +15,11 @@ REVIEW_SOURCES = ("ml_specialist_auditor", "ml_specialist_scope_review")
 OPERATIONAL_SPECIALIST_KEYS = [
     "culture_title_labels",
     "religion",
+    "religion_bosnian_terms",
+    "religion_possessive_gods",
+    "religion_preserved_terms",
+    "religion_divine_realm_contextual_boundary",
+    "religion_dab_qhuas_terms",
     "title_adjectives",
     "title_baronies",
     "title_counties",
@@ -161,6 +166,23 @@ def latest_score_for_kind(conn, model_kind: str) -> dict[str, Any] | None:
         LIMIT 1
         """,
         (model_kind,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def latest_holdout_for_dataset(conn, dataset_run_id: int | None) -> dict[str, Any] | None:
+    if dataset_run_id is None:
+        return None
+    row = conn.execute(
+        """
+        SELECT *
+        FROM ml_holdout_eval_runs
+        WHERE dataset_run_id = ?
+          AND finished_at IS NOT NULL
+        ORDER BY finished_at DESC, id DESC
+        LIMIT 1
+        """,
+        (dataset_run_id,),
     ).fetchone()
     return dict(row) if row else None
 
@@ -364,6 +386,10 @@ def decide_status(
         return "NEEDS_REVIEW_EXPANSION", "review_pending_new_safe_divergences"
     if compared.get("pending_demoted_count", 0) > 0:
         return "READY_CONSERVATIVE_AUDIT", "review_demoted_false_safe_samples"
+    score_auto_safe = int(latest_score.get("final_auto_safe_count") or 0) if latest_score else 0
+    score_model_direct_safe = int(latest_score.get("model_direct_auto_safe_count") or 0) if latest_score else 0
+    if predicted_safe_count == 0 and score_auto_safe == 0 and score_model_direct_safe == 0:
+        return "READY_BLOCKER_ONLY", "monitor_as_boundary_no_coverage_gain"
     if compared.get("divergent_count", 0) > 0:
         return "READY_REVIEWED_DIVERGENCES", "eligible_for_dry_run_policy"
     return "READY_CLEAN", "eligible_for_dry_run_policy"
@@ -414,6 +440,12 @@ def build_snapshot(
             and threshold is not None
             and threshold + 0.000001 < float(config.default_safe_threshold)
         )
+        dataset_run_id = (
+            int(score["dataset_run_id"])
+            if score and score.get("dataset_run_id") is not None
+            else (int(model["dataset_run_id"]) if model and model.get("dataset_run_id") else None)
+        )
+        holdout = latest_holdout_for_dataset(conn, dataset_run_id)
         status, action = decide_status(
             model,
             score,
@@ -422,6 +454,17 @@ def build_snapshot(
             scope_delta_count,
             threshold_below_policy,
         )
+        if status.startswith("READY") and holdout:
+            holdout_false_safe = int(holdout.get("false_safe_count") or 0)
+            holdout_predicted_safe = int(holdout.get("predicted_safe_count") or 0)
+            holdout_precision = holdout.get("safe_precision")
+            if holdout_false_safe > 0 or (
+                holdout_predicted_safe > 0
+                and holdout_precision is not None
+                and float(holdout_precision) + 0.000001 < 1.0
+            ):
+                status = "MODEL_HOLDOUT_SAFETY_FAIL"
+                action = "add_negative_reviews_or_split_holdout_boundary"
 
         final_auto_safe = int(score["final_auto_safe_count"] or 0) if score else 0
         model_direct = int(score["model_direct_auto_safe_count"] or 0) if score else 0
@@ -437,6 +480,10 @@ def build_snapshot(
                 else False
             ),
             "selection_strategy": strategy,
+            "holdout_eval_run_id": holdout["id"] if holdout else None,
+            "holdout_false_safe_count": int(holdout.get("false_safe_count") or 0) if holdout else None,
+            "holdout_predicted_safe_count": int(holdout.get("predicted_safe_count") or 0) if holdout else None,
+            "holdout_safe_precision": float(holdout.get("safe_precision")) if holdout and holdout.get("safe_precision") is not None else None,
         }
         return {
             "rule_version": RULE_VERSION,
@@ -445,11 +492,7 @@ def build_snapshot(
             "model_kind": config.name,
             "model_run_id": int(score["model_run_id"]) if score else (model["id"] if model else None),
             "model_version": score["model_version"] if score else (model["model_version"] if model else None),
-            "dataset_run_id": (
-                int(score["dataset_run_id"])
-                if score and score.get("dataset_run_id") is not None
-                else (int(model["dataset_run_id"]) if model and model.get("dataset_run_id") else None)
-            ),
+            "dataset_run_id": dataset_run_id,
             "score_run_id": int(score["id"]) if score else None,
             "operational_threshold": threshold,
             "policy_min_threshold": float(config.default_safe_threshold),
@@ -555,10 +598,11 @@ def report_lines(
     ready = [row for row in snapshots if str(row["status"]).startswith("READY_")]
     needs_review = [row for row in snapshots if row["status"] == "NEEDS_REVIEW_EXPANSION"]
     conservative_audit = [row for row in snapshots if row["status"] == "READY_CONSERVATIVE_AUDIT"]
+    blocker_only = [row for row in snapshots if row["status"] == "READY_BLOCKER_ONLY"]
     stale = [row for row in snapshots if row["status"] == "STALE_SCORE"]
     scope_drift = [row for row in snapshots if row["status"] == "SCOPE_DRIFT"]
     threshold_low = [row for row in snapshots if row["status"] == "THRESHOLD_BELOW_POLICY"]
-    safety_fail = [row for row in snapshots if row["status"] == "MODEL_SAFETY_FAIL"]
+    safety_fail = [row for row in snapshots if row["status"] in {"MODEL_SAFETY_FAIL", "MODEL_HOLDOUT_SAFETY_FAIL"}]
     missing = [row for row in snapshots if row["status"] in {"NO_MODEL", "NO_SCORE", "NEEDS_GENERAL_RESCORE"}]
     total_scored = sum(int(row["scored_count"] or 0) for row in snapshots)
     total_auto = sum(int(row["final_auto_safe_count"] or 0) for row in snapshots)
@@ -593,6 +637,7 @@ def report_lines(
             "Operational summary:",
             f"- Specialists inspected: {len(snapshots)}",
             f"- Ready: {len(ready)}",
+            f"- Ready blocker-only/no coverage gain: {len(blocker_only)}",
             f"- Need expansion review: {len(needs_review)}",
             f"- Conservative false-safe audit: {len(conservative_audit)}",
             f"- Stale score: {len(stale)}",
@@ -637,10 +682,12 @@ def report_lines(
             "",
             "Interpretation:",
             "- READY_* means the latest specialist score has no unreviewed divergence against the general score reference.",
+            "- READY_BLOCKER_ONLY means the specialist is clean but currently releases zero auto-safe rows; treat it as a boundary monitor, not a coverage gain.",
             "- NEEDS_REVIEW_EXPANSION means the specialist wants to mark extra rows safe and those rows need review first.",
             "- READY_CONSERVATIVE_AUDIT means the specialist is only more cautious than the general model; review demotions as false-safe research.",
             "- THRESHOLD_BELOW_POLICY means the score used a looser threshold than this specialist policy allows.",
             "- MODEL_SAFETY_FAIL means the latest specialist model produced at least one false-safe or lost perfect safe precision in its internal evaluation.",
+            "- MODEL_HOLDOUT_SAFETY_FAIL means the specialist looked clean internally but failed file-level holdout safety.",
             "- STALE_SCORE means a newer specialist model exists and needs a fresh score run.",
             "- SCOPE_DRIFT means the eligible scope changed after the score and should be rescored.",
             "- This command does not apply output, change confirmations, or promote models.",
@@ -664,6 +711,11 @@ def main(
         general_score = score_run_info(conn, general_score_run_id) if general_score_run_id else latest_general_score_run(conn)
         if general_score is None and general_score_run_id is not None:
             raise RuntimeError(f"General score run {general_score_run_id} is missing, unfinished, or empty.")
+        if general_score is not None and general_score.get("model_kind") != "risk_action_classifier":
+            raise RuntimeError(
+                "Specialist policy requires a general risk_action_classifier score as reference; "
+                f"got {general_score.get('model_kind')} from score run {general_score.get('id')}."
+            )
         resolved_general_score_run_id = int(general_score["id"]) if general_score else None
         requested = resolve_requested_specialists(specialist)
         snapshots = [

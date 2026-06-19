@@ -311,6 +311,67 @@ def validate_candidate(
     return "ready", current_line, new_line
 
 
+def validation_priority(status: str) -> int:
+    if status in {"ready", "ready_token_override", "ready_token_policy_decision"}:
+        return 0
+    if status in {"already_matches", "already_matches_line"}:
+        return 1
+    if status == "stale_token_policy_confirmed_hash":
+        return 3
+    if status == "stale_token_policy_output_hash":
+        return 4
+    if status == "missing_token_policy_decision":
+        return 5
+    return 2
+
+
+def evaluate_best_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    output_root: Path,
+    allow_locked_token_override: bool,
+    require_token_policy_decision: bool,
+    include_intentional_blank: bool,
+) -> tuple[Counter, list[tuple[dict[str, Any], str, str | None, str | None]]]:
+    grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    ordered_segment_ids: list[int] = []
+    for row in candidates:
+        segment_id = int(row["segment_id"])
+        if segment_id not in grouped:
+            ordered_segment_ids.append(segment_id)
+        grouped[segment_id].append(row)
+
+    result_counts: Counter = Counter()
+    previews: list[tuple[dict[str, Any], str, str | None, str | None]] = []
+    for segment_id in ordered_segment_ids:
+        rows = grouped[segment_id]
+        if len(rows) > 1:
+            result_counts["duplicate_segment"] += len(rows) - 1
+        evaluated = [
+            (
+                row,
+                *validate_candidate(
+                    row,
+                    output_root,
+                    allow_locked_token_override,
+                    require_token_policy_decision,
+                    include_intentional_blank,
+                ),
+            )
+            for row in rows
+        ]
+        row, status, current_line, new_line = min(
+            evaluated,
+            key=lambda item: (
+                validation_priority(item[1]),
+                int(item[0].get("token_policy_decision_id") or 0) * -1,
+            ),
+        )
+        result_counts[status] += 1
+        previews.append((row, status, current_line, new_line))
+    return result_counts, previews
+
+
 def insert_apply_run(
     conn,
     *,
@@ -587,22 +648,14 @@ def main(
         )
         conn.commit()
 
-    seen_segments: set[int] = set()
-    for row in candidates:
-        segment_id = int(row["segment_id"])
-        if segment_id in seen_segments:
-            result_counts["duplicate_segment"] += 1
-            continue
-        seen_segments.add(segment_id)
-        status, current_line, new_line = validate_candidate(
-            row,
-            output_root,
-            allow_locked_token_override,
-            require_token_policy_decision,
-            include_intentional_blank,
-        )
-        result_counts[status] += 1
-        previews.append((row, status, current_line, new_line))
+    result_counts, previews = evaluate_best_candidates(
+        candidates,
+        output_root=output_root,
+        allow_locked_token_override=allow_locked_token_override,
+        require_token_policy_decision=require_token_policy_decision,
+        include_intentional_blank=include_intentional_blank,
+    )
+    for row, status, _current_line, new_line in previews:
         if status in {"ready", "ready_token_override", "ready_token_policy_decision"} and new_line is not None:
             file_updates[row["relative_path"]][int(row["output_line_number"])] = new_line
             ready_entries.append((row, new_line))

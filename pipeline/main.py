@@ -42,7 +42,19 @@ STAGES = {
     "ml_specialist_ensemble_policy": "ml_specialist_ensemble_policy",
     "ml_agent_architecture": "ml_agent_architecture",
     "ml_agent_audit_queue": "ml_agent_audit_queue",
+    "learning_network_diagnostic": "learning_network_diagnostic",
     "ml_composite_review_progress": "ml_composite_review_progress",
+    "issue_review_ingest": "issue_review_ingest",
+    "issue_review_gender_boundary_checkpoint": "issue_review_gender_boundary_checkpoint",
+    "issue_review_gender_boundary_lifecycle": "issue_review_gender_boundary_lifecycle_policy",
+    "issue_review_trigger_gender_role_surface": "issue_review_trigger_gender_role_surface",
+    "issue_review_trigger_gender_role_checkpoint": "issue_review_trigger_gender_role_checkpoint",
+    "issue_review_trigger_gender_role_lifecycle": "issue_review_trigger_gender_role_lifecycle_policy",
+    "issue_partial_coverage": "issue_partial_coverage_report",
+    "issue_title_policy_routes": "issue_title_policy_route_diagnostic",
+    "issue_semantic_short_label_pair_checkpoint": "issue_semantic_short_label_pair_checkpoint",
+    "issue_composition_queue": "issue_composition_queue",
+    "issue_multiagent_composition_queue": "issue_multiagent_composition_queue",
     "ml_composite_review_ingest": "ml_composite_review_ingest",
     "ml_composite_queue_backfill": "ml_composite_queue_backfill",
     "ml_composite_next_queue_cycle": "ml_composite_next_queue_cycle",
@@ -54,6 +66,22 @@ STAGES = {
     "ml_composite_guarded_overlay_checkpoint": "ml_composite_guarded_overlay_checkpoint",
     "ml_composite_guarded_overlay_shadow_queue": "ml_composite_guarded_overlay_shadow_queue",
     "ml_composite_guarded_overlay_shadow_decisions": "ml_composite_guarded_overlay_shadow_decisions",
+    "auto_confirmation_text_shadow_policy": "auto_confirmation_reopen_text_shadow_policy",
+    "auto_confirmation_text_policy_checkpoint": "auto_confirmation_reopen_text_policy_checkpoint",
+    "auto_confirmation_text_lifecycle_policy": "auto_confirmation_reopen_text_lifecycle_policy",
+    "auto_confirmation_text_boundary_policy": "auto_confirmation_reopen_text_boundary_policy",
+    "auto_confirmation_text_boundary_repair_queue": "auto_confirmation_reopen_text_boundary_repair_queue",
+    "auto_confirmation_text_boundary_repair_shadow_policy": "auto_confirmation_reopen_text_boundary_repair_shadow_policy",
+    "auto_confirmation_text_boundary_repair_checkpoint": "auto_confirmation_reopen_text_boundary_repair_checkpoint",
+    "auto_confirmation_text_boundary_repair_lifecycle_policy": "auto_confirmation_reopen_text_boundary_repair_lifecycle_policy",
+    "auto_confirmation_text_boundary_repair_production_audit": "auto_confirmation_reopen_text_boundary_repair_production_audit",
+    "auto_confirmation_text_boundary_token_policy_bridge": "auto_confirmation_reopen_text_boundary_token_policy_bridge",
+    "auto_confirmation_text_boundary_token_subpolicy_shadow": "auto_confirmation_reopen_text_boundary_token_subpolicy_shadow",
+    "auto_confirmation_text_boundary_token_subpolicy_checkpoint": "auto_confirmation_reopen_text_boundary_token_subpolicy_checkpoint",
+    "auto_confirmation_text_boundary_token_subpolicy_lifecycle_policy": "auto_confirmation_reopen_text_boundary_token_subpolicy_lifecycle_policy",
+    "auto_confirmation_text_boundary_token_subpolicy_production_audit": "auto_confirmation_reopen_text_boundary_token_subpolicy_production_audit",
+    "controlled_token_subpolicy_apply": "controlled_token_subpolicy_apply",
+    "auto_confirmation_weak_boundary_queue": "auto_confirmation_reopen_weak_boundary_queue",
     "segment_state": "segment_state_snapshot",
     "segment_apply": "apply_segment_state_updates",
     "segment_token_queue": "segment_token_mismatch_queue",
@@ -256,6 +284,23 @@ def main() -> None:
             "ml-specialist-frontier-queue",
             "ml-agent-architecture",
             "ml-agent-audit-queue",
+            "learning-network-diagnostic",
+            "issue-ledger",
+            "issue-review-queue",
+            "issue-review-subcluster",
+            "issue-review-ingest",
+            "issue-review-short-label-positive-release",
+            "issue-review-short-label-positive-checkpoint",
+            "issue-review-gender-subpolicy-shadow",
+            "issue-review-gender-boundary-checkpoint",
+            "issue-review-gender-boundary-lifecycle",
+            "issue-review-trigger-gender-role-surface",
+            "issue-review-trigger-gender-role-checkpoint",
+            "issue-review-trigger-gender-role-lifecycle",
+            "issue-partial-coverage",
+            "issue-title-policy-route-queue",
+            "issue-composition-queue",
+            "issue-multiagent-composition-queue",
             "ml-composite-checkpoint",
             "ml-composite-promote",
             "ml-composite-review-progress",
@@ -271,6 +316,24 @@ def main() -> None:
             "ml-composite-guarded-overlay-promote",
             "ml-composite-guarded-overlay-shadow-queue",
             "ml-composite-guarded-overlay-shadow-decisions",
+            "auto-confirmation-text-shadow-policy",
+            "auto-confirmation-text-policy-checkpoint",
+            "auto-confirmation-text-lifecycle-policy",
+            "auto-confirmation-text-boundary-policy",
+            "auto-confirmation-text-boundary-repair-queue",
+            "auto-confirmation-text-boundary-repair-shadow-policy",
+            "auto-confirmation-text-boundary-repair-checkpoint",
+            "auto-confirmation-text-boundary-repair-lifecycle-policy",
+            "auto-confirmation-text-boundary-repair-production-audit",
+            "auto-confirmation-text-boundary-token-policy-bridge",
+            "auto-confirmation-text-boundary-token-subpolicy-shadow",
+            "auto-confirmation-text-boundary-token-subpolicy-checkpoint",
+            "auto-confirmation-text-boundary-token-subpolicy-lifecycle-policy",
+            "auto-confirmation-text-boundary-token-subpolicy-production-audit",
+            "controlled-token-subpolicy-apply",
+            "same-token-boundary-repair-apply",
+            "select-cstring-governed-bridge-apply",
+            "auto-confirmation-weak-boundary-queue",
             "segment-state",
             "segment-apply",
             "segment-token-queue",
@@ -278,6 +341,15 @@ def main() -> None:
             "segment-token-tutorial-concept-policy",
             "segment-token-tutorial-concept-promotion",
             "segment-token-tutorial-concept-candidate-policy",
+            "segment-token-gender-subpolicy",
+            "segment-token-gender-split-subpolicy",
+            "segment-token-gender-split-evidence-queue",
+            "segment-token-gender-simple-evidence-queue",
+            "segment-token-gender-split-evidence-ingest",
+            "segment-token-gender-split-promotion-audit",
+            "segment-token-gender-split-guarded-policy",
+            "segment-token-gender-split-coordinator-dry-run",
+            "segment-token-gender-split-bridge-dry-run",
             "segment-token-policy-overlay",
             "segment-token-overlay-queue",
             "segment-token-overlay-text-decisions",
@@ -285,6 +357,7 @@ def main() -> None:
             "segment-token-policy-queue",
             "segment-token-policy-decisions",
             "segment-token-policy-decision-rebase",
+            "segment-token-composite-bridge",
             "segment-token-confirmation-fixes",
             "ml-score",
             "ml-score-audit",
@@ -422,6 +495,232 @@ def main() -> None:
         help="During auto-validate, optional SQL LIKE filter for source relative_path, for example gui/%%.",
     )
     parser.add_argument(
+        "--issue-agent-key",
+        default="micro_short_label_style",
+        help="During issue-review-queue, select ledger items for this microagent.",
+    )
+    parser.add_argument(
+        "--issue-family",
+        default=None,
+        help="During issue-review-queue, optional issue_family filter.",
+    )
+    parser.add_argument(
+        "--issue-kind",
+        default=None,
+        help="During issue-review-queue, optional issue_kind filter.",
+    )
+    parser.add_argument(
+        "--issue-active-action",
+        default=None,
+        help="During issue-review-queue, optional active_action filter.",
+    )
+    parser.add_argument(
+        "--issue-candidate-action",
+        default=None,
+        help="During issue-review-queue, optional candidate_action filter.",
+    )
+    parser.add_argument(
+        "--issue-policy-action",
+        default=None,
+        help="During issue-review-queue, optional policy_action filter.",
+    )
+    parser.add_argument(
+        "--issue-path-like",
+        default=None,
+        help="During issue-review-queue, optional SQL LIKE filter for relative_path.",
+    )
+    parser.add_argument(
+        "--issue-queue-per-bucket",
+        type=int,
+        default=20,
+        help="During issue-review-queue, maximum rows selected per stratification bucket.",
+    )
+    parser.add_argument(
+        "--issue-queue-include-existing",
+        action="store_true",
+        help="During issue-review-queue, allow ledger items already emitted in previous issue queues.",
+    )
+    parser.add_argument(
+        "--issue-review-decisions",
+        default=None,
+        help="During issue-review-ingest/subcluster, JSON/JSONL/CSV file with reviewed issue queue decisions.",
+    )
+    parser.add_argument(
+        "--issue-review-queue-jsonl",
+        default=None,
+        help="During issue-review-subcluster, source issue review queue JSONL file.",
+    )
+    parser.add_argument(
+        "--issue-review-queue-run-id",
+        type=int,
+        default=None,
+        help="During issue-review-ingest, queue run id used to resolve ledger_item_id rows. Default is read from rows.",
+    )
+    parser.add_argument(
+        "--issue-review-decision-run-id",
+        type=int,
+        default=None,
+        help="During issue-review-short-label-positive-release, inspect a specific issue review decision run. Default is latest for the agent.",
+    )
+    parser.add_argument(
+        "--issue-short-label-release-run-id",
+        type=int,
+        default=None,
+        help="During issue-review-short-label-positive-checkpoint, inspect a specific short-label release run. Default is latest.",
+    )
+    parser.add_argument(
+        "--issue-short-label-checkpoint-min-released",
+        type=int,
+        default=1,
+        help="During issue-review-short-label-positive-checkpoint, minimum shadow released rows required.",
+    )
+    parser.add_argument(
+        "--issue-short-label-checkpoint-max-blocked",
+        type=int,
+        default=0,
+        help="During issue-review-short-label-positive-checkpoint, maximum release blocked rows allowed.",
+    )
+    parser.add_argument(
+        "--issue-gender-shadow-run-id",
+        type=int,
+        default=None,
+        help="During issue-review-gender-boundary-checkpoint, inspect a specific gender shadow run. Default is latest.",
+    )
+    parser.add_argument(
+        "--issue-gender-boundary-min",
+        type=int,
+        default=1,
+        help="During issue-review-gender-boundary-checkpoint, minimum boundary rows required.",
+    )
+    parser.add_argument(
+        "--issue-gender-boundary-max-blocked",
+        type=int,
+        default=0,
+        help="During issue-review-gender-boundary-checkpoint, maximum shadow blocked rows allowed.",
+    )
+    parser.add_argument(
+        "--issue-gender-boundary-checkpoint-run-id",
+        type=int,
+        default=None,
+        help="During issue-review-gender-boundary-lifecycle, inspect a specific gender boundary checkpoint. Default is latest.",
+    )
+    parser.add_argument(
+        "--issue-gender-boundary-lifecycle-status",
+        choices=["shadow"],
+        default="shadow",
+        help="During issue-review-gender-boundary-lifecycle, lifecycle status. This is intentionally shadow-only.",
+    )
+    parser.add_argument(
+        "--issue-gender-boundary-lifecycle-expected-total",
+        type=int,
+        default=None,
+        help="During issue-review-gender-boundary-lifecycle, expected lifecycle item count.",
+    )
+    parser.add_argument(
+        "--issue-trigger-gender-role-shadow-run-id",
+        type=int,
+        default=None,
+        help="During issue-review-trigger-gender-role-checkpoint, inspect a specific trigger gender-role shadow run. Default is latest.",
+    )
+    parser.add_argument(
+        "--issue-trigger-gender-role-checkpoint-min-ready",
+        type=int,
+        default=1,
+        help="During issue-review-trigger-gender-role-checkpoint, minimum ready rows required.",
+    )
+    parser.add_argument(
+        "--issue-trigger-gender-role-checkpoint-max-blocked",
+        type=int,
+        default=0,
+        help="During issue-review-trigger-gender-role-checkpoint, maximum shadow blocked rows allowed.",
+    )
+    parser.add_argument(
+        "--issue-trigger-gender-role-lifecycle-checkpoint-run-id",
+        type=int,
+        default=None,
+        help="During issue-review-trigger-gender-role-lifecycle, inspect a specific trigger gender-role checkpoint. Default is latest.",
+    )
+    parser.add_argument(
+        "--issue-trigger-gender-role-lifecycle-status",
+        choices=["shadow"],
+        default="shadow",
+        help="During issue-review-trigger-gender-role-lifecycle, lifecycle status. This is intentionally shadow-only.",
+    )
+    parser.add_argument(
+        "--issue-trigger-gender-role-lifecycle-expected-total",
+        type=int,
+        default=None,
+        help="During issue-review-trigger-gender-role-lifecycle, expected lifecycle item count.",
+    )
+    parser.add_argument(
+        "--issue-partial-coverage-ledger-run-id",
+        type=int,
+        default=None,
+        help="During issue-partial-coverage, inspect a specific issue ledger run. Default is latest.",
+    )
+    parser.add_argument(
+        "--issue-ledger-run-id",
+        type=int,
+        default=None,
+        help="During issue-ledger based diagnostics/queues, inspect a specific issue ledger run. Default is latest.",
+    )
+    parser.add_argument(
+        "--issue-title-route-lane",
+        default="landed_title_adjectives",
+        help="During issue-title-policy-route-queue, select the title-policy route lane.",
+    )
+    parser.add_argument(
+        "--issue-title-route-per-prefix",
+        type=int,
+        default=60,
+        help="During issue-title-policy-route-queue, maximum selected rows per title key prefix.",
+    )
+    parser.add_argument(
+        "--issue-composition-partial-run-id",
+        type=int,
+        default=None,
+        help="During issue-composition-queue, inspect a specific partial coverage run. Default is latest.",
+    )
+    parser.add_argument(
+        "--issue-composition-scope",
+        choices=["partial", "full", "partial_or_reviewed", "not_uncovered"],
+        default="partial",
+        help="During issue-composition-queue, choose which partial coverage segment state to queue from.",
+    )
+    parser.add_argument(
+        "--issue-composition-min-issues",
+        type=int,
+        default=2,
+        help="During issue-multiagent-composition-queue, minimum open issue count per segment.",
+    )
+    parser.add_argument(
+        "--issue-composition-min-mature-families",
+        type=int,
+        default=2,
+        help="During issue-multiagent-composition-queue, minimum families with checkpoint evidence.",
+    )
+    parser.add_argument(
+        "--issue-composition-min-mature-ratio",
+        type=float,
+        default=0.75,
+        help="During issue-multiagent-composition-queue, minimum ratio of open families with checkpoint evidence.",
+    )
+    parser.add_argument(
+        "--issue-composition-agent-key",
+        default="composition_coordinator_v1",
+        help="During issue-multiagent-composition-queue, coordinator agent key recorded in the queue.",
+    )
+    parser.add_argument(
+        "--issue-review-source-report",
+        default=None,
+        help="During issue-review-ingest, optional source queue/report path for audit traceability.",
+    )
+    parser.add_argument(
+        "--issue-reviewer",
+        default=None,
+        help="During issue-review-ingest, reviewer name stored when rows do not specify one.",
+    )
+    parser.add_argument(
         "--segment-ids",
         default=None,
         help="During segment-apply, comma-separated segment ids to apply exactly.",
@@ -491,6 +790,21 @@ def main() -> None:
         help="During segment-token-policy-queue, comma-separated risk_level filter.",
     )
     parser.add_argument(
+        "--token-policy-pending-apply-only",
+        action="store_true",
+        help="During segment-token-policy-queue, include only policy items still marked needs_apply in segment state.",
+    )
+    parser.add_argument(
+        "--token-policy-skip-apply-approved",
+        action="store_true",
+        help="During segment-token-policy-queue, exclude policy items already approved for apply in current token policy decisions.",
+    )
+    parser.add_argument(
+        "--token-policy-undecided-only",
+        action="store_true",
+        help="During gender-token learning modes, include only policy items without any token policy decision.",
+    )
+    parser.add_argument(
         "--token-policy-decisions",
         default=None,
         help="During segment-token-policy-decisions, JSON/JSONL/CSV file with reviewed token policy decisions.",
@@ -504,6 +818,54 @@ def main() -> None:
         "--token-policy-reviewer",
         default=None,
         help="During segment-token-policy-decisions, reviewer name stored on decisions when rows do not specify one.",
+    )
+    parser.add_argument(
+        "--token-subpolicy-statuses",
+        default=None,
+        help="During segment-token-gender-subpolicy, comma-separated subpolicy_status filter.",
+    )
+    parser.add_argument(
+        "--token-gender-subtypes",
+        default=None,
+        help="During segment-token-gender-subpolicy, comma-separated gender_subtype filter.",
+    )
+    parser.add_argument(
+        "--token-split-agents",
+        default=None,
+        help="During segment-token-gender-split-* modes, comma-separated split_agent filter.",
+    )
+    parser.add_argument(
+        "--token-split-maturity",
+        default=None,
+        help="During segment-token-gender-split-* modes, comma-separated split_maturity filter.",
+    )
+    parser.add_argument(
+        "--token-split-evidence-decisions",
+        default=None,
+        help="During segment-token-gender-split-evidence-ingest, JSON/JSONL/CSV with evidence labels.",
+    )
+    parser.add_argument(
+        "--token-split-evidence-source-queue",
+        default=None,
+        help="During segment-token-gender-split-evidence-ingest, source evidence queue JSONL.",
+    )
+    parser.add_argument(
+        "--token-split-min-positive",
+        type=int,
+        default=3,
+        help="During segment-token-gender-split-promotion-audit, positives required for guarded review.",
+    )
+    parser.add_argument(
+        "--token-split-audit-run-id",
+        type=int,
+        default=None,
+        help="During segment-token-gender-split-guarded-policy, inspect a specific gender split promotion audit run.",
+    )
+    parser.add_argument(
+        "--token-split-guarded-run-id",
+        type=int,
+        default=None,
+        help="During segment-token-gender-split-coordinator-dry-run, inspect a specific guarded policy run.",
     )
     parser.add_argument(
         "--composite-review-decisions",
@@ -686,6 +1048,256 @@ def main() -> None:
         type=int,
         default=None,
         help="During ml-composite-guarded-overlay-shadow-decisions, draft decisions for a specific shadow queue run.",
+    )
+    parser.add_argument(
+        "--text-diagnostic-run-id",
+        type=int,
+        default=None,
+        help="During auto-confirmation-text-shadow-policy, inspect a specific text diagnostic run. Default is latest.",
+    )
+    parser.add_argument(
+        "--text-shadow-policy",
+        choices=[
+            "hold_court_aptitude_tooltip",
+            "short_tooltip_artifact_honor_reason",
+            "short_ui_relation_score",
+            "weak_auto_static_token_only",
+        ],
+        default="hold_court_aptitude_tooltip",
+        help="During auto-confirmation-text-shadow-policy, choose the shadow-only text subpolicy.",
+    )
+    parser.add_argument(
+        "--text-shadow-policy-run-id",
+        type=int,
+        default=None,
+        help="During auto-confirmation-text-policy-checkpoint, checkpoint a specific text shadow policy run. Default is latest eligible run.",
+    )
+    parser.add_argument(
+        "--text-checkpoint-policy",
+        choices=["weak_auto_static_token_only"],
+        default="weak_auto_static_token_only",
+        help="During auto-confirmation-text-policy-checkpoint, choose the governed checkpoint policy.",
+    )
+    parser.add_argument(
+        "--text-checkpoint-min-ready",
+        type=int,
+        default=100,
+        help="During auto-confirmation-text-policy-checkpoint, require at least this many shadow-ready rows.",
+    )
+    parser.add_argument(
+        "--text-checkpoint-max-blocked",
+        type=int,
+        default=0,
+        help="During auto-confirmation-text-policy-checkpoint, allow at most this many shadow-blocked rows.",
+    )
+    parser.add_argument(
+        "--text-checkpoint-run-id",
+        type=int,
+        default=None,
+        help="During auto-confirmation-text-lifecycle-policy, release a specific guarded checkpoint. Default is latest eligible checkpoint.",
+    )
+    parser.add_argument(
+        "--text-lifecycle-status",
+        choices=["shadow", "active"],
+        default="active",
+        help="During auto-confirmation-text-lifecycle-policy, create a shadow or active lifecycle release.",
+    )
+    parser.add_argument(
+        "--text-boundary-policy",
+        choices=[
+            "all",
+            "unclassified_negative_boundary",
+            "weak_auto_custom_loc_es_helper",
+            "weak_auto_embedded_glossary_visible_label",
+            "weak_auto_embedded_select_cstring_spanish_literal",
+            "weak_auto_visible_copula_token_form",
+            "weak_auto_visible_possessive_connector_loss",
+            "weak_auto_visible_runtime_spanish_verb",
+            "weak_auto_visible_semantic_sentence_loss",
+            "weak_auto_visible_sentence_collapse",
+        ],
+        default="all",
+        help="During auto-confirmation-text-boundary-policy, choose the weak-auto negative boundary to classify.",
+    )
+    parser.add_argument(
+        "--text-boundary-policy-run-id",
+        type=int,
+        default=None,
+        help="During auto-confirmation-text-boundary-repair-queue, inspect a specific boundary policy run. Default is latest.",
+    )
+    parser.add_argument(
+        "--text-boundary-repair-scope",
+        choices=["all", "same-token", "token-change"],
+        default="all",
+        help="During auto-confirmation-text-boundary-repair-queue, choose same-token, token-change, or all repair candidates.",
+    )
+    parser.add_argument(
+        "--text-boundary-repair-limit",
+        type=int,
+        default=None,
+        help="During auto-confirmation-text-boundary-repair-queue, cap selected rows.",
+    )
+    parser.add_argument(
+        "--text-boundary-repair-include-existing",
+        action="store_true",
+        help="During auto-confirmation-text-boundary-repair-queue, include boundary items already queued before.",
+    )
+    parser.add_argument(
+        "--text-boundary-repair-queue-run-id",
+        type=int,
+        default=None,
+        help="During auto-confirmation-text-boundary-repair-shadow-policy, inspect a specific same-token repair queue run. Default is latest.",
+    )
+    parser.add_argument(
+        "--text-boundary-repair-shadow-run-id",
+        type=int,
+        default=None,
+        help="During auto-confirmation-text-boundary-repair-checkpoint, inspect a specific repair shadow run. Default is latest.",
+    )
+    parser.add_argument(
+        "--text-boundary-repair-min-ready",
+        type=int,
+        default=1,
+        help="During auto-confirmation-text-boundary-repair-checkpoint, minimum shadow-ready repairs required.",
+    )
+    parser.add_argument(
+        "--text-boundary-repair-max-blocked",
+        type=int,
+        default=2,
+        help="During auto-confirmation-text-boundary-repair-checkpoint, maximum blocked rows allowed in the shadow run.",
+    )
+    parser.add_argument(
+        "--text-boundary-repair-checkpoint-run-id",
+        type=int,
+        default=None,
+        help="During auto-confirmation-text-boundary-repair-lifecycle-policy, inspect a specific repair checkpoint. Default is latest.",
+    )
+    parser.add_argument(
+        "--text-boundary-repair-lifecycle-run-id",
+        type=int,
+        default=None,
+        help="During auto-confirmation-text-boundary-repair-production-audit, inspect a specific lifecycle run. Default is latest.",
+    )
+    parser.add_argument(
+        "--text-boundary-repair-state-run-id",
+        type=int,
+        default=None,
+        help="During auto-confirmation-text-boundary-repair-production-audit, compare against a specific segment-state run. Default is latest.",
+    )
+    parser.add_argument(
+        "--text-boundary-token-bridge-limit",
+        type=int,
+        default=None,
+        help="During auto-confirmation-text-boundary-token-policy-bridge, cap selected token-change repair rows.",
+    )
+    parser.add_argument(
+        "--text-boundary-token-bridge-run-id",
+        type=int,
+        default=None,
+        help="During auto-confirmation-text-boundary-token-subpolicy-shadow, inspect a specific bridge run. Default is latest.",
+    )
+    parser.add_argument(
+        "--text-boundary-token-subpolicy",
+        default="select_cstring_invariant_ptbr_verb",
+        help="During auto-confirmation-text-boundary-token-subpolicy-shadow, choose the shadow token subpolicy.",
+    )
+    parser.add_argument(
+        "--text-boundary-token-subpolicy-run-id",
+        type=int,
+        default=None,
+        help="During auto-confirmation-text-boundary-token-subpolicy-checkpoint, inspect a specific subpolicy shadow run. Default is latest.",
+    )
+    parser.add_argument(
+        "--text-boundary-token-subpolicy-min-ready",
+        type=int,
+        default=1,
+        help="During auto-confirmation-text-boundary-token-subpolicy-checkpoint, minimum shadow-ready rows required.",
+    )
+    parser.add_argument(
+        "--text-boundary-token-subpolicy-max-blocked",
+        type=int,
+        default=0,
+        help="During auto-confirmation-text-boundary-token-subpolicy-checkpoint, maximum blocked rows allowed.",
+    )
+    parser.add_argument(
+        "--text-boundary-token-subpolicy-checkpoint-run-ids",
+        default=None,
+        help="During auto-confirmation-text-boundary-token-subpolicy-lifecycle-policy, comma-separated checkpoint run IDs. Default is latest ready checkpoint per subpolicy.",
+    )
+    parser.add_argument(
+        "--text-boundary-token-subpolicy-lifecycle-min-checkpoints",
+        type=int,
+        default=4,
+        help="During auto-confirmation-text-boundary-token-subpolicy-lifecycle-policy, minimum checkpoint count required.",
+    )
+    parser.add_argument(
+        "--text-boundary-token-subpolicy-lifecycle-expected-total",
+        type=int,
+        default=44,
+        help="During auto-confirmation-text-boundary-token-subpolicy-lifecycle-policy, expected total lifecycle items.",
+    )
+    parser.add_argument(
+        "--text-boundary-token-subpolicy-lifecycle-run-id",
+        type=int,
+        default=None,
+        help="During auto-confirmation-text-boundary-token-subpolicy-production-audit, inspect a specific lifecycle run. Default is latest.",
+    )
+    parser.add_argument(
+        "--text-boundary-token-subpolicy-state-run-id",
+        type=int,
+        default=None,
+        help="During auto-confirmation-text-boundary-token-subpolicy-production-audit, compare against a specific segment-state run. Default is latest.",
+    )
+    parser.add_argument(
+        "--controlled-token-subpolicy-audit-run-id",
+        type=int,
+        default=None,
+        help="During controlled-token-subpolicy-apply, consume a specific production audit run. Default is latest.",
+    )
+    parser.add_argument(
+        "--controlled-token-subpolicy-reaudit",
+        "--reaudit",
+        action="store_true",
+        help="During controlled-token-subpolicy-apply, report actual post-write closure without writing output.",
+    )
+    parser.add_argument(
+        "--same-token-boundary-repair-audit-run-id",
+        type=int,
+        default=None,
+        help="During same-token-boundary-repair-apply, consume a specific production audit run. Default is latest ready.",
+    )
+    parser.add_argument(
+        "--same-token-boundary-repair-reaudit",
+        action="store_true",
+        help="During same-token-boundary-repair-apply, report actual post-write closure without writing output.",
+    )
+    parser.add_argument(
+        "--select-cstring-bridge-proposal-run-id",
+        type=int,
+        default=None,
+        help="During select-cstring-governed-bridge-apply, consume a specific governed bridge proposal run. Default is latest ready.",
+    )
+    parser.add_argument(
+        "--select-cstring-bridge-reaudit",
+        action="store_true",
+        help="During select-cstring-governed-bridge-apply, report actual post-write closure without writing output.",
+    )
+    parser.add_argument(
+        "--weak-boundary",
+        choices=["custom_loc", "embedded_literal", "source_visible"],
+        default="source_visible",
+        help="During auto-confirmation-weak-boundary-queue, choose the weak-auto boundary to queue.",
+    )
+    parser.add_argument(
+        "--weak-boundary-limit",
+        type=int,
+        default=0,
+        help="During auto-confirmation-weak-boundary-queue, cap selected rows. Use 0 for all candidates.",
+    )
+    parser.add_argument(
+        "--weak-boundary-include-existing",
+        action="store_true",
+        help="During auto-confirmation-weak-boundary-queue, include rows already queued/reviewed for the same boundary.",
     )
     parser.add_argument(
         "--auto-offset",
@@ -894,6 +1506,14 @@ def main() -> None:
             "religion_sufri",
             "religion_possessive_gods",
             "religion_preserved_terms",
+            "religion_divine_realm_contextual_boundary",
+            "religion_dab_qhuas_terms",
+            "religion_preserved_subspecialists",
+            "select_cstring_ep3_laamp_roles",
+            "select_cstring_ep3_laamp_spanish_role_boundary",
+            "select_cstring_ep3_laamp_role_correction_candidate",
+            "select_cstring_ep3_laamp_subspecialists",
+            "all_with_token_gate_subspecialists",
         ],
         default="all",
         help="During ml-specialist-models, choose which specialist to train.",
@@ -987,6 +1607,22 @@ def main() -> None:
             "ml-specialist-frontier-queue",
             "ml-agent-architecture",
             "ml-agent-audit-queue",
+            "learning-network-diagnostic",
+            "issue-ledger",
+            "issue-review-queue",
+            "issue-review-subcluster",
+            "issue-review-ingest",
+            "issue-review-short-label-positive-release",
+            "issue-review-short-label-positive-checkpoint",
+            "issue-review-gender-subpolicy-shadow",
+            "issue-review-gender-boundary-checkpoint",
+            "issue-review-gender-boundary-lifecycle",
+            "issue-review-trigger-gender-role-surface",
+            "issue-review-trigger-gender-role-checkpoint",
+            "issue-review-trigger-gender-role-lifecycle",
+            "issue-partial-coverage",
+            "issue-title-policy-route-queue",
+            "issue-composition-queue",
             "ml-composite-checkpoint",
             "ml-composite-promote",
             "ml-composite-review-progress",
@@ -1002,6 +1638,24 @@ def main() -> None:
             "ml-composite-guarded-overlay-promote",
             "ml-composite-guarded-overlay-shadow-queue",
             "ml-composite-guarded-overlay-shadow-decisions",
+            "auto-confirmation-text-shadow-policy",
+            "auto-confirmation-text-policy-checkpoint",
+            "auto-confirmation-text-lifecycle-policy",
+            "auto-confirmation-text-boundary-policy",
+            "auto-confirmation-text-boundary-repair-queue",
+            "auto-confirmation-text-boundary-repair-shadow-policy",
+            "auto-confirmation-text-boundary-repair-checkpoint",
+            "auto-confirmation-text-boundary-repair-lifecycle-policy",
+            "auto-confirmation-text-boundary-repair-production-audit",
+            "auto-confirmation-text-boundary-token-policy-bridge",
+            "auto-confirmation-text-boundary-token-subpolicy-shadow",
+            "auto-confirmation-text-boundary-token-subpolicy-checkpoint",
+            "auto-confirmation-text-boundary-token-subpolicy-lifecycle-policy",
+            "auto-confirmation-text-boundary-token-subpolicy-production-audit",
+            "controlled-token-subpolicy-apply",
+            "same-token-boundary-repair-apply",
+            "select-cstring-governed-bridge-apply",
+            "auto-confirmation-weak-boundary-queue",
             "segment-state",
             "segment-apply",
             "segment-token-queue",
@@ -1009,6 +1663,15 @@ def main() -> None:
             "segment-token-tutorial-concept-policy",
             "segment-token-tutorial-concept-promotion",
             "segment-token-tutorial-concept-candidate-policy",
+            "segment-token-gender-subpolicy",
+            "segment-token-gender-split-subpolicy",
+            "segment-token-gender-split-evidence-queue",
+            "segment-token-gender-simple-evidence-queue",
+            "segment-token-gender-split-evidence-ingest",
+            "segment-token-gender-split-promotion-audit",
+            "segment-token-gender-split-guarded-policy",
+            "segment-token-gender-split-coordinator-dry-run",
+            "segment-token-gender-split-bridge-dry-run",
             "segment-token-policy-overlay",
             "segment-token-overlay-queue",
             "segment-token-overlay-text-decisions",
@@ -1016,6 +1679,7 @@ def main() -> None:
             "segment-token-policy-queue",
             "segment-token-policy-decisions",
             "segment-token-policy-decision-rebase",
+            "segment-token-composite-bridge",
             "segment-token-confirmation-fixes",
             "ml-score",
             "ml-score-audit",
@@ -1589,6 +2253,399 @@ def main() -> None:
             log_lines.extend(output.splitlines())
             report_lines.append("- ml_agent_audit_queue: executed")
 
+        if args.mode == "learning-network-diagnostic":
+            run_stage_with_log("learning_network_diagnostic", log_lines)
+            report_lines.append("- learning_network_diagnostic: executed")
+
+        if args.mode == "issue-ledger":
+            import issue_ledger
+
+            print("[main] Running stage: issue_ledger (issue_ledger.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    issue_ledger.main(limit=args.auto_limit)
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- issue_ledger: executed")
+
+        if args.mode == "issue-review-queue":
+            import issue_review_queue
+
+            print("[main] Running stage: issue_review_queue (issue_review_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    issue_review_queue.main(
+                        agent_key=args.issue_agent_key,
+                        issue_family=args.issue_family,
+                        issue_kind=args.issue_kind,
+                        active_action=args.issue_active_action,
+                        candidate_action=args.issue_candidate_action,
+                        policy_action=args.issue_policy_action,
+                        path_like=args.issue_path_like,
+                        limit=args.auto_limit,
+                        per_bucket=args.issue_queue_per_bucket,
+                        include_existing=args.issue_queue_include_existing,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- issue_review_queue: executed")
+
+        if args.mode == "issue-review-subcluster":
+            import issue_review_subcluster
+
+            if not args.issue_review_queue_jsonl:
+                raise RuntimeError("--issue-review-queue-jsonl is required for issue-review-subcluster.")
+            if not args.issue_review_decisions:
+                raise RuntimeError("--issue-review-decisions is required for issue-review-subcluster.")
+            print("[main] Running stage: issue_review_subcluster (issue_review_subcluster.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    issue_review_subcluster.main(
+                        queue_jsonl=args.issue_review_queue_jsonl,
+                        decisions_jsonl=args.issue_review_decisions,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- issue_review_subcluster: executed")
+
+        if args.mode == "issue-review-ingest":
+            import issue_review_ingest
+
+            if not args.issue_review_decisions:
+                raise RuntimeError("--issue-review-decisions is required for issue-review-ingest.")
+            print("[main] Running stage: issue_review_ingest (issue_review_ingest.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    issue_review_ingest.main(
+                        decisions_path=args.issue_review_decisions,
+                        queue_run_id=args.issue_review_queue_run_id,
+                        source_report=args.issue_review_source_report,
+                        reviewer=args.issue_reviewer,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- issue_review_ingest: executed")
+
+        if args.mode == "issue-review-short-label-positive-release":
+            import issue_review_short_label_positive_release
+
+            print("[main] Running stage: issue_review_short_label_positive_release (issue_review_short_label_positive_release.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    issue_review_short_label_positive_release.main(
+                        decision_run_id=args.issue_review_decision_run_id,
+                        queue_run_id=args.issue_review_queue_run_id,
+                        agent_key=args.issue_agent_key,
+                        policy_status="shadow",
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- issue_review_short_label_positive_release: executed")
+
+        if args.mode == "issue-review-short-label-positive-checkpoint":
+            import issue_review_short_label_positive_checkpoint
+
+            print("[main] Running stage: issue_review_short_label_positive_checkpoint (issue_review_short_label_positive_checkpoint.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    issue_review_short_label_positive_checkpoint.main(
+                        release_run_id=args.issue_short_label_release_run_id,
+                        min_released_required=args.issue_short_label_checkpoint_min_released,
+                        max_blocked_allowed=args.issue_short_label_checkpoint_max_blocked,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- issue_review_short_label_positive_checkpoint: executed")
+
+        if args.mode == "issue-review-gender-subpolicy-shadow":
+            import issue_review_gender_subpolicy_shadow
+
+            print("[main] Running stage: issue_review_gender_subpolicy_shadow (issue_review_gender_subpolicy_shadow.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    issue_review_gender_subpolicy_shadow.main(
+                        decision_run_id=args.issue_review_decision_run_id,
+                        queue_run_id=args.issue_review_queue_run_id,
+                        agent_key=args.issue_agent_key,
+                        policy_status="shadow",
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- issue_review_gender_subpolicy_shadow: executed")
+
+        if args.mode == "issue-review-gender-boundary-checkpoint":
+            import issue_review_gender_boundary_checkpoint
+
+            print("[main] Running stage: issue_review_gender_boundary_checkpoint (issue_review_gender_boundary_checkpoint.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    issue_review_gender_boundary_checkpoint.main(
+                        shadow_run_id=args.issue_gender_shadow_run_id,
+                        min_boundary_required=args.issue_gender_boundary_min,
+                        max_blocked_allowed=args.issue_gender_boundary_max_blocked,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- issue_review_gender_boundary_checkpoint: executed")
+
+        if args.mode == "issue-review-gender-boundary-lifecycle":
+            import issue_review_gender_boundary_lifecycle_policy
+
+            print("[main] Running stage: issue_review_gender_boundary_lifecycle_policy (issue_review_gender_boundary_lifecycle_policy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    issue_review_gender_boundary_lifecycle_policy.main(
+                        checkpoint_run_id=args.issue_gender_boundary_checkpoint_run_id,
+                        policy_status=args.issue_gender_boundary_lifecycle_status,
+                        expected_total=args.issue_gender_boundary_lifecycle_expected_total,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- issue_review_gender_boundary_lifecycle_policy: executed")
+
+        if args.mode == "issue-review-trigger-gender-role-surface":
+            import issue_review_trigger_gender_role_surface
+
+            print("[main] Running stage: issue_review_trigger_gender_role_surface (issue_review_trigger_gender_role_surface.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    issue_review_trigger_gender_role_surface.main(
+                        decision_run_id=args.issue_review_decision_run_id,
+                        queue_run_id=args.issue_review_queue_run_id,
+                        source_agent_key=args.issue_agent_key,
+                        policy_status="shadow",
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- issue_review_trigger_gender_role_surface: executed")
+
+        if args.mode == "issue-review-trigger-gender-role-checkpoint":
+            import issue_review_trigger_gender_role_checkpoint
+
+            print("[main] Running stage: issue_review_trigger_gender_role_checkpoint (issue_review_trigger_gender_role_checkpoint.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    issue_review_trigger_gender_role_checkpoint.main(
+                        shadow_run_id=args.issue_trigger_gender_role_shadow_run_id,
+                        min_ready_required=args.issue_trigger_gender_role_checkpoint_min_ready,
+                        max_blocked_allowed=args.issue_trigger_gender_role_checkpoint_max_blocked,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- issue_review_trigger_gender_role_checkpoint: executed")
+
+        if args.mode == "issue-review-trigger-gender-role-lifecycle":
+            import issue_review_trigger_gender_role_lifecycle_policy
+
+            print("[main] Running stage: issue_review_trigger_gender_role_lifecycle_policy (issue_review_trigger_gender_role_lifecycle_policy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    issue_review_trigger_gender_role_lifecycle_policy.main(
+                        checkpoint_run_id=args.issue_trigger_gender_role_lifecycle_checkpoint_run_id,
+                        policy_status=args.issue_trigger_gender_role_lifecycle_status,
+                        expected_total=args.issue_trigger_gender_role_lifecycle_expected_total,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- issue_review_trigger_gender_role_lifecycle_policy: executed")
+
+        if args.mode == "issue-partial-coverage":
+            import issue_partial_coverage_report
+
+            print("[main] Running stage: issue_partial_coverage_report (issue_partial_coverage_report.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    issue_partial_coverage_report.main(
+                        ledger_run_id=args.issue_partial_coverage_ledger_run_id,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- issue_partial_coverage_report: executed")
+
+        if args.mode == "issue-title-policy-route-queue":
+            import issue_title_policy_route_standard_review_queue
+
+            print("[main] Running stage: issue_title_policy_route_standard_review_queue (issue_title_policy_route_standard_review_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    issue_title_policy_route_standard_review_queue.main(
+                        ledger_run_id=args.issue_ledger_run_id,
+                        lane=args.issue_title_route_lane,
+                        limit=args.auto_limit,
+                        per_prefix=args.issue_title_route_per_prefix,
+                        include_existing=args.issue_queue_include_existing,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- issue_title_policy_route_standard_review_queue: executed")
+
+        if args.mode == "issue-composition-queue":
+            import issue_composition_queue
+
+            print("[main] Running stage: issue_composition_queue (issue_composition_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    issue_composition_queue.main(
+                        agent_key=args.issue_agent_key,
+                        issue_family=args.issue_family,
+                        partial_run_id=args.issue_composition_partial_run_id,
+                        scope=args.issue_composition_scope,
+                        limit=args.auto_limit,
+                        per_bucket=args.issue_queue_per_bucket,
+                        include_existing=args.issue_queue_include_existing,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- issue_composition_queue: executed")
+
+        if args.mode == "issue-multiagent-composition-queue":
+            import issue_multiagent_composition_queue
+
+            print("[main] Running stage: issue_multiagent_composition_queue (issue_multiagent_composition_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    issue_multiagent_composition_queue.main(
+                        partial_run_id=args.issue_composition_partial_run_id,
+                        agent_key=args.issue_composition_agent_key,
+                        limit=args.auto_limit,
+                        per_bucket=args.issue_queue_per_bucket,
+                        min_issues=args.issue_composition_min_issues,
+                        min_mature_families=args.issue_composition_min_mature_families,
+                        min_mature_ratio=args.issue_composition_min_mature_ratio,
+                        include_existing=args.issue_queue_include_existing,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- issue_multiagent_composition_queue: executed")
+
         if args.mode == "ml-composite-checkpoint":
             import ml_composite_checkpoint
 
@@ -1940,6 +2997,425 @@ def main() -> None:
             log_lines.extend(output.splitlines())
             report_lines.append("- ml_composite_guarded_overlay_shadow_decisions: executed")
 
+        if args.mode == "auto-confirmation-text-shadow-policy":
+            import auto_confirmation_reopen_text_shadow_policy
+
+            print("[main] Running stage: auto_confirmation_reopen_text_shadow_policy (auto_confirmation_reopen_text_shadow_policy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_confirmation_reopen_text_shadow_policy.main(
+                        diagnostic_run_id=args.text_diagnostic_run_id,
+                        policy_key=args.text_shadow_policy,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- auto_confirmation_reopen_text_shadow_policy: executed")
+
+        if args.mode == "auto-confirmation-text-policy-checkpoint":
+            import auto_confirmation_reopen_text_policy_checkpoint
+
+            print("[main] Running stage: auto_confirmation_reopen_text_policy_checkpoint (auto_confirmation_reopen_text_policy_checkpoint.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_confirmation_reopen_text_policy_checkpoint.main(
+                        shadow_policy_run_id=args.text_shadow_policy_run_id,
+                        policy_key=args.text_checkpoint_policy,
+                        min_ready_required=args.text_checkpoint_min_ready,
+                        max_blocked_allowed=args.text_checkpoint_max_blocked,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- auto_confirmation_reopen_text_policy_checkpoint: executed")
+
+        if args.mode == "auto-confirmation-text-lifecycle-policy":
+            import auto_confirmation_reopen_text_lifecycle_policy
+
+            print("[main] Running stage: auto_confirmation_reopen_text_lifecycle_policy (auto_confirmation_reopen_text_lifecycle_policy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_confirmation_reopen_text_lifecycle_policy.main(
+                        checkpoint_run_id=args.text_checkpoint_run_id,
+                        policy_status=args.text_lifecycle_status,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- auto_confirmation_reopen_text_lifecycle_policy: executed")
+
+        if args.mode == "auto-confirmation-text-boundary-policy":
+            import auto_confirmation_reopen_text_boundary_policy
+
+            print("[main] Running stage: auto_confirmation_reopen_text_boundary_policy (auto_confirmation_reopen_text_boundary_policy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_confirmation_reopen_text_boundary_policy.main(
+                        policy_key=args.text_boundary_policy,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(
+                f"- auto_confirmation_reopen_text_boundary_policy: executed, policy={args.text_boundary_policy}"
+            )
+
+        if args.mode == "auto-confirmation-text-boundary-repair-queue":
+            import auto_confirmation_reopen_text_boundary_repair_queue
+
+            print("[main] Running stage: auto_confirmation_reopen_text_boundary_repair_queue (auto_confirmation_reopen_text_boundary_repair_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_confirmation_reopen_text_boundary_repair_queue.main(
+                        boundary_policy_run_id=args.text_boundary_policy_run_id,
+                        scope=args.text_boundary_repair_scope,
+                        limit=args.text_boundary_repair_limit,
+                        include_existing=args.text_boundary_repair_include_existing,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(
+                (
+                    "- auto_confirmation_reopen_text_boundary_repair_queue: executed, "
+                    f"scope={args.text_boundary_repair_scope}"
+                )
+            )
+
+        if args.mode == "auto-confirmation-text-boundary-repair-shadow-policy":
+            import auto_confirmation_reopen_text_boundary_repair_shadow_policy
+
+            print("[main] Running stage: auto_confirmation_reopen_text_boundary_repair_shadow_policy (auto_confirmation_reopen_text_boundary_repair_shadow_policy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_confirmation_reopen_text_boundary_repair_shadow_policy.main(
+                        repair_queue_run_id=args.text_boundary_repair_queue_run_id,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- auto_confirmation_reopen_text_boundary_repair_shadow_policy: executed")
+
+        if args.mode == "auto-confirmation-text-boundary-repair-checkpoint":
+            import auto_confirmation_reopen_text_boundary_repair_checkpoint
+
+            print("[main] Running stage: auto_confirmation_reopen_text_boundary_repair_checkpoint (auto_confirmation_reopen_text_boundary_repair_checkpoint.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_confirmation_reopen_text_boundary_repair_checkpoint.main(
+                        repair_shadow_run_id=args.text_boundary_repair_shadow_run_id,
+                        min_ready_required=args.text_boundary_repair_min_ready,
+                        max_blocked_allowed=args.text_boundary_repair_max_blocked,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- auto_confirmation_reopen_text_boundary_repair_checkpoint: executed")
+
+        if args.mode == "auto-confirmation-text-boundary-repair-lifecycle-policy":
+            import auto_confirmation_reopen_text_boundary_repair_lifecycle_policy
+
+            print("[main] Running stage: auto_confirmation_reopen_text_boundary_repair_lifecycle_policy (auto_confirmation_reopen_text_boundary_repair_lifecycle_policy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_confirmation_reopen_text_boundary_repair_lifecycle_policy.main(
+                        checkpoint_run_id=args.text_boundary_repair_checkpoint_run_id,
+                        policy_status="shadow",
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- auto_confirmation_reopen_text_boundary_repair_lifecycle_policy: executed")
+
+        if args.mode == "auto-confirmation-text-boundary-repair-production-audit":
+            import auto_confirmation_reopen_text_boundary_repair_production_audit
+
+            print("[main] Running stage: auto_confirmation_reopen_text_boundary_repair_production_audit (auto_confirmation_reopen_text_boundary_repair_production_audit.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_confirmation_reopen_text_boundary_repair_production_audit.main(
+                        lifecycle_run_id=args.text_boundary_repair_lifecycle_run_id,
+                        state_run_id=args.text_boundary_repair_state_run_id,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- auto_confirmation_reopen_text_boundary_repair_production_audit: executed")
+
+        if args.mode == "auto-confirmation-text-boundary-token-policy-bridge":
+            import auto_confirmation_reopen_text_boundary_token_policy_bridge
+
+            print("[main] Running stage: auto_confirmation_reopen_text_boundary_token_policy_bridge (auto_confirmation_reopen_text_boundary_token_policy_bridge.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_confirmation_reopen_text_boundary_token_policy_bridge.main(
+                        repair_queue_run_id=args.text_boundary_repair_queue_run_id,
+                        limit=args.text_boundary_token_bridge_limit,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- auto_confirmation_reopen_text_boundary_token_policy_bridge: executed")
+
+        if args.mode == "auto-confirmation-text-boundary-token-subpolicy-shadow":
+            import auto_confirmation_reopen_text_boundary_token_subpolicy_shadow
+
+            print("[main] Running stage: auto_confirmation_reopen_text_boundary_token_subpolicy_shadow (auto_confirmation_reopen_text_boundary_token_subpolicy_shadow.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_confirmation_reopen_text_boundary_token_subpolicy_shadow.main(
+                        bridge_run_id=args.text_boundary_token_bridge_run_id,
+                        subpolicy_name=args.text_boundary_token_subpolicy,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- auto_confirmation_reopen_text_boundary_token_subpolicy_shadow: executed")
+
+        if args.mode == "auto-confirmation-text-boundary-token-subpolicy-checkpoint":
+            import auto_confirmation_reopen_text_boundary_token_subpolicy_checkpoint
+
+            print("[main] Running stage: auto_confirmation_reopen_text_boundary_token_subpolicy_checkpoint (auto_confirmation_reopen_text_boundary_token_subpolicy_checkpoint.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_confirmation_reopen_text_boundary_token_subpolicy_checkpoint.main(
+                        subpolicy_shadow_run_id=args.text_boundary_token_subpolicy_run_id,
+                        subpolicy_name=args.text_boundary_token_subpolicy,
+                        min_ready_required=args.text_boundary_token_subpolicy_min_ready,
+                        max_blocked_allowed=args.text_boundary_token_subpolicy_max_blocked,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- auto_confirmation_reopen_text_boundary_token_subpolicy_checkpoint: executed")
+
+        if args.mode == "auto-confirmation-text-boundary-token-subpolicy-lifecycle-policy":
+            import auto_confirmation_reopen_text_boundary_token_subpolicy_lifecycle_policy
+
+            print("[main] Running stage: auto_confirmation_reopen_text_boundary_token_subpolicy_lifecycle_policy (auto_confirmation_reopen_text_boundary_token_subpolicy_lifecycle_policy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_confirmation_reopen_text_boundary_token_subpolicy_lifecycle_policy.main(
+                        checkpoint_run_ids=auto_confirmation_reopen_text_boundary_token_subpolicy_lifecycle_policy.parse_ids(
+                            args.text_boundary_token_subpolicy_checkpoint_run_ids
+                        ),
+                        policy_status="shadow",
+                        min_checkpoints=args.text_boundary_token_subpolicy_lifecycle_min_checkpoints,
+                        expected_total=args.text_boundary_token_subpolicy_lifecycle_expected_total,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- auto_confirmation_reopen_text_boundary_token_subpolicy_lifecycle_policy: executed")
+
+        if args.mode == "auto-confirmation-text-boundary-token-subpolicy-production-audit":
+            import auto_confirmation_reopen_text_boundary_token_subpolicy_production_audit
+
+            print("[main] Running stage: auto_confirmation_reopen_text_boundary_token_subpolicy_production_audit (auto_confirmation_reopen_text_boundary_token_subpolicy_production_audit.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_confirmation_reopen_text_boundary_token_subpolicy_production_audit.main(
+                        lifecycle_run_id=args.text_boundary_token_subpolicy_lifecycle_run_id,
+                        state_run_id=args.text_boundary_token_subpolicy_state_run_id,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- auto_confirmation_reopen_text_boundary_token_subpolicy_production_audit: executed")
+
+        if args.mode == "controlled-token-subpolicy-apply":
+            import controlled_token_subpolicy_apply
+
+            print("[main] Running stage: controlled_token_subpolicy_apply (controlled_token_subpolicy_apply.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    controlled_token_subpolicy_apply.main(
+                        audit_run_id=args.controlled_token_subpolicy_audit_run_id,
+                        apply=args.auto_apply,
+                        reaudit=args.controlled_token_subpolicy_reaudit,
+                        create_backup=not args.apply_no_backup,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- controlled_token_subpolicy_apply: executed")
+
+        if args.mode == "same-token-boundary-repair-apply":
+            import same_token_boundary_repair_apply
+
+            print("[main] Running stage: same_token_boundary_repair_apply (same_token_boundary_repair_apply.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    same_token_boundary_repair_apply.main(
+                        audit_run_id=args.same_token_boundary_repair_audit_run_id,
+                        apply=args.auto_apply,
+                        reaudit=args.same_token_boundary_repair_reaudit,
+                        create_backup=not args.apply_no_backup,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- same_token_boundary_repair_apply: executed")
+
+        if args.mode == "select-cstring-governed-bridge-apply":
+            import select_cstring_governed_bridge_apply
+
+            print("[main] Running stage: select_cstring_governed_bridge_apply (select_cstring_governed_bridge_apply.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    select_cstring_governed_bridge_apply.main(
+                        proposal_run_id=args.select_cstring_bridge_proposal_run_id,
+                        apply=args.auto_apply,
+                        reaudit=args.select_cstring_bridge_reaudit,
+                        create_backup=not args.apply_no_backup,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- select_cstring_governed_bridge_apply: executed")
+
+        if args.mode == "auto-confirmation-weak-boundary-queue":
+            import auto_confirmation_reopen_weak_boundary_queue
+
+            print("[main] Running stage: auto_confirmation_reopen_weak_boundary_queue (auto_confirmation_reopen_weak_boundary_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    auto_confirmation_reopen_weak_boundary_queue.main(
+                        boundary=args.weak_boundary,
+                        limit=args.weak_boundary_limit if args.weak_boundary_limit > 0 else None,
+                        skip_existing=not args.weak_boundary_include_existing,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(f"- auto_confirmation_reopen_weak_boundary_queue: executed, boundary={args.weak_boundary}")
+
         if args.mode == "segment-state":
             import segment_state_snapshot
 
@@ -2070,6 +3546,8 @@ def main() -> None:
                         buckets_csv=args.token_policy_buckets,
                         risks_csv=args.token_policy_risks,
                         path_like=args.auto_path_like,
+                        pending_apply_only=args.token_policy_pending_apply_only,
+                        skip_apply_approved=args.token_policy_skip_apply_approved,
                     )
             except Exception:
                 traceback.print_exc(file=buffer)
@@ -2146,6 +3624,232 @@ def main() -> None:
             output = buffer.getvalue()
             log_lines.extend(output.splitlines())
             report_lines.append("- segment_token_tutorial_concept_candidate_policy: executed")
+
+        if args.mode == "segment-token-gender-subpolicy":
+            import segment_token_gender_subpolicy
+
+            print("[main] Running stage: segment_token_gender_subpolicy (segment_token_gender_subpolicy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_gender_subpolicy.main(
+                        policy_run_id=args.token_policy_run_id,
+                        pending_apply_only=args.token_policy_pending_apply_only,
+                        skip_apply_approved=args.token_policy_skip_apply_approved,
+                        undecided_only=args.token_policy_undecided_only,
+                        limit=args.token_overlay_limit,
+                        statuses_value=args.token_subpolicy_statuses,
+                        subtypes_value=args.token_gender_subtypes,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_gender_subpolicy: executed")
+
+        if args.mode == "segment-token-gender-split-subpolicy":
+            import segment_token_gender_split_subpolicy
+
+            print("[main] Running stage: segment_token_gender_split_subpolicy (segment_token_gender_split_subpolicy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_gender_split_subpolicy.main(
+                        policy_run_id=args.token_policy_run_id,
+                        pending_apply_only=args.token_policy_pending_apply_only,
+                        skip_apply_approved=args.token_policy_skip_apply_approved,
+                        undecided_only=args.token_policy_undecided_only,
+                        limit=args.token_overlay_limit,
+                        split_agents_value=args.token_split_agents,
+                        split_maturity_value=args.token_split_maturity,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_gender_split_subpolicy: executed")
+
+        if args.mode == "segment-token-gender-split-evidence-queue":
+            import segment_token_gender_split_evidence_queue
+
+            print("[main] Running stage: segment_token_gender_split_evidence_queue (segment_token_gender_split_evidence_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_gender_split_evidence_queue.main(
+                        policy_run_id=args.token_policy_run_id,
+                        pending_apply_only=args.token_policy_pending_apply_only,
+                        skip_apply_approved=args.token_policy_skip_apply_approved,
+                        undecided_only=args.token_policy_undecided_only,
+                        limit=args.token_overlay_limit,
+                        split_agents_value=args.token_split_agents,
+                        split_maturity_value=args.token_split_maturity,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_gender_split_evidence_queue: executed")
+
+        if args.mode == "segment-token-gender-simple-evidence-queue":
+            import segment_token_gender_simple_evidence_queue
+
+            print("[main] Running stage: segment_token_gender_simple_evidence_queue (segment_token_gender_simple_evidence_queue.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_gender_simple_evidence_queue.main(
+                        policy_run_id=args.token_policy_run_id,
+                        pending_apply_only=args.token_policy_pending_apply_only,
+                        skip_apply_approved=args.token_policy_skip_apply_approved,
+                        undecided_only=args.token_policy_undecided_only,
+                        statuses_value=args.token_subpolicy_statuses,
+                        simple_agents_value=args.token_split_agents,
+                        maturity_value=args.token_split_maturity,
+                        limit=args.token_overlay_limit,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_gender_simple_evidence_queue: executed")
+
+        if args.mode == "segment-token-gender-split-evidence-ingest":
+            import segment_token_gender_split_evidence_ingest
+
+            if not args.token_split_evidence_decisions:
+                raise RuntimeError("--token-split-evidence-decisions is required for segment-token-gender-split-evidence-ingest.")
+            if not args.token_split_evidence_source_queue:
+                raise RuntimeError("--token-split-evidence-source-queue is required for segment-token-gender-split-evidence-ingest.")
+            print("[main] Running stage: segment_token_gender_split_evidence_ingest (segment_token_gender_split_evidence_ingest.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_gender_split_evidence_ingest.main(
+                        decisions_path=args.token_split_evidence_decisions,
+                        source_queue_path=args.token_split_evidence_source_queue,
+                        policy_run_id=args.token_policy_run_id,
+                        reviewer=args.token_policy_reviewer or "codex_learning_front",
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_gender_split_evidence_ingest: executed")
+
+        if args.mode == "segment-token-gender-split-promotion-audit":
+            import segment_token_gender_split_promotion_audit
+
+            print("[main] Running stage: segment_token_gender_split_promotion_audit (segment_token_gender_split_promotion_audit.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_gender_split_promotion_audit.main(
+                        min_positive=args.token_split_min_positive,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_gender_split_promotion_audit: executed")
+
+        if args.mode == "segment-token-gender-split-guarded-policy":
+            import segment_token_gender_split_guarded_policy
+
+            print("[main] Running stage: segment_token_gender_split_guarded_policy (segment_token_gender_split_guarded_policy.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_gender_split_guarded_policy.main(
+                        policy_run_id=args.token_policy_run_id,
+                        audit_run_id=args.token_split_audit_run_id,
+                        pending_apply_only=args.token_policy_pending_apply_only,
+                        skip_apply_approved=args.token_policy_skip_apply_approved,
+                        agents_value=args.token_split_agents,
+                        limit=args.token_overlay_limit,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_gender_split_guarded_policy: executed")
+
+        if args.mode == "segment-token-gender-split-coordinator-dry-run":
+            import segment_token_gender_split_coordinator_dry_run
+
+            print("[main] Running stage: segment_token_gender_split_coordinator_dry_run (segment_token_gender_split_coordinator_dry_run.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_gender_split_coordinator_dry_run.main(
+                        guarded_run_id=args.token_split_guarded_run_id,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_gender_split_coordinator_dry_run: executed")
+
+        if args.mode == "segment-token-gender-split-bridge-dry-run":
+            import segment_token_gender_split_bridge_dry_run
+
+            print("[main] Running stage: segment_token_gender_split_bridge_dry_run (segment_token_gender_split_bridge_dry_run.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_gender_split_bridge_dry_run.main(
+                        guarded_run_id=args.token_split_guarded_run_id,
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append("- segment_token_gender_split_bridge_dry_run: executed")
 
         if args.mode == "segment-token-policy-overlay":
             import segment_token_policy_overlay
@@ -2290,6 +3994,34 @@ def main() -> None:
             output = buffer.getvalue()
             log_lines.extend(output.splitlines())
             report_lines.append(f"- segment_token_policy_decision_rebase: executed, apply={args.auto_apply}")
+
+        if args.mode == "segment-token-composite-bridge":
+            import segment_token_composite_decision_bridge
+
+            print("[main] Running stage: segment_token_composite_decision_bridge (segment_token_composite_decision_bridge.py)")
+            buffer = io.StringIO()
+            tee_stdout = Tee(sys.stdout, buffer)
+            tee_stderr = Tee(sys.stderr, buffer)
+            try:
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    segment_token_composite_decision_bridge.main(
+                        state_run_id=None,
+                        policy_run_id=args.token_policy_run_id,
+                        audit_run_id=args.composite_promotion_audit_run_id,
+                        statuses_value=args.composite_guarded_overlay_statuses,
+                        buckets_value=args.token_policy_buckets,
+                        pending_apply_only=args.token_policy_pending_apply_only,
+                        apply=args.auto_apply,
+                        reviewer=args.token_policy_reviewer or "codex_composite_bridge",
+                    )
+            except Exception:
+                traceback.print_exc(file=buffer)
+                output = buffer.getvalue()
+                log_lines.extend(output.splitlines())
+                raise
+            output = buffer.getvalue()
+            log_lines.extend(output.splitlines())
+            report_lines.append(f"- segment_token_composite_decision_bridge: executed, apply={args.auto_apply}")
 
         if args.mode == "segment-token-confirmation-fixes":
             import segment_token_policy_confirmation_fixes

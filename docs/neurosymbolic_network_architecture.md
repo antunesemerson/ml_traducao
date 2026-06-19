@@ -105,6 +105,81 @@ Exemplos atuais:
 
 Subespecialistas nascem quando existe uma assinatura clara: tokens, caminho, chave, padrao linguistico ou familia de erro.
 
+### 6.1. Microagentes por Habilidade
+
+Camada transversal.
+
+Esta e a proxima evolucao importante da rede. Nem todo problema deve ser fechado por um especialista de dominio inteiro. Um mesmo segmento pode ter varios problemas pequenos:
+
+- token de genero usado em uma palavra;
+- literal espanhol dentro de `Select_CString`;
+- espaco ou pontuacao colada em token;
+- texto curto de UI com estilo ruim;
+- trecho longo que precisa preservar semantica;
+- titulo, cultura ou religiao que exige criterio de contexto.
+
+Nessa camada, cada neuroniozinho trata uma habilidade especifica e registra sua evidencia. O segmento so fecha quando o coordenador junta as evidencias e uma auditoria final valida a composicao.
+
+Microagentes prioritarios:
+
+- `short_label_style_microagent`: revisa labels curtas, tooltips compactos e textos de UI.
+- `gender_token_microagent`: valida e sugere uso de `ES_OA`, `ES_AO`, `ES_ElLa`, `Select_CString` e parentes.
+- `dynamic_ck3_expression_microagent`: entende expressoes dinamicas do CK3 e literals internos.
+- `spanish_residual_microagent`: detecta e repara espanhol residual real, sem confundir nome de pacote com erro.
+- `surface_boundary_microagent`: corrige espacos, pontuacao e fronteiras visiveis ao redor de tokens.
+- `long_text_composer`: coordena reparos em textos longos onde varios microagentes podem atuar ao mesmo tempo.
+
+### 6.2. Issue Ledger
+
+Camada de memoria operacional por problema.
+
+Em vez de salvar apenas `segmento -> decisao`, a rede deve passar a salvar `segmento -> problema -> evidencia -> reparo -> validacao`.
+
+Cada item do ledger deve guardar:
+
+- `segment_id`;
+- familia do problema;
+- trecho ou assinatura detectada;
+- agente responsavel;
+- proposta de reparo, quando houver;
+- impacto em tokens;
+- validacao local;
+- decisao humana, se revisado;
+- resultado do coordenador;
+- status de promocao ou descarte.
+
+Isso permite que varios microagentes trabalhem no mesmo segmento sem pisar uns nos outros.
+
+Checkpoint inicial do ledger em 2026-06-03:
+
+- 13.736 segmentos pendentes foram inspecionados;
+- 25.422 issues foram materializadas;
+- media de 1,85 issues por segmento pendente;
+- 100% dos pendentes receberam pelo menos uma linha no ledger;
+- `Needs output apply = 0`, portanto o backlog atual nao e fila de escrita: e fila de decisao, reparo, politica e validacao.
+
+Principais familias detectadas:
+
+- `short_label_style_microagent`: 10.442 issues;
+- `dynamic_ck3_expression_microagent`: 5.137 issues;
+- `gender_token_microagent`: 3.300 issues;
+- `semantic_review_router`: 1.689 issues;
+- `autofix_unknown_microagent`: 1.237 issues;
+- `spanish_residual_microagent`: 834 issues;
+- `title_policy_microagent`: 772 issues.
+
+A consequencia pratica e que a rede nao deve exigir que um especialista feche o segmento inteiro sozinho. O fluxo correto passa a ser:
+
+```text
+segmento pendente
+  -> ledger de issues
+  -> microagentes por habilidade
+  -> especialistas de dominio como contexto
+  -> compositor/coordenador
+  -> auditoria final
+  -> fechamento ou fila humana
+```
+
 ### 7. Politicas Guardadas
 
 Camada de promocao segura.
@@ -190,6 +265,71 @@ Um modelo pode ter confianca alta e ainda assim ser bloqueado. Isso e esperado.
 - Guard profile novo `same_scope_es_oa_to_es_xa_article_candidate`: promovido.
 - Aplicacao automatica pelo gate: desligada.
 
+## Estado de Referencia em 2026-06-03
+
+A producao ja zerou `needs_apply`, entao o gargalo principal deixou de ser escrita de output e passou a ser reabertura por qualidade.
+
+Snapshot de referencia:
+
+- Segment-state run: 139.
+- Segmentos ativos: 288.100.
+- Fechados/consolidados: 274.364 (95,23%).
+- Pendentes operacionais: 13.736 (4,77%).
+- `needs_apply`: 0.
+- Quase toda a pendencia: `reopen_auto_confirmed_autofix`.
+
+Diagnostico de arquitetura das pendencias:
+
+- `short_label_style_microagent`: 5.720 primarios.
+- `gender_token_microagent`: 3.297 primarios.
+- `dynamic_ck3_expression_microagent`: 1.963 primarios.
+- `autofix_unknown_microagent`: 1.232 primarios.
+- `title_policy_microagent`: 750 primarios.
+- `religion_semantic_microagent`: 322 primarios.
+- `culture_semantic_microagent`: 223 primarios.
+- `spanish_residual_microagent`: 181 primarios.
+
+Conclusao: criar mais especialistas por arquivo ou dominio tera retorno limitado. A rede precisa amadurecer microagentes transversais e um compositor final.
+
+Checkpoint de subclusterizacao em 2026-06-03:
+
+- A fila `micro_short_label_style` provou que um microagente ainda pode ficar amplo demais.
+- A subclusterizacao separou 120 itens em positivos limpos, textos longos/dinamicos, reparos de espanhol residual, contexto de dominio, token/genero e reparo de superficie.
+- Apenas 32 itens ficaram como candidatos positivos limpos; 1 candidato aparentemente positivo foi removido por `space_before_punctuation`.
+- Depois de ingerir os 32 positivos e treinar o macro 330, a cobertura em um recorte de 50.000 segmentos ficou igual ao modelo anterior.
+- Conclusao: a evidencia positiva deve alimentar memoria e subpoliticas guardadas, mas a cobertura operacional precisa de coordenador/subpolitica, nao apenas de re-treino macro.
+
+Primeira subpolitica de release positivo em 2026-06-03:
+
+- `short_label_positive_release` converteu os 32 positivos limpos do `micro_short_label_style` em um release shadow.
+- Resultado do run 1:
+  - candidatos: 32;
+  - liberados shadow: 32;
+  - bloqueados: 0;
+  - ganho estimado: 32 segmentos;
+  - relatorio: `reports/20260603_191452_808576_issue_short_label_positive_release.txt`.
+- Papel na rede:
+  - o macro continua aprendendo com os exemplos, mas nao precisa ser promovido para este ganho estreito;
+  - o coordenador pode consultar subpoliticas guardadas quando o issue ledger identifica um padrao conhecido;
+  - a subpolitica nao corrige texto completo: ela valida uma decisao especifica do neuronio de short label e preserva os gates deterministas;
+  - uma etapa futura de checkpoint/allowlist pode transformar shadow em fechamento de lifecycle, se continuar sem bloqueios.
+
+Checkpoint guardado posterior:
+
+- `short_label_positive_release_guarded_checkpoint_v1` revalidou o release shadow contra confirmacao e segment-state atuais.
+- Resultado:
+  - checkpoint run id: 1;
+  - status: `ready_for_guarded_lifecycle_policy`;
+  - promotion status: `guarded_candidate`;
+  - allowlistados: 32/32;
+  - bloqueados: 0;
+  - `production_release_allowed=0`.
+- Papel na rede:
+  - cria uma camada clara entre "evidencia positiva" e "consumo por producao";
+  - permite ao coordenador trabalhar com allowlists estreitas e auditaveis;
+  - evita que o macro precise carregar sozinho toda a autoridade de fechamento;
+  - preserva stale-check: mudanca futura no texto ou estado invalida a confianca antiga.
+
 ## Como Saber se a Estrategia Esta Funcionando
 
 Sinais bons:
@@ -218,4 +358,3 @@ Sinais de ajuste:
 - separar laboratorio de release;
 - criar subagentes apenas quando houver impacto real;
 - testar transformer local apenas depois que dados, rotas e guardrails estiverem maduros.
-

@@ -2,44 +2,68 @@
 
 # CK3 PT-BR Localization Pipeline
 
-Sistema local/offline para traduzir, revisar e refinar a localização do Crusader Kings III para Português do Brasil, gerando um mod que substitui o pacote espanhol.
-
-O projeto preserva a estrutura dos arquivos `.yml` do CK3 e combina:
-
-- SQLite como base de conhecimento local;
-- memória de tradução;
-- validações determinísticas;
-- revisão humana;
-- aprendizado local;
-- relatórios e dashboard de acompanhamento.
+Sistema local/offline para traduzir, revisar e refinar a localizacao do Crusader Kings III para Portugues do Brasil. O projeto preserva a estrutura dos arquivos `.yml` do CK3, combina regras deterministicas, memoria confiavel, revisao humana e aprendizado local, e gera um mod que substitui o pacote espanhol.
 
 ## Estrutura
 
 ```text
-source/      fontes do jogo e referência histórica local
-output/      saída final do mod
-pipeline/    scripts e orquestração do pipeline
+source/      fontes do jogo e referencia historica local
+output/      saida final do mod
+pipeline/    scripts e orquestracao do pipeline
 memory/      banco SQLite, modelos e dados locais
-docs/        documentação estável do projeto
-prompts/     prompts temporários ignorados pelo Git
-reports/     relatórios gerados
-logs/        logs de execução
-dashboard/   dashboard local de análise
+docs/        documentacao estavel do projeto
+prompts/     prompts temporarios ignorados pelo Git
+reports/     relatorios gerados
+logs/        logs de execucao
+dashboard/   interface local, backend e dashboards
 ```
 
-`source/`, `output/`, `memory/`, `reports/`, `logs/` e `prompts/` não são versionados.
+`source/`, `output/`, `memory/`, `reports/`, `logs/` e `prompts/` sao dados locais/temporarios e nao sao o foco do versionamento Git.
 
-## Documentação
+## Instalacao
 
-- [Guia de comandos](docs/commands.md)
+Python:
+
+```powershell
+pip install -r requirements.txt
+```
+
+Dashboard:
+
+```powershell
+cd dashboard
+npm install
+npm run build
+```
+
+## Start Local
+
+Backend:
+
+```powershell
+python dashboard/backend.py --host 127.0.0.1 --port 8765
+```
+
+Frontend estatico:
+
+```powershell
+python -m http.server 5173 --bind 127.0.0.1 -d dashboard/dist
+```
+
+URLs:
+
+```text
+http://127.0.0.1:5173
+http://127.0.0.1:8765/api/dashboard
+```
+
+## Aprendizado
+
+O projeto aprende com revisoes humanas, feedback de jogo, memoria confiavel e checkpoints locais. Para estudar a arquitetura, comece por:
+
 - [Aprendizado guiado do ML local](docs/ml_guided_learning.md)
-- [Documentação da pasta docs](docs/README.md)
-- [Exceções contextuais de localização](docs/contextual_localization_exceptions.md)
-- [Tokens de gênero PT-BR](docs/gender_tokens_ptbr.md)
-
-## Segurança
-
-O ML não deve aplicar traduções livremente nem alterar `output/spanish` sem uma etapa explícita de aplicação.
+- [Arquitetura neuro-simbolica](docs/neurosymbolic_network_architecture.md)
+- [Arquitetura do fluxo de producao](docs/production_flow_architecture.md)
 
 Regra de ouro:
 
@@ -48,6 +72,3 @@ ML recomenda.
 Regras bloqueiam.
 Humano confirma.
 ```
-
-Tokens, placeholders, comandos CK3 e confirmações humanas manuais devem ser preservados.
-

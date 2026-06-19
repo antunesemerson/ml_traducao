@@ -87,7 +87,7 @@ def suggested_labels(row: dict[str, Any]) -> list[str]:
         return ["needs_subpolicy", "manual_token_rewrite_required", "reject_policy_candidate"]
     if bucket == "candidate_tutorial_concept_exception":
         return ["needs_subpolicy", "accept_policy_candidate", "reject_policy_candidate"]
-    if bucket == "guarded_pronoun_english_aligned_subpolicy":
+    if bucket.startswith("guarded_"):
         return ["accept_policy_candidate", "encoding_cleanup_required", "needs_subpolicy"]
     if bucket.startswith("review_"):
         return ["needs_subpolicy", "reject_policy_candidate", "keep_manual_exception_only"]
@@ -153,6 +153,53 @@ def suggested_route(row: dict[str, Any]) -> tuple[str, str]:
         return (
             "gender_pronoun_english_aligned_subpolicy",
             "Pronoun token change accepted by guarded evidence; keep text-hygiene rows blocked from apply until cleanup.",
+        )
+    if bucket == "guarded_select_cstring_ui_subpolicy":
+        return (
+            "select_cstring_dynamic_context_review",
+            "Select_CString change is already guarded by the active composite gate; keep routed to the dynamic Select_CString specialist.",
+        )
+    if bucket == "guarded_mixed_name_gender_subpolicy":
+        return (
+            "mixed_token_change_review",
+            "Mixed name/gender token change is already guarded by the active composite gate; keep routed to the mixed-token specialist.",
+        )
+    if bucket == "guarded_glossary_label_translation_subpolicy":
+        return (
+            "mixed_token_change_review",
+            "Glossary label translation is already guarded by same-key evidence; keep routed to mixed-token/glossary specialist evidence.",
+        )
+    if bucket == "guarded_tutorial_concept_exception_subpolicy":
+        return (
+            "tutorial_concept_exception_subpolicy_review",
+            "Tutorial concept exception is already guarded by the active composite gate; keep routed to tutorial concept review.",
+        )
+    if bucket == "guarded_token_added_english_reference_subpolicy":
+        return (
+            "token_added_review",
+            "Token addition is already guarded by English-reference evidence; keep routed to token-added review.",
+        )
+    if bucket in {
+        "guarded_pronoun_form_swap_subpolicy",
+        "guarded_gender_form_swap_subpolicy",
+        "guarded_gender_article_removal_subpolicy",
+    }:
+        return (
+            "gender_token_subspecialist_review",
+            "Gender/pronoun token change is already guarded by the active composite gate; keep routed to gender-token specialist evidence.",
+        )
+    if bucket in {
+        "guarded_name_form_style_subpolicy",
+        "guarded_token_style_modifier_subpolicy",
+    }:
+        return (
+            "mixed_token_change_review",
+            "Name/style token change is already guarded by the active composite gate; keep routed to mixed-token specialist evidence.",
+        )
+    if bucket == "guarded_dynamic_scope_neutralization_subpolicy":
+        return (
+            "dynamic_scope_token_review",
+            "Dynamic scope neutralization is already guarded by the active composite gate; keep routed to scope-aware token specialist review.",
         )
     if bucket == "review_gender_token_change":
         return (

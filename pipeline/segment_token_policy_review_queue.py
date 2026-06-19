@@ -100,9 +100,16 @@ def fetch_rows(
     buckets: list[str],
     risks: list[str],
     path_like: str | None,
+    pending_apply_only: bool,
+    skip_apply_approved: bool,
 ) -> list[dict[str, Any]]:
     params: list[Any] = [policy_run_id]
     where = ["i.run_id = ?"]
+    joins = [
+        "JOIN source_segments s ON s.id = i.segment_id",
+        "LEFT JOIN output_segments o ON o.segment_id = i.segment_id",
+        "LEFT JOIN segment_confirmations sc ON sc.segment_id = i.segment_id",
+    ]
 
     if buckets:
         placeholders = ", ".join("?" for _ in buckets)
@@ -115,6 +122,25 @@ def fetch_rows(
     if path_like:
         where.append("i.relative_path LIKE ?")
         params.append(path_like)
+    if pending_apply_only:
+        joins.append(
+            """
+        JOIN segment_state_items state_i
+          ON state_i.segment_id = i.segment_id
+         AND state_i.run_id = i.state_run_id
+         AND state_i.apply_state = 'needs_apply'
+            """
+        )
+    if skip_apply_approved:
+        joins.append(
+            """
+        LEFT JOIN segment_token_policy_decisions current_d
+          ON current_d.policy_run_id = i.run_id
+         AND current_d.policy_item_id = i.id
+         AND current_d.approved_for_apply = 1
+            """
+        )
+        where.append("current_d.id IS NULL")
 
     rows = conn.execute(
         f"""
@@ -146,9 +172,7 @@ def fetch_rows(
             sc.confirmation_label,
             sc.locked
         FROM segment_token_policy_items i
-        JOIN source_segments s ON s.id = i.segment_id
-        LEFT JOIN output_segments o ON o.segment_id = i.segment_id
-        LEFT JOIN segment_confirmations sc ON sc.segment_id = i.segment_id
+        {" ".join(joins)}
         WHERE {" AND ".join(where)}
         ORDER BY
             CASE i.risk_level
@@ -213,6 +237,8 @@ def write_outputs(
     selected_rows: list[dict[str, Any]],
     per_bucket: int,
     limit: int | None,
+    pending_apply_only: bool,
+    skip_apply_approved: bool,
 ) -> tuple[Path, Path, Path]:
     reports_dir = db.project_path(settings["reports_dir"])
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -327,6 +353,8 @@ def write_outputs(
         f"Selected for review: {len(selected)}",
         f"Per bucket: {per_bucket}",
         f"Global limit: {limit if limit is not None else 'none'}",
+        f"Pending apply only: {pending_apply_only}",
+        f"Skip apply-approved decisions: {skip_apply_approved}",
         "",
         "Decision labels for human review:",
         "- accept_policy_candidate: pattern can feed a future safe policy after enough similar samples.",
@@ -374,6 +402,8 @@ def main(
     buckets_csv: str | None = None,
     risks_csv: str | None = None,
     path_like: str | None = None,
+    pending_apply_only: bool = False,
+    skip_apply_approved: bool = False,
 ) -> None:
     settings = db.load_settings()
     buckets = split_csv(buckets_csv)
@@ -387,6 +417,8 @@ def main(
             buckets=buckets,
             risks=risks,
             path_like=path_like,
+            pending_apply_only=pending_apply_only,
+            skip_apply_approved=skip_apply_approved,
         )
     selected = select_balanced(rows, per_bucket=per_bucket, limit=limit)
     txt_path, csv_path, jsonl_path = write_outputs(
@@ -396,6 +428,8 @@ def main(
         selected_rows=selected,
         per_bucket=per_bucket,
         limit=limit,
+        pending_apply_only=pending_apply_only,
+        skip_apply_approved=skip_apply_approved,
     )
 
     print("[segment_token_policy_review_queue] Queue generated")
@@ -416,6 +450,8 @@ if __name__ == "__main__":
     parser.add_argument("--buckets", default=None)
     parser.add_argument("--risks", default=None)
     parser.add_argument("--path-like", default=None)
+    parser.add_argument("--pending-apply-only", action="store_true")
+    parser.add_argument("--skip-apply-approved", action="store_true")
     args = parser.parse_args()
     main(
         policy_run_id=args.policy_run_id,
@@ -424,4 +460,6 @@ if __name__ == "__main__":
         buckets_csv=args.buckets,
         risks_csv=args.risks,
         path_like=args.path_like,
+        pending_apply_only=args.pending_apply_only,
+        skip_apply_approved=args.skip_apply_approved,
     )
