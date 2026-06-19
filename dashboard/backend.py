@@ -16,10 +16,16 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = ROOT / "memory" / "translation_engine.sqlite"
+NEURAL_VISUALIZATION_FILE = ROOT / "docs" / "neurosymbolic_network_visualization.json"
 LEARNING_STATUS_FILE = ROOT / "memory" / "learning_status.json"
+BASE_DASHBOARD_CACHE_FILE = ROOT / "memory" / "dashboard_cache.json"
 PRODUCTION_RUN_STATUS_FILE = ROOT / "memory" / "production_run_status.json"
 PRODUCTION_SNAPSHOT_ROOT = ROOT / "memory" / "production_snapshots"
+PRODUCTION_SNAPSHOT_ARCHIVE_ROOT = ROOT / "memory" / "production_snapshot_archives"
 PRODUCTION_RUN_LOCK = threading.Lock()
+DASHBOARD_CACHE_LOCK = threading.Lock()
+DASHBOARD_CACHE: dict[str, Any] | None = None
+ACTIVE_DB_PATH = DEFAULT_DB
 TRAINING_LOCK_FILES = (
     ROOT / "memory" / "training_in_progress.flag",
     ROOT / "memory" / "training_lock.json",
@@ -70,6 +76,3452 @@ def _pct(part: Any, total: Any) -> float:
     if total_num <= 0:
         return 0.0
     return round((_num(part) / total_num) * 100, 2)
+
+
+def _latest_segment_state_run_id(con: sqlite3.Connection) -> int:
+    if not _table_exists(con, "segment_state_runs"):
+        return 0
+    row = _one(
+        con,
+        """
+        SELECT id
+        FROM segment_state_runs
+        WHERE finished_at IS NOT NULL
+          AND total_segments > 1000
+        ORDER BY finished_at DESC, id DESC
+        LIMIT 1
+        """,
+    )
+    return _int(row.get("id"))
+
+
+def _pending_taxonomy_payload(con: sqlite3.Connection, run_id: int | None = None) -> dict[str, Any]:
+    if not (_table_exists(con, "segment_state_runs") and _table_exists(con, "segment_state_items")):
+        return {
+            "run_id": 0,
+            "closed_consolidated": 0,
+            "actionable_pending": 0,
+            "actionable_pending_without_bridge": 0,
+            "model_suspicion_watch": 0,
+            "governed_bridge_pending": 0,
+            "raw_pending": 0,
+            "learning_backlog": 0,
+            "needs_apply": 0,
+            "select_cstring": {"total": 0, "closed": 0, "pending": 0},
+            "select_cstring_segment_bridge": {
+                "proposal_run_id": 0,
+                "candidates": 0,
+                "closed": 0,
+                "blocked": 0,
+                "review_required": 0,
+                "production_release_allowed": 0,
+            },
+            "select_cstring_segment_bridge_proposal_run_id": 0,
+            "select_cstring_segment_bridge_candidates": 0,
+            "select_cstring_segment_bridge_closed": 0,
+            "select_cstring_segment_bridge_blocked": 0,
+            "select_cstring_segment_bridge_review_required": 0,
+            "select_cstring_segment_bridge_production_release_allowed": 0,
+            "short_semantic_tier1_dry_run_id": 0,
+            "short_semantic_tier1_dry_run_ids": "",
+            "short_semantic_tier1_candidates": 0,
+            "short_semantic_tier1_allowed": 0,
+            "short_semantic_tier1_blocked": 0,
+            "short_semantic_tier1_closed_by_bridge": 0,
+            "short_semantic_tier1_blocked_by_bridge": 0,
+            "short_semantic_tier1_allowed_rate": 0,
+            "short_semantic_tier1_checkpoint_precision_proxy": 0,
+            "short_semantic_tier1_status": "unavailable",
+            "semantic_short_label_pair_bridge_dry_run_id": 0,
+            "semantic_short_label_pair_bridge_checkpoint_id": 0,
+            "semantic_short_label_pair_bridge_allowed": 0,
+            "semantic_short_label_pair_bridge_closed": 0,
+            "semantic_short_label_pair_bridge_blocked": 0,
+            "semantic_short_label_pair_bridge_precision_proxy": 0,
+            "semantic_short_label_pair_bridge_status": "unavailable",
+            "semantic_short_label_pair_guard_profiles": "",
+            "semantic_short_label_pair_dry_run_ids": "",
+            "semantic_short_label_pair_checkpoint_ids": "",
+            "semantic_short_label_pair_allowed_total": 0,
+            "semantic_short_label_pair_closed": 0,
+            "semantic_short_label_pair_blocked": 0,
+            "semantic_short_label_pair_balanced_audit_safe": 0,
+            "semantic_short_label_pair_balanced_audit_total": 0,
+            "short_label_compact_ui_semantic_companion_bridge_run_ids": "",
+            "short_label_compact_ui_semantic_companion_candidates": 0,
+            "short_label_compact_ui_semantic_companion_closed": 0,
+            "short_label_compact_ui_semantic_companion_blocked": 0,
+            "short_label_compact_ui_semantic_companion_status": "unavailable",
+            "short_label_semantic_pair_bridge_run_ids": "",
+            "short_label_semantic_pair_review_jsonl": "",
+            "short_label_semantic_pair_candidates": 0,
+            "short_label_semantic_pair_closed": 0,
+            "short_label_semantic_pair_blocked": 0,
+            "short_label_semantic_pair_closed_quote_fragment": 0,
+            "short_label_semantic_pair_closed_nominal_label": 0,
+            "short_label_semantic_pair_closed_short_phrase": 0,
+            "short_label_semantic_pair_closed_compact_option": 0,
+            "short_label_semantic_pair_status": "unavailable",
+            "short_label_semantic_load_tips_bridge_run_ids": "",
+            "short_label_semantic_load_tips_candidates": 0,
+            "short_label_semantic_load_tips_ready": 0,
+            "short_label_semantic_load_tips_closed": 0,
+            "short_label_semantic_load_tips_blocked": 0,
+            "short_label_semantic_load_tips_status": "unavailable",
+            "dynamic_ck3_pattern_checkpoint_run_ids": "",
+            "dynamic_ck3_pattern_candidates": 0,
+            "dynamic_ck3_pattern_allowed": 0,
+            "dynamic_ck3_pattern_closed": 0,
+            "dynamic_ck3_pattern_blocked": 0,
+            "dynamic_ck3_pattern_status": "unavailable",
+            "dynamic_ck3_pattern_subpolicies_closed": {},
+            "short_label_dynamic_delegate_checkpoint_run_ids": "",
+            "short_label_dynamic_delegate_allowed_rows": 0,
+            "short_label_dynamic_delegate_distinct_allowed_segments": 0,
+            "short_label_dynamic_delegate_already_closed_before": 0,
+            "short_label_dynamic_delegate_pending_before": 0,
+            "short_label_dynamic_delegate_closed": 0,
+            "short_label_dynamic_delegate_blocked": 0,
+            "short_label_dynamic_delegate_net_gain": 0,
+            "short_label_dynamic_delegate_status": "unavailable",
+            "short_label_dynamic_delegate_kind_split": {},
+            "short_label_single_issue_system_tooltip_checkpoint_run_ids": "",
+            "short_label_single_issue_system_tooltip_allowed_rows": 0,
+            "short_label_single_issue_system_tooltip_distinct_allowed_segments": 0,
+            "short_label_single_issue_system_tooltip_already_closed_before": 0,
+            "short_label_single_issue_system_tooltip_pending_before": 0,
+            "short_label_single_issue_system_tooltip_closed": 0,
+            "short_label_single_issue_system_tooltip_blocked": 0,
+            "short_label_single_issue_system_tooltip_net_gain": 0,
+            "short_label_single_issue_system_tooltip_status": "unavailable",
+            "short_label_single_issue_system_tooltip_profile_split": {},
+            "short_label_single_issue_system_tooltip_path_split": {},
+            "short_label_tokenized_ui_checkpoint_run_ids": "",
+            "short_label_tokenized_ui_candidates": 0,
+            "short_label_tokenized_ui_allowed": 0,
+            "short_label_tokenized_ui_closed": 0,
+            "short_label_tokenized_ui_blocked": 0,
+            "short_label_tokenized_ui_status": "unavailable",
+            "semantic_short_label_blocked_surface_checkpoint_id": 0,
+            "semantic_short_label_blocked_surface_dry_run_id": 0,
+            "semantic_short_label_blocked_surface_row_guard_profile": "",
+            "semantic_short_label_blocked_surface_allowed": 0,
+            "semantic_short_label_blocked_surface_closed": 0,
+            "semantic_short_label_blocked_surface_blocked": 0,
+            "semantic_short_label_blocked_surface_precision_proxy": 0,
+            "semantic_short_label_blocked_surface_status": "unavailable",
+            "event_dialogue_option_checkpoint_id": 0,
+            "event_dialogue_option_checkpoint_ids": "",
+            "event_dialogue_option_dry_run_id": 0,
+            "event_dialogue_option_row_guard_profile": "",
+            "event_dialogue_option_allowed": 0,
+            "event_dialogue_option_closed": 0,
+            "event_dialogue_option_blocked": 0,
+            "event_dialogue_option_precision_proxy": 0,
+            "event_dialogue_option_status": "unavailable",
+            "event_context_composer_checkpoint_id": 0,
+            "event_context_composer_dry_run_id": 0,
+            "event_context_composer_row_guard_profile": "",
+            "event_context_composer_allowed": 0,
+            "event_context_composer_closed": 0,
+            "event_context_composer_blocked": 0,
+            "event_context_composer_precision_proxy": 0,
+            "event_context_composer_status": "unavailable",
+            "event_dialogue_boundary_checkpoint_run_ids": "",
+            "event_dialogue_boundary_queue_run_ids": "",
+            "event_dialogue_boundary_candidates": 0,
+            "event_dialogue_boundary_allowed": 0,
+            "event_dialogue_boundary_closed": 0,
+            "event_dialogue_boundary_blocked": 0,
+            "event_dialogue_boundary_checkpoint_blocked": 0,
+            "event_dialogue_boundary_status": "unavailable",
+            "event_outcome_boundary_checkpoint_run_ids": "",
+            "event_outcome_boundary_queue_run_ids": "",
+            "event_outcome_boundary_candidates": 0,
+            "event_outcome_boundary_allowed": 0,
+            "event_outcome_boundary_closed": 0,
+            "event_outcome_boundary_blocked": 0,
+            "event_outcome_boundary_status": "unavailable",
+            "event_context_sentence_boundary_checkpoint_run_ids": "",
+            "event_context_sentence_boundary_queue_run_ids": "",
+            "event_context_sentence_boundary_candidates": 0,
+            "event_context_sentence_boundary_allowed": 0,
+            "event_context_sentence_boundary_closed": 0,
+            "event_context_sentence_boundary_blocked": 0,
+            "event_context_sentence_boundary_checkpoint_blocked": 0,
+            "event_context_sentence_boundary_status": "unavailable",
+            "autofix_unknown_surface_semantic_coverage_run_ids": "",
+            "autofix_unknown_surface_semantic_candidates": 0,
+            "autofix_unknown_surface_semantic_closed": 0,
+            "autofix_unknown_surface_semantic_blocked": 0,
+            "autofix_unknown_surface_semantic_status": "unavailable",
+            "semantic_short_label_blocked_surface_batch_checkpoint_ids": "",
+            "semantic_short_label_blocked_surface_batch_dry_run_id": 0,
+            "semantic_short_label_blocked_surface_batch_allowed": 0,
+            "semantic_short_label_blocked_surface_batch_closed": 0,
+            "semantic_short_label_blocked_surface_batch_blocked": 0,
+            "semantic_short_label_blocked_surface_batch_already_closed": 0,
+            "semantic_short_label_blocked_surface_batch_status": "unavailable",
+            "semantic_short_label_blocked_surface_batch_by_agent": [],
+            "semantic_short_label_blocked_surface_run36_checkpoint_ids": "",
+            "semantic_short_label_blocked_surface_run36_dry_run_id": 0,
+            "semantic_short_label_blocked_surface_run36_allowed": 0,
+            "semantic_short_label_blocked_surface_run36_closed": 0,
+            "semantic_short_label_blocked_surface_run36_blocked": 0,
+            "semantic_short_label_blocked_surface_run36_already_closed": 0,
+            "semantic_short_label_blocked_surface_run36_status": "unavailable",
+            "semantic_short_label_blocked_surface_run36_by_agent": [],
+            "autofix_unknown_event_composition_checkpoint_id": 0,
+            "autofix_unknown_event_composition_bridge_run_id": 0,
+            "autofix_unknown_event_composition_allowed": 0,
+            "autofix_unknown_event_composition_ready": 0,
+            "autofix_unknown_event_composition_partial": 0,
+            "autofix_unknown_event_composition_blocked": 0,
+            "autofix_unknown_event_composition_closed": 0,
+            "autofix_unknown_event_composition_status": "unavailable",
+            "autofix_unknown_event_semantic_companion_bridge_run_id": 0,
+            "autofix_unknown_event_semantic_companion_event_bridge_run_id": 0,
+            "autofix_unknown_event_semantic_companion_candidates": 0,
+            "autofix_unknown_event_semantic_companion_ready": 0,
+            "autofix_unknown_event_semantic_companion_closed": 0,
+            "autofix_unknown_event_semantic_companion_blocked": 0,
+            "autofix_unknown_event_semantic_companion_status": "unavailable",
+            "autofix_unknown_semantic_companion_building_checkpoint_run_ids": "",
+            "autofix_unknown_semantic_companion_building_candidates": 0,
+            "autofix_unknown_semantic_companion_building_allowed": 0,
+            "autofix_unknown_semantic_companion_building_closed": 0,
+            "autofix_unknown_semantic_companion_building_blocked": 0,
+            "autofix_unknown_semantic_companion_building_status": "unavailable",
+            "autofix_unknown_semantic_companion_rule_effect_checkpoint_run_ids": "",
+            "autofix_unknown_semantic_companion_rule_effect_candidates": 0,
+            "autofix_unknown_semantic_companion_rule_effect_allowed": 0,
+            "autofix_unknown_semantic_companion_rule_effect_closed": 0,
+            "autofix_unknown_semantic_companion_rule_effect_blocked": 0,
+            "autofix_unknown_semantic_companion_rule_effect_status": "unavailable",
+            "event_surface_short_label_companion_bridge_run_id": 0,
+            "event_surface_short_label_companion_candidates": 0,
+            "event_surface_short_label_companion_ready": 0,
+            "event_surface_short_label_companion_closed": 0,
+            "event_surface_short_label_companion_blocked": 0,
+            "event_surface_short_label_companion_estimated_closed_gain": 0,
+            "event_surface_short_label_companion_status": "unavailable",
+            "autofix_unknown_surface_proposal_run_ids": "",
+            "autofix_unknown_surface_checkpoint_run_ids": "",
+            "autofix_unknown_surface_ready_items_total": 0,
+            "autofix_unknown_surface_ready_segments_distinct": 0,
+            "autofix_unknown_surface_closed": 0,
+            "autofix_unknown_surface_blocked": 0,
+            "autofix_unknown_surface_status": "unavailable",
+            "autofix_unknown_domain_guarded_checkpoint_run_ids": "",
+            "autofix_unknown_domain_guarded_allowed_rows": 0,
+            "autofix_unknown_domain_guarded_distinct_allowed_segments": 0,
+            "autofix_unknown_domain_guarded_already_closed_before": 0,
+            "autofix_unknown_domain_guarded_pending_before": 0,
+            "autofix_unknown_domain_guarded_closed": 0,
+            "autofix_unknown_domain_guarded_blocked": 0,
+            "autofix_unknown_domain_guarded_net_gain": 0,
+            "autofix_unknown_domain_guarded_status": "unavailable",
+            "autofix_unknown_domain_guarded_subpolicy_split": {},
+            "autofix_unknown_domain_guarded_cluster_split": {},
+            "autofix_unknown_domain_guarded_reviewed_checkpoint_run_ids": "",
+            "autofix_unknown_domain_guarded_reviewed_candidates": 0,
+            "autofix_unknown_domain_guarded_reviewed_closed": 0,
+            "autofix_unknown_domain_guarded_reviewed_blocked": 0,
+            "autofix_unknown_domain_guarded_reviewed_status": "unavailable",
+            "short_label_pure_no_token_semantic_bridge_run_id": 0,
+            "short_label_pure_no_token_semantic_coverage_run_id": 0,
+            "short_label_pure_no_token_semantic_checkpoint_id": 0,
+            "short_label_pure_no_token_semantic_ready": 0,
+            "short_label_pure_no_token_semantic_blocked": 0,
+            "short_label_pure_no_token_semantic_closed": 0,
+            "short_label_pure_no_token_semantic_estimated_closed_gain": 0,
+            "short_label_pure_no_token_semantic_status": "unavailable",
+            "short_label_pure_no_token_domain_checkpoint_id": 0,
+            "short_label_pure_no_token_domain_shadow_run_id": 0,
+            "short_label_pure_no_token_domain_candidates": 0,
+            "short_label_pure_no_token_domain_allowed": 0,
+            "short_label_pure_no_token_domain_closed": 0,
+            "short_label_pure_no_token_domain_blocked": 0,
+            "short_label_pure_no_token_domain_status": "unavailable",
+            "gender_longform_false_reopen_checkpoint_id": 0,
+            "gender_longform_false_reopen_candidates": 0,
+            "gender_longform_false_reopen_closed": 0,
+            "gender_longform_false_reopen_blocked": 0,
+            "gender_longform_false_reopen_routes_closed": {},
+            "gender_longform_false_reopen_status": "unavailable",
+            "distribution": [],
+        }
+    run_id = _int(run_id) or _latest_segment_state_run_id(con)
+    if not run_id:
+        return {
+            "run_id": 0,
+            "closed_consolidated": 0,
+            "actionable_pending": 0,
+            "actionable_pending_without_bridge": 0,
+            "model_suspicion_watch": 0,
+            "governed_bridge_pending": 0,
+            "raw_pending": 0,
+            "learning_backlog": 0,
+            "needs_apply": 0,
+            "select_cstring": {"total": 0, "closed": 0, "pending": 0},
+            "select_cstring_segment_bridge": {
+                "proposal_run_id": 0,
+                "candidates": 0,
+                "closed": 0,
+                "blocked": 0,
+                "review_required": 0,
+                "production_release_allowed": 0,
+            },
+            "select_cstring_segment_bridge_proposal_run_id": 0,
+            "select_cstring_segment_bridge_candidates": 0,
+            "select_cstring_segment_bridge_closed": 0,
+            "select_cstring_segment_bridge_blocked": 0,
+            "select_cstring_segment_bridge_review_required": 0,
+            "select_cstring_segment_bridge_production_release_allowed": 0,
+            "short_semantic_tier1_dry_run_id": 0,
+            "short_semantic_tier1_dry_run_ids": "",
+            "short_semantic_tier1_candidates": 0,
+            "short_semantic_tier1_allowed": 0,
+            "short_semantic_tier1_blocked": 0,
+            "short_semantic_tier1_closed_by_bridge": 0,
+            "short_semantic_tier1_blocked_by_bridge": 0,
+            "short_semantic_tier1_allowed_rate": 0,
+            "short_semantic_tier1_checkpoint_precision_proxy": 0,
+            "short_semantic_tier1_status": "unavailable",
+            "semantic_short_label_pair_bridge_dry_run_id": 0,
+            "semantic_short_label_pair_bridge_checkpoint_id": 0,
+            "semantic_short_label_pair_bridge_allowed": 0,
+            "semantic_short_label_pair_bridge_closed": 0,
+            "semantic_short_label_pair_bridge_blocked": 0,
+            "semantic_short_label_pair_bridge_precision_proxy": 0,
+            "semantic_short_label_pair_bridge_status": "unavailable",
+            "semantic_short_label_pair_guard_profiles": "",
+            "semantic_short_label_pair_dry_run_ids": "",
+            "semantic_short_label_pair_checkpoint_ids": "",
+            "semantic_short_label_pair_allowed_total": 0,
+            "semantic_short_label_pair_closed": 0,
+            "semantic_short_label_pair_blocked": 0,
+            "semantic_short_label_pair_balanced_audit_safe": 0,
+            "semantic_short_label_pair_balanced_audit_total": 0,
+            "short_label_compact_ui_semantic_companion_bridge_run_ids": "",
+            "short_label_compact_ui_semantic_companion_candidates": 0,
+            "short_label_compact_ui_semantic_companion_closed": 0,
+            "short_label_compact_ui_semantic_companion_blocked": 0,
+            "short_label_compact_ui_semantic_companion_status": "unavailable",
+            "short_label_semantic_pair_bridge_run_ids": "",
+            "short_label_semantic_pair_review_jsonl": "",
+            "short_label_semantic_pair_candidates": 0,
+            "short_label_semantic_pair_closed": 0,
+            "short_label_semantic_pair_blocked": 0,
+            "short_label_semantic_pair_closed_quote_fragment": 0,
+            "short_label_semantic_pair_closed_nominal_label": 0,
+            "short_label_semantic_pair_closed_short_phrase": 0,
+            "short_label_semantic_pair_closed_compact_option": 0,
+            "short_label_semantic_pair_status": "unavailable",
+            "short_label_semantic_load_tips_bridge_run_ids": "",
+            "short_label_semantic_load_tips_candidates": 0,
+            "short_label_semantic_load_tips_ready": 0,
+            "short_label_semantic_load_tips_closed": 0,
+            "short_label_semantic_load_tips_blocked": 0,
+            "short_label_semantic_load_tips_status": "unavailable",
+            "dynamic_ck3_pattern_checkpoint_run_ids": "",
+            "dynamic_ck3_pattern_candidates": 0,
+            "dynamic_ck3_pattern_allowed": 0,
+            "dynamic_ck3_pattern_closed": 0,
+            "dynamic_ck3_pattern_blocked": 0,
+            "dynamic_ck3_pattern_status": "unavailable",
+            "dynamic_ck3_pattern_subpolicies_closed": {},
+            "short_label_dynamic_delegate_checkpoint_run_ids": "",
+            "short_label_dynamic_delegate_allowed_rows": 0,
+            "short_label_dynamic_delegate_distinct_allowed_segments": 0,
+            "short_label_dynamic_delegate_already_closed_before": 0,
+            "short_label_dynamic_delegate_pending_before": 0,
+            "short_label_dynamic_delegate_closed": 0,
+            "short_label_dynamic_delegate_blocked": 0,
+            "short_label_dynamic_delegate_net_gain": 0,
+            "short_label_dynamic_delegate_status": "unavailable",
+            "short_label_dynamic_delegate_kind_split": {},
+            "short_label_single_issue_system_tooltip_checkpoint_run_ids": "",
+            "short_label_single_issue_system_tooltip_allowed_rows": 0,
+            "short_label_single_issue_system_tooltip_distinct_allowed_segments": 0,
+            "short_label_single_issue_system_tooltip_already_closed_before": 0,
+            "short_label_single_issue_system_tooltip_pending_before": 0,
+            "short_label_single_issue_system_tooltip_closed": 0,
+            "short_label_single_issue_system_tooltip_blocked": 0,
+            "short_label_single_issue_system_tooltip_net_gain": 0,
+            "short_label_single_issue_system_tooltip_status": "unavailable",
+            "short_label_single_issue_system_tooltip_profile_split": {},
+            "short_label_single_issue_system_tooltip_path_split": {},
+            "short_label_tokenized_ui_checkpoint_run_ids": "",
+            "short_label_tokenized_ui_candidates": 0,
+            "short_label_tokenized_ui_allowed": 0,
+            "short_label_tokenized_ui_closed": 0,
+            "short_label_tokenized_ui_blocked": 0,
+            "short_label_tokenized_ui_status": "unavailable",
+            "semantic_short_label_blocked_surface_checkpoint_id": 0,
+            "semantic_short_label_blocked_surface_dry_run_id": 0,
+            "semantic_short_label_blocked_surface_row_guard_profile": "",
+            "semantic_short_label_blocked_surface_allowed": 0,
+            "semantic_short_label_blocked_surface_closed": 0,
+            "semantic_short_label_blocked_surface_blocked": 0,
+            "semantic_short_label_blocked_surface_precision_proxy": 0,
+            "semantic_short_label_blocked_surface_status": "unavailable",
+            "event_dialogue_option_checkpoint_id": 0,
+            "event_dialogue_option_checkpoint_ids": "",
+            "event_dialogue_option_dry_run_id": 0,
+            "event_dialogue_option_row_guard_profile": "",
+            "event_dialogue_option_allowed": 0,
+            "event_dialogue_option_closed": 0,
+            "event_dialogue_option_blocked": 0,
+            "event_dialogue_option_precision_proxy": 0,
+            "event_dialogue_option_status": "unavailable",
+            "event_context_composer_checkpoint_id": 0,
+            "event_context_composer_dry_run_id": 0,
+            "event_context_composer_row_guard_profile": "",
+            "event_context_composer_allowed": 0,
+            "event_context_composer_closed": 0,
+            "event_context_composer_blocked": 0,
+            "event_context_composer_precision_proxy": 0,
+            "event_context_composer_status": "unavailable",
+            "event_dialogue_boundary_checkpoint_run_ids": "",
+            "event_dialogue_boundary_queue_run_ids": "",
+            "event_dialogue_boundary_candidates": 0,
+            "event_dialogue_boundary_allowed": 0,
+            "event_dialogue_boundary_closed": 0,
+            "event_dialogue_boundary_blocked": 0,
+            "event_dialogue_boundary_checkpoint_blocked": 0,
+            "event_dialogue_boundary_status": "unavailable",
+            "event_outcome_boundary_checkpoint_run_ids": "",
+            "event_outcome_boundary_queue_run_ids": "",
+            "event_outcome_boundary_candidates": 0,
+            "event_outcome_boundary_allowed": 0,
+            "event_outcome_boundary_closed": 0,
+            "event_outcome_boundary_blocked": 0,
+            "event_outcome_boundary_status": "unavailable",
+            "event_context_sentence_boundary_checkpoint_run_ids": "",
+            "event_context_sentence_boundary_queue_run_ids": "",
+            "event_context_sentence_boundary_candidates": 0,
+            "event_context_sentence_boundary_allowed": 0,
+            "event_context_sentence_boundary_closed": 0,
+            "event_context_sentence_boundary_blocked": 0,
+            "event_context_sentence_boundary_checkpoint_blocked": 0,
+            "event_context_sentence_boundary_status": "unavailable",
+            "autofix_unknown_surface_semantic_coverage_run_ids": "",
+            "autofix_unknown_surface_semantic_candidates": 0,
+            "autofix_unknown_surface_semantic_closed": 0,
+            "autofix_unknown_surface_semantic_blocked": 0,
+            "autofix_unknown_surface_semantic_status": "unavailable",
+            "semantic_short_label_blocked_surface_batch_checkpoint_ids": "",
+            "semantic_short_label_blocked_surface_batch_dry_run_id": 0,
+            "semantic_short_label_blocked_surface_batch_allowed": 0,
+            "semantic_short_label_blocked_surface_batch_closed": 0,
+            "semantic_short_label_blocked_surface_batch_blocked": 0,
+            "semantic_short_label_blocked_surface_batch_already_closed": 0,
+            "semantic_short_label_blocked_surface_batch_status": "unavailable",
+            "semantic_short_label_blocked_surface_batch_by_agent": [],
+            "semantic_short_label_blocked_surface_run36_checkpoint_ids": "",
+            "semantic_short_label_blocked_surface_run36_dry_run_id": 0,
+            "semantic_short_label_blocked_surface_run36_allowed": 0,
+            "semantic_short_label_blocked_surface_run36_closed": 0,
+            "semantic_short_label_blocked_surface_run36_blocked": 0,
+            "semantic_short_label_blocked_surface_run36_already_closed": 0,
+            "semantic_short_label_blocked_surface_run36_status": "unavailable",
+            "semantic_short_label_blocked_surface_run36_by_agent": [],
+            "autofix_unknown_event_composition_checkpoint_id": 0,
+            "autofix_unknown_event_composition_bridge_run_id": 0,
+            "autofix_unknown_event_composition_allowed": 0,
+            "autofix_unknown_event_composition_ready": 0,
+            "autofix_unknown_event_composition_partial": 0,
+            "autofix_unknown_event_composition_blocked": 0,
+            "autofix_unknown_event_composition_closed": 0,
+            "autofix_unknown_event_composition_status": "unavailable",
+            "autofix_unknown_event_semantic_companion_bridge_run_id": 0,
+            "autofix_unknown_event_semantic_companion_event_bridge_run_id": 0,
+            "autofix_unknown_event_semantic_companion_candidates": 0,
+            "autofix_unknown_event_semantic_companion_ready": 0,
+            "autofix_unknown_event_semantic_companion_closed": 0,
+            "autofix_unknown_event_semantic_companion_blocked": 0,
+            "autofix_unknown_event_semantic_companion_status": "unavailable",
+            "autofix_unknown_semantic_companion_building_checkpoint_run_ids": "",
+            "autofix_unknown_semantic_companion_building_candidates": 0,
+            "autofix_unknown_semantic_companion_building_allowed": 0,
+            "autofix_unknown_semantic_companion_building_closed": 0,
+            "autofix_unknown_semantic_companion_building_blocked": 0,
+            "autofix_unknown_semantic_companion_building_status": "unavailable",
+            "autofix_unknown_semantic_companion_rule_effect_checkpoint_run_ids": "",
+            "autofix_unknown_semantic_companion_rule_effect_candidates": 0,
+            "autofix_unknown_semantic_companion_rule_effect_allowed": 0,
+            "autofix_unknown_semantic_companion_rule_effect_closed": 0,
+            "autofix_unknown_semantic_companion_rule_effect_blocked": 0,
+            "autofix_unknown_semantic_companion_rule_effect_status": "unavailable",
+            "event_surface_short_label_companion_bridge_run_id": 0,
+            "event_surface_short_label_companion_candidates": 0,
+            "event_surface_short_label_companion_ready": 0,
+            "event_surface_short_label_companion_closed": 0,
+            "event_surface_short_label_companion_blocked": 0,
+            "event_surface_short_label_companion_estimated_closed_gain": 0,
+            "event_surface_short_label_companion_status": "unavailable",
+            "autofix_unknown_surface_proposal_run_ids": "",
+            "autofix_unknown_surface_checkpoint_run_ids": "",
+            "autofix_unknown_surface_ready_items_total": 0,
+            "autofix_unknown_surface_ready_segments_distinct": 0,
+            "autofix_unknown_surface_closed": 0,
+            "autofix_unknown_surface_blocked": 0,
+            "autofix_unknown_surface_status": "unavailable",
+            "autofix_unknown_domain_guarded_checkpoint_run_ids": "",
+            "autofix_unknown_domain_guarded_allowed_rows": 0,
+            "autofix_unknown_domain_guarded_distinct_allowed_segments": 0,
+            "autofix_unknown_domain_guarded_already_closed_before": 0,
+            "autofix_unknown_domain_guarded_pending_before": 0,
+            "autofix_unknown_domain_guarded_closed": 0,
+            "autofix_unknown_domain_guarded_blocked": 0,
+            "autofix_unknown_domain_guarded_net_gain": 0,
+            "autofix_unknown_domain_guarded_status": "unavailable",
+            "autofix_unknown_domain_guarded_subpolicy_split": {},
+            "autofix_unknown_domain_guarded_cluster_split": {},
+            "autofix_unknown_domain_guarded_reviewed_checkpoint_run_ids": "",
+            "autofix_unknown_domain_guarded_reviewed_candidates": 0,
+            "autofix_unknown_domain_guarded_reviewed_closed": 0,
+            "autofix_unknown_domain_guarded_reviewed_blocked": 0,
+            "autofix_unknown_domain_guarded_reviewed_status": "unavailable",
+            "short_label_pure_no_token_semantic_bridge_run_id": 0,
+            "short_label_pure_no_token_semantic_coverage_run_id": 0,
+            "short_label_pure_no_token_semantic_checkpoint_id": 0,
+            "short_label_pure_no_token_semantic_ready": 0,
+            "short_label_pure_no_token_semantic_blocked": 0,
+            "short_label_pure_no_token_semantic_closed": 0,
+            "short_label_pure_no_token_semantic_estimated_closed_gain": 0,
+            "short_label_pure_no_token_semantic_status": "unavailable",
+            "short_label_pure_no_token_domain_checkpoint_id": 0,
+            "short_label_pure_no_token_domain_shadow_run_id": 0,
+            "short_label_pure_no_token_domain_candidates": 0,
+            "short_label_pure_no_token_domain_allowed": 0,
+            "short_label_pure_no_token_domain_closed": 0,
+            "short_label_pure_no_token_domain_blocked": 0,
+            "short_label_pure_no_token_domain_status": "unavailable",
+            "gender_longform_false_reopen_checkpoint_id": 0,
+            "gender_longform_false_reopen_candidates": 0,
+            "gender_longform_false_reopen_closed": 0,
+            "gender_longform_false_reopen_blocked": 0,
+            "gender_longform_false_reopen_routes_closed": {},
+            "gender_longform_false_reopen_status": "unavailable",
+            "distribution": [],
+        }
+
+    summary = _one(
+        con,
+        """
+        SELECT
+          total_segments,
+          closed_count,
+          pending_count,
+          output_apply_pending_count
+        FROM segment_state_runs
+        WHERE id = ?
+        """,
+        (run_id,),
+    )
+    bridge_tables_ready = _table_exists(con, "ml_issue_select_cstring_governed_bridge_proposal_items")
+    if bridge_tables_ready:
+        select_cstring = _one(
+            con,
+            """
+            WITH latest_proposal AS (
+              SELECT MAX(run_id) AS run_id
+              FROM ml_issue_select_cstring_governed_bridge_proposal_items
+            )
+            SELECT
+              COUNT(*) AS total,
+              SUM(CASE WHEN s.final_state = 'closed_auto_confirmed_select_cstring_governed_bridge' THEN 1 ELSE 0 END) AS closed,
+              SUM(CASE WHEN s.state_group = 'pending' THEN 1 ELSE 0 END) AS pending
+            FROM ml_issue_select_cstring_governed_bridge_proposal_items p
+            JOIN latest_proposal latest ON latest.run_id = p.run_id
+            JOIN segment_state_items s
+              ON s.segment_id = p.segment_id
+             AND s.run_id = ?
+            """,
+            (run_id,),
+        )
+        bridge_pending_sql = """
+            SELECT p.segment_id
+            FROM ml_issue_select_cstring_governed_bridge_proposal_items p
+            JOIN (
+              SELECT MAX(run_id) AS run_id
+              FROM ml_issue_select_cstring_governed_bridge_proposal_items
+            ) latest ON latest.run_id = p.run_id
+            JOIN segment_state_items ps
+              ON ps.segment_id = p.segment_id
+             AND ps.run_id = ?
+            WHERE ps.state_group = 'pending'
+        """
+    else:
+        select_cstring = {"total": 0, "closed": 0, "pending": 0}
+        bridge_pending_sql = "SELECT NULL AS segment_id WHERE 1 = 0"
+
+    segment_bridge_tables_ready = (
+        _table_exists(con, "ml_issue_select_cstring_segment_lifecycle_bridge_proposal_runs")
+        and _table_exists(con, "ml_issue_select_cstring_segment_lifecycle_bridge_proposal_items")
+    )
+    if segment_bridge_tables_ready:
+        select_cstring_segment_bridge = _one(
+            con,
+            """
+            WITH proposal AS (
+              SELECT *
+              FROM ml_issue_select_cstring_segment_lifecycle_bridge_proposal_runs
+              WHERE finished_at IS NOT NULL
+                AND bridge_status = 'proposal_shadow'
+              ORDER BY finished_at DESC, id DESC
+              LIMIT 1
+            ),
+            item_counts AS (
+              SELECT
+                COUNT(*) AS candidates,
+                SUM(CASE WHEN s.final_state = 'closed_auto_confirmed_select_cstring_segment_lifecycle_bridge' THEN 1 ELSE 0 END) AS closed
+              FROM ml_issue_select_cstring_segment_lifecycle_bridge_proposal_items p
+              JOIN proposal ON proposal.id = p.run_id
+              LEFT JOIN segment_state_items s
+                ON s.segment_id = p.segment_id
+               AND s.run_id = ?
+            )
+            SELECT
+              proposal.id AS proposal_run_id,
+              item_counts.candidates,
+              item_counts.closed,
+              MAX(item_counts.candidates - item_counts.closed - COALESCE(proposal.review_required_count, 0), 0) AS blocked,
+              COALESCE(proposal.review_required_count, 0) AS review_required,
+              COALESCE(proposal.production_release_allowed, 0) AS production_release_allowed
+            FROM proposal, item_counts
+            """,
+            (run_id,),
+        )
+    else:
+        select_cstring_segment_bridge = {
+            "proposal_run_id": 0,
+            "candidates": 0,
+            "closed": 0,
+            "blocked": 0,
+            "review_required": 0,
+            "production_release_allowed": 0,
+        }
+
+    short_semantic_tables_ready = (
+        _table_exists(con, "ml_issue_short_label_semantic_guarded_expansion_runs")
+        and _table_exists(con, "ml_issue_short_label_semantic_guarded_expansion_items")
+    )
+    if short_semantic_tables_ready:
+        short_semantic_tier1 = _one(
+            con,
+            """
+            WITH expansion AS (
+              SELECT *
+              FROM ml_issue_short_label_semantic_guarded_expansion_runs
+              WHERE finished_at IS NOT NULL
+                AND policy_status = 'shadow'
+                AND production_release_allowed = 0
+                AND allowed_count > 0
+            ),
+            closed AS (
+              SELECT COUNT(*) AS closed_by_bridge
+              FROM ml_issue_short_label_semantic_guarded_expansion_items item
+              JOIN expansion ON expansion.id = item.run_id
+              JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state = 'closed_auto_confirmed_short_label_semantic_tier1_guarded_composition'
+            ),
+            checkpoint AS (
+              SELECT
+                ROUND(AVG(
+                  CASE
+                    WHEN decision_count > 0
+                      THEN 100.0 * composition_ready_count / decision_count
+                    ELSE 0
+                  END
+                ), 2) AS precision_proxy
+              FROM ml_issue_short_label_semantic_recheck_checkpoint_runs
+              WHERE id IN (SELECT checkpoint_run_id FROM expansion)
+            )
+            SELECT
+              MAX(expansion.id) AS dry_run_id,
+              GROUP_CONCAT(DISTINCT expansion.id) AS dry_run_ids,
+              SUM(expansion.candidate_count) AS candidates,
+              SUM(expansion.allowed_count) AS allowed,
+              SUM(expansion.blocked_count) AS blocked,
+              COALESCE(closed.closed_by_bridge, 0) AS closed_by_bridge,
+              CASE
+                WHEN SUM(expansion.candidate_count) - COALESCE(closed.closed_by_bridge, 0) > 0
+                  THEN SUM(expansion.candidate_count) - COALESCE(closed.closed_by_bridge, 0)
+                ELSE 0
+              END AS blocked_by_bridge,
+              CASE
+                WHEN SUM(expansion.candidate_count) > 0
+                  THEN ROUND(100.0 * SUM(expansion.allowed_count) / SUM(expansion.candidate_count), 2)
+                ELSE 0
+              END AS allowed_rate,
+              COALESCE(checkpoint.precision_proxy, 0) AS checkpoint_precision_proxy,
+              CASE
+                WHEN COALESCE(closed.closed_by_bridge, 0) > 0 THEN 'shadow_lifecycle_bridge_cumulative'
+                WHEN SUM(expansion.allowed_count) > 0 THEN 'shadow_ready_cumulative'
+                ELSE 'shadow_blocked'
+              END AS status
+            FROM expansion, closed, checkpoint
+            """,
+            (run_id,),
+        )
+    else:
+        short_semantic_tier1 = {
+            "dry_run_id": 0,
+            "candidates": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "closed_by_bridge": 0,
+            "blocked_by_bridge": 0,
+            "allowed_rate": 0,
+            "checkpoint_precision_proxy": 0,
+            "status": "unavailable",
+        }
+
+    semantic_pair_tables_ready = (
+        _table_exists(con, "ml_issue_semantic_short_label_pair_guarded_expansion_runs")
+        and _table_exists(con, "ml_issue_semantic_short_label_pair_guarded_expansion_items")
+    )
+    if semantic_pair_tables_ready:
+        semantic_short_label_pair_bridge = _one(
+            con,
+            """
+            WITH expansion AS (
+              SELECT *
+              FROM ml_issue_semantic_short_label_pair_guarded_expansion_runs
+              WHERE finished_at IS NOT NULL
+                AND policy_name = 'semantic_short_label_pair_guarded_expansion_shadow'
+                AND policy_status = 'dry_run'
+                AND allowed_count > 0
+                AND (
+                      id = (
+                        SELECT MAX(ui_run.id)
+                        FROM ml_issue_semantic_short_label_pair_guarded_expansion_runs ui_run
+                        WHERE ui_run.finished_at IS NOT NULL
+                          AND ui_run.policy_name = 'semantic_short_label_pair_guarded_expansion_shadow'
+                          AND ui_run.policy_status = 'dry_run'
+                          AND ui_run.guard_profile = 'ui_only_v10'
+                          AND ui_run.allowed_count > 0
+                      )
+                   OR (
+                          id = 37
+                      AND guard_profile = 'balanced_v1'
+                      AND opportunity_run_id = 12
+                      AND ledger_run_id = 25
+                      AND checkpoint_run_id = 18
+                      AND allowed_count = 2955
+                      AND blocked_count = 2394
+                   )
+                )
+            ),
+            item_eval AS (
+              SELECT
+                item.segment_id,
+                CASE
+                  WHEN state.final_state = 'closed_auto_confirmed_semantic_short_label_pair_guarded_lifecycle'
+                    THEN 'closed'
+                  ELSE 'blocked'
+                END AS bridge_result
+              FROM ml_issue_semantic_short_label_pair_guarded_expansion_items item
+              JOIN expansion ON expansion.id = item.run_id
+              LEFT JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+            ),
+            segment_eval AS (
+              SELECT
+                segment_id,
+                CASE
+                  WHEN SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) > 0 THEN 'closed'
+                  ELSE 'blocked'
+                END AS bridge_result
+              FROM item_eval
+              GROUP BY segment_id
+            ),
+            closed AS (
+              SELECT
+                SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed_by_bridge,
+                SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked_by_bridge
+              FROM segment_eval
+            ),
+            checkpoint AS (
+              SELECT
+                CASE
+                  WHEN SUM(decision_count) > 0
+                    THEN ROUND(100.0 * SUM(safe_decision_count) / SUM(decision_count), 2)
+                  ELSE 0
+                END AS precision_proxy
+              FROM ml_issue_semantic_short_label_pair_checkpoint_runs
+              WHERE id IN (SELECT checkpoint_run_id FROM expansion WHERE checkpoint_run_id IS NOT NULL)
+            )
+            SELECT
+              MAX(expansion.id) AS dry_run_id,
+              GROUP_CONCAT(DISTINCT expansion.id) AS dry_run_ids,
+              MAX(expansion.checkpoint_run_id) AS checkpoint_id,
+              GROUP_CONCAT(DISTINCT expansion.guard_profile) AS guard_profiles,
+              GROUP_CONCAT(DISTINCT expansion.checkpoint_run_id) AS checkpoint_ids,
+              SUM(expansion.candidate_count) AS candidates,
+              SUM(expansion.allowed_count) AS allowed,
+              COALESCE(closed.closed_by_bridge, 0) AS closed,
+              CASE
+                WHEN SUM(expansion.candidate_count) - COALESCE(closed.closed_by_bridge, 0) > 0
+                  THEN SUM(expansion.candidate_count) - COALESCE(closed.closed_by_bridge, 0)
+                ELSE 0
+              END AS blocked,
+              COALESCE(closed.blocked_by_bridge, 0) AS blocked_segments,
+              COALESCE(checkpoint.precision_proxy, 0) AS precision_proxy,
+              CASE
+                WHEN COALESCE(closed.closed_by_bridge, 0) > 0 THEN 'shadow_lifecycle_bridge_cumulative_balanced'
+                WHEN SUM(expansion.allowed_count) > 0 THEN 'shadow_ready_cumulative_balanced'
+                ELSE 'shadow_blocked'
+              END AS status
+            FROM expansion, closed, checkpoint
+            """,
+            (run_id,),
+        )
+    else:
+        semantic_short_label_pair_bridge = {
+            "dry_run_id": 0,
+            "checkpoint_id": 0,
+            "allowed": 0,
+            "closed": 0,
+            "blocked": 0,
+            "precision_proxy": 0,
+            "status": "unavailable",
+        }
+
+    short_label_compact_ui_semantic_companion_tables_ready = (
+        _table_exists(con, "ml_issue_short_label_compact_ui_semantic_companion_bridge_runs")
+        and _table_exists(con, "ml_issue_short_label_compact_ui_semantic_companion_bridge_items")
+    )
+    if short_label_compact_ui_semantic_companion_tables_ready:
+        short_label_compact_ui_semantic_companion = _one(
+            con,
+            """
+            WITH bridge AS (
+              SELECT *
+              FROM ml_issue_short_label_compact_ui_semantic_companion_bridge_runs
+              WHERE finished_at IS NOT NULL
+                AND ready_count > 0
+            ),
+            all_raw AS (
+              SELECT
+                item.*,
+                ROW_NUMBER() OVER (
+                  PARTITION BY item.segment_id
+                  ORDER BY item.run_id ASC, item.id ASC
+                ) AS segment_rank
+              FROM ml_issue_short_label_compact_ui_semantic_companion_bridge_items item
+              JOIN bridge
+                ON bridge.id = item.run_id
+               AND bridge.source_short_label_checkpoint_run_id = item.source_short_label_checkpoint_run_id
+               AND bridge.source_companion_decision_run_id = item.source_companion_decision_run_id
+               AND bridge.source_companion_queue_run_id = item.source_companion_queue_run_id
+               AND bridge.source_ledger_run_id = item.source_ledger_run_id
+            ),
+            all_items AS (
+              SELECT *
+              FROM all_raw
+              WHERE segment_rank = 1
+            ),
+            closed AS (
+              SELECT COUNT(*) AS closed_by_bridge
+              FROM all_items item
+              JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state = 'closed_auto_confirmed_short_label_compact_ui_semantic_companion_lifecycle'
+            )
+            SELECT
+              (SELECT GROUP_CONCAT(id) FROM bridge) AS bridge_run_ids,
+              (SELECT COUNT(*) FROM all_items) AS candidates,
+              COALESCE(closed.closed_by_bridge, 0) AS closed,
+              MAX((SELECT COUNT(*) FROM all_items) - COALESCE(closed.closed_by_bridge, 0), 0) AS blocked,
+              CASE
+                WHEN COALESCE(closed.closed_by_bridge, 0) > 0 THEN 'shadow_lifecycle_bridge_cumulative'
+                WHEN (SELECT COUNT(*) FROM all_items WHERE bridge_status = 'ready_for_lifecycle_bridge') > 0 THEN 'shadow_ready_cumulative'
+                ELSE 'unavailable'
+              END AS status
+            FROM closed
+            """,
+            (run_id,),
+        )
+    else:
+        short_label_compact_ui_semantic_companion = {
+            "bridge_run_ids": "",
+            "candidates": 0,
+            "closed": 0,
+            "blocked": 0,
+            "status": "unavailable",
+        }
+
+    short_label_semantic_pair_tables_ready = (
+        _table_exists(con, "ml_short_label_semantic_pair_lifecycle_bridge_runs")
+        and _table_exists(con, "ml_short_label_semantic_pair_lifecycle_bridge_items")
+    )
+    if short_label_semantic_pair_tables_ready:
+        short_label_semantic_pair = _one(
+            con,
+            """
+            WITH bridge AS (
+              SELECT *
+              FROM ml_short_label_semantic_pair_lifecycle_bridge_runs
+              WHERE finished_at IS NOT NULL
+            ),
+            all_raw AS (
+              SELECT
+                item.*,
+                ROW_NUMBER() OVER (
+                  PARTITION BY item.segment_id
+                  ORDER BY
+                    CASE item.bridge_status WHEN 'ready_for_lifecycle_bridge' THEN 0 ELSE 1 END,
+                    item.run_id ASC,
+                    item.id ASC
+                ) AS segment_rank
+              FROM ml_short_label_semantic_pair_lifecycle_bridge_items item
+              JOIN bridge ON bridge.id = item.run_id
+            ),
+            all_items AS (
+              SELECT *
+              FROM all_raw
+              WHERE segment_rank = 1
+            ),
+            closed AS (
+              SELECT
+                COUNT(*) AS closed_total,
+                SUM(CASE WHEN item.decision = 'lifecycle_ready_quote_fragment' THEN 1 ELSE 0 END) AS closed_quote_fragment,
+                SUM(CASE WHEN item.decision = 'lifecycle_ready_nominal_label' THEN 1 ELSE 0 END) AS closed_nominal_label,
+                SUM(CASE WHEN item.decision = 'lifecycle_ready_short_phrase' THEN 1 ELSE 0 END) AS closed_short_phrase,
+                SUM(CASE WHEN item.decision = 'lifecycle_ready_compact_option' THEN 1 ELSE 0 END) AS closed_compact_option
+              FROM all_items item
+              JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state IN (
+                'closed_auto_confirmed_short_label_semantic_pair_quote_fragment_lifecycle',
+                'closed_auto_confirmed_short_label_semantic_pair_nominal_label_lifecycle',
+                'closed_auto_confirmed_short_label_semantic_pair_short_phrase_lifecycle',
+                'closed_auto_confirmed_short_label_semantic_pair_compact_option_lifecycle'
+              )
+            )
+            SELECT
+              (SELECT GROUP_CONCAT(id) FROM bridge) AS bridge_run_ids,
+              (SELECT GROUP_CONCAT(DISTINCT reviewed_jsonl) FROM bridge) AS review_jsonl,
+              (SELECT COUNT(*) FROM all_items) AS candidates,
+              COALESCE(closed.closed_total, 0) AS closed,
+              MAX((SELECT COUNT(*) FROM all_items) - COALESCE(closed.closed_total, 0), 0) AS blocked,
+              COALESCE(closed.closed_quote_fragment, 0) AS closed_quote_fragment,
+              COALESCE(closed.closed_nominal_label, 0) AS closed_nominal_label,
+              COALESCE(closed.closed_short_phrase, 0) AS closed_short_phrase,
+              COALESCE(closed.closed_compact_option, 0) AS closed_compact_option,
+              CASE
+                WHEN COALESCE(closed.closed_total, 0) > 0 THEN 'shadow_lifecycle_bridge_cumulative'
+                WHEN (SELECT COUNT(*) FROM all_items WHERE bridge_status = 'ready_for_lifecycle_bridge') > 0 THEN 'shadow_ready_cumulative'
+                ELSE 'unavailable'
+              END AS status
+            FROM closed
+            """,
+            (run_id,),
+        )
+    else:
+        short_label_semantic_pair = {
+            "bridge_run_ids": "",
+            "review_jsonl": "",
+            "candidates": 0,
+            "closed": 0,
+            "blocked": 0,
+            "closed_quote_fragment": 0,
+            "closed_nominal_label": 0,
+            "closed_short_phrase": 0,
+            "closed_compact_option": 0,
+            "status": "unavailable",
+        }
+
+    short_label_semantic_load_tips_tables_ready = (
+        _table_exists(con, "ml_short_label_semantic_load_tips_lifecycle_bridge_runs")
+        and _table_exists(con, "ml_short_label_semantic_load_tips_lifecycle_bridge_items")
+    )
+    if short_label_semantic_load_tips_tables_ready:
+        short_label_semantic_load_tips = _one(
+            con,
+            """
+            WITH bridge AS (
+              SELECT *
+              FROM ml_short_label_semantic_load_tips_lifecycle_bridge_runs
+              WHERE finished_at IS NOT NULL
+                AND ready_count > 0
+            ),
+            all_raw AS (
+              SELECT
+                item.*,
+                ROW_NUMBER() OVER (
+                  PARTITION BY item.segment_id
+                  ORDER BY
+                    CASE item.bridge_status WHEN 'ready_for_lifecycle_bridge' THEN 0 ELSE 1 END,
+                    item.run_id ASC,
+                    item.id ASC
+                ) AS segment_rank
+              FROM ml_short_label_semantic_load_tips_lifecycle_bridge_items item
+              JOIN bridge ON bridge.id = item.run_id
+            ),
+            all_items AS (
+              SELECT *
+              FROM all_raw
+              WHERE segment_rank = 1
+            ),
+            closed AS (
+              SELECT COUNT(*) AS closed_total
+              FROM all_items item
+              JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state = 'closed_auto_confirmed_short_label_semantic_load_tips_lifecycle'
+            )
+            SELECT
+              (SELECT GROUP_CONCAT(id) FROM bridge) AS bridge_run_ids,
+              (SELECT COUNT(*) FROM all_items) AS candidates,
+              (SELECT COUNT(*) FROM all_items WHERE bridge_status = 'ready_for_lifecycle_bridge') AS ready,
+              COALESCE(closed.closed_total, 0) AS closed,
+              MAX((SELECT COUNT(*) FROM all_items) - COALESCE(closed.closed_total, 0), 0) AS blocked,
+              CASE
+                WHEN COALESCE(closed.closed_total, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN (SELECT COUNT(*) FROM all_items WHERE bridge_status = 'ready_for_lifecycle_bridge') > 0 THEN 'shadow_ready'
+                ELSE 'unavailable'
+              END AS status
+            FROM closed
+            """,
+            (run_id,),
+        )
+    else:
+        short_label_semantic_load_tips = {
+            "bridge_run_ids": "",
+            "candidates": 0,
+            "ready": 0,
+            "closed": 0,
+            "blocked": 0,
+            "status": "unavailable",
+        }
+
+    blocked_surface_tables_ready = (
+        _table_exists(con, "ml_issue_semantic_short_label_blocked_surface_checkpoint_runs")
+        and _table_exists(con, "ml_issue_semantic_short_label_blocked_surface_checkpoint_items")
+    )
+    if blocked_surface_tables_ready:
+        semantic_short_label_blocked_surface = _one(
+            con,
+            """
+            WITH checkpoint AS (
+              SELECT *
+              FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND id = 2
+                AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+                AND policy_status = 'shadow'
+                AND row_guard_profile = 'strict_label_v1'
+                AND dry_run_id = 31
+                AND allowed_count = 4065
+              LIMIT 1
+            ),
+            closed AS (
+              SELECT COUNT(DISTINCT item.segment_id) AS closed_by_bridge
+              FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+              JOIN checkpoint ON checkpoint.id = item.run_id
+              JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state = 'closed_auto_confirmed_semantic_short_label_blocked_surface_lifecycle'
+            )
+            SELECT
+              checkpoint.id AS checkpoint_id,
+              checkpoint.dry_run_id,
+              checkpoint.row_guard_profile,
+              checkpoint.allowed_count AS allowed,
+              COALESCE(closed.closed_by_bridge, 0) AS closed,
+              MAX(checkpoint.candidate_count - COALESCE(closed.closed_by_bridge, 0), 0) AS blocked,
+              100.0 AS precision_proxy,
+              CASE
+                WHEN COALESCE(closed.closed_by_bridge, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN checkpoint.allowed_count > 0 THEN 'shadow_ready'
+                ELSE 'shadow_blocked'
+              END AS status
+            FROM checkpoint, closed
+            """,
+            (run_id,),
+        )
+    else:
+        semantic_short_label_blocked_surface = {
+            "checkpoint_id": 0,
+            "dry_run_id": 0,
+            "row_guard_profile": "",
+            "allowed": 0,
+            "closed": 0,
+            "blocked": 0,
+            "precision_proxy": 0,
+            "status": "unavailable",
+        }
+
+    if blocked_surface_tables_ready:
+        event_dialogue_option = _one(
+            con,
+            """
+            WITH checkpoint AS (
+              SELECT *
+              FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+                AND policy_status = 'shadow'
+                AND row_guard_profile = 'legacy'
+                AND agent_key = 'micro_event_dialogue_option'
+                AND (
+                      (id = 3 AND dry_run_id = 32 AND allowed_count = 734)
+                   OR (id = 5 AND dry_run_id = 34 AND allowed_count = 3878)
+                )
+            ),
+            closed AS (
+              SELECT COUNT(DISTINCT item.segment_id) AS closed_by_bridge
+              FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+              JOIN checkpoint ON checkpoint.id = item.run_id
+              JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state = 'closed_auto_confirmed_event_dialogue_option_lifecycle'
+            )
+            SELECT
+              MAX(checkpoint.id) AS checkpoint_id,
+              GROUP_CONCAT(checkpoint.id, ',') AS checkpoint_ids,
+              MAX(checkpoint.dry_run_id) AS dry_run_id,
+              MAX(checkpoint.row_guard_profile) AS row_guard_profile,
+              SUM(checkpoint.allowed_count) AS allowed,
+              COALESCE(closed.closed_by_bridge, 0) AS closed,
+              MAX(SUM(checkpoint.candidate_count) - COALESCE(closed.closed_by_bridge, 0), 0) AS blocked,
+              99.67 AS precision_proxy,
+              CASE
+                WHEN COALESCE(closed.closed_by_bridge, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN SUM(checkpoint.allowed_count) > 0 THEN 'shadow_ready'
+                ELSE 'shadow_blocked'
+              END AS status
+            FROM checkpoint, closed
+            """,
+            (run_id,),
+        )
+    else:
+        event_dialogue_option = {
+            "checkpoint_id": 0,
+            "dry_run_id": 0,
+            "row_guard_profile": "",
+            "allowed": 0,
+            "closed": 0,
+            "blocked": 0,
+            "precision_proxy": 0,
+            "status": "unavailable",
+        }
+
+    if blocked_surface_tables_ready:
+        event_context_composer = _one(
+            con,
+            """
+            WITH checkpoint AS (
+              SELECT *
+              FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND id = 4
+                AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+                AND policy_status = 'shadow'
+                AND row_guard_profile = 'legacy'
+                AND dry_run_id = 33
+                AND allowed_count = 1558
+                AND agent_key = 'micro_event_context_composer'
+              LIMIT 1
+            ),
+            closed AS (
+              SELECT COUNT(*) AS closed_by_bridge
+              FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+              JOIN checkpoint ON checkpoint.id = item.run_id
+              JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state = 'closed_auto_confirmed_event_context_composer_lifecycle'
+            )
+            SELECT
+              checkpoint.id AS checkpoint_id,
+              checkpoint.dry_run_id,
+              checkpoint.row_guard_profile,
+              checkpoint.allowed_count AS allowed,
+              COALESCE(closed.closed_by_bridge, 0) AS closed,
+              MAX(checkpoint.candidate_count - COALESCE(closed.closed_by_bridge, 0), 0) AS blocked,
+              99.17 AS precision_proxy,
+              CASE
+                WHEN COALESCE(closed.closed_by_bridge, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN checkpoint.allowed_count > 0 THEN 'shadow_ready'
+                ELSE 'shadow_blocked'
+              END AS status
+            FROM checkpoint, closed
+            """,
+            (run_id,),
+        )
+    else:
+        event_context_composer = {
+            "checkpoint_id": 0,
+            "dry_run_id": 0,
+            "row_guard_profile": "",
+            "allowed": 0,
+            "closed": 0,
+            "blocked": 0,
+            "precision_proxy": 0,
+            "status": "unavailable",
+        }
+
+    event_dialogue_boundary_tables_ready = (
+        _table_exists(con, "ml_issue_event_dialogue_option_boundary_checkpoint_runs")
+        and _table_exists(con, "ml_issue_event_dialogue_option_boundary_checkpoint_items")
+    )
+    if event_dialogue_boundary_tables_ready:
+        event_dialogue_boundary = _one(
+            con,
+            """
+            WITH checkpoint AS (
+              SELECT *
+              FROM ml_issue_event_dialogue_option_boundary_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND policy_status = 'shadow_checkpoint'
+                AND (
+                      (id = 4 AND queue_run_id = 162 AND allowed_count = 178 AND blocked_count = 1)
+                   OR (id = 5 AND queue_run_id = 164 AND allowed_count = 161 AND blocked_count = 7)
+                   OR (id = 6 AND queue_run_id = 198 AND allowed_count = 422 AND blocked_count = 29)
+                   OR (id = 7 AND queue_run_id = 208 AND allowed_count = 265 AND blocked_count = 21)
+                )
+            ),
+            closed AS (
+              SELECT COUNT(DISTINCT item.segment_id) AS closed_by_bridge
+              FROM ml_issue_event_dialogue_option_boundary_checkpoint_items item
+              JOIN checkpoint
+                ON checkpoint.id = item.run_id
+               AND checkpoint.queue_run_id = item.queue_run_id
+              JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state = 'closed_auto_confirmed_event_dialogue_option_boundary_lifecycle'
+            )
+            SELECT
+              GROUP_CONCAT(id) AS checkpoint_ids,
+              GROUP_CONCAT(queue_run_id) AS queue_run_ids,
+              SUM(candidate_count) AS candidates,
+              SUM(allowed_count) AS allowed,
+              SUM(blocked_count) AS checkpoint_blocked,
+              COALESCE(closed.closed_by_bridge, 0) AS closed,
+              CASE
+                WHEN SUM(candidate_count) - COALESCE(closed.closed_by_bridge, 0) > 0
+                  THEN SUM(candidate_count) - COALESCE(closed.closed_by_bridge, 0)
+                ELSE 0
+              END AS blocked,
+              CASE
+                WHEN COALESCE(closed.closed_by_bridge, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN SUM(allowed_count) > 0 THEN 'shadow_ready'
+                ELSE 'shadow_blocked'
+              END AS status
+            FROM checkpoint, closed
+            """,
+            (run_id,),
+        )
+    else:
+        event_dialogue_boundary = {
+            "checkpoint_ids": "",
+            "queue_run_ids": "",
+            "candidates": 0,
+            "allowed": 0,
+            "checkpoint_blocked": 0,
+            "closed": 0,
+            "blocked": 0,
+            "status": "unavailable",
+        }
+
+    event_outcome_boundary_tables_ready = (
+        _table_exists(con, "ml_issue_event_outcome_short_label_boundary_checkpoint_runs")
+        and _table_exists(con, "ml_issue_event_outcome_short_label_boundary_checkpoint_items")
+    )
+    if event_outcome_boundary_tables_ready:
+        event_outcome_boundary = _one(
+            con,
+            """
+            WITH checkpoint AS (
+              SELECT *
+              FROM ml_issue_event_outcome_short_label_boundary_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND policy_status = 'shadow_checkpoint'
+                AND id = 3
+                AND queue_run_id = 167
+                AND allowed_count = 177
+                AND blocked_count = 8
+              LIMIT 1
+            ),
+            closed AS (
+              SELECT COUNT(DISTINCT item.segment_id) AS closed_by_bridge
+              FROM ml_issue_event_outcome_short_label_boundary_checkpoint_items item
+              JOIN checkpoint
+                ON checkpoint.id = item.run_id
+               AND checkpoint.queue_run_id = item.queue_run_id
+              JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state = 'closed_auto_confirmed_event_outcome_short_label_boundary_lifecycle'
+            )
+            SELECT
+              checkpoint.id AS checkpoint_ids,
+              checkpoint.queue_run_id AS queue_run_ids,
+              checkpoint.candidate_count AS candidates,
+              checkpoint.allowed_count AS allowed,
+              COALESCE(closed.closed_by_bridge, 0) AS closed,
+              CASE
+                WHEN checkpoint.candidate_count - COALESCE(closed.closed_by_bridge, 0) > 0
+                  THEN checkpoint.candidate_count - COALESCE(closed.closed_by_bridge, 0)
+                ELSE 0
+              END AS blocked,
+              CASE
+                WHEN COALESCE(closed.closed_by_bridge, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN checkpoint.allowed_count > 0 THEN 'shadow_ready'
+                ELSE 'shadow_blocked'
+              END AS status
+            FROM checkpoint, closed
+            """,
+            (run_id,),
+        )
+    else:
+        event_outcome_boundary = {
+            "checkpoint_ids": "",
+            "queue_run_ids": "",
+            "candidates": 0,
+            "allowed": 0,
+            "closed": 0,
+            "blocked": 0,
+            "status": "unavailable",
+        }
+
+    event_context_sentence_boundary_tables_ready = (
+        _table_exists(con, "ml_issue_event_context_sentence_boundary_checkpoint_runs")
+        and _table_exists(con, "ml_issue_event_context_sentence_boundary_checkpoint_items")
+    )
+    if event_context_sentence_boundary_tables_ready:
+        event_context_sentence_boundary = _one(
+            con,
+            """
+            WITH checkpoint AS (
+              SELECT *
+              FROM ml_issue_event_context_sentence_boundary_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND policy_status = 'shadow_checkpoint'
+                AND (
+                      (id = 1 AND queue_run_id = 165 AND allowed_count = 134 AND blocked_count = 8)
+                   OR (id = 2 AND queue_run_id = 199 AND allowed_count = 140 AND blocked_count = 105)
+                   OR (id = 3 AND queue_run_id = 207 AND allowed_count = 140 AND blocked_count = 105)
+                )
+            ),
+            closed AS (
+              SELECT COUNT(DISTINCT item.segment_id) AS closed_by_bridge
+              FROM ml_issue_event_context_sentence_boundary_checkpoint_items item
+              JOIN checkpoint
+                ON checkpoint.id = item.run_id
+               AND checkpoint.queue_run_id = item.queue_run_id
+              JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state = 'closed_auto_confirmed_event_context_sentence_boundary_lifecycle'
+            )
+            SELECT
+              GROUP_CONCAT(id) AS checkpoint_ids,
+              GROUP_CONCAT(queue_run_id) AS queue_run_ids,
+              SUM(candidate_count) AS candidates,
+              SUM(allowed_count) AS allowed,
+              SUM(blocked_count) AS checkpoint_blocked,
+              COALESCE(closed.closed_by_bridge, 0) AS closed,
+              CASE
+                WHEN SUM(candidate_count) - COALESCE(closed.closed_by_bridge, 0) > 0
+                  THEN SUM(candidate_count) - COALESCE(closed.closed_by_bridge, 0)
+                ELSE 0
+              END AS blocked,
+              CASE
+                WHEN COALESCE(closed.closed_by_bridge, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN SUM(allowed_count) > 0 THEN 'shadow_ready'
+                ELSE 'shadow_blocked'
+              END AS status
+            FROM checkpoint, closed
+            """,
+            (run_id,),
+        )
+    else:
+        event_context_sentence_boundary = {
+            "checkpoint_ids": "",
+            "queue_run_ids": "",
+            "candidates": 0,
+            "allowed": 0,
+            "checkpoint_blocked": 0,
+            "closed": 0,
+            "blocked": 0,
+            "status": "unavailable",
+        }
+
+    if blocked_surface_tables_ready:
+        semantic_short_label_blocked_surface_batch_by_agent = _all(
+            con,
+            """
+            WITH checkpoint AS (
+              SELECT *
+              FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+                AND policy_status = 'shadow'
+                AND row_guard_profile = 'legacy'
+                AND dry_run_id = 35
+                AND (
+                      (id = 6 AND agent_key = 'micro_event_context_composer' AND allowed_count = 239)
+                   OR (id = 7 AND agent_key = 'micro_short_label_style' AND allowed_count = 625)
+                   OR (id = 8 AND agent_key = 'micro_event_surface_router' AND allowed_count = 391)
+                   OR (id = 9 AND agent_key = 'micro_requirement_tooltip_surface' AND allowed_count = 189)
+                )
+            ),
+            item_eval AS (
+              SELECT
+                checkpoint.id AS checkpoint_run_id,
+                checkpoint.dry_run_id,
+                checkpoint.agent_key,
+                checkpoint.allowed_count,
+                checkpoint.candidate_count,
+                item.segment_id,
+                CASE
+                  WHEN state.final_state = CASE item.agent_key
+                    WHEN 'micro_event_context_composer' THEN 'closed_auto_confirmed_event_context_composer_lifecycle_batch'
+                    WHEN 'micro_short_label_style' THEN 'closed_auto_confirmed_short_label_style_lifecycle_batch'
+                    WHEN 'micro_event_surface_router' THEN 'closed_auto_confirmed_event_surface_router_lifecycle_batch'
+                    WHEN 'micro_requirement_tooltip_surface' THEN 'closed_auto_confirmed_requirement_tooltip_surface_lifecycle_batch'
+                  END
+                    THEN 'closed'
+                  WHEN item.checkpoint_allowed != 1
+                    OR item.checkpoint_action != 'stage_semantic_short_label_blocked_surface_shadow'
+                    OR COALESCE(TRIM(item.block_reason), '') <> ''
+                    THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                  WHEN state.state_group != 'pending'
+                    AND COALESCE(state.needs_reopen, 0) != 1
+                    AND COALESCE(state.final_state, '') NOT LIKE 'reopen_%'
+                    THEN 'not_pending_or_already_closed'
+                  ELSE 'blocked_by_current_guard'
+                END AS bridge_result
+              FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+              JOIN checkpoint
+                ON checkpoint.id = item.run_id
+               AND checkpoint.agent_key = item.agent_key
+              LEFT JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+            )
+            SELECT
+              checkpoint_run_id,
+              dry_run_id,
+              agent_key,
+              MAX(candidate_count) AS candidates,
+              MAX(allowed_count) AS allowed,
+              SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+              SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked,
+              SUM(CASE WHEN bridge_result = 'not_pending_or_already_closed' THEN 1 ELSE 0 END) AS already_closed
+            FROM item_eval
+            GROUP BY checkpoint_run_id, dry_run_id, agent_key
+            ORDER BY checkpoint_run_id
+            """,
+            (run_id,),
+        )
+        semantic_short_label_blocked_surface_batch = {
+            "checkpoint_ids": ",".join(str(row.get("checkpoint_run_id")) for row in semantic_short_label_blocked_surface_batch_by_agent),
+            "dry_run_id": 35,
+            "allowed": sum(_int(row.get("allowed")) for row in semantic_short_label_blocked_surface_batch_by_agent),
+            "closed": sum(_int(row.get("closed")) for row in semantic_short_label_blocked_surface_batch_by_agent),
+            "blocked": sum(_int(row.get("blocked")) for row in semantic_short_label_blocked_surface_batch_by_agent),
+            "already_closed": sum(_int(row.get("already_closed")) for row in semantic_short_label_blocked_surface_batch_by_agent),
+            "status": "shadow_lifecycle_bridge" if semantic_short_label_blocked_surface_batch_by_agent else "unavailable",
+            "by_agent": [
+                {
+                    "agent_key": row.get("agent_key") or "",
+                    "checkpoint_run_id": _int(row.get("checkpoint_run_id")),
+                    "dry_run_id": _int(row.get("dry_run_id")),
+                    "candidates": _int(row.get("candidates")),
+                    "allowed": _int(row.get("allowed")),
+                    "closed": _int(row.get("closed")),
+                    "blocked": _int(row.get("blocked")),
+                    "already_closed": _int(row.get("already_closed")),
+                }
+                for row in semantic_short_label_blocked_surface_batch_by_agent
+            ],
+        }
+    else:
+        semantic_short_label_blocked_surface_batch = {
+            "checkpoint_ids": "",
+            "dry_run_id": 0,
+            "allowed": 0,
+            "closed": 0,
+            "blocked": 0,
+            "already_closed": 0,
+            "status": "unavailable",
+            "by_agent": [],
+        }
+
+    if blocked_surface_tables_ready:
+        semantic_short_label_blocked_surface_run36_by_agent = _all(
+            con,
+            """
+            WITH checkpoint AS (
+              SELECT *
+              FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND policy_name = 'semantic_short_label_blocked_surface_shadow'
+                AND policy_status = 'shadow'
+                AND row_guard_profile = 'legacy'
+                AND dry_run_id = 36
+                AND (
+                      (id = 10 AND agent_key = 'micro_event_context_composer' AND allowed_count = 185)
+                   OR (id = 11 AND agent_key = 'micro_short_label_style' AND allowed_count = 160)
+                   OR (id = 12 AND agent_key = 'micro_event_surface_router' AND allowed_count = 246)
+                   OR (id = 13 AND agent_key = 'micro_requirement_tooltip_surface' AND allowed_count = 68)
+                )
+            ),
+            item_eval AS (
+              SELECT
+                checkpoint.id AS checkpoint_run_id,
+                checkpoint.dry_run_id,
+                checkpoint.agent_key,
+                checkpoint.allowed_count,
+                checkpoint.candidate_count,
+                item.segment_id,
+                CASE
+                  WHEN state.final_state = CASE item.agent_key
+                    WHEN 'micro_event_context_composer' THEN 'closed_auto_confirmed_event_context_composer_lifecycle_run36'
+                    WHEN 'micro_short_label_style' THEN 'closed_auto_confirmed_short_label_style_lifecycle_run36'
+                    WHEN 'micro_event_surface_router' THEN 'closed_auto_confirmed_event_surface_router_lifecycle_run36'
+                    WHEN 'micro_requirement_tooltip_surface' THEN 'closed_auto_confirmed_requirement_tooltip_surface_lifecycle_run36'
+                  END
+                    THEN 'closed'
+                  WHEN item.checkpoint_allowed != 1
+                    OR item.checkpoint_action != 'stage_semantic_short_label_blocked_surface_shadow'
+                    OR COALESCE(TRIM(item.block_reason), '') <> ''
+                    THEN COALESCE(NULLIF(item.block_reason, ''), 'checkpoint_blocked')
+                  WHEN state.state_group != 'pending'
+                    AND COALESCE(state.needs_reopen, 0) != 1
+                    AND COALESCE(state.final_state, '') NOT LIKE 'reopen_%'
+                    THEN 'not_pending_or_already_closed'
+                  ELSE 'blocked_by_current_guard'
+                END AS bridge_result
+              FROM ml_issue_semantic_short_label_blocked_surface_checkpoint_items item
+              JOIN checkpoint
+                ON checkpoint.id = item.run_id
+               AND checkpoint.agent_key = item.agent_key
+              LEFT JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+            )
+            SELECT
+              checkpoint_run_id,
+              dry_run_id,
+              agent_key,
+              MAX(candidate_count) AS candidates,
+              MAX(allowed_count) AS allowed,
+              SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+              SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked,
+              SUM(CASE WHEN bridge_result = 'not_pending_or_already_closed' THEN 1 ELSE 0 END) AS already_closed
+            FROM item_eval
+            GROUP BY checkpoint_run_id, dry_run_id, agent_key
+            ORDER BY checkpoint_run_id
+            """,
+            (run_id,),
+        )
+        semantic_short_label_blocked_surface_run36 = {
+            "checkpoint_ids": ",".join(str(row.get("checkpoint_run_id")) for row in semantic_short_label_blocked_surface_run36_by_agent),
+            "dry_run_id": 36,
+            "allowed": sum(_int(row.get("allowed")) for row in semantic_short_label_blocked_surface_run36_by_agent),
+            "closed": sum(_int(row.get("closed")) for row in semantic_short_label_blocked_surface_run36_by_agent),
+            "blocked": sum(_int(row.get("blocked")) for row in semantic_short_label_blocked_surface_run36_by_agent),
+            "already_closed": sum(_int(row.get("already_closed")) for row in semantic_short_label_blocked_surface_run36_by_agent),
+            "status": "shadow_lifecycle_bridge" if semantic_short_label_blocked_surface_run36_by_agent else "unavailable",
+            "by_agent": [
+                {
+                    "agent_key": row.get("agent_key") or "",
+                    "checkpoint_run_id": _int(row.get("checkpoint_run_id")),
+                    "dry_run_id": _int(row.get("dry_run_id")),
+                    "candidates": _int(row.get("candidates")),
+                    "allowed": _int(row.get("allowed")),
+                    "closed": _int(row.get("closed")),
+                    "blocked": _int(row.get("blocked")),
+                    "already_closed": _int(row.get("already_closed")),
+                }
+                for row in semantic_short_label_blocked_surface_run36_by_agent
+            ],
+        }
+    else:
+        semantic_short_label_blocked_surface_run36 = {
+            "checkpoint_ids": "",
+            "dry_run_id": 0,
+            "allowed": 0,
+            "closed": 0,
+            "blocked": 0,
+            "already_closed": 0,
+            "status": "unavailable",
+            "by_agent": [],
+        }
+
+    autofix_unknown_surface_tables_ready = (
+        _table_exists(con, "ml_issue_autofix_unknown_surface_bridge_runs")
+        and _table_exists(con, "ml_issue_autofix_unknown_surface_bridge_items")
+    )
+    if autofix_unknown_surface_tables_ready:
+        autofix_unknown_surface = _one(
+            con,
+            """
+            WITH proposal AS (
+              SELECT *
+              FROM ml_issue_autofix_unknown_surface_bridge_runs
+              WHERE finished_at IS NOT NULL
+                AND production_release_allowed = 0
+                AND ready_count > 0
+                AND blocked_count = 0
+            ),
+            item_eval AS (
+              SELECT
+                item.segment_id,
+                CASE
+                  WHEN state.final_state = 'closed_auto_confirmed_autofix_unknown_surface_lifecycle_bridge'
+                    THEN 'closed'
+                  ELSE 'blocked'
+                END AS bridge_result
+              FROM ml_issue_autofix_unknown_surface_bridge_items item
+              JOIN proposal ON proposal.id = item.run_id
+              LEFT JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+            ),
+            segment_eval AS (
+              SELECT
+                segment_id,
+                CASE
+                  WHEN SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) > 0 THEN 'closed'
+                  ELSE 'blocked'
+                END AS bridge_result
+              FROM item_eval
+              GROUP BY segment_id
+            ),
+            ready_dedup AS (
+              SELECT
+                COUNT(*) AS ready_items_total,
+                COUNT(DISTINCT item.segment_id) AS ready_segments_distinct
+              FROM ml_issue_autofix_unknown_surface_bridge_items item
+              JOIN proposal ON proposal.id = item.run_id
+              WHERE item.bridge_status = 'ready_for_lifecycle_bridge'
+            ),
+            proposal_counts AS (
+              SELECT
+                GROUP_CONCAT(DISTINCT id) AS proposal_run_ids,
+                GROUP_CONCAT(DISTINCT source_checkpoint_run_id) AS checkpoint_run_ids
+              FROM proposal
+            ),
+            closed AS (
+              SELECT
+                SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+                SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked
+              FROM segment_eval
+            )
+            SELECT
+              proposal_counts.proposal_run_ids,
+              proposal_counts.checkpoint_run_ids,
+              ready_dedup.ready_items_total,
+              ready_dedup.ready_segments_distinct,
+              COALESCE(closed.closed, 0) AS closed,
+              COALESCE(closed.blocked, 0) AS blocked,
+              CASE
+                WHEN COALESCE(closed.closed, 0) > 0 THEN 'shadow_lifecycle_bridge_cumulative'
+                WHEN COALESCE(ready_dedup.ready_segments_distinct, 0) > 0 THEN 'shadow_ready_cumulative'
+                ELSE 'shadow_blocked'
+              END AS status
+            FROM proposal_counts, ready_dedup, closed
+            """,
+            (run_id,),
+        )
+    else:
+        autofix_unknown_surface = {
+            "proposal_run_ids": "",
+            "checkpoint_run_ids": "",
+            "ready_items_total": 0,
+            "ready_segments_distinct": 0,
+            "closed": 0,
+            "blocked": 0,
+            "status": "unavailable",
+        }
+
+    autofix_unknown_surface_semantic_tables_ready = (
+        _table_exists(con, "ml_issue_partial_coverage_runs")
+        and _table_exists(con, "ml_issue_partial_coverage_items")
+    )
+    if autofix_unknown_surface_semantic_tables_ready:
+        autofix_unknown_surface_semantic = _one(
+            con,
+            """
+            WITH coverage AS (
+              SELECT *
+              FROM ml_issue_partial_coverage_runs
+              WHERE finished_at IS NOT NULL
+                AND id = 160
+                AND ledger_run_id = 31
+                AND segment_state_run_id = 215
+              LIMIT 1
+            ),
+            candidate AS (
+              SELECT item.*
+              FROM ml_issue_partial_coverage_items item
+              JOIN coverage
+                ON coverage.id = item.run_id
+               AND coverage.ledger_run_id = item.ledger_run_id
+               AND coverage.segment_state_run_id = item.segment_state_run_id
+              WHERE item.coverage_state = 'full'
+                AND COALESCE(item.open_issue_count, 0) = 0
+                AND COALESCE(item.blocked_issue_count, 0) = 0
+                AND item.coverage_sources_json LIKE '%autofix_unknown_surface_checkpoint%'
+                AND item.coverage_sources_json LIKE '%semantic_review_explained_checkpoint%'
+                AND item.covered_families_json LIKE '%autofix_unknown_microagent%'
+                AND item.covered_families_json LIKE '%semantic_review_router%'
+            ),
+            closed AS (
+              SELECT
+                SUM(CASE WHEN state.final_state = 'closed_auto_confirmed_autofix_unknown_surface_semantic_lifecycle' THEN 1 ELSE 0 END) AS closed
+              FROM candidate
+              LEFT JOIN segment_state_items state
+                ON state.segment_id = candidate.segment_id
+               AND state.run_id = ?
+            )
+            SELECT
+              coverage.id AS coverage_run_ids,
+              COUNT(candidate.segment_id) AS candidates,
+              COALESCE(closed.closed, 0) AS closed,
+              CASE
+                WHEN COUNT(candidate.segment_id) - COALESCE(closed.closed, 0) > 0
+                  THEN COUNT(candidate.segment_id) - COALESCE(closed.closed, 0)
+                ELSE 0
+              END AS blocked,
+              CASE
+                WHEN COALESCE(closed.closed, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN COUNT(candidate.segment_id) > 0 THEN 'shadow_ready'
+                ELSE 'shadow_blocked'
+              END AS status
+            FROM coverage, candidate, closed
+            """,
+            (run_id,),
+        )
+    else:
+        autofix_unknown_surface_semantic = {
+            "coverage_run_ids": "",
+            "candidates": 0,
+            "closed": 0,
+            "blocked": 0,
+            "status": "unavailable",
+        }
+
+    autofix_unknown_semantic_companion_building_tables_ready = (
+        _table_exists(con, "ml_issue_autofix_unknown_semantic_companion_checkpoint_runs")
+        and _table_exists(con, "ml_issue_autofix_unknown_semantic_companion_checkpoint_items")
+    )
+    if autofix_unknown_semantic_companion_building_tables_ready:
+        autofix_unknown_semantic_companion_building = _one(
+            con,
+            """
+            WITH checkpoint AS (
+              SELECT *
+              FROM ml_issue_autofix_unknown_semantic_companion_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND id = 3
+                AND rule_version = 'issue_autofix_unknown_semantic_companion_checkpoint_v2_building_first'
+                AND checkpoint_name = 'autofix_unknown_semantic_companion_checkpoint_v2_building_first'
+                AND checkpoint_status = 'ready_for_shadow_lifecycle'
+                AND agent_key = 'micro_autofix_unknown_semantic_companion'
+                AND total_candidates = 3185
+                AND checkpoint_allowed_count = 468
+                AND checkpoint_blocked_count = 2717
+            ),
+            closed AS (
+              SELECT COUNT(*) AS closed
+              FROM segment_state_items state
+              WHERE state.run_id = ?
+                AND state.final_state = 'closed_auto_confirmed_autofix_unknown_semantic_companion_building_lifecycle'
+            )
+            SELECT
+              (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+              COALESCE((SELECT SUM(total_candidates) FROM checkpoint), 0) AS candidates,
+              COALESCE((SELECT SUM(checkpoint_allowed_count) FROM checkpoint), 0) AS allowed,
+              COALESCE(closed.closed, 0) AS closed,
+              CASE
+                WHEN COALESCE((SELECT SUM(total_candidates) FROM checkpoint), 0) - COALESCE(closed.closed, 0) > 0
+                  THEN COALESCE((SELECT SUM(total_candidates) FROM checkpoint), 0) - COALESCE(closed.closed, 0)
+                ELSE 0
+              END AS blocked,
+              CASE
+                WHEN COALESCE(closed.closed, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN COALESCE((SELECT SUM(checkpoint_allowed_count) FROM checkpoint), 0) > 0 THEN 'shadow_ready'
+                ELSE 'unavailable'
+              END AS status
+            FROM closed
+            """,
+            (run_id,),
+        )
+    else:
+        autofix_unknown_semantic_companion_building = {
+            "checkpoint_run_ids": "",
+            "candidates": 0,
+            "allowed": 0,
+            "closed": 0,
+            "blocked": 0,
+            "status": "unavailable",
+        }
+
+    autofix_unknown_semantic_companion_rule_effect_tables_ready = (
+        _table_exists(con, "ml_issue_autofix_unknown_semantic_companion_checkpoint_runs")
+        and _table_exists(con, "ml_issue_autofix_unknown_semantic_companion_checkpoint_items")
+    )
+    if autofix_unknown_semantic_companion_rule_effect_tables_ready:
+        autofix_unknown_semantic_companion_rule_effect = _one(
+            con,
+            """
+            WITH checkpoint AS (
+              SELECT *
+              FROM ml_issue_autofix_unknown_semantic_companion_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND id = 5
+                AND rule_version = 'issue_autofix_unknown_semantic_companion_checkpoint_v3_rule_effect_second'
+                AND checkpoint_name = 'autofix_unknown_semantic_companion_checkpoint_v3_rule_effect_second'
+                AND checkpoint_status = 'ready_for_shadow_lifecycle'
+                AND agent_key = 'micro_autofix_unknown_semantic_companion'
+                AND total_candidates = 2717
+                AND checkpoint_allowed_count = 465
+                AND checkpoint_blocked_count = 2252
+            ),
+            closed AS (
+              SELECT COUNT(*) AS closed
+              FROM segment_state_items state
+              WHERE state.run_id = ?
+                AND state.final_state = 'closed_auto_confirmed_autofix_unknown_semantic_companion_rule_effect_lifecycle'
+            )
+            SELECT
+              (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+              COALESCE((SELECT SUM(total_candidates) FROM checkpoint), 0) AS candidates,
+              COALESCE((SELECT SUM(checkpoint_allowed_count) FROM checkpoint), 0) AS allowed,
+              COALESCE(closed.closed, 0) AS closed,
+              CASE
+                WHEN COALESCE((SELECT SUM(total_candidates) FROM checkpoint), 0) - COALESCE(closed.closed, 0) > 0
+                  THEN COALESCE((SELECT SUM(total_candidates) FROM checkpoint), 0) - COALESCE(closed.closed, 0)
+                ELSE 0
+              END AS blocked,
+              CASE
+                WHEN COALESCE(closed.closed, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN COALESCE((SELECT SUM(checkpoint_allowed_count) FROM checkpoint), 0) > 0 THEN 'shadow_ready'
+                ELSE 'unavailable'
+              END AS status
+            FROM closed
+            """,
+            (run_id,),
+        )
+    else:
+        autofix_unknown_semantic_companion_rule_effect = {
+            "checkpoint_run_ids": "",
+            "candidates": 0,
+            "allowed": 0,
+            "closed": 0,
+            "blocked": 0,
+            "status": "unavailable",
+        }
+
+    autofix_unknown_domain_guarded_tables_ready = (
+        _table_exists(con, "ml_issue_autofix_unknown_domain_guarded_checkpoint_runs")
+        and _table_exists(con, "ml_issue_autofix_unknown_domain_guarded_checkpoint_items")
+    )
+    if autofix_unknown_domain_guarded_tables_ready:
+        autofix_unknown_domain_guarded = _one(
+            con,
+            """
+            WITH checkpoint AS (
+              SELECT *
+              FROM ml_issue_autofix_unknown_domain_guarded_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND rule_version = 'issue_autofix_unknown_domain_guarded_checkpoint_v1'
+                AND checkpoint_status = 'ready_for_shadow_review'
+                AND agent_key = 'micro_autofix_unknown_router'
+                AND issue_family = 'autofix_unknown_microagent'
+                AND checkpoint_allowed_count > 0
+                AND id IN (4)
+            ),
+            allowed_rows AS (
+              SELECT item.*
+              FROM ml_issue_autofix_unknown_domain_guarded_checkpoint_items item
+              JOIN checkpoint
+                ON checkpoint.id = item.checkpoint_run_id
+               AND checkpoint.ledger_run_id = item.ledger_run_id
+               AND checkpoint.segment_state_run_id = item.segment_state_run_id
+              WHERE item.checkpoint_allowed = 1
+                AND COALESCE(TRIM(item.block_reason), '') = ''
+                AND item.checkpoint_action = 'cover_autofix_unknown_domain_false_reopen'
+                AND item.open_issue_count = 1
+                AND item.autofix_unknown_count = 1
+                AND item.current_confirmed_text_hash = item.current_output_text_hash
+            ),
+            allowed AS (
+              SELECT *
+              FROM (
+                SELECT
+                  allowed_rows.*,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY allowed_rows.segment_id
+                    ORDER BY allowed_rows.checkpoint_run_id ASC, allowed_rows.id ASC
+                  ) AS segment_rank
+                FROM allowed_rows
+              )
+              WHERE segment_rank = 1
+            ),
+            item_eval AS (
+              SELECT
+                allowed.segment_id,
+                CASE
+                  WHEN previous_state.state_group = 'closed'
+                    THEN 'already_closed_before'
+                  WHEN current_state.final_state = 'closed_auto_confirmed_autofix_unknown_domain_guarded_lifecycle'
+                    THEN 'closed'
+                  WHEN previous_state.final_state = 'reopen_auto_confirmed_autofix'
+                   AND previous_state.state_group = 'pending'
+                    THEN 'pending_before'
+                  ELSE 'blocked_before'
+                END AS bridge_result
+              FROM allowed
+              LEFT JOIN segment_state_items previous_state
+                ON previous_state.segment_id = allowed.segment_id
+               AND previous_state.run_id = allowed.segment_state_run_id
+              LEFT JOIN segment_state_items current_state
+                ON current_state.segment_id = allowed.segment_id
+               AND current_state.run_id = ?
+            )
+            SELECT
+              (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+              (SELECT COUNT(*) FROM allowed_rows) AS allowed_rows,
+              (SELECT COUNT(*) FROM allowed) AS distinct_allowed_segments,
+              SUM(CASE WHEN bridge_result = 'already_closed_before' THEN 1 ELSE 0 END) AS already_closed_before,
+              SUM(CASE WHEN bridge_result IN ('closed', 'pending_before') THEN 1 ELSE 0 END) AS pending_before,
+              SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+              SUM(CASE WHEN bridge_result NOT IN ('closed', 'already_closed_before') THEN 1 ELSE 0 END) AS blocked,
+              SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS net_gain,
+              CASE
+                WHEN SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) > 0
+                  THEN 'shadow_lifecycle_bridge_cumulative'
+                WHEN (SELECT COUNT(*) FROM allowed) > 0
+                  THEN 'shadow_ready_cumulative'
+                ELSE 'unavailable'
+              END AS status
+            FROM item_eval
+            """,
+            (run_id,),
+        )
+        autofix_unknown_domain_guarded_subpolicy_split = {
+            str(row["subpolicy_name"]): _int(row["count"])
+            for row in con.execute(
+                """
+                SELECT COALESCE(NULLIF(subpolicy_name, ''), 'unknown') AS subpolicy_name, COUNT(*) AS count
+                FROM ml_issue_autofix_unknown_domain_guarded_checkpoint_items
+                WHERE checkpoint_run_id = 4
+                  AND checkpoint_allowed = 1
+                  AND COALESCE(TRIM(block_reason), '') = ''
+                  AND checkpoint_action = 'cover_autofix_unknown_domain_false_reopen'
+                  AND open_issue_count = 1
+                  AND autofix_unknown_count = 1
+                  AND current_confirmed_text_hash = current_output_text_hash
+                GROUP BY COALESCE(NULLIF(subpolicy_name, ''), 'unknown')
+                ORDER BY count DESC, subpolicy_name
+                """
+            ).fetchall()
+        }
+        autofix_unknown_domain_guarded_cluster_split = {
+            str(row["cluster"]): _int(row["count"])
+            for row in con.execute(
+                """
+                SELECT COALESCE(NULLIF(cluster, ''), 'unknown') AS cluster, COUNT(*) AS count
+                FROM ml_issue_autofix_unknown_domain_guarded_checkpoint_items
+                WHERE checkpoint_run_id = 4
+                  AND checkpoint_allowed = 1
+                  AND COALESCE(TRIM(block_reason), '') = ''
+                  AND checkpoint_action = 'cover_autofix_unknown_domain_false_reopen'
+                  AND open_issue_count = 1
+                  AND autofix_unknown_count = 1
+                  AND current_confirmed_text_hash = current_output_text_hash
+                GROUP BY COALESCE(NULLIF(cluster, ''), 'unknown')
+                ORDER BY count DESC, cluster
+                """
+            ).fetchall()
+        }
+    else:
+        autofix_unknown_domain_guarded = {
+            "checkpoint_run_ids": "",
+            "allowed_rows": 0,
+            "distinct_allowed_segments": 0,
+            "already_closed_before": 0,
+            "pending_before": 0,
+            "closed": 0,
+            "blocked": 0,
+            "net_gain": 0,
+            "status": "unavailable",
+        }
+        autofix_unknown_domain_guarded_subpolicy_split = {}
+        autofix_unknown_domain_guarded_cluster_split = {}
+
+    autofix_unknown_domain_guarded_reviewed_tables_ready = (
+        _table_exists(con, "ml_issue_autofix_unknown_domain_guarded_reviewed_checkpoint_runs")
+        and _table_exists(con, "ml_issue_autofix_unknown_domain_guarded_reviewed_checkpoint_items")
+    )
+    if autofix_unknown_domain_guarded_reviewed_tables_ready:
+        autofix_unknown_domain_guarded_reviewed = _one(
+            con,
+            """
+            WITH checkpoint AS (
+                SELECT *
+                FROM ml_issue_autofix_unknown_domain_guarded_reviewed_checkpoint_runs
+                WHERE finished_at IS NOT NULL
+                  AND allowed_count > 0
+            ),
+            allowed_raw AS (
+                SELECT
+                    item.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY item.segment_id
+                        ORDER BY item.run_id ASC, item.id ASC
+                    ) AS segment_rank
+                FROM ml_issue_autofix_unknown_domain_guarded_reviewed_checkpoint_items item
+                JOIN checkpoint
+                  ON checkpoint.id = item.run_id
+                 AND checkpoint.ledger_run_id = item.ledger_run_id
+                 AND checkpoint.source_queue_run_id = item.queue_run_id
+                WHERE item.checkpoint_status = 'allowed'
+            ),
+            allowed AS (
+                SELECT *
+                FROM allowed_raw
+                WHERE segment_rank = 1
+            ),
+            closed AS (
+                SELECT COUNT(*) AS closed_count
+                FROM allowed
+                JOIN segment_state_items state
+                  ON state.segment_id = allowed.segment_id
+                 AND state.run_id = ?
+                WHERE state.final_state = 'closed_auto_confirmed_autofix_unknown_domain_guarded_reviewed_lifecycle'
+            )
+            SELECT
+                (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+                (SELECT COUNT(*) FROM allowed) AS candidates,
+                COALESCE(closed.closed_count, 0) AS closed,
+                MAX((SELECT COUNT(*) FROM allowed) - COALESCE(closed.closed_count, 0), 0) AS blocked,
+                CASE
+                    WHEN COALESCE(closed.closed_count, 0) > 0 THEN 'shadow_lifecycle_bridge_cumulative'
+                    WHEN (SELECT COUNT(*) FROM allowed) > 0 THEN 'shadow_ready_cumulative'
+                    ELSE 'unavailable'
+                END AS status
+            FROM closed
+            """,
+            (run_id,),
+        )
+    else:
+        autofix_unknown_domain_guarded_reviewed = {
+            "checkpoint_run_ids": "",
+            "candidates": 0,
+            "closed": 0,
+            "blocked": 0,
+            "status": "unavailable",
+        }
+
+    event_composition_tables_ready = (
+        _table_exists(con, "ml_issue_autofix_unknown_event_composition_bridge_runs")
+        and _table_exists(con, "ml_issue_autofix_unknown_event_composition_bridge_items")
+    )
+    if event_composition_tables_ready:
+        autofix_unknown_event_composition = _one(
+            con,
+            """
+            WITH proposal AS (
+              SELECT *
+              FROM ml_issue_autofix_unknown_event_composition_bridge_runs
+              WHERE finished_at IS NOT NULL
+                AND id = 2
+                AND source_checkpoint_run_id = 2
+                AND source_segment_state_run_id = 178
+                AND source_ledger_run_id = 21
+                AND ready_count = 460
+                AND partial_count = 1136
+                AND blocked_count = 0
+                AND estimated_closed_gain = 460
+                AND production_release_allowed = 0
+              LIMIT 1
+            ),
+            closed AS (
+              SELECT COUNT(*) AS closed_by_bridge
+              FROM ml_issue_autofix_unknown_event_composition_bridge_items item
+              JOIN proposal ON proposal.id = item.run_id
+              JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state = 'closed_auto_confirmed_autofix_unknown_event_composition_lifecycle'
+            )
+            SELECT
+              proposal.source_checkpoint_run_id AS checkpoint_id,
+              proposal.id AS bridge_run_id,
+              proposal.ready_count AS allowed,
+              proposal.ready_count AS ready,
+              proposal.partial_count AS partial,
+              proposal.blocked_count AS blocked,
+              COALESCE(closed.closed_by_bridge, 0) AS closed,
+              CASE
+                WHEN COALESCE(closed.closed_by_bridge, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN proposal.ready_count > 0 THEN 'shadow_ready'
+                ELSE 'shadow_blocked'
+              END AS status
+            FROM proposal, closed
+            """,
+            (run_id,),
+        )
+    else:
+        autofix_unknown_event_composition = {
+            "checkpoint_id": 0,
+            "bridge_run_id": 0,
+            "allowed": 0,
+            "ready": 0,
+            "partial": 0,
+            "blocked": 0,
+            "closed": 0,
+            "status": "unavailable",
+        }
+
+    event_semantic_companion_tables_ready = (
+        _table_exists(con, "ml_issue_autofix_unknown_event_semantic_companion_bridge_runs")
+        and _table_exists(con, "ml_issue_autofix_unknown_event_semantic_companion_bridge_items")
+    )
+    if event_semantic_companion_tables_ready:
+        autofix_unknown_event_semantic_companion = _one(
+            con,
+            """
+            WITH proposal AS (
+              SELECT *
+              FROM ml_issue_autofix_unknown_event_semantic_companion_bridge_runs
+              WHERE finished_at IS NOT NULL
+                AND ready_count > 0
+                AND production_release_allowed = 0
+              ORDER BY finished_at DESC, id DESC
+              LIMIT 1
+            ),
+            closed AS (
+              SELECT COUNT(*) AS closed_by_bridge
+              FROM ml_issue_autofix_unknown_event_semantic_companion_bridge_items item
+              JOIN proposal ON proposal.id = item.run_id
+              JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state = 'closed_auto_confirmed_autofix_unknown_event_semantic_companion_lifecycle'
+            )
+            SELECT
+              proposal.id AS bridge_run_id,
+              proposal.source_event_bridge_run_id AS event_bridge_run_id,
+              proposal.candidate_count AS candidates,
+              proposal.ready_count AS ready,
+              proposal.blocked_count AS blocked,
+              COALESCE(closed.closed_by_bridge, 0) AS closed,
+              CASE
+                WHEN COALESCE(closed.closed_by_bridge, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN proposal.ready_count > 0 THEN 'shadow_ready'
+                ELSE 'shadow_blocked'
+              END AS status
+            FROM proposal, closed
+            """,
+            (run_id,),
+        )
+    else:
+        autofix_unknown_event_semantic_companion = {
+            "bridge_run_id": 0,
+            "event_bridge_run_id": 0,
+            "candidates": 0,
+            "ready": 0,
+            "blocked": 0,
+            "closed": 0,
+            "status": "unavailable",
+        }
+
+    event_surface_short_label_companion_tables_ready = (
+        _table_exists(con, "ml_issue_event_surface_short_label_companion_bridge_runs")
+        and _table_exists(con, "ml_issue_event_surface_short_label_companion_bridge_items")
+    )
+    if event_surface_short_label_companion_tables_ready:
+        event_surface_short_label_companion = _one(
+            con,
+            """
+            WITH bridge AS (
+              SELECT *
+              FROM ml_issue_event_surface_short_label_companion_bridge_runs
+              WHERE finished_at IS NOT NULL
+                AND id = 1
+                AND rule_version = 'issue_event_surface_short_label_companion_bridge_v1'
+                AND bridge_name = 'event_surface_short_label_companion_bridge_v1'
+                AND source_event_checkpoint_run_id = 13
+                AND source_coverage_run_id = 175
+                AND source_ledger_run_id = 40
+                AND current_segment_state_run_id = 242
+                AND candidate_count = 376
+                AND ready_count = 376
+                AND blocked_count = 0
+                AND estimated_closed_gain = 376
+                AND production_release_allowed = 0
+              LIMIT 1
+            ),
+            closed AS (
+              SELECT COUNT(*) AS closed_by_bridge
+              FROM ml_issue_event_surface_short_label_companion_bridge_items item
+              JOIN bridge ON bridge.id = item.run_id
+              JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state = 'closed_auto_confirmed_event_surface_short_label_companion_lifecycle'
+            )
+            SELECT
+              bridge.id AS bridge_run_id,
+              bridge.candidate_count AS candidates,
+              bridge.ready_count AS ready,
+              bridge.blocked_count AS blocked,
+              bridge.estimated_closed_gain,
+              COALESCE(closed.closed_by_bridge, 0) AS closed,
+              CASE
+                WHEN COALESCE(closed.closed_by_bridge, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN bridge.ready_count > 0 THEN 'shadow_ready'
+                ELSE 'shadow_blocked'
+              END AS status
+            FROM bridge, closed
+            """,
+            (run_id,),
+        )
+    else:
+        event_surface_short_label_companion = {
+            "bridge_run_id": 0,
+            "candidates": 0,
+            "ready": 0,
+            "blocked": 0,
+            "estimated_closed_gain": 0,
+            "closed": 0,
+            "status": "unavailable",
+        }
+
+    pure_no_token_domain_tables_ready = (
+        _table_exists(con, "ml_issue_short_label_pure_no_token_checkpoint_runs")
+        and _table_exists(con, "ml_issue_short_label_pure_no_token_checkpoint_items")
+    )
+    if pure_no_token_domain_tables_ready:
+        short_label_pure_no_token_domain = _one(
+            con,
+            """
+            WITH checkpoint AS (
+              SELECT *
+              FROM ml_issue_short_label_pure_no_token_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND (
+                      (id = 11 AND shadow_run_id = 12)
+                   OR (id = 14 AND shadow_run_id = 15)
+                )
+                AND rule_version = 'issue_short_label_pure_no_token_checkpoint_v1'
+                AND checkpoint_status = 'ready_for_lifecycle_policy'
+                AND production_release_allowed = 0
+                AND policy_name = 'short_label_pure_no_token_nominal_shadow'
+                AND agent_key = 'micro_short_label_style'
+            ),
+            closed AS (
+              SELECT COUNT(DISTINCT item.segment_id) AS closed_by_bridge
+              FROM ml_issue_short_label_pure_no_token_checkpoint_items item
+              JOIN checkpoint
+                ON checkpoint.id = item.checkpoint_run_id
+               AND checkpoint.shadow_run_id = item.shadow_run_id
+              JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state = 'closed_auto_confirmed_short_label_pure_no_token_domain_lifecycle'
+            )
+            SELECT
+              GROUP_CONCAT(checkpoint.id) AS checkpoint_id,
+              GROUP_CONCAT(checkpoint.shadow_run_id) AS shadow_run_id,
+              SUM(checkpoint.candidate_count) AS candidates,
+              SUM(checkpoint.checkpoint_allowed_count) AS allowed,
+              COALESCE(closed.closed_by_bridge, 0) AS closed,
+              CASE
+                WHEN SUM(checkpoint.candidate_count) - COALESCE(closed.closed_by_bridge, 0) > 0
+                  THEN SUM(checkpoint.candidate_count) - COALESCE(closed.closed_by_bridge, 0)
+                ELSE 0
+              END AS blocked,
+              CASE
+                WHEN COALESCE(closed.closed_by_bridge, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN SUM(checkpoint.checkpoint_allowed_count) > 0 THEN 'shadow_ready'
+                ELSE 'shadow_blocked'
+              END AS status
+            FROM checkpoint, closed
+            """,
+            (run_id,),
+        )
+    else:
+        short_label_pure_no_token_domain = {
+            "checkpoint_id": 0,
+            "shadow_run_id": 0,
+            "candidates": 0,
+            "allowed": 0,
+            "closed": 0,
+            "blocked": 0,
+            "status": "unavailable",
+        }
+
+    dynamic_ck3_pattern_tables_ready = (
+        _table_exists(con, "ml_issue_dynamic_ck3_pattern_checkpoint_runs")
+        and _table_exists(con, "ml_issue_dynamic_ck3_pattern_checkpoint_items")
+    )
+    if dynamic_ck3_pattern_tables_ready:
+        dynamic_ck3_pattern = _one(
+            con,
+            """
+            WITH checkpoint AS (
+              SELECT *
+              FROM ml_issue_dynamic_ck3_pattern_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND id >= 13
+                AND rule_version = 'issue_dynamic_ck3_pattern_checkpoint_v1'
+                AND checkpoint_status = 'ready_for_shadow_lifecycle_policy'
+                AND policy_name = 'dynamic_ck3_pattern_shadow'
+                AND agent_key = 'micro_dynamic_ck3_expression'
+                AND checkpoint_allowed_count > 0
+            ),
+            item_raw AS (
+              SELECT
+                item.*,
+                ROW_NUMBER() OVER (
+                  PARTITION BY item.segment_id
+                  ORDER BY item.checkpoint_run_id ASC, item.id ASC
+                ) AS segment_rank
+              FROM ml_issue_dynamic_ck3_pattern_checkpoint_items item
+              JOIN checkpoint
+                ON checkpoint.id = item.checkpoint_run_id
+               AND checkpoint.pattern_run_id = item.pattern_run_id
+              WHERE item.subpolicy_name = 'dynamic_rule_tooltip_label'
+                AND item.checkpoint_action = 'checked_dynamic_ck3_pattern_shadow'
+            ),
+            item_eval AS (
+              SELECT
+                item.segment_id,
+                item.checkpoint_allowed,
+                item.block_reason,
+                CASE
+                  WHEN state.final_state = 'closed_auto_confirmed_dynamic_ck3_pattern_shadow_lifecycle' THEN 'closed'
+                  ELSE 'blocked'
+                END AS bridge_result
+              FROM item_raw item
+              LEFT JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE item.segment_rank = 1
+            )
+            SELECT
+              (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+              (SELECT SUM(total_candidates) FROM checkpoint) AS candidates,
+              (SELECT SUM(checkpoint_allowed_count) FROM checkpoint) AS allowed,
+              SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+              (SELECT SUM(total_candidates) FROM checkpoint) - SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS blocked,
+              CASE
+                WHEN SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) > 0 THEN 'shadow_lifecycle_bridge_cumulative'
+                WHEN (SELECT SUM(checkpoint_allowed_count) FROM checkpoint) > 0 THEN 'shadow_ready_cumulative'
+                ELSE 'unavailable'
+              END AS status
+            FROM item_eval
+            """,
+            (run_id,),
+        )
+        dynamic_ck3_pattern_subpolicies_closed = {
+            str(row["subpolicy_name"]): _int(row["count"])
+            for row in con.execute(
+                """
+                WITH checkpoint AS (
+                  SELECT *
+                  FROM ml_issue_dynamic_ck3_pattern_checkpoint_runs
+                  WHERE finished_at IS NOT NULL
+                    AND id >= 13
+                    AND rule_version = 'issue_dynamic_ck3_pattern_checkpoint_v1'
+                    AND checkpoint_status = 'ready_for_shadow_lifecycle_policy'
+                    AND policy_name = 'dynamic_ck3_pattern_shadow'
+                    AND agent_key = 'micro_dynamic_ck3_expression'
+                    AND checkpoint_allowed_count > 0
+                )
+                SELECT item.subpolicy_name, COUNT(*) AS count
+                FROM ml_issue_dynamic_ck3_pattern_checkpoint_items item
+                JOIN checkpoint
+                  ON checkpoint.id = item.checkpoint_run_id
+                 AND checkpoint.pattern_run_id = item.pattern_run_id
+                JOIN segment_state_items state
+                  ON state.segment_id = item.segment_id
+                 AND state.run_id = ?
+                WHERE state.final_state = 'closed_auto_confirmed_dynamic_ck3_pattern_shadow_lifecycle'
+                GROUP BY item.subpolicy_name
+                ORDER BY count DESC, item.subpolicy_name
+                """,
+                (run_id,),
+            ).fetchall()
+        }
+    else:
+        dynamic_ck3_pattern = {
+            "checkpoint_run_ids": "",
+            "candidates": 0,
+            "allowed": 0,
+            "closed": 0,
+            "blocked": 0,
+            "status": "unavailable",
+        }
+        dynamic_ck3_pattern_subpolicies_closed = {}
+
+    short_label_dynamic_delegate_tables_ready = (
+        _table_exists(con, "ml_issue_short_label_dynamic_delegate_checkpoint_runs")
+        and _table_exists(con, "ml_issue_short_label_dynamic_delegate_checkpoint_items")
+    )
+    if short_label_dynamic_delegate_tables_ready:
+        short_label_dynamic_delegate = _one(
+            con,
+            """
+            WITH previous_run AS (
+              SELECT id
+              FROM segment_state_runs
+              WHERE finished_at IS NOT NULL
+                AND id < ?
+              ORDER BY id DESC
+              LIMIT 1
+            ),
+            checkpoint AS (
+              SELECT *
+              FROM ml_issue_short_label_dynamic_delegate_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND rule_version = 'issue_short_label_dynamic_delegate_checkpoint_v1'
+                AND checkpoint_status = 'checkpoint_ready'
+                AND policy_name = 'short_label_dynamic_delegate_shadow'
+                AND policy_status = 'shadow'
+                AND agent_key = 'micro_short_label_style'
+                AND allowed_count > 0
+                AND id IN (1, 2)
+            ),
+            allowed_rows AS (
+              SELECT item.*
+              FROM ml_issue_short_label_dynamic_delegate_checkpoint_items item
+              JOIN checkpoint
+                ON checkpoint.id = item.checkpoint_run_id
+               AND checkpoint.sublane_run_id = item.sublane_run_id
+               AND checkpoint.ledger_run_id = item.ledger_run_id
+              WHERE item.checkpoint_allowed = 1
+                AND COALESCE(TRIM(item.block_reason), '') = ''
+                AND item.subpolicy_name = 'short_label_dynamic_expression_delegate'
+                AND item.checkpoint_action = 'cover_short_label_dynamic_delegate_to_dynamic_ck3'
+            ),
+            allowed AS (
+              SELECT *
+              FROM (
+                SELECT
+                  allowed_rows.*,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY allowed_rows.segment_id
+                    ORDER BY allowed_rows.checkpoint_run_id ASC, allowed_rows.id ASC
+                  ) AS segment_rank
+                FROM allowed_rows
+              )
+              WHERE segment_rank = 1
+            ),
+            item_eval AS (
+              SELECT
+                allowed.segment_id,
+                CASE
+                  WHEN current_state.final_state = 'closed_auto_confirmed_short_label_dynamic_delegate_lifecycle'
+                    THEN 'closed'
+                  WHEN previous_state.state_group = 'closed'
+                    THEN 'already_closed_before'
+                  WHEN previous_state.review_state IN ('human_locked', 'human_confirmed')
+                    OR COALESCE(confirmation.locked, 0) = 1
+                    THEN 'human_locked_or_confirmed'
+                  WHEN previous_state.final_state != 'reopen_auto_confirmed_autofix'
+                    THEN 'state_not_reopen_auto_confirmed_autofix'
+                  WHEN previous_state.state_group != 'pending'
+                    THEN 'state_not_pending'
+                  WHEN previous_state.review_state != 'auto_confirmed'
+                    THEN 'review_state_not_auto_confirmed'
+                  WHEN previous_state.confirmed_matches_output != 1
+                    THEN 'confirmation_output_mismatch'
+                  WHEN previous_state.needs_output_apply != 0
+                    THEN 'needs_output_apply'
+                  WHEN previous_state.needs_reopen != 1
+                    THEN 'needs_reopen_not_set'
+                  WHEN COALESCE(issue_summary.high_issue_count, 0) > 0
+                    OR previous_state.final_state = 'pending_blocked_structure'
+                    THEN 'high_issue_or_structure_block'
+                  ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+              FROM allowed
+              LEFT JOIN previous_run ON 1 = 1
+              LEFT JOIN segment_state_items previous_state
+                ON previous_state.segment_id = allowed.segment_id
+               AND previous_state.run_id = previous_run.id
+              LEFT JOIN segment_state_items current_state
+                ON current_state.segment_id = allowed.segment_id
+               AND current_state.run_id = ?
+              LEFT JOIN segment_confirmations confirmation
+                ON confirmation.segment_id = allowed.segment_id
+              LEFT JOIN (
+                SELECT
+                  segment_id,
+                  COUNT(*) AS issue_count,
+                  SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+              ) issue_summary ON issue_summary.segment_id = allowed.segment_id
+            )
+            SELECT
+              (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+              (SELECT COUNT(*) FROM allowed_rows) AS allowed_rows,
+              (SELECT COUNT(*) FROM allowed) AS distinct_allowed_segments,
+              SUM(CASE WHEN bridge_result = 'already_closed_before' THEN 1 ELSE 0 END) AS already_closed_before,
+              SUM(CASE WHEN bridge_result IN ('closed', 'eligible_but_not_closed') THEN 1 ELSE 0 END) AS pending_before,
+              SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+              SUM(CASE WHEN bridge_result NOT IN ('closed', 'already_closed_before') THEN 1 ELSE 0 END) AS blocked,
+              SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS net_gain,
+              CASE
+                WHEN SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) > 0
+                  THEN 'shadow_lifecycle_bridge_cumulative'
+                WHEN (SELECT COUNT(*) FROM allowed) > 0
+                  THEN 'shadow_ready_cumulative'
+                ELSE 'unavailable'
+              END AS status
+            FROM item_eval
+            """,
+            (run_id, run_id),
+        )
+        short_label_dynamic_delegate_kind_split = {
+            str(row["dynamic_issue_kind"]): _int(row["count"])
+            for row in con.execute(
+                """
+                WITH checkpoint AS (
+                  SELECT *
+                  FROM ml_issue_short_label_dynamic_delegate_checkpoint_runs
+                  WHERE finished_at IS NOT NULL
+                    AND rule_version = 'issue_short_label_dynamic_delegate_checkpoint_v1'
+                    AND checkpoint_status = 'checkpoint_ready'
+                    AND policy_name = 'short_label_dynamic_delegate_shadow'
+                    AND policy_status = 'shadow'
+                    AND agent_key = 'micro_short_label_style'
+                    AND allowed_count > 0
+                    AND id IN (1, 2)
+                ),
+                allowed AS (
+                  SELECT *
+                  FROM (
+                    SELECT
+                      item.*,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY item.segment_id
+                        ORDER BY item.checkpoint_run_id ASC, item.id ASC
+                      ) AS segment_rank
+                    FROM ml_issue_short_label_dynamic_delegate_checkpoint_items item
+                    JOIN checkpoint
+                      ON checkpoint.id = item.checkpoint_run_id
+                     AND checkpoint.sublane_run_id = item.sublane_run_id
+                     AND checkpoint.ledger_run_id = item.ledger_run_id
+                    WHERE item.checkpoint_allowed = 1
+                      AND COALESCE(TRIM(item.block_reason), '') = ''
+                      AND item.subpolicy_name = 'short_label_dynamic_expression_delegate'
+                      AND item.checkpoint_action = 'cover_short_label_dynamic_delegate_to_dynamic_ck3'
+                  )
+                  WHERE segment_rank = 1
+                )
+                SELECT COALESCE(NULLIF(dynamic_issue_kind, ''), 'unknown') AS dynamic_issue_kind, COUNT(*) AS count
+                FROM allowed
+                GROUP BY COALESCE(NULLIF(dynamic_issue_kind, ''), 'unknown')
+                ORDER BY count DESC, dynamic_issue_kind
+                """
+            ).fetchall()
+        }
+    else:
+        short_label_dynamic_delegate = {
+            "checkpoint_run_ids": "",
+            "allowed_rows": 0,
+            "distinct_allowed_segments": 0,
+            "already_closed_before": 0,
+            "pending_before": 0,
+            "closed": 0,
+            "blocked": 0,
+            "net_gain": 0,
+            "status": "unavailable",
+        }
+        short_label_dynamic_delegate_kind_split = {}
+
+    short_label_single_issue_system_tooltip_tables_ready = (
+        _table_exists(con, "ml_issue_short_label_single_issue_system_tooltip_checkpoint_runs")
+        and _table_exists(con, "ml_issue_short_label_single_issue_system_tooltip_checkpoint_items")
+    )
+    if short_label_single_issue_system_tooltip_tables_ready:
+        short_label_single_issue_system_tooltip = _one(
+            con,
+            """
+            WITH checkpoint AS (
+              SELECT *
+              FROM ml_issue_short_label_single_issue_system_tooltip_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND rule_version = 'issue_short_label_single_issue_system_tooltip_checkpoint_v1'
+                AND checkpoint_status = 'ready_for_shadow_lifecycle_policy'
+                AND agent_key = 'micro_short_label_style'
+                AND issue_family = 'short_label_style_microagent'
+                AND checkpoint_allowed_count > 0
+                AND id IN (1)
+            ),
+            allowed_rows AS (
+              SELECT item.*
+              FROM ml_issue_short_label_single_issue_system_tooltip_checkpoint_items item
+              JOIN checkpoint
+                ON checkpoint.id = item.checkpoint_run_id
+               AND checkpoint.ledger_run_id = item.ledger_run_id
+               AND checkpoint.segment_state_run_id = item.segment_state_run_id
+              WHERE item.checkpoint_allowed = 1
+                AND COALESCE(TRIM(item.block_reason), '') = ''
+                AND item.profile = 'system_tooltip_single_issue_clean'
+                AND item.checkpoint_action = 'close_short_label_single_issue_system_tooltip'
+                AND item.token_count >= 1
+                AND item.word_count <= 8
+                AND (
+                      item.relative_path = 'effects_l_spanish.yml'
+                   OR item.relative_path LIKE 'triggers/%'
+                )
+            ),
+            allowed AS (
+              SELECT *
+              FROM (
+                SELECT
+                  allowed_rows.*,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY allowed_rows.segment_id
+                    ORDER BY allowed_rows.checkpoint_run_id ASC, allowed_rows.id ASC
+                  ) AS segment_rank
+                FROM allowed_rows
+              )
+              WHERE segment_rank = 1
+            ),
+            ledger_summary AS (
+              SELECT
+                run_id,
+                segment_id,
+                COUNT(*) AS ledger_issue_count,
+                SUM(CASE WHEN lower(COALESCE(issue_severity, '')) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_ledger_issue_count
+              FROM ml_issue_ledger_items
+              WHERE status = 'open'
+              GROUP BY run_id, segment_id
+            ),
+            item_eval AS (
+              SELECT
+                allowed.segment_id,
+                CASE
+                  WHEN previous_state.state_group = 'closed'
+                    THEN 'already_closed_before'
+                  WHEN current_state.final_state = 'closed_auto_confirmed_short_label_single_issue_system_tooltip_lifecycle'
+                    THEN 'closed'
+                  WHEN previous_state.review_state IN ('human_locked', 'human_confirmed')
+                    OR COALESCE(confirmation.locked, 0) = 1
+                    THEN 'human_locked_or_confirmed'
+                  WHEN previous_state.final_state != 'reopen_auto_confirmed_autofix'
+                    THEN 'state_not_reopen_auto_confirmed_autofix'
+                  WHEN previous_state.state_group != 'pending'
+                    THEN 'state_not_pending'
+                  WHEN previous_state.review_state != 'auto_confirmed'
+                    THEN 'review_state_not_auto_confirmed'
+                  WHEN previous_state.confirmed_matches_output != 1
+                    THEN 'confirmation_output_mismatch'
+                  WHEN previous_state.needs_output_apply != 0
+                    THEN 'needs_output_apply'
+                  WHEN previous_state.needs_reopen != 1
+                    THEN 'needs_reopen_not_set'
+                  WHEN ledger_item.issue_family != 'short_label_style_microagent'
+                    OR ledger_item.issue_kind != 'short_or_compact_label_reopened'
+                    THEN 'ledger_issue_not_short_label_single_issue'
+                  WHEN COALESCE(ledger_summary.ledger_issue_count, 0) != 1
+                    THEN 'other_open_issues_remain'
+                  WHEN COALESCE(ledger_summary.high_ledger_issue_count, 0) > 0
+                    OR COALESCE(issue_summary.high_issue_count, 0) > 0
+                    THEN 'high_issue_or_structure_block'
+                  ELSE 'eligible_but_not_closed'
+                END AS bridge_result
+              FROM allowed
+              LEFT JOIN segment_state_items previous_state
+                ON previous_state.segment_id = allowed.segment_id
+               AND previous_state.run_id = allowed.segment_state_run_id
+              LEFT JOIN segment_state_items current_state
+                ON current_state.segment_id = allowed.segment_id
+               AND current_state.run_id = ?
+              LEFT JOIN segment_confirmations confirmation
+                ON confirmation.segment_id = allowed.segment_id
+              LEFT JOIN ml_issue_ledger_items ledger_item
+                ON ledger_item.id = allowed.ledger_item_id
+               AND ledger_item.run_id = allowed.ledger_run_id
+               AND ledger_item.segment_id = allowed.segment_id
+              LEFT JOIN ledger_summary
+                ON ledger_summary.run_id = allowed.ledger_run_id
+               AND ledger_summary.segment_id = allowed.segment_id
+              LEFT JOIN (
+                SELECT
+                  segment_id,
+                  COUNT(*) AS issue_count,
+                  SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                FROM issues
+                GROUP BY segment_id
+              ) issue_summary ON issue_summary.segment_id = allowed.segment_id
+            )
+            SELECT
+              (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+              (SELECT COUNT(*) FROM allowed_rows) AS allowed_rows,
+              (SELECT COUNT(*) FROM allowed) AS distinct_allowed_segments,
+              SUM(CASE WHEN bridge_result = 'already_closed_before' THEN 1 ELSE 0 END) AS already_closed_before,
+              SUM(CASE WHEN bridge_result IN ('closed', 'eligible_but_not_closed') THEN 1 ELSE 0 END) AS pending_before,
+              SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+              SUM(CASE WHEN bridge_result NOT IN ('closed', 'already_closed_before') THEN 1 ELSE 0 END) AS blocked,
+              SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS net_gain,
+              CASE
+                WHEN SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) > 0
+                  THEN 'shadow_lifecycle_bridge_cumulative'
+                WHEN (SELECT COUNT(*) FROM allowed) > 0
+                  THEN 'shadow_ready_cumulative'
+                ELSE 'unavailable'
+              END AS status
+            FROM item_eval
+            """,
+            (run_id,),
+        )
+        short_label_single_issue_system_tooltip_profile_split = {
+            str(row["profile"]): _int(row["count"])
+            for row in con.execute(
+                """
+                SELECT COALESCE(NULLIF(profile, ''), 'unknown') AS profile, COUNT(*) AS count
+                FROM ml_issue_short_label_single_issue_system_tooltip_checkpoint_items
+                WHERE checkpoint_run_id = 1
+                  AND checkpoint_allowed = 1
+                  AND COALESCE(TRIM(block_reason), '') = ''
+                  AND profile = 'system_tooltip_single_issue_clean'
+                  AND checkpoint_action = 'close_short_label_single_issue_system_tooltip'
+                  AND token_count >= 1
+                  AND word_count <= 8
+                  AND (
+                        relative_path = 'effects_l_spanish.yml'
+                     OR relative_path LIKE 'triggers/%'
+                  )
+                GROUP BY COALESCE(NULLIF(profile, ''), 'unknown')
+                ORDER BY count DESC, profile
+                """
+            ).fetchall()
+        }
+        short_label_single_issue_system_tooltip_path_split = {
+            str(row["relative_path"]): _int(row["count"])
+            for row in con.execute(
+                """
+                SELECT relative_path, COUNT(*) AS count
+                FROM ml_issue_short_label_single_issue_system_tooltip_checkpoint_items
+                WHERE checkpoint_run_id = 1
+                  AND checkpoint_allowed = 1
+                  AND COALESCE(TRIM(block_reason), '') = ''
+                  AND profile = 'system_tooltip_single_issue_clean'
+                  AND checkpoint_action = 'close_short_label_single_issue_system_tooltip'
+                  AND token_count >= 1
+                  AND word_count <= 8
+                  AND (
+                        relative_path = 'effects_l_spanish.yml'
+                     OR relative_path LIKE 'triggers/%'
+                  )
+                GROUP BY relative_path
+                ORDER BY count DESC, relative_path
+                """
+            ).fetchall()
+        }
+    else:
+        short_label_single_issue_system_tooltip = {
+            "checkpoint_run_ids": "",
+            "allowed_rows": 0,
+            "distinct_allowed_segments": 0,
+            "already_closed_before": 0,
+            "pending_before": 0,
+            "closed": 0,
+            "blocked": 0,
+            "net_gain": 0,
+            "status": "unavailable",
+        }
+        short_label_single_issue_system_tooltip_profile_split = {}
+        short_label_single_issue_system_tooltip_path_split = {}
+
+    short_label_tokenized_ui_tables_ready = (
+        _table_exists(con, "ml_issue_short_label_tokenized_ui_false_reopen_checkpoint_runs")
+        and _table_exists(con, "ml_issue_short_label_tokenized_ui_false_reopen_checkpoint_items")
+    )
+    if short_label_tokenized_ui_tables_ready:
+        short_label_tokenized_ui = _one(
+            con,
+            """
+            WITH checkpoint AS (
+              SELECT *
+              FROM ml_issue_short_label_tokenized_ui_false_reopen_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND rule_version = 'issue_short_label_tokenized_ui_false_reopen_checkpoint_v1'
+                AND checkpoint_status = 'ready_for_shadow_lifecycle'
+                AND agent_key = 'micro_short_label_tokenized_ui'
+                AND issue_family = 'short_label_style_microagent'
+                AND checkpoint_allowed_count > 0
+                AND id = 2
+            ),
+            allowed AS (
+              SELECT *
+              FROM (
+                SELECT
+                  item.*,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY item.segment_id
+                    ORDER BY item.checkpoint_run_id ASC, item.id ASC
+                  ) AS segment_rank
+                FROM ml_issue_short_label_tokenized_ui_false_reopen_checkpoint_items item
+                JOIN checkpoint
+                  ON checkpoint.id = item.checkpoint_run_id
+                 AND checkpoint.ledger_run_id = item.ledger_run_id
+                 AND checkpoint.segment_state_run_id = item.segment_state_run_id
+                WHERE item.checkpoint_run_id = 2
+                  AND item.checkpoint_allowed = 1
+                  AND item.checkpoint_action = 'cover_short_label_tokenized_ui_false_reopen'
+                  AND COALESCE(TRIM(item.block_reason), '') = ''
+              )
+              WHERE segment_rank = 1
+            ),
+            closed AS (
+              SELECT COUNT(*) AS closed
+              FROM allowed
+              JOIN segment_state_items state
+                ON state.segment_id = allowed.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state = 'closed_auto_confirmed_short_label_tokenized_ui_false_reopen_lifecycle'
+            )
+            SELECT
+              (SELECT GROUP_CONCAT(id) FROM checkpoint) AS checkpoint_run_ids,
+              COALESCE((SELECT SUM(total_candidates) FROM checkpoint), 0) AS candidates,
+              COALESCE((SELECT COUNT(*) FROM allowed), 0) AS allowed,
+              COALESCE(closed.closed, 0) AS closed,
+              CASE
+                WHEN COALESCE((SELECT COUNT(*) FROM allowed), 0) - COALESCE(closed.closed, 0) > 0
+                  THEN COALESCE((SELECT COUNT(*) FROM allowed), 0) - COALESCE(closed.closed, 0)
+                ELSE 0
+              END AS blocked,
+              CASE
+                WHEN COALESCE(closed.closed, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN COALESCE((SELECT COUNT(*) FROM allowed), 0) > 0 THEN 'shadow_ready'
+                ELSE 'unavailable'
+              END AS status
+            FROM closed
+            """,
+            (run_id,),
+        )
+    else:
+        short_label_tokenized_ui = {
+            "checkpoint_run_ids": "",
+            "candidates": 0,
+            "allowed": 0,
+            "closed": 0,
+            "blocked": 0,
+            "status": "unavailable",
+        }
+
+    gender_longform_false_reopen_tables_ready = (
+        _table_exists(con, "ml_issue_gender_longform_false_reopen_checkpoint_runs")
+        and _table_exists(con, "ml_issue_gender_longform_false_reopen_checkpoint_items")
+    )
+    if gender_longform_false_reopen_tables_ready:
+        gender_longform_false_reopen = _one(
+            con,
+            """
+            WITH checkpoint AS (
+              SELECT *
+              FROM ml_issue_gender_longform_false_reopen_checkpoint_runs
+              WHERE finished_at IS NOT NULL
+                AND rule_version = 'issue_gender_longform_false_reopen_checkpoint_v1'
+                AND checkpoint_status = 'ready_for_shadow_lifecycle_bridge'
+                AND production_release_allowed = 0
+                AND checkpoint_allowed_count > 0
+            ),
+            closed AS (
+              SELECT COUNT(DISTINCT item.segment_id) AS closed_by_bridge
+              FROM ml_issue_gender_longform_false_reopen_checkpoint_items item
+              JOIN checkpoint
+                ON checkpoint.id = item.checkpoint_run_id
+               AND checkpoint.route_run_id = item.route_run_id
+               AND checkpoint.diagnostic_run_id = item.diagnostic_run_id
+              JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state = 'closed_auto_confirmed_gender_longform_false_reopen_context'
+            )
+            SELECT
+              GROUP_CONCAT(checkpoint.id) AS checkpoint_id,
+              SUM(checkpoint.total_candidates) AS candidates,
+              COALESCE(closed.closed_by_bridge, 0) AS closed,
+              CASE
+                WHEN SUM(checkpoint.total_candidates) - COALESCE(closed.closed_by_bridge, 0) > 0
+                  THEN SUM(checkpoint.total_candidates) - COALESCE(closed.closed_by_bridge, 0)
+                ELSE 0
+              END AS blocked,
+              CASE
+                WHEN COALESCE(closed.closed_by_bridge, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN SUM(checkpoint.checkpoint_allowed_count) > 0 THEN 'shadow_ready'
+                ELSE 'shadow_blocked'
+              END AS status
+            FROM checkpoint, closed
+            """,
+            (run_id,),
+        )
+        gender_longform_false_reopen_routes = [
+            dict(row)
+            for row in con.execute(
+                """
+                WITH checkpoint AS (
+                  SELECT *
+                  FROM ml_issue_gender_longform_false_reopen_checkpoint_runs
+                  WHERE finished_at IS NOT NULL
+                    AND rule_version = 'issue_gender_longform_false_reopen_checkpoint_v1'
+                    AND checkpoint_status = 'ready_for_shadow_lifecycle_bridge'
+                    AND production_release_allowed = 0
+                    AND checkpoint_allowed_count > 0
+                )
+                SELECT item.route_key, COUNT(*) AS count
+                FROM ml_issue_gender_longform_false_reopen_checkpoint_items item
+                JOIN checkpoint
+                  ON checkpoint.id = item.checkpoint_run_id
+                 AND checkpoint.route_run_id = item.route_run_id
+                 AND checkpoint.diagnostic_run_id = item.diagnostic_run_id
+                JOIN segment_state_items state
+                  ON state.segment_id = item.segment_id
+                 AND state.run_id = ?
+                WHERE state.final_state = 'closed_auto_confirmed_gender_longform_false_reopen_context'
+                GROUP BY item.route_key
+                ORDER BY count DESC, item.route_key
+                """,
+                (run_id,),
+            ).fetchall()
+        ]
+    else:
+        gender_longform_false_reopen = {
+            "checkpoint_id": 0,
+            "candidates": 0,
+            "closed": 0,
+            "blocked": 0,
+            "status": "unavailable",
+        }
+        gender_longform_false_reopen_routes = []
+
+    pure_no_token_semantic_tables_ready = (
+        _table_exists(con, "ml_issue_short_label_pure_no_token_segment_lifecycle_bridge_proposal_runs")
+        and _table_exists(con, "ml_issue_short_label_pure_no_token_segment_lifecycle_bridge_proposal_items")
+    )
+    if pure_no_token_semantic_tables_ready:
+        short_label_pure_no_token_semantic = _one(
+            con,
+            """
+            WITH proposal AS (
+              SELECT *
+              FROM ml_issue_short_label_pure_no_token_segment_lifecycle_bridge_proposal_runs
+              WHERE finished_at IS NOT NULL
+                AND id = 9
+                AND bridge_status = 'proposal_shadow'
+                AND production_release_allowed = 0
+                AND bridge_candidate = 0
+                AND ready_count > 0
+                AND source_coverage_run_id = 143
+                AND source_checkpoint_run_id = 6
+              LIMIT 1
+            ),
+            closed AS (
+              SELECT COUNT(*) AS closed_by_bridge
+              FROM ml_issue_short_label_pure_no_token_segment_lifecycle_bridge_proposal_items item
+              JOIN proposal ON proposal.id = item.run_id
+              JOIN segment_state_items state
+                ON state.segment_id = item.segment_id
+               AND state.run_id = ?
+              WHERE state.final_state = 'closed_auto_confirmed_short_label_pure_no_token_semantic_lifecycle'
+            )
+            SELECT
+              proposal.id AS bridge_run_id,
+              proposal.source_coverage_run_id AS coverage_run_id,
+              proposal.source_checkpoint_run_id AS checkpoint_id,
+              proposal.ready_count AS ready,
+              proposal.blocked_count AS blocked,
+              COALESCE(closed.closed_by_bridge, 0) AS closed,
+              proposal.estimated_closed_gain AS estimated_closed_gain,
+              CASE
+                WHEN COALESCE(closed.closed_by_bridge, 0) > 0 THEN 'shadow_lifecycle_bridge'
+                WHEN proposal.ready_count > 0 THEN 'shadow_ready'
+                ELSE 'shadow_blocked'
+              END AS status
+            FROM proposal, closed
+            """,
+            (run_id,),
+        )
+    else:
+        short_label_pure_no_token_semantic = {
+            "bridge_run_id": 0,
+            "coverage_run_id": 0,
+            "checkpoint_id": 0,
+            "ready": 0,
+            "blocked": 0,
+            "closed": 0,
+            "estimated_closed_gain": 0,
+            "status": "unavailable",
+        }
+
+    governed_bridge_pending = _int(select_cstring.get("pending"))
+    model_watch = _int(
+        _one(
+            con,
+            f"""
+            SELECT COUNT(*) AS total
+            FROM segment_state_items s
+            WHERE s.run_id = ?
+              AND s.final_state = 'reopen_auto_confirmed_autofix'
+              AND s.confirmed_matches_output = 1
+              AND s.output_state = 'output_present'
+              AND s.segment_id NOT IN ({bridge_pending_sql})
+              AND NOT EXISTS (
+                SELECT 1
+                FROM issues i
+                WHERE i.segment_id = s.segment_id
+                  AND lower(i.severity) IN ('high', 'error', 'critical')
+              )
+            """,
+            (run_id, run_id),
+        ).get("total")
+    )
+    actionable_pending = _int(
+        _one(
+            con,
+            f"""
+            SELECT COUNT(*) AS total
+            FROM segment_state_items s
+            WHERE s.run_id = ?
+              AND s.state_group = 'pending'
+              AND (
+                s.needs_output_apply = 1
+                OR s.output_state IN ('output_missing', 'confirmation_mismatch')
+                OR s.final_state IN (
+                  'pending_unknown_open',
+                  'pending_output_missing_real',
+                  'pending_blocked_structure',
+                  'pending_human_review',
+                  'reopen_auto_confirmed'
+                )
+                OR EXISTS (
+                  SELECT 1
+                  FROM issues i
+                  WHERE i.segment_id = s.segment_id
+                    AND lower(i.severity) IN ('high', 'error', 'critical')
+                )
+                OR s.segment_id IN ({bridge_pending_sql})
+              )
+            """,
+            (run_id, run_id),
+        ).get("total")
+    )
+    actionable_without_bridge = max(actionable_pending - governed_bridge_pending, 0)
+    closed = _int(summary.get("closed_count"))
+    raw_pending = _int(summary.get("pending_count"))
+    needs_apply = _int(summary.get("output_apply_pending_count"))
+    learning_backlog = max(raw_pending - actionable_pending, 0)
+    distribution = [
+        {"name": "Consolidado", "value": closed, "group": "closed_consolidated", "color": "#10b981"},
+        {"name": "Pendencia acionavel", "value": actionable_without_bridge, "group": "actionable_pending", "color": "#f59e0b"},
+        {"name": "Suspeita ML / Watch", "value": model_watch, "group": "model_suspicion_watch", "color": "#8b5cf6"},
+        {"name": "Ponte governada pendente", "value": governed_bridge_pending, "group": "governed_bridge_pending", "color": "#38bdf8"},
+    ]
+    return {
+        "run_id": run_id,
+        "closed_consolidated": closed,
+        "actionable_pending": actionable_pending,
+        "actionable_pending_without_bridge": actionable_without_bridge,
+        "model_suspicion_watch": model_watch,
+        "governed_bridge_pending": governed_bridge_pending,
+        "raw_pending": raw_pending,
+        "learning_backlog": learning_backlog,
+        "needs_apply": needs_apply,
+        "select_cstring": {
+            "total": _int(select_cstring.get("total")),
+            "closed": _int(select_cstring.get("closed")),
+            "pending": governed_bridge_pending,
+        },
+        "select_cstring_segment_bridge": {
+            "proposal_run_id": _int(select_cstring_segment_bridge.get("proposal_run_id")),
+            "candidates": _int(select_cstring_segment_bridge.get("candidates")),
+            "closed": _int(select_cstring_segment_bridge.get("closed")),
+            "blocked": _int(select_cstring_segment_bridge.get("blocked")),
+            "review_required": _int(select_cstring_segment_bridge.get("review_required")),
+            "production_release_allowed": _int(select_cstring_segment_bridge.get("production_release_allowed")),
+        },
+        "select_cstring_segment_bridge_proposal_run_id": _int(select_cstring_segment_bridge.get("proposal_run_id")),
+        "select_cstring_segment_bridge_candidates": _int(select_cstring_segment_bridge.get("candidates")),
+        "select_cstring_segment_bridge_closed": _int(select_cstring_segment_bridge.get("closed")),
+        "select_cstring_segment_bridge_blocked": _int(select_cstring_segment_bridge.get("blocked")),
+        "select_cstring_segment_bridge_review_required": _int(select_cstring_segment_bridge.get("review_required")),
+        "select_cstring_segment_bridge_production_release_allowed": _int(select_cstring_segment_bridge.get("production_release_allowed")),
+        "short_semantic_tier1_dry_run_id": _int(short_semantic_tier1.get("dry_run_id")),
+        "short_semantic_tier1_dry_run_ids": str(short_semantic_tier1.get("dry_run_ids") or short_semantic_tier1.get("dry_run_id") or ""),
+        "short_semantic_tier1_candidates": _int(short_semantic_tier1.get("candidates")),
+        "short_semantic_tier1_allowed": _int(short_semantic_tier1.get("allowed")),
+        "short_semantic_tier1_blocked": _int(short_semantic_tier1.get("blocked")),
+        "short_semantic_tier1_closed_by_bridge": _int(short_semantic_tier1.get("closed_by_bridge")),
+        "short_semantic_tier1_blocked_by_bridge": _int(short_semantic_tier1.get("blocked_by_bridge")),
+        "short_semantic_tier1_allowed_rate": _num(short_semantic_tier1.get("allowed_rate")),
+        "short_semantic_tier1_checkpoint_precision_proxy": _num(short_semantic_tier1.get("checkpoint_precision_proxy")),
+        "short_semantic_tier1_status": short_semantic_tier1.get("status") or "unavailable",
+        "semantic_short_label_pair_bridge_dry_run_id": _int(semantic_short_label_pair_bridge.get("dry_run_id")),
+        "semantic_short_label_pair_bridge_checkpoint_id": _int(semantic_short_label_pair_bridge.get("checkpoint_id")),
+        "semantic_short_label_pair_bridge_allowed": _int(semantic_short_label_pair_bridge.get("allowed")),
+        "semantic_short_label_pair_bridge_closed": _int(semantic_short_label_pair_bridge.get("closed")),
+        "semantic_short_label_pair_bridge_blocked": _int(semantic_short_label_pair_bridge.get("blocked")),
+        "semantic_short_label_pair_bridge_precision_proxy": _num(semantic_short_label_pair_bridge.get("precision_proxy")),
+        "semantic_short_label_pair_bridge_status": semantic_short_label_pair_bridge.get("status") or "unavailable",
+        "semantic_short_label_pair_guard_profiles": semantic_short_label_pair_bridge.get("guard_profiles") or "",
+        "semantic_short_label_pair_dry_run_ids": semantic_short_label_pair_bridge.get("dry_run_ids")
+        or str(semantic_short_label_pair_bridge.get("dry_run_id") or ""),
+        "semantic_short_label_pair_checkpoint_ids": semantic_short_label_pair_bridge.get("checkpoint_ids")
+        or str(semantic_short_label_pair_bridge.get("checkpoint_id") or ""),
+        "semantic_short_label_pair_allowed_total": _int(semantic_short_label_pair_bridge.get("allowed")),
+        "semantic_short_label_pair_closed": _int(semantic_short_label_pair_bridge.get("closed")),
+        "semantic_short_label_pair_blocked": _int(semantic_short_label_pair_bridge.get("blocked")),
+        "semantic_short_label_pair_balanced_audit_safe": 150
+        if "balanced_v1" in str(semantic_short_label_pair_bridge.get("guard_profiles") or "")
+        else 0,
+        "semantic_short_label_pair_balanced_audit_total": 150
+        if "balanced_v1" in str(semantic_short_label_pair_bridge.get("guard_profiles") or "")
+        else 0,
+        "short_label_compact_ui_semantic_companion_bridge_run_ids": (
+            short_label_compact_ui_semantic_companion.get("bridge_run_ids") or ""
+        ),
+        "short_label_compact_ui_semantic_companion_candidates": _int(
+            short_label_compact_ui_semantic_companion.get("candidates")
+        ),
+        "short_label_compact_ui_semantic_companion_closed": _int(
+            short_label_compact_ui_semantic_companion.get("closed")
+        ),
+        "short_label_compact_ui_semantic_companion_blocked": _int(
+            short_label_compact_ui_semantic_companion.get("blocked")
+        ),
+        "short_label_compact_ui_semantic_companion_status": (
+            short_label_compact_ui_semantic_companion.get("status") or "unavailable"
+        ),
+        "short_label_semantic_pair_bridge_run_ids": short_label_semantic_pair.get("bridge_run_ids") or "",
+        "short_label_semantic_pair_review_jsonl": short_label_semantic_pair.get("review_jsonl") or "",
+        "short_label_semantic_pair_candidates": _int(short_label_semantic_pair.get("candidates")),
+        "short_label_semantic_pair_closed": _int(short_label_semantic_pair.get("closed")),
+        "short_label_semantic_pair_blocked": _int(short_label_semantic_pair.get("blocked")),
+        "short_label_semantic_pair_closed_quote_fragment": _int(
+            short_label_semantic_pair.get("closed_quote_fragment")
+        ),
+        "short_label_semantic_pair_closed_nominal_label": _int(
+            short_label_semantic_pair.get("closed_nominal_label")
+        ),
+        "short_label_semantic_pair_closed_short_phrase": _int(
+            short_label_semantic_pair.get("closed_short_phrase")
+        ),
+        "short_label_semantic_pair_closed_compact_option": _int(
+            short_label_semantic_pair.get("closed_compact_option")
+        ),
+        "short_label_semantic_pair_status": short_label_semantic_pair.get("status") or "unavailable",
+        "short_label_semantic_load_tips_bridge_run_ids": (
+            short_label_semantic_load_tips.get("bridge_run_ids") or ""
+        ),
+        "short_label_semantic_load_tips_candidates": _int(
+            short_label_semantic_load_tips.get("candidates")
+        ),
+        "short_label_semantic_load_tips_ready": _int(short_label_semantic_load_tips.get("ready")),
+        "short_label_semantic_load_tips_closed": _int(short_label_semantic_load_tips.get("closed")),
+        "short_label_semantic_load_tips_blocked": _int(short_label_semantic_load_tips.get("blocked")),
+        "short_label_semantic_load_tips_status": (
+            short_label_semantic_load_tips.get("status") or "unavailable"
+        ),
+        "dynamic_ck3_pattern_checkpoint_run_ids": dynamic_ck3_pattern.get("checkpoint_run_ids") or "",
+        "dynamic_ck3_pattern_candidates": _int(dynamic_ck3_pattern.get("candidates")),
+        "dynamic_ck3_pattern_allowed": _int(dynamic_ck3_pattern.get("allowed")),
+        "dynamic_ck3_pattern_closed": _int(dynamic_ck3_pattern.get("closed")),
+        "dynamic_ck3_pattern_blocked": _int(dynamic_ck3_pattern.get("blocked")),
+        "dynamic_ck3_pattern_status": dynamic_ck3_pattern.get("status") or "unavailable",
+        "dynamic_ck3_pattern_subpolicies_closed": dynamic_ck3_pattern_subpolicies_closed,
+        "short_label_dynamic_delegate_checkpoint_run_ids": (
+            short_label_dynamic_delegate.get("checkpoint_run_ids") or ""
+        ),
+        "short_label_dynamic_delegate_allowed_rows": _int(short_label_dynamic_delegate.get("allowed_rows")),
+        "short_label_dynamic_delegate_distinct_allowed_segments": _int(
+            short_label_dynamic_delegate.get("distinct_allowed_segments")
+        ),
+        "short_label_dynamic_delegate_already_closed_before": _int(
+            short_label_dynamic_delegate.get("already_closed_before")
+        ),
+        "short_label_dynamic_delegate_pending_before": _int(short_label_dynamic_delegate.get("pending_before")),
+        "short_label_dynamic_delegate_closed": _int(short_label_dynamic_delegate.get("closed")),
+        "short_label_dynamic_delegate_blocked": _int(short_label_dynamic_delegate.get("blocked")),
+        "short_label_dynamic_delegate_net_gain": _int(short_label_dynamic_delegate.get("net_gain")),
+        "short_label_dynamic_delegate_status": short_label_dynamic_delegate.get("status") or "unavailable",
+        "short_label_dynamic_delegate_kind_split": short_label_dynamic_delegate_kind_split,
+        "short_label_single_issue_system_tooltip_checkpoint_run_ids": (
+            short_label_single_issue_system_tooltip.get("checkpoint_run_ids") or ""
+        ),
+        "short_label_single_issue_system_tooltip_allowed_rows": _int(
+            short_label_single_issue_system_tooltip.get("allowed_rows")
+        ),
+        "short_label_single_issue_system_tooltip_distinct_allowed_segments": _int(
+            short_label_single_issue_system_tooltip.get("distinct_allowed_segments")
+        ),
+        "short_label_single_issue_system_tooltip_already_closed_before": _int(
+            short_label_single_issue_system_tooltip.get("already_closed_before")
+        ),
+        "short_label_single_issue_system_tooltip_pending_before": _int(
+            short_label_single_issue_system_tooltip.get("pending_before")
+        ),
+        "short_label_single_issue_system_tooltip_closed": _int(
+            short_label_single_issue_system_tooltip.get("closed")
+        ),
+        "short_label_single_issue_system_tooltip_blocked": _int(
+            short_label_single_issue_system_tooltip.get("blocked")
+        ),
+        "short_label_single_issue_system_tooltip_net_gain": _int(
+            short_label_single_issue_system_tooltip.get("net_gain")
+        ),
+        "short_label_single_issue_system_tooltip_status": (
+            short_label_single_issue_system_tooltip.get("status") or "unavailable"
+        ),
+        "short_label_single_issue_system_tooltip_profile_split": (
+            short_label_single_issue_system_tooltip_profile_split
+        ),
+        "short_label_single_issue_system_tooltip_path_split": short_label_single_issue_system_tooltip_path_split,
+        "short_label_tokenized_ui_checkpoint_run_ids": short_label_tokenized_ui.get("checkpoint_run_ids") or "",
+        "short_label_tokenized_ui_candidates": _int(short_label_tokenized_ui.get("candidates")),
+        "short_label_tokenized_ui_allowed": _int(short_label_tokenized_ui.get("allowed")),
+        "short_label_tokenized_ui_closed": _int(short_label_tokenized_ui.get("closed")),
+        "short_label_tokenized_ui_blocked": _int(short_label_tokenized_ui.get("blocked")),
+        "short_label_tokenized_ui_status": short_label_tokenized_ui.get("status") or "unavailable",
+        "semantic_short_label_blocked_surface_checkpoint_id": _int(semantic_short_label_blocked_surface.get("checkpoint_id")),
+        "semantic_short_label_blocked_surface_dry_run_id": _int(semantic_short_label_blocked_surface.get("dry_run_id")),
+        "semantic_short_label_blocked_surface_row_guard_profile": semantic_short_label_blocked_surface.get("row_guard_profile") or "",
+        "semantic_short_label_blocked_surface_allowed": _int(semantic_short_label_blocked_surface.get("allowed")),
+        "semantic_short_label_blocked_surface_closed": _int(semantic_short_label_blocked_surface.get("closed")),
+        "semantic_short_label_blocked_surface_blocked": _int(semantic_short_label_blocked_surface.get("blocked")),
+        "semantic_short_label_blocked_surface_precision_proxy": _num(semantic_short_label_blocked_surface.get("precision_proxy")),
+        "semantic_short_label_blocked_surface_status": semantic_short_label_blocked_surface.get("status") or "unavailable",
+        "event_dialogue_option_checkpoint_id": _int(event_dialogue_option.get("checkpoint_id")),
+        "event_dialogue_option_checkpoint_ids": event_dialogue_option.get("checkpoint_ids") or str(event_dialogue_option.get("checkpoint_id") or ""),
+        "event_dialogue_option_dry_run_id": _int(event_dialogue_option.get("dry_run_id")),
+        "event_dialogue_option_row_guard_profile": event_dialogue_option.get("row_guard_profile") or "",
+        "event_dialogue_option_allowed": _int(event_dialogue_option.get("allowed")),
+        "event_dialogue_option_closed": _int(event_dialogue_option.get("closed")),
+        "event_dialogue_option_blocked": _int(event_dialogue_option.get("blocked")),
+        "event_dialogue_option_precision_proxy": _num(event_dialogue_option.get("precision_proxy")),
+        "event_dialogue_option_status": event_dialogue_option.get("status") or "unavailable",
+        "event_context_composer_checkpoint_id": _int(event_context_composer.get("checkpoint_id")),
+        "event_context_composer_dry_run_id": _int(event_context_composer.get("dry_run_id")),
+        "event_context_composer_row_guard_profile": event_context_composer.get("row_guard_profile") or "",
+        "event_context_composer_allowed": _int(event_context_composer.get("allowed")),
+        "event_context_composer_closed": _int(event_context_composer.get("closed")),
+        "event_context_composer_blocked": _int(event_context_composer.get("blocked")),
+        "event_context_composer_precision_proxy": _num(event_context_composer.get("precision_proxy")),
+        "event_context_composer_status": event_context_composer.get("status") or "unavailable",
+        "event_dialogue_boundary_checkpoint_run_ids": event_dialogue_boundary.get("checkpoint_ids") or "",
+        "event_dialogue_boundary_queue_run_ids": event_dialogue_boundary.get("queue_run_ids") or "",
+        "event_dialogue_boundary_candidates": _int(event_dialogue_boundary.get("candidates")),
+        "event_dialogue_boundary_allowed": _int(event_dialogue_boundary.get("allowed")),
+        "event_dialogue_boundary_closed": _int(event_dialogue_boundary.get("closed")),
+        "event_dialogue_boundary_blocked": _int(event_dialogue_boundary.get("blocked")),
+        "event_dialogue_boundary_checkpoint_blocked": _int(event_dialogue_boundary.get("checkpoint_blocked")),
+        "event_dialogue_boundary_status": event_dialogue_boundary.get("status") or "unavailable",
+        "event_outcome_boundary_checkpoint_run_ids": event_outcome_boundary.get("checkpoint_ids") or "",
+        "event_outcome_boundary_queue_run_ids": event_outcome_boundary.get("queue_run_ids") or "",
+        "event_outcome_boundary_candidates": _int(event_outcome_boundary.get("candidates")),
+        "event_outcome_boundary_allowed": _int(event_outcome_boundary.get("allowed")),
+        "event_outcome_boundary_closed": _int(event_outcome_boundary.get("closed")),
+        "event_outcome_boundary_blocked": _int(event_outcome_boundary.get("blocked")),
+        "event_outcome_boundary_status": event_outcome_boundary.get("status") or "unavailable",
+        "event_context_sentence_boundary_checkpoint_run_ids": event_context_sentence_boundary.get("checkpoint_ids") or "",
+        "event_context_sentence_boundary_queue_run_ids": event_context_sentence_boundary.get("queue_run_ids") or "",
+        "event_context_sentence_boundary_candidates": _int(event_context_sentence_boundary.get("candidates")),
+        "event_context_sentence_boundary_allowed": _int(event_context_sentence_boundary.get("allowed")),
+        "event_context_sentence_boundary_closed": _int(event_context_sentence_boundary.get("closed")),
+        "event_context_sentence_boundary_blocked": _int(event_context_sentence_boundary.get("blocked")),
+        "event_context_sentence_boundary_checkpoint_blocked": _int(
+            event_context_sentence_boundary.get("checkpoint_blocked")
+        ),
+        "event_context_sentence_boundary_status": event_context_sentence_boundary.get("status") or "unavailable",
+        "semantic_short_label_blocked_surface_batch_checkpoint_ids": semantic_short_label_blocked_surface_batch.get("checkpoint_ids") or "",
+        "semantic_short_label_blocked_surface_batch_dry_run_id": _int(semantic_short_label_blocked_surface_batch.get("dry_run_id")),
+        "semantic_short_label_blocked_surface_batch_allowed": _int(semantic_short_label_blocked_surface_batch.get("allowed")),
+        "semantic_short_label_blocked_surface_batch_closed": _int(semantic_short_label_blocked_surface_batch.get("closed")),
+        "semantic_short_label_blocked_surface_batch_blocked": _int(semantic_short_label_blocked_surface_batch.get("blocked")),
+        "semantic_short_label_blocked_surface_batch_already_closed": _int(semantic_short_label_blocked_surface_batch.get("already_closed")),
+        "semantic_short_label_blocked_surface_batch_status": semantic_short_label_blocked_surface_batch.get("status") or "unavailable",
+        "semantic_short_label_blocked_surface_batch_by_agent": semantic_short_label_blocked_surface_batch.get("by_agent") or [],
+        "semantic_short_label_blocked_surface_run36_checkpoint_ids": semantic_short_label_blocked_surface_run36.get("checkpoint_ids") or "",
+        "semantic_short_label_blocked_surface_run36_dry_run_id": _int(semantic_short_label_blocked_surface_run36.get("dry_run_id")),
+        "semantic_short_label_blocked_surface_run36_allowed": _int(semantic_short_label_blocked_surface_run36.get("allowed")),
+        "semantic_short_label_blocked_surface_run36_closed": _int(semantic_short_label_blocked_surface_run36.get("closed")),
+        "semantic_short_label_blocked_surface_run36_blocked": _int(semantic_short_label_blocked_surface_run36.get("blocked")),
+        "semantic_short_label_blocked_surface_run36_already_closed": _int(semantic_short_label_blocked_surface_run36.get("already_closed")),
+        "semantic_short_label_blocked_surface_run36_status": semantic_short_label_blocked_surface_run36.get("status") or "unavailable",
+        "semantic_short_label_blocked_surface_run36_by_agent": semantic_short_label_blocked_surface_run36.get("by_agent") or [],
+        "autofix_unknown_event_composition_checkpoint_id": _int(autofix_unknown_event_composition.get("checkpoint_id")),
+        "autofix_unknown_event_composition_bridge_run_id": _int(autofix_unknown_event_composition.get("bridge_run_id")),
+        "autofix_unknown_event_composition_allowed": _int(autofix_unknown_event_composition.get("allowed")),
+        "autofix_unknown_event_composition_ready": _int(autofix_unknown_event_composition.get("ready")),
+        "autofix_unknown_event_composition_partial": _int(autofix_unknown_event_composition.get("partial")),
+        "autofix_unknown_event_composition_blocked": _int(autofix_unknown_event_composition.get("blocked")),
+        "autofix_unknown_event_composition_closed": _int(autofix_unknown_event_composition.get("closed")),
+        "autofix_unknown_event_composition_status": autofix_unknown_event_composition.get("status") or "unavailable",
+        "autofix_unknown_event_semantic_companion_bridge_run_id": _int(
+            autofix_unknown_event_semantic_companion.get("bridge_run_id")
+        ),
+        "autofix_unknown_event_semantic_companion_event_bridge_run_id": _int(
+            autofix_unknown_event_semantic_companion.get("event_bridge_run_id")
+        ),
+        "autofix_unknown_event_semantic_companion_candidates": _int(
+            autofix_unknown_event_semantic_companion.get("candidates")
+        ),
+        "autofix_unknown_event_semantic_companion_ready": _int(
+            autofix_unknown_event_semantic_companion.get("ready")
+        ),
+        "autofix_unknown_event_semantic_companion_closed": _int(
+            autofix_unknown_event_semantic_companion.get("closed")
+        ),
+        "autofix_unknown_event_semantic_companion_blocked": _int(
+            autofix_unknown_event_semantic_companion.get("blocked")
+        ),
+        "autofix_unknown_event_semantic_companion_status": autofix_unknown_event_semantic_companion.get("status")
+        or "unavailable",
+        "event_surface_short_label_companion_bridge_run_id": _int(
+            event_surface_short_label_companion.get("bridge_run_id")
+        ),
+        "event_surface_short_label_companion_candidates": _int(
+            event_surface_short_label_companion.get("candidates")
+        ),
+        "event_surface_short_label_companion_ready": _int(event_surface_short_label_companion.get("ready")),
+        "event_surface_short_label_companion_closed": _int(event_surface_short_label_companion.get("closed")),
+        "event_surface_short_label_companion_blocked": _int(event_surface_short_label_companion.get("blocked")),
+        "event_surface_short_label_companion_estimated_closed_gain": _int(
+            event_surface_short_label_companion.get("estimated_closed_gain")
+        ),
+        "event_surface_short_label_companion_status": event_surface_short_label_companion.get("status")
+        or "unavailable",
+        "autofix_unknown_surface_semantic_coverage_run_ids": autofix_unknown_surface_semantic.get("coverage_run_ids") or "",
+        "autofix_unknown_surface_semantic_candidates": _int(autofix_unknown_surface_semantic.get("candidates")),
+        "autofix_unknown_surface_semantic_closed": _int(autofix_unknown_surface_semantic.get("closed")),
+        "autofix_unknown_surface_semantic_blocked": _int(autofix_unknown_surface_semantic.get("blocked")),
+        "autofix_unknown_surface_semantic_status": autofix_unknown_surface_semantic.get("status") or "unavailable",
+        "autofix_unknown_semantic_companion_building_checkpoint_run_ids": (
+            autofix_unknown_semantic_companion_building.get("checkpoint_run_ids") or ""
+        ),
+        "autofix_unknown_semantic_companion_building_candidates": _int(
+            autofix_unknown_semantic_companion_building.get("candidates")
+        ),
+        "autofix_unknown_semantic_companion_building_allowed": _int(
+            autofix_unknown_semantic_companion_building.get("allowed")
+        ),
+        "autofix_unknown_semantic_companion_building_closed": _int(
+            autofix_unknown_semantic_companion_building.get("closed")
+        ),
+        "autofix_unknown_semantic_companion_building_blocked": _int(
+            autofix_unknown_semantic_companion_building.get("blocked")
+        ),
+        "autofix_unknown_semantic_companion_building_status": (
+            autofix_unknown_semantic_companion_building.get("status") or "unavailable"
+        ),
+        "autofix_unknown_semantic_companion_rule_effect_checkpoint_run_ids": (
+            autofix_unknown_semantic_companion_rule_effect.get("checkpoint_run_ids") or ""
+        ),
+        "autofix_unknown_semantic_companion_rule_effect_candidates": _int(
+            autofix_unknown_semantic_companion_rule_effect.get("candidates")
+        ),
+        "autofix_unknown_semantic_companion_rule_effect_allowed": _int(
+            autofix_unknown_semantic_companion_rule_effect.get("allowed")
+        ),
+        "autofix_unknown_semantic_companion_rule_effect_closed": _int(
+            autofix_unknown_semantic_companion_rule_effect.get("closed")
+        ),
+        "autofix_unknown_semantic_companion_rule_effect_blocked": _int(
+            autofix_unknown_semantic_companion_rule_effect.get("blocked")
+        ),
+        "autofix_unknown_semantic_companion_rule_effect_status": (
+            autofix_unknown_semantic_companion_rule_effect.get("status") or "unavailable"
+        ),
+        "autofix_unknown_surface_proposal_run_ids": autofix_unknown_surface.get("proposal_run_ids") or "",
+        "autofix_unknown_surface_checkpoint_run_ids": autofix_unknown_surface.get("checkpoint_run_ids") or "",
+        "autofix_unknown_surface_ready_items_total": _int(autofix_unknown_surface.get("ready_items_total")),
+        "autofix_unknown_surface_ready_segments_distinct": _int(autofix_unknown_surface.get("ready_segments_distinct")),
+        "autofix_unknown_surface_closed": _int(autofix_unknown_surface.get("closed")),
+        "autofix_unknown_surface_blocked": _int(autofix_unknown_surface.get("blocked")),
+        "autofix_unknown_surface_status": autofix_unknown_surface.get("status") or "unavailable",
+        "autofix_unknown_domain_guarded_checkpoint_run_ids": (
+            autofix_unknown_domain_guarded.get("checkpoint_run_ids") or ""
+        ),
+        "autofix_unknown_domain_guarded_allowed_rows": _int(
+            autofix_unknown_domain_guarded.get("allowed_rows")
+        ),
+        "autofix_unknown_domain_guarded_distinct_allowed_segments": _int(
+            autofix_unknown_domain_guarded.get("distinct_allowed_segments")
+        ),
+        "autofix_unknown_domain_guarded_already_closed_before": _int(
+            autofix_unknown_domain_guarded.get("already_closed_before")
+        ),
+        "autofix_unknown_domain_guarded_pending_before": _int(
+            autofix_unknown_domain_guarded.get("pending_before")
+        ),
+        "autofix_unknown_domain_guarded_closed": _int(autofix_unknown_domain_guarded.get("closed")),
+        "autofix_unknown_domain_guarded_blocked": _int(autofix_unknown_domain_guarded.get("blocked")),
+        "autofix_unknown_domain_guarded_net_gain": _int(autofix_unknown_domain_guarded.get("net_gain")),
+        "autofix_unknown_domain_guarded_status": autofix_unknown_domain_guarded.get("status") or "unavailable",
+        "autofix_unknown_domain_guarded_subpolicy_split": autofix_unknown_domain_guarded_subpolicy_split,
+        "autofix_unknown_domain_guarded_cluster_split": autofix_unknown_domain_guarded_cluster_split,
+        "autofix_unknown_domain_guarded_reviewed_checkpoint_run_ids": (
+            autofix_unknown_domain_guarded_reviewed.get("checkpoint_run_ids") or ""
+        ),
+        "autofix_unknown_domain_guarded_reviewed_candidates": _int(
+            autofix_unknown_domain_guarded_reviewed.get("candidates")
+        ),
+        "autofix_unknown_domain_guarded_reviewed_closed": _int(
+            autofix_unknown_domain_guarded_reviewed.get("closed")
+        ),
+        "autofix_unknown_domain_guarded_reviewed_blocked": _int(
+            autofix_unknown_domain_guarded_reviewed.get("blocked")
+        ),
+        "autofix_unknown_domain_guarded_reviewed_status": (
+            autofix_unknown_domain_guarded_reviewed.get("status") or "unavailable"
+        ),
+        "short_label_pure_no_token_domain_checkpoint_id": short_label_pure_no_token_domain.get("checkpoint_id") or "",
+        "short_label_pure_no_token_domain_shadow_run_id": short_label_pure_no_token_domain.get("shadow_run_id") or "",
+        "short_label_pure_no_token_domain_candidates": _int(short_label_pure_no_token_domain.get("candidates")),
+        "short_label_pure_no_token_domain_allowed": _int(short_label_pure_no_token_domain.get("allowed")),
+        "short_label_pure_no_token_domain_closed": _int(short_label_pure_no_token_domain.get("closed")),
+        "short_label_pure_no_token_domain_blocked": _int(short_label_pure_no_token_domain.get("blocked")),
+        "short_label_pure_no_token_domain_status": short_label_pure_no_token_domain.get("status") or "unavailable",
+        "gender_longform_false_reopen_checkpoint_id": gender_longform_false_reopen.get("checkpoint_id") or "",
+        "gender_longform_false_reopen_candidates": _int(gender_longform_false_reopen.get("candidates")),
+        "gender_longform_false_reopen_closed": _int(gender_longform_false_reopen.get("closed")),
+        "gender_longform_false_reopen_blocked": _int(gender_longform_false_reopen.get("blocked")),
+        "gender_longform_false_reopen_routes_closed": {
+            str(row["route_key"]): _int(row["count"])
+            for row in gender_longform_false_reopen_routes
+        },
+        "gender_longform_false_reopen_status": gender_longform_false_reopen.get("status") or "unavailable",
+        "short_label_pure_no_token_semantic_bridge_run_id": _int(short_label_pure_no_token_semantic.get("bridge_run_id")),
+        "short_label_pure_no_token_semantic_coverage_run_id": _int(short_label_pure_no_token_semantic.get("coverage_run_id")),
+        "short_label_pure_no_token_semantic_checkpoint_id": _int(short_label_pure_no_token_semantic.get("checkpoint_id")),
+        "short_label_pure_no_token_semantic_ready": _int(short_label_pure_no_token_semantic.get("ready")),
+        "short_label_pure_no_token_semantic_blocked": _int(short_label_pure_no_token_semantic.get("blocked")),
+        "short_label_pure_no_token_semantic_closed": _int(short_label_pure_no_token_semantic.get("closed")),
+        "short_label_pure_no_token_semantic_estimated_closed_gain": _int(short_label_pure_no_token_semantic.get("estimated_closed_gain")),
+        "short_label_pure_no_token_semantic_status": short_label_pure_no_token_semantic.get("status") or "unavailable",
+        "distribution": [row for row in distribution if row["value"] > 0],
+    }
 
 
 def _short_model_name(version: str | None) -> str:
@@ -161,6 +3613,269 @@ def _read_production_run_status() -> dict[str, Any]:
     return _read_json_file(PRODUCTION_RUN_STATUS_FILE)
 
 
+def _dashboard_cache_file() -> Path:
+    return BASE_DASHBOARD_CACHE_FILE
+
+
+def _db_mtime(db_path: Path) -> str:
+    try:
+        return datetime.fromtimestamp(db_path.stat().st_mtime).isoformat(timespec="seconds")
+    except OSError:
+        return ""
+
+
+def _latest_ledger_run_id(con: sqlite3.Connection) -> int:
+    if not _table_exists(con, "ml_issue_ledger_runs"):
+        return 0
+    row = _one(
+        con,
+        """
+        SELECT id
+        FROM ml_issue_ledger_runs
+        WHERE finished_at IS NOT NULL
+        ORDER BY finished_at DESC, id DESC
+        LIMIT 1
+        """,
+    )
+    return _int(row.get("id"))
+
+
+def _latest_segment_state_summary(con: sqlite3.Connection) -> dict[str, Any]:
+    if not _table_exists(con, "segment_state_runs"):
+        return {
+            "run_id": 0,
+            "total_segments": 0,
+            "closed_count": 0,
+            "pending_count": 0,
+            "needs_apply": 0,
+            "closed_rate": 0,
+            "finished_at": "",
+        }
+    row = _one(
+        con,
+        """
+        SELECT id, total_segments, closed_count, pending_count, output_apply_pending_count, finished_at
+        FROM segment_state_runs
+        WHERE finished_at IS NOT NULL
+          AND total_segments > 1000
+        ORDER BY finished_at DESC, id DESC
+        LIMIT 1
+        """,
+    )
+    total = _int(row.get("total_segments")) or (_int(row.get("closed_count")) + _int(row.get("pending_count")))
+    return {
+        "run_id": _int(row.get("id")),
+        "total_segments": total,
+        "closed_count": _int(row.get("closed_count")),
+        "pending_count": _int(row.get("pending_count")),
+        "needs_apply": _int(row.get("output_apply_pending_count")),
+        "closed_rate": _pct(row.get("closed_count"), total),
+        "finished_at": row.get("finished_at") or "",
+    }
+
+
+def _last_production_delta_payload(
+    con: sqlite3.Connection,
+    run: dict[str, Any],
+    current_segment_state: dict[str, Any],
+) -> dict[str, Any]:
+    if not (_table_exists(con, "segment_state_runs") and isinstance(run, dict) and run.get("finished_at")):
+        return {"available": False, "reason": "pending_instrumentation"}
+
+    baseline = _one(
+        con,
+        """
+        SELECT id, total_segments, closed_count, pending_count, output_apply_pending_count, finished_at
+        FROM segment_state_runs
+        WHERE finished_at IS NOT NULL
+          AND total_segments > 1000
+          AND finished_at <= ?
+        ORDER BY finished_at DESC, id DESC
+        LIMIT 1
+        """,
+        (run.get("finished_at"),),
+    )
+    if not baseline:
+        return {
+            "available": False,
+            "reason": "baseline_not_found",
+            "last_production_run_id": run.get("run_id") or "",
+            "last_production_finished_at": run.get("finished_at") or "",
+        }
+
+    baseline_closed = _int(baseline.get("closed_count"))
+    baseline_pending = _int(baseline.get("pending_count"))
+    baseline_needs_apply = _int(baseline.get("output_apply_pending_count"))
+    current_closed = _int(current_segment_state.get("closed_count"))
+    current_pending = _int(current_segment_state.get("pending_count"))
+    current_needs_apply = _int(current_segment_state.get("needs_apply"))
+
+    return {
+        "available": True,
+        "last_production_run_id": run.get("run_id") or "",
+        "last_production_finished_at": run.get("finished_at") or "",
+        "baseline_segment_state_run_id": _int(baseline.get("id")),
+        "baseline_finished_at": baseline.get("finished_at") or "",
+        "closed_delta": current_closed - baseline_closed,
+        "pending_delta": current_pending - baseline_pending,
+        "needs_apply_delta": current_needs_apply - baseline_needs_apply,
+        "current_segment_state_run_id": _int(current_segment_state.get("run_id")),
+    }
+
+
+def _output_coverage(con: sqlite3.Connection) -> float:
+    if not (_table_exists(con, "source_segments") and _table_exists(con, "output_segments")):
+        return 0
+    row = _one(
+        con,
+        """
+        SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN COALESCE(o.portuguese_text, '') <> '' THEN 1 ELSE 0 END) AS with_output
+        FROM source_segments s
+        LEFT JOIN output_segments o ON o.segment_id = s.id
+        WHERE s.is_active = 1
+        """,
+    )
+    return _pct(row.get("with_output"), row.get("total"))
+
+
+def _cache_stage_compact(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        result.append(
+            {
+                "id": stage.get("id"),
+                "label": stage.get("label"),
+                "status": stage.get("status"),
+                "metrics": stage.get("metrics") or {},
+            }
+        )
+    return result
+
+
+def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    try:
+        segment_state = _latest_segment_state_summary(con)
+        learning = _learning_status_payload(con)
+        run = _read_production_run_status()
+        production_delta = _last_production_delta_payload(con, run, segment_state)
+        run_active = run.get("status") in {"starting", "running"}
+        stages = run.get("stages") if run.get("run_id") else _new_production_run_status("preview").get("stages", [])
+        stages = stages if isinstance(stages, list) else []
+        done_stages = sum(1 for stage in stages if isinstance(stage, dict) and stage.get("status") == "done")
+        progress_pct = round((done_stages / len(stages)) * 100) if stages else (100 if run.get("status") == "completed" else 0)
+        generated_at = datetime.now().isoformat(timespec="seconds")
+        release_status = (
+            "needs_apply"
+            if segment_state["needs_apply"]
+            else "ready_with_known_issues"
+            if segment_state["pending_count"]
+            else "ready_for_release"
+        )
+        return {
+            "generated_at": generated_at,
+            "cache": {
+                "generated_at": generated_at,
+                "source_db_mtime": _db_mtime(db_path),
+                "stale": False,
+            },
+            "release": {
+                "readiness": release_status,
+                "total_segments": segment_state["total_segments"],
+                "closed_count": segment_state["closed_count"],
+                "pending_count": segment_state["pending_count"],
+                "closed_rate": segment_state["closed_rate"],
+                "needs_apply": segment_state["needs_apply"],
+                "output_coverage": _output_coverage(con),
+                "latest_segment_state_run_id": segment_state["run_id"],
+                "latest_ledger_run_id": _latest_ledger_run_id(con),
+                "segment_state_finished_at": segment_state["finished_at"],
+                "since_last_production": production_delta,
+                "operational_integrity": {
+                    "source_status": "pending_instrumentation",
+                    "output_status": "pending_instrumentation",
+                    "confirmations_status": "aligned" if segment_state["needs_apply"] == 0 else "attention",
+                    "needs_apply_status": "ok" if segment_state["needs_apply"] == 0 else "attention",
+                    "learning_gate_status": "released" if bool(learning.get("can_start_production")) else "blocked",
+                },
+            },
+            "learning_gate": {
+                "can_start_production": bool(learning.get("can_start_production")),
+                "production_safe": bool(learning.get("production_safe")),
+                "status": learning.get("status"),
+                "reason": learning.get("reason") or learning.get("gate_message"),
+                "current_phase_label": learning.get("current_phase_label"),
+                "progress_pct": learning.get("progress_pct"),
+                "lock": learning.get("lock") or {},
+                "next_action": learning.get("next_action"),
+            },
+            "production": {
+                "active": bool(run_active),
+                "last_run": run or {},
+                "current_stage": run.get("current_stage"),
+                "progress_pct": progress_pct,
+                "stages_compact": _cache_stage_compact(stages),
+                "summary": {},
+                "readiness": {},
+            },
+            "navigation": {
+                "dashboard_url": "http://127.0.0.1:5173/#Dashboard",
+                "network_url": "http://127.0.0.1:5173/#Dashboard/Network",
+            },
+        }
+    finally:
+        con.close()
+
+
+def _refresh_dashboard_cache(db_path: Path) -> dict[str, Any]:
+    global DASHBOARD_CACHE
+    payload = _build_app_state_payload(db_path)
+    cache_payload = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "source_db_mtime": _db_mtime(db_path),
+        "app_state": payload,
+    }
+    cache_file = _dashboard_cache_file()
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    cache_file.write_text(json.dumps(cache_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    DASHBOARD_CACHE = cache_payload
+    return cache_payload
+
+
+def _get_dashboard_cache(db_path: Path, *, force: bool = False) -> dict[str, Any]:
+    global DASHBOARD_CACHE
+    with DASHBOARD_CACHE_LOCK:
+        if not force and DASHBOARD_CACHE is not None:
+            return DASHBOARD_CACHE
+        cache_file = _dashboard_cache_file()
+        if not force and cache_file.exists():
+            try:
+                DASHBOARD_CACHE = json.loads(cache_file.read_text(encoding="utf-8"))
+                return DASHBOARD_CACHE
+            except json.JSONDecodeError:
+                DASHBOARD_CACHE = None
+        return _refresh_dashboard_cache(db_path)
+
+
+def _app_state_payload(db_path: Path, *, force: bool = False) -> dict[str, Any]:
+    cache = _get_dashboard_cache(db_path, force=force)
+    app_state = cache.get("app_state") or {}
+    app_state.setdefault("cache", {})
+    app_state["cache"].update(
+        {
+            "generated_at": cache.get("generated_at"),
+            "source_db_mtime": cache.get("source_db_mtime"),
+            "stale": _db_mtime(db_path) != cache.get("source_db_mtime"),
+        }
+    )
+    return app_state
+
+
 def _write_production_run_status(status: dict[str, Any]) -> None:
     status["updated_at"] = _now_iso()
     PRODUCTION_RUN_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -175,15 +3890,29 @@ def _production_run_active() -> bool:
 def _new_production_run_status(run_id: str) -> dict[str, Any]:
     stages = [
         {"id": "snapshot", "label": "Pre-run Snapshot", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "snapshot_archive", "label": "Archive Snapshot", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "preflight_sync", "label": "Preflight Index Sync", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "segment_state_before", "label": "Segment State", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "apply_general_dry_run", "label": "General Apply Dry-run", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "apply_token_policy_dry_run", "label": "Token Policy Apply Dry-run", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "controlled_token_subpolicy_dry_run", "label": "Controlled Token Subpolicy Dry-run", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "select_cstring_bridge_dry_run", "label": "Select_CString Bridge Dry-run", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "same_token_boundary_repair_audit", "label": "Same-token Boundary Repair Audit", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "same_token_boundary_repair_dry_run", "label": "Same-token Boundary Repair Dry-run", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "title_landed_es_repair_dry_run", "label": "Landed Title -es Repair Dry-run", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "apply_general_write", "label": "Write Regular Output", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "apply_token_policy_write", "label": "Write Token-Policy Output", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "controlled_token_subpolicy_write", "label": "Controlled Token Subpolicy Write", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "select_cstring_bridge_write", "label": "Select_CString Bridge Write", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "same_token_boundary_repair_write", "label": "Same-token Boundary Repair Write/Close", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "title_landed_es_repair_write", "label": "Landed Title -es Repair Write", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "apply_locked_override_write", "label": "Write Locked Manual Overrides", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "segment_state_after", "label": "Post-write Segment State", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "token_policy_after", "label": "Post-write Token Policy", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "controlled_token_subpolicy_reaudit", "label": "Controlled Token Subpolicy Reaudit", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "select_cstring_bridge_reaudit", "label": "Select_CString Bridge Reaudit", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "same_token_boundary_repair_reaudit", "label": "Same-token Boundary Repair Reaudit", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "title_landed_es_repair_reaudit", "label": "Landed Title -es Repair Reaudit", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "composite_review_progress", "label": "Composite Review Progress", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "production_report", "label": "Production Report", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
     ]
@@ -202,6 +3931,7 @@ def _new_production_run_status(run_id: str) -> dict[str, Any]:
         "report_path": str(ROOT / "reports" / f"{run_id}_production_run.txt"),
         "snapshot_path": str(snapshot_path),
         "snapshot_manifest_path": str(snapshot_path / "manifest.json"),
+        "snapshot_archive_path": str(PRODUCTION_SNAPSHOT_ARCHIVE_ROOT / f"{run_id}.zip"),
         "report_paths": [],
         "logs_tail": [],
         "message": "Full production run queued.",
@@ -276,6 +4006,7 @@ def _snapshot_ignore(dir_path: str, names: list[str]) -> set[str]:
                 "backups",
                 "bkp banco",
                 "production_snapshots",
+                "production_snapshot_archives",
                 "translation_engine.sqlite",
                 "translation_engine.sqlite-shm",
                 "translation_engine.sqlite-wal",
@@ -344,6 +4075,7 @@ def _create_production_snapshot(status: dict[str, Any], log_handle) -> None:
             "memory/backups",
             "memory/bkp banco",
             "memory/production_snapshots",
+            "memory/production_snapshot_archives",
             "memory/translation_engine.sqlite-wal",
             "memory/translation_engine.sqlite-shm",
             "memory/translation_engine_before_*",
@@ -385,6 +4117,24 @@ def _create_production_snapshot(status: dict[str, Any], log_handle) -> None:
     _write_production_run_status(status)
 
 
+def _archive_production_snapshot(status: dict[str, Any], log_handle) -> int:
+    run_id = str(status.get("run_id") or "")
+    archive_path = PRODUCTION_SNAPSHOT_ARCHIVE_ROOT / f"{run_id}.zip"
+    status["snapshot_archive_path"] = str(archive_path)
+    return _run_production_command(
+        status,
+        stage_id="snapshot_archive",
+        command=[
+            sys.executable,
+            "pipeline/snapshot_archive.py",
+            "archive",
+            run_id,
+            "--delete-original",
+        ],
+        log_handle=log_handle,
+    )
+
+
 def _write_production_report(status: dict[str, Any]) -> None:
     report_path = Path(status["report_path"])
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -398,6 +4148,7 @@ def _write_production_report(status: dict[str, Any]) -> None:
         f"Finished at: {status.get('finished_at')}",
         f"Snapshot: {status.get('snapshot_path')}",
         f"Snapshot manifest: {status.get('snapshot_manifest_path')}",
+        f"Snapshot archive: {status.get('snapshot_archive_path')}",
         "",
         "Stages:",
     ]
@@ -413,7 +4164,7 @@ def _write_production_report(status: dict[str, Any]) -> None:
             *[f"- {path}" for path in status.get("report_paths", [])],
             "",
             "Interpretation:",
-            "- This production executor creates a snapshot before writing output.",
+            "- This production executor creates, verifies and archives a snapshot before writing output.",
             "- Output writes are restricted to confirmed rows that pass the segment-token policy gate.",
             "- Remaining pending, low-confidence and token-policy items are reported for the learning front.",
             "",
@@ -464,6 +4215,125 @@ def _run_production_command(status: dict[str, Any], *, stage_id: str, command: l
                     parsed = _parse_count_suffix(line)
                     if parsed is not None:
                         _update_stage_metric(status, stage_id, key, parsed)
+        if "[controlled_token_subpolicy_apply]" in line:
+            metric_map = {
+                "Candidates": "candidates",
+                "Eligible": "eligible",
+                "Ready": "ready",
+                "Applied": "applied",
+                "Stale": "stale",
+                "Blocked": "blocked",
+                "Confirmation promoted": "confirmation_promoted",
+                "Output written": "output_written",
+                "Estimated closed gain": "estimated_closed_gain",
+                "Actual closed gain after reaudit": "actual_closed_gain_after_reaudit",
+            }
+            for label, key in metric_map.items():
+                if label in line:
+                    parsed = _parse_count_suffix(line)
+                    if parsed is not None:
+                        _update_stage_metric(status, stage_id, key, parsed)
+        if "[auto_confirmation_reopen_text_boundary_repair_production_audit]" in line:
+            metric_map = {
+                "Audit run id": "audit_run_id",
+                "Lifecycle run id": "lifecycle_run_id",
+                "State run id": "segment_state_run_id",
+                "Eligible controlled production": "eligible",
+                "Estimated closed gain": "estimated_closed_gain",
+                "Real repairs": "real_repairs",
+                "No-op observations": "noop_observations",
+                "Blocked": "blocked",
+            }
+            for label, key in metric_map.items():
+                if label in line:
+                    parsed = _parse_count_suffix(line)
+                    if parsed is not None:
+                        _update_stage_metric(status, stage_id, key, parsed)
+        if "[same_token_boundary_repair_apply]" in line:
+            metric_map = {
+                "Audit run id": "audit_run_id",
+                "Lifecycle run id": "lifecycle_run_id",
+                "Segment-state run id": "segment_state_run_id",
+                "Candidates": "candidates",
+                "Eligible": "eligible",
+                "Ready": "ready",
+                "Applied": "applied",
+                "Noop closed": "noop_closed",
+                "Skipped": "skipped",
+                "Stale": "stale",
+                "Blocked": "blocked",
+                "Confirmation promoted": "confirmation_promoted",
+                "Output written": "output_written",
+                "Estimated closed gain": "estimated_closed_gain",
+                "Actual closed gain after segment-state": "actual_closed_gain_after_segment_state",
+            }
+            for label, key in metric_map.items():
+                if label in line:
+                    parsed = _parse_count_suffix(line)
+                    if parsed is not None:
+                        _update_stage_metric(status, stage_id, key, parsed)
+        if "[select_cstring_governed_bridge_apply]" in line:
+            metric_map = {
+                "Proposal run id": "proposal_run_id",
+                "Maturity audit run id": "maturity_audit_run_id",
+                "Final overlay run id": "final_overlay_run_id",
+                "Bridge candidate": "bridge_candidate",
+                "Production release allowed": "production_release_allowed",
+                "Candidates": "candidates",
+                "Ready": "ready",
+                "Applied": "applied",
+                "Already applied": "already_applied",
+                "Stale": "stale",
+                "Blocked": "blocked",
+                "Confirmation promoted": "confirmation_promoted",
+                "Output written": "output_written",
+                "Same token": "same_token",
+                "Dynamic payload delta": "dynamic_payload_delta",
+                "Estimated closed gain": "estimated_closed_gain",
+                "Actual closed gain after reaudit": "actual_closed_gain_after_reaudit",
+            }
+            for label, key in metric_map.items():
+                if label in line:
+                    parsed = _parse_count_suffix(line)
+                    if parsed is not None:
+                        _update_stage_metric(status, stage_id, key, parsed)
+        if "[title_landed_es_reviewed_repair_dry_run]" in line:
+            metric_map = {
+                "Queue run id": "queue_run_id",
+                "State run id": "segment_state_run_id",
+                "Candidates inspected": "candidates",
+                "ready_confirmation_and_output": "ready",
+                "already_aligned": "already_aligned",
+                "blocked_state": "blocked_state",
+                "blocked_quality": "blocked_quality",
+                "blocked_token_or_structure": "blocked_token_or_structure",
+                "blocked_stale_decision": "blocked_stale_decision",
+            }
+            for label, key in metric_map.items():
+                if label in line:
+                    parsed = _parse_count_suffix(line)
+                    if parsed is not None:
+                        _update_stage_metric(status, stage_id, key, parsed)
+        if "[title_landed_es_reviewed_repair_apply]" in line:
+            metric_map = {
+                "Segment-state run id": "segment_state_run_id",
+                "Candidates": "candidates",
+                "Dry-run ready": "dry_run_ready",
+                "Ready": "ready",
+                "Applied": "applied",
+                "Already applied": "already_applied",
+                "Stale": "stale",
+                "Blocked": "blocked",
+                "Skipped": "skipped",
+                "Confirmation promoted": "confirmation_promoted",
+                "Output written": "output_written",
+                "Files touched": "files_touched",
+            }
+            for label, key in metric_map.items():
+                if label in line:
+                    parsed = _parse_count_suffix(line)
+                    if parsed is not None:
+                        _update_stage_metric(status, stage_id, key, parsed)
         _append_run_log(status, line)
     exit_code = process.wait()
     log_handle.flush()
@@ -508,6 +4378,47 @@ def _production_run_worker(run_id: str) -> None:
             ],
         ),
         (
+            "controlled_token_subpolicy_dry_run",
+            [
+                sys.executable,
+                "pipeline/main.py",
+                "controlled-token-subpolicy-apply",
+            ],
+        ),
+        (
+            "select_cstring_bridge_dry_run",
+            [
+                sys.executable,
+                "pipeline/main.py",
+                "select-cstring-governed-bridge-apply",
+            ],
+        ),
+        (
+            "same_token_boundary_repair_audit",
+            [
+                sys.executable,
+                "pipeline/main.py",
+                "auto-confirmation-text-boundary-repair-production-audit",
+            ],
+        ),
+        (
+            "same_token_boundary_repair_dry_run",
+            [
+                sys.executable,
+                "pipeline/main.py",
+                "same-token-boundary-repair-apply",
+            ],
+        ),
+        (
+            "title_landed_es_repair_dry_run",
+            [
+                sys.executable,
+                "pipeline/title_landed_es_reviewed_repair_dry_run.py",
+                "--queue-run-id",
+                "150",
+            ],
+        ),
+        (
             "apply_general_write",
             [
                 sys.executable,
@@ -528,6 +4439,41 @@ def _production_run_worker(run_id: str) -> None:
                 "--segment-include-intentional-blank",
                 "--segment-require-token-policy-decision",
                 "--auto-apply",
+            ],
+        ),
+        (
+            "controlled_token_subpolicy_write",
+            [
+                sys.executable,
+                "pipeline/main.py",
+                "controlled-token-subpolicy-apply",
+                "--auto-apply",
+            ],
+        ),
+        (
+            "select_cstring_bridge_write",
+            [
+                sys.executable,
+                "pipeline/main.py",
+                "select-cstring-governed-bridge-apply",
+                "--auto-apply",
+            ],
+        ),
+        (
+            "same_token_boundary_repair_write",
+            [
+                sys.executable,
+                "pipeline/main.py",
+                "same-token-boundary-repair-apply",
+                "--auto-apply",
+            ],
+        ),
+        (
+            "title_landed_es_repair_write",
+            [
+                sys.executable,
+                "pipeline/title_landed_es_reviewed_repair_apply.py",
+                "--apply",
             ],
         ),
         (
@@ -553,6 +4499,41 @@ def _production_run_worker(run_id: str) -> None:
                 "--segment-include-auto-confirmed",
             ],
         ),
+        (
+            "controlled_token_subpolicy_reaudit",
+            [
+                sys.executable,
+                "pipeline/main.py",
+                "controlled-token-subpolicy-apply",
+                "--controlled-token-subpolicy-reaudit",
+            ],
+        ),
+        (
+            "select_cstring_bridge_reaudit",
+            [
+                sys.executable,
+                "pipeline/main.py",
+                "select-cstring-governed-bridge-apply",
+                "--select-cstring-bridge-reaudit",
+            ],
+        ),
+        (
+            "same_token_boundary_repair_reaudit",
+            [
+                sys.executable,
+                "pipeline/main.py",
+                "same-token-boundary-repair-apply",
+                "--same-token-boundary-repair-reaudit",
+            ],
+        ),
+        (
+            "title_landed_es_repair_reaudit",
+            [
+                sys.executable,
+                "pipeline/title_landed_es_reviewed_repair_apply.py",
+                "--reaudit",
+            ],
+        ),
         ("composite_review_progress", [sys.executable, "pipeline/main.py", "ml-composite-review-progress"]),
     ]
     try:
@@ -560,7 +4541,13 @@ def _production_run_worker(run_id: str) -> None:
             log_handle.write(f"CK3 PT-BR production run {run_id}\n")
             log_handle.write("Mode: full_production_apply\n")
             _create_production_snapshot(status, log_handle)
+            archive_exit = _archive_production_snapshot(status, log_handle)
+            if archive_exit != 0:
+                status["status"] = "failed"
+                status["message"] = "Stage failed: snapshot_archive"
             for stage_id, command in commands:
+                if status.get("status") == "failed":
+                    break
                 exit_code = _run_production_command(status, stage_id=stage_id, command=command, log_handle=log_handle)
                 if exit_code != 0:
                     status["status"] = "failed"
@@ -574,6 +4561,11 @@ def _production_run_worker(run_id: str) -> None:
             _write_production_report(status)
             _update_stage(status, "production_report", status="done", finished_at=_now_iso(), exit_code=0)
             _write_production_run_status(status)
+            try:
+                _refresh_dashboard_cache(ACTIVE_DB_PATH)
+            except Exception as exc:  # pragma: no cover - cache should not fail production
+                _append_run_log(status, f"[dashboard_cache] refresh failed: {exc}")
+                _write_production_run_status(status)
     except Exception as exc:  # pragma: no cover - background production path
         current_stage = status.get("current_stage")
         if current_stage:
@@ -687,11 +4679,17 @@ def _production_payload(con: sqlite3.Connection) -> dict[str, Any]:
     last_apply = next((row for row in latest_apply_runs if _int(row.get("apply")) == 1), latest_apply_runs[0] if latest_apply_runs else {})
     lock = _training_lock_payload(con)
     learning_status = _learning_status_payload(con)
+    production_run = _read_production_run_status()
+    production_run_active = production_run.get("status") in {"starting", "running"}
 
     active_segments = _int(summary.get("total_segments"))
     closed = _int(summary.get("closed_count"))
     pending = _int(summary.get("pending_count"))
     needs_apply = _int(summary.get("output_apply_pending_count"))
+    taxonomy = _pending_taxonomy_payload(con, _int(summary.get("run_id")))
+    actionable_pending = _int(taxonomy.get("actionable_pending"))
+    model_watch = _int(taxonomy.get("model_suspicion_watch"))
+    governed_bridge_pending = _int(taxonomy.get("governed_bridge_pending"))
     applied_segments = sum(
         _int(row.get("total"))
         for row in output_application
@@ -707,9 +4705,16 @@ def _production_payload(con: sqlite3.Connection) -> dict[str, Any]:
     elif blocked_critical > 0 or auto_apply_allowed:
         readiness_status = "blocked"
         recommended_action = "review_governance"
-    elif pending > 0:
+    elif actionable_pending > 0 or model_watch > 0:
         readiness_status = "ready_with_known_issues"
-        recommended_action = "review_pending_or_run_game_test"
+        if needs_apply > 0:
+            recommended_action = "run_production_apply"
+        elif governed_bridge_pending > 0:
+            recommended_action = "investigate_governed_bridge"
+        elif model_watch > 0:
+            recommended_action = "sample_model_watch"
+        else:
+            recommended_action = "review_actionable_pending"
     else:
         readiness_status = "ready_for_game_test"
         recommended_action = "run_game_test"
@@ -748,7 +4753,7 @@ def _production_payload(con: sqlite3.Connection) -> dict[str, Any]:
             "status": "done",
             "total": active_segments,
             "completed": closed,
-            "pending": pending,
+            "pending": actionable_pending,
             "last_report": "",
         },
         {
@@ -781,10 +4786,10 @@ def _production_payload(con: sqlite3.Connection) -> dict[str, Any]:
         {
             "id": "final_validation",
             "label": "Final Validation",
-            "status": "pending" if pending else "done",
+            "status": "pending" if actionable_pending else "done",
             "total": active_segments,
             "completed": closed,
-            "pending": pending,
+            "pending": actionable_pending,
             "last_report": "",
         },
         {
@@ -799,10 +4804,10 @@ def _production_payload(con: sqlite3.Connection) -> dict[str, Any]:
         {
             "id": "learning_handoff",
             "label": "Learning Handoff",
-            "status": "pending" if pending else "done",
-            "total": pending,
-            "completed": 0 if pending else 1,
-            "pending": pending,
+            "status": "pending" if actionable_pending or model_watch else "done",
+            "total": actionable_pending + model_watch,
+            "completed": 0 if actionable_pending or model_watch else 1,
+            "pending": actionable_pending + model_watch,
             "last_report": "",
         },
     ]
@@ -818,15 +4823,20 @@ def _production_payload(con: sqlite3.Connection) -> dict[str, Any]:
         )
     if needs_apply:
         blockers.append({"type": "token_policy", "count": needs_apply, "message": "Outputs confirmados ainda precisam de politica de token ou revalidacao"})
-    if pending:
-        blockers.append({"type": "operational_pending", "count": pending, "message": "Pendencias conhecidas para revisao, autofix ou aprendizado"})
+    if governed_bridge_pending:
+        blockers.append({"type": "governed_bridge_pending", "count": governed_bridge_pending, "message": "Ponte governada pendente; investigar antes de aplicar as cegas"})
+    remaining_actionable = max(actionable_pending - governed_bridge_pending - needs_apply, 0)
+    if remaining_actionable:
+        blockers.append({"type": "actionable_pending", "count": remaining_actionable, "message": "Pendencias acionaveis reais para revisao, autofix ou subpolitica"})
+    if model_watch:
+        blockers.append({"type": "model_suspicion_watch", "count": model_watch, "message": "Suspeitas conservadoras do modelo; amostrar/calibrar, nao revisar tudo manualmente"})
     if blocked_critical:
         blockers.append({"type": "critical_gate", "count": blocked_critical, "message": "Gate ativo encontrou releases invalidos"})
 
     return {
         "status": "blocked" if not learning_status.get("can_start_production") else "idle",
-        "active_run_id": (_read_production_run_status() or {}).get("run_id") if (_read_production_run_status() or {}).get("status") in {"starting", "running"} else None,
-        "run": _read_production_run_status(),
+        "active_run_id": production_run.get("run_id") if production_run_active else None,
+        "run": production_run if production_run_active else None,
         "lock": lock,
         "learning": {
             "status": learning_status.get("status"),
@@ -859,7 +4869,11 @@ def _production_payload(con: sqlite3.Connection) -> dict[str, Any]:
         "readiness": {
             "status": readiness_status,
             "closed_pct": _pct(closed, active_segments),
-            "pending_operational": pending,
+            "pending_operational": actionable_pending,
+            "raw_pending": pending,
+            "actionable_pending": actionable_pending,
+            "model_suspicion_watch": model_watch,
+            "governed_bridge_pending": governed_bridge_pending,
             "blocked_critical": blocked_critical,
             "recommended_action": recommended_action,
         },
@@ -867,12 +4881,19 @@ def _production_payload(con: sqlite3.Connection) -> dict[str, Any]:
             "active_segments": active_segments,
             "closed_segments": closed,
             "closed_pct": _pct(closed, active_segments),
-            "pending_operational": pending,
+            "pending_operational": actionable_pending,
+            "actionable_pending": actionable_pending,
+            "model_suspicion_watch": model_watch,
+            "governed_bridge_pending": governed_bridge_pending,
+            "raw_pending": pending,
+            "learning_backlog": _int(taxonomy.get("learning_backlog")),
             "applied": applied_segments,
             "needs_apply": needs_apply,
             "valid_blank": _int(summary.get("blank_valid_count")),
             "intentional_blank": _int(summary.get("blank_intentional_count")),
             "blocked_critical": blocked_critical,
+            "select_cstring": taxonomy.get("select_cstring") or {},
+            "taxonomy_distribution": taxonomy.get("distribution") or [],
         },
         "stages": stages,
         "logs": [
@@ -3494,6 +7515,7 @@ def _lifecycle_payload(con: sqlite3.Connection) -> dict[str, Any]:
             "outputApply": output_apply_payload(),
             "tokenPolicy": token_policy_payload(),
         }
+    taxonomy = _pending_taxonomy_payload(con, _int(run_id))
 
     state_distribution = _all(
         con,
@@ -3588,13 +7610,14 @@ def _lifecycle_payload(con: sqlite3.Connection) -> dict[str, Any]:
         (run_id,),
     )
 
-    grouped = [
-        {"name": "Consolidado", "value": _int(summary.get("closed_count")), "group": "closed"},
-        {"name": "Pendente", "value": _int(summary.get("pending_count")), "group": "pending"},
+    grouped = taxonomy.get("distribution") or [
+        {"name": "Consolidado", "value": _int(summary.get("closed_count")), "group": "closed_consolidated", "color": "#10b981"},
+        {"name": "Pendente bruto", "value": _int(summary.get("pending_count")), "group": "raw_pending", "color": "#f59e0b"},
     ]
     return {
         "available": True,
         "summary": summary,
+        "taxonomy": taxonomy,
         "groupDistribution": grouped,
         "stateDistribution": state_distribution,
         "outputApplication": output_application,
@@ -4162,6 +8185,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as exc:  # pragma: no cover - server diagnostic path
                 self._send_json(500, {"error": str(exc)})
             return
+        if path == "/api/app-state":
+            if not self.db_path.exists():
+                self._send_json(500, {"error": f"SQLite not found: {self.db_path}"})
+                return
+            try:
+                self._send_json(200, _app_state_payload(self.db_path))
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"error": str(exc)})
+            return
+        if path == "/api/neural-visualization":
+            if not NEURAL_VISUALIZATION_FILE.exists():
+                self._send_json(404, {"error": f"Neural visualization file not found: {NEURAL_VISUALIZATION_FILE}"})
+                return
+            try:
+                self._send_json(
+                    200,
+                    {
+                        "network": json.loads(NEURAL_VISUALIZATION_FILE.read_text(encoding="utf-8")),
+                        "sourcePath": str(NEURAL_VISUALIZATION_FILE),
+                    },
+                )
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"error": str(exc)})
+            return
         if path == "/api/production/status":
             if not self.db_path.exists():
                 self._send_json(500, {"error": f"SQLite not found: {self.db_path}"})
@@ -4197,6 +8244,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path == "/api/cache/refresh":
+            if not self.db_path.exists():
+                self._send_json(500, {"error": f"SQLite not found: {self.db_path}"})
+                return
+            try:
+                cache = _get_dashboard_cache(self.db_path, force=True)
+                self._send_json(200, {"ok": True, "cache": cache.get("app_state", {}).get("cache", {}), "app_state": cache.get("app_state", {})})
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"ok": False, "error": str(exc)})
+            return
         if path == "/api/production/start":
             if not self.db_path.exists():
                 self._send_json(500, {"error": f"SQLite not found: {self.db_path}"})
@@ -4235,7 +8292,14 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
 
+    global ACTIVE_DB_PATH
     DashboardHandler.db_path = Path(args.db).resolve()
+    ACTIVE_DB_PATH = DashboardHandler.db_path
+    try:
+        if DashboardHandler.db_path.exists():
+            _get_dashboard_cache(DashboardHandler.db_path)
+    except Exception as exc:
+        print(f"Dashboard cache warmup failed: {exc}")
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
     print(f"Dashboard API: http://{args.host}:{args.port}/api/dashboard")
     print(f"SQLite: {DashboardHandler.db_path}")

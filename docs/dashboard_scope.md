@@ -19,6 +19,57 @@ Objetivo: permitir que qualquer chat leia rapidamente o estado atual do dashboar
 
 ## Telas
 
+### Managerial
+
+Subtitulo: `Visao macro de release e pendencias operacionais`
+
+Funcao: painel gerencial read-only para responder rapidamente se a versao atual pode gerar/testar um mod e explicar, de forma visual, como o sistema e a rede neuro-simbolica trabalham.
+
+Regra de leitura atual: o Gerencial deve separar `pendencia acionavel` de `suspeita/watch do modelo`. Depois da recalibracao v0400, `segment_state.pending_count` pode incluir dezenas de milhares de `reopen_auto_confirmed_autofix` onde `confirmed_matches_output=1`, o output existe, os tokens estao ok e nao ha issue concreta. Esses casos nao devem ser apresentados como backlog manual bruto nem como regressao direta; devem aparecer como `Model Watch`/`Suspeita ML` ate que uma regra, especialista maduro, issue concreta ou amostragem humana confirme o problema.
+
+Subtelas internas:
+
+- `Overview`
+  - pergunta principal: `O projeto esta pronto para gerar/testar uma versao do mod?`;
+  - KPIs: release readiness, closed, actionable pending, model watch, governed bridges, needs apply, learning state e operational safety;
+  - bloco de proxima decisao recomendada com `production ready`, `learning active` ou `needs apply`;
+  - o ultimo ganho real em shadow/checkpoint aparece dentro do bloco de decisao, nao como card extra;
+  - bloco `Pending Work` separando actionable, model_watch, governed_bridge_pending, candidate, audit_required, cluster_required e guard_block quando os dados existirem;
+  - graficos: donut de distribuicao de release com closed/actionable/model_watch/bridge_pending, linha/barra de cobertura recente e barras de gargalos por token policy ou pacote;
+  - `auto_apply_allowed = false` e exibido como seguranca esperada, nao como falha.
+- `Production Flow`
+  - agrupa o fluxo em 4 fases: Preparacao, Analise e Politicas, Aplicacao Controlada, Validacao e Handoff;
+  - cada fase mostra status agregado, progresso, subetapa atual e subetapas compactas;
+  - subetapas que dependem de memoria, politicas ou aprendizado recebem marcador `ML/policy`.
+- `Neural Network`
+  - camadas didaticas: deterministic guards, trusted memory, general macro model, coordinator ensemble, operational specialists, symbolic guarded policies, experimental/planned neurons e human/game feedback;
+  - KPIs: agentes, experimentais, guarded releases, invalid releases, operational false safe e evidencia de recomendacoes;
+  - distingue claramente operacional, experimental e planejado.
+- `Learning Impact`
+  - visao read-only para avaliar se a estrategia de aprendizado esta funcionando;
+  - KPIs: latest dataset/model run, deltas de Macro F1/Safe Recall/False Safe, shadow release gain, checkpoint blocked, new microagents, operational false-safe e learning gate;
+  - graficos: qualidade por modelo, risco por modelo, evidencia por ciclo e matriz de gargalos com responsavel neural provavel.
+
+Regras:
+
+- tela somente leitura;
+- sem botao de apply, train, promote ou reindex;
+- detalhes operacionais continuam no dashboard analitico e no painel de producao.
+
+### Production Control
+
+Subtitulo: `Source, output, gate e inicio seguro do fluxo de producao`
+
+Funcao: tela inicial do sistema local. Permite iniciar o fluxo de producao quando o learning gate libera, e mostra progresso visual sem expor controles de treino/promocao.
+
+Componentes:
+
+- cards macro: readiness, closed, pending, needs apply e production gate;
+- botoes para abrir dashboard gerencial e operacional em nova guia;
+- painel `Fluxo de Producao` / `Execucao Atual` agrupado nas mesmas 4 fases do Managerial;
+- subetapas compactas com descricao e marcador `ML/policy`;
+- metricas detalhadas de run aparecem apenas durante execucao ativa/nova, evitando poluicao com estatisticas antigas.
+
 ### Cockpit
 
 Subtítulo: `O projeto está avançando e está seguro?`
@@ -511,10 +562,13 @@ Fontes:
 Cards:
 
 - `Segmentos Consolidados`: `closed_count / total_segments`.
-- `Pendencia Operacional`: `pending_count / total_segments`.
+- `Pendencia Acionavel`: pendencias que exigem acao antes de release, nao o `pending_count` bruto.
+- `Suspeita ML / Watch`: `reopen_auto_confirmed_autofix` sem issue concreta, com confirmacao batendo output e token ok.
+- `Pendencia Bruta`: `pending_count / total_segments`, exibida com tooltip explicando que pode conter suspeitas conservadoras do modelo.
 - `Aplicar Output Confirmado`: `output_apply_pending_count`, casos confirmados que ainda precisam refletir no output.
 - `Blanks Validos`: `blank_valid_count`, linhas vazias aceitas por regra/contexto.
-- `Reabrir por ML Atual`: `reopen_count`, confirmacoes antigas que o modelo atual recomenda revisar.
+- `Reabrir por ML Atual`: `reopen_count`, confirmacoes antigas que o modelo atual recomenda revisar; deve ser dividido entre acao comprovada e watch conservador.
+- `Ponte Select_CString`: fechados e pendentes por `closed_auto_confirmed_select_cstring_governed_bridge` e bloqueios listados no relatorio do `segment-state`.
 
 Visoes:
 
@@ -599,7 +653,9 @@ Interpretacao:
 
 - A tela e read-only e nao deve aplicar output automaticamente.
 - `pending_apply_confirmed` indica trabalho mecanico/auditavel de sincronizar output.
-- `reopen_auto_confirmed_autofix` e familia similar indica que a confirmacao antiga nao deve ser sobrescrita em massa; primeiro vira revisao humana ou fila controlada.
+- `reopen_auto_confirmed_autofix` e familia similar indica que a confirmacao antiga nao deve ser sobrescrita em massa; se `confirmed_matches_output=1`, nao houver issue concreta e o token estiver ok, classificar como `model_suspicion_watch`, nao como trabalho manual acionavel.
+- `actionable_pending` deve contar somente pendencias com output ausente real, needs_apply, token/estrutura bloqueada, mismatch confirmacao/output, issue high/error/critical, ponte governada pendente ou decisao humana/subpolitica necessaria.
+- `closed_auto_confirmed_select_cstring_governed_bridge` e fechamento positivo por lifecycle governado; deve aparecer como ganho real da rede.
 - Blanks validos sao excecoes estruturais/esteticas e devem continuar protegidos contra preenchimento automatico.
 - `segment_output_apply_runs.apply = 1` representa escrita real no output; `apply = 0` e dry-run.
 - `applied_backfill` deve contar como aplicado real, pois representa o primeiro lote aplicado antes da criacao completa do historico.
@@ -632,11 +688,20 @@ Interpretacao:
 
 ## Extensoes Planejadas
 
-### Production Control
+### Detalhes de Execucao Controlada
 
-Nova tela/web local fora do dashboard analitico principal.
+A tela `Production Control` ja existe como tela inicial do sistema local. Ela inicia e acompanha um ciclo de producao do mod por API local com allowlist de comandos, mostrando estado das fontes, estado do output, timeline de execucao, logs resumidos, pendencias, bloqueios e links para dashboards.
 
-Objetivo: iniciar e acompanhar um ciclo de producao do mod, consumindo uma API local futura com allowlist de comandos. A tela deve mostrar estado das fontes, estado do output, timeline de execucao, logs resumidos, pendencias, bloqueios e links para dashboards.
+Na execucao atual, cards de etapa que dependem ou ganham precisao com ML, politicas, memoria confiavel ou aprendizado exibem um icone `BrainCircuit` com badge `ML`. O objetivo e diferenciar etapas puramente estruturais/deterministicas de etapas potencializadas pela rede neuro-simbolica, sem alterar a autoridade operacional das travas.
+
+Etapas controladas same-token boundary repair:
+
+- `same_token_boundary_repair_audit`: gera auditoria fresca a partir do lifecycle mais recente;
+- `same_token_boundary_repair_dry_run`: valida hashes, estado atual, confirmacao, output e validacao local sem escrita;
+- `same_token_boundary_repair_write`: promove confirmacao e escreve output apenas para reparos reais prontos; no-op nao escreve;
+- `same_token_boundary_repair_reaudit`: mede ganho real depois do `segment-state` pos-write.
+
+Metricas exibidas quando disponiveis: `audit_run_id`, `lifecycle_run_id`, `segment_state_run_id`, `candidates`, `eligible`, `ready`, `applied`, `noop_closed`, `skipped`, `stale`, `blocked`, `confirmation_promoted`, `output_written`, `estimated_closed_gain` e `actual_closed_gain_after_segment_state`.
 
 ### Learning Gate / Production Lock
 

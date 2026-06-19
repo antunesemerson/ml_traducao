@@ -2301,14 +2301,15 @@ function ProductionControl({ data }) {
                       return (
                         <div key={stage.id} className={cn(
                           'rounded-lg border p-3',
+                          neuralDetail && 'ring-1 ring-violet-400/20',
                           stage.status === 'running'
                             ? 'border-blue-400/50 bg-blue-500/10'
-                            : stage.status === 'failed'
-                              ? 'border-red-400/40 bg-red-500/10'
-                              : neuralDetail
-                                ? 'border-violet-400/40 bg-violet-500/[0.08] ring-1 ring-violet-400/20'
-                                : stage.status === 'done'
-                                  ? 'border-emerald-400/30 bg-emerald-500/10'
+                            : stage.status === 'done'
+                              ? 'border-emerald-400/30 bg-emerald-500/10'
+                              : stage.status === 'failed'
+                                ? 'border-red-400/40 bg-red-500/10'
+                                : neuralDetail
+                                  ? 'border-violet-400/25 bg-violet-500/[0.06]'
                                   : 'border-white/10 bg-slate-950/30'
                         )}>
                           <div className="flex items-center justify-between gap-2">
@@ -2383,8 +2384,6 @@ function ProductionControlCompact({ data }) {
   const learning = appState.learning_gate ?? {};
   const productionState = appState.production ?? {};
   const lastRun = productionState.last_run ?? {};
-  const productionDelta = release.since_last_production ?? {};
-  const integrity = release.operational_integrity ?? {};
   const compactStages = productionState.stages_compact ?? [];
   const [startStatus, setStartStatus] = useState(null);
   const [startError, setStartError] = useState(null);
@@ -2455,27 +2454,6 @@ function ProductionControlCompact({ data }) {
   const readinessTone = release.needs_apply ? 'amber' : learning.can_start_production ? 'emerald' : 'red';
   const gateText = learning.can_start_production ? 'Liberado' : 'Bloqueado';
   const lastRunStatus = runStatus?.status ?? 'sem run';
-  const cacheTone = cache.stale ? 'amber' : 'emerald';
-  const deltaAvailable = Boolean(productionDelta.available);
-  const deltaClosed = Number(productionDelta.closed_delta ?? 0);
-  const deltaPending = Number(productionDelta.pending_delta ?? 0);
-  const deltaNeedsApply = Number(productionDelta.needs_apply_delta ?? 0);
-  const nextAction = cache.stale
-    ? 'Atualizar cache'
-    : release.needs_apply
-      ? 'Revisar needs_apply'
-      : !learning.can_start_production
-        ? 'Aguardar learning gate'
-        : deltaAvailable && deltaClosed > 0
-          ? 'Seguro para rodar producao'
-          : 'Monitorar estado atual';
-  const integrityItems = [
-    { label: 'source', value: integrity.source_status ?? 'pending_instrumentation', tone: integrity.source_status === 'clean' ? 'emerald' : 'slate' },
-    { label: 'output', value: integrity.output_status ?? 'pending_instrumentation', tone: integrity.output_status?.includes?.('alter') ? 'amber' : 'slate' },
-    { label: 'confirmations', value: integrity.confirmations_status ?? 'pending_instrumentation', tone: integrity.confirmations_status === 'aligned' ? 'emerald' : 'amber' },
-    { label: 'needs_apply', value: compact(release.needs_apply), tone: release.needs_apply ? 'amber' : 'emerald' },
-    { label: 'gate', value: gateText, tone: learning.can_start_production ? 'emerald' : 'red' },
-  ];
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 pb-0">
@@ -2491,12 +2469,6 @@ function ProductionControlCompact({ data }) {
                 Cache {cache.generated_at ? `atualizado em ${cache.generated_at}` : 'pendente'} · SQLite {cache.stale ? 'mudou desde o cache' : 'sincronizado'}
               </p>
             </div>
-          </div>
-          <div className="flex flex-wrap justify-end gap-1.5 text-[10px] font-bold">
-            <Badge tone="blue">Segment-state #{release.latest_segment_state_run_id ?? '-'}</Badge>
-            <Badge tone="violet">Ledger #{release.latest_ledger_run_id ?? '-'}</Badge>
-            <Badge tone={cacheTone}>{cache.stale ? 'cache defasado' : 'cache atualizado'}</Badge>
-            <Badge tone={cacheTone}>{cache.stale ? 'SQLite mudou' : 'SQLite sync'}</Badge>
           </div>
         </div>
 
@@ -2530,16 +2502,6 @@ function ProductionControlCompact({ data }) {
             <Play size={18} /> {runActive ? 'Run em execução...' : startStatus === 'checking' ? 'Checando...' : 'Start Production Run'}
           </button>
 
-          <div className="mt-2 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Proxima acao</p>
-                <p className="truncate text-sm font-black text-[var(--dash-text)]">{nextAction}</p>
-              </div>
-              <Badge tone={cache.stale || release.needs_apply || !learning.can_start_production ? 'amber' : 'emerald'}>operacional</Badge>
-            </div>
-          </div>
-
           {(startError || startStatus) && (
             <div className="mt-3 rounded-lg border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-3 text-xs text-[var(--dash-muted)]">
               <span className="font-bold text-[var(--dash-text)]">{statusLabel(startStatus ?? lastRunStatus)}</span>
@@ -2552,40 +2514,6 @@ function ProductionControlCompact({ data }) {
             <MetricTile title="Status" value={statusLabel(lastRunStatus)} tone={statusTone(lastRunStatus)} />
             <MetricTile title="Progresso" value={`${runProgress}%`} tone={runActive ? 'blue' : statusTone(lastRunStatus)} />
             <MetricTile title="Etapa" value={currentStage?.label ?? runStatus?.current_stage ?? '-'} tone="slate" />
-          </div>
-
-          <div className="mt-2 grid gap-2 md:grid-cols-2">
-            <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
-              <h4 className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Delta desde producao</h4>
-              {deltaAvailable ? (
-                <div className="mt-1 grid grid-cols-3 gap-1.5 text-xs">
-                  <div>
-                    <p className="text-[var(--dash-muted)]">Fechados</p>
-                    <p className="font-black text-emerald-400">+{compact(deltaClosed)}</p>
-                  </div>
-                  <div>
-                    <p className="text-[var(--dash-muted)]">Pendentes</p>
-                    <p className={cn('font-black', deltaPending <= 0 ? 'text-emerald-400' : 'text-amber-400')}>{deltaPending > 0 ? '+' : ''}{compact(deltaPending)}</p>
-                  </div>
-                  <div>
-                    <p className="text-[var(--dash-muted)]">Apply</p>
-                    <p className={cn('font-black', deltaNeedsApply === 0 ? 'text-emerald-400' : 'text-amber-400')}>{deltaNeedsApply > 0 ? '+' : ''}{compact(deltaNeedsApply)}</p>
-                  </div>
-                </div>
-              ) : (
-                <p className="mt-1 text-xs font-bold text-[var(--dash-muted)]">{productionDelta.reason ?? 'pending_instrumentation'}</p>
-              )}
-              <p className="mt-1 truncate text-[10px] text-[var(--dash-soft)]">Ultima producao: {productionDelta.last_production_run_id ?? runStatus?.run_id ?? '-'}</p>
-            </div>
-
-            <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
-              <h4 className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Pre-flight</h4>
-              <div className="mt-1 flex flex-wrap gap-1.5">
-                {integrityItems.map((item) => (
-                  <Badge key={item.label} tone={item.tone}>{item.label}: {item.value}</Badge>
-                ))}
-              </div>
-            </div>
           </div>
 
           <div className="mt-2 min-h-0 flex-1 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
@@ -2631,18 +2559,18 @@ function ProductionControlCompact({ data }) {
                         title={`${stage.label} · ${productionStageDetails[stage.id] ?? stage.id}`}
                         className={cn(
                           'inline-flex max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-bold',
-                          stage.status === 'failed'
-                            ? 'border-red-400/30 bg-red-500/10 text-red-200'
-                            : isMl
-                              ? 'border-violet-400/45 bg-violet-500/10 text-violet-700 dark:border-violet-400/35 dark:bg-violet-500/15 dark:text-violet-200'
-                              : stage.status === 'done'
-                                ? 'border-emerald-400/35 bg-slate-100 text-emerald-600 dark:border-emerald-400/25 dark:bg-slate-800/70 dark:text-emerald-300'
-                                : stage.status === 'running'
-                                  ? 'border-blue-400/30 bg-blue-500/10 text-blue-200'
+                          stage.status === 'done'
+                            ? 'border-emerald-400/35 bg-slate-100 text-emerald-600 dark:border-emerald-400/25 dark:bg-slate-800/70 dark:text-emerald-300'
+                            : stage.status === 'running'
+                              ? 'border-blue-400/30 bg-blue-500/10 text-blue-200'
+                              : stage.status === 'failed'
+                                ? 'border-red-400/30 bg-red-500/10 text-red-200'
+                                : isMl
+                                  ? 'border-violet-400/25 bg-violet-500/10 text-violet-200'
                                   : 'border-slate-400/15 bg-slate-900/20 text-[var(--dash-muted)]'
                         )}
                       >
-                        {isMl && <BrainCircuit size={11} className="text-violet-600 dark:text-violet-200" />}
+                        {isMl && <BrainCircuit size={11} />}
                         <span className="truncate">{stage.label}</span>
                       </span>
                     );
