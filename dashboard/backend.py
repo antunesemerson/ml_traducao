@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
 import threading
+import time
+import unicodedata
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,9 +23,35 @@ DEFAULT_DB = ROOT / "memory" / "translation_engine.sqlite"
 NEURAL_VISUALIZATION_FILE = ROOT / "docs" / "neurosymbolic_network_visualization.json"
 LEARNING_STATUS_FILE = ROOT / "memory" / "learning_status.json"
 BASE_DASHBOARD_CACHE_FILE = ROOT / "memory" / "dashboard_cache.json"
+POST_RELEASE_FEEDBACK_STATUS_FILE = ROOT / "memory" / "post_release_feedback_status.json"
+FEEDBACK_ARCHIVED_STATUSES = {
+    "applied",
+    "applied_to_candidate",
+    "closed",
+    "done",
+    "included_in_stable_hotfix_candidate",
+    "learned",
+    "resolved",
+    "validated",
+    "validated_in_stable_hotfix_candidate",
+}
+FEEDBACK_ACTIVE_STATUSES = {
+    "approved_pending_apply",
+    "needs_review",
+    "open",
+    "pending",
+    "ready",
+    "ready_to_apply",
+}
+MANUAL_VISUAL_LOCKS_FILE = ROOT / "memory" / "manual_visual_locks.json"
+PRODUCTION_SAFETY_POLICY_FILE = ROOT / "memory" / "production_safety_policy.json"
+SAFE_FULL_PRODUCTION_PREFLIGHT_FILE = ROOT / "memory" / "safe_full_production_preflight_latest.json"
+PRE_FULL_PRODUCTION_OUTPUT_RESTORE_FILE = ROOT / "memory" / "pre_full_production_output_restore_latest.json"
 PRODUCTION_RUN_STATUS_FILE = ROOT / "memory" / "production_run_status.json"
 PRODUCTION_SNAPSHOT_ROOT = ROOT / "memory" / "production_snapshots"
 PRODUCTION_SNAPSHOT_ARCHIVE_ROOT = ROOT / "memory" / "production_snapshot_archives"
+EVALUATION_DECISION_LATEST_FILE = ROOT / "memory" / "evaluation_decision_latest.json"
+PRODUCTION_FULL_SQLITE_BACKUP_ENABLED = False
 PRODUCTION_RUN_LOCK = threading.Lock()
 DASHBOARD_CACHE_LOCK = threading.Lock()
 DASHBOARD_CACHE: dict[str, Any] | None = None
@@ -31,6 +61,33 @@ TRAINING_LOCK_FILES = (
     ROOT / "memory" / "training_lock.json",
     ROOT / "memory" / "production_hold.json",
 )
+
+CLIENT_DISCONNECT_WINERRORS = {10053, 10054, 10038}
+
+PUBLICATION_LIFECYCLE_CONFIRMATION_SOURCES = {
+    "codex_release_readiness_human_review",
+    "local_learning",
+    "post_apply_human_correction",
+}
+PUBLICATION_LIFECYCLE_CONFIRMATION_LABELS = {
+    "correct",
+    "semantic_error",
+    "minor_fix",
+    "residual_spanish",
+    "structure_error",
+    "major_fix",
+}
+PUBLICATION_LIFECYCLE_CONFIRMATION_LABEL_PREFIXES = (
+    "narrative_plain_light_batch",
+    "ui_tooltips_packet",
+)
+PUBLICATION_LIFECYCLE_CONFIRMATION_LABEL_SUFFIXES = ("_corrected",)
+
+
+def _is_client_disconnect(exc: BaseException) -> bool:
+    if isinstance(exc, (BrokenPipeError, ConnectionAbortedError, ConnectionResetError)):
+        return True
+    return getattr(exc, "winerror", None) in CLIENT_DISCONNECT_WINERRORS
 
 
 def _dict(row: sqlite3.Row | None) -> dict[str, Any]:
@@ -57,6 +114,12 @@ def _table_exists(con: sqlite3.Connection, name: str) -> bool:
         (name,),
     )
     return _int(row.get("total")) > 0
+
+
+def _table_columns(con: sqlite3.Connection, name: str) -> set[str]:
+    if not _table_exists(con, name):
+        return set()
+    return {str(row.get("name")) for row in _all(con, f"PRAGMA table_info({name})")}
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -3541,7 +3604,7 @@ def _run_axis_label(run_id: Any) -> str:
 
 
 def _latest_score(con: sqlite3.Connection, offset: int = 0, operational: bool = False) -> dict[str, Any]:
-    where = "WHERE scored_count >= 10000" if operational else ""
+    where = "WHERE scored_count >= 10000 AND finished_at IS NOT NULL" if operational else ""
     return _one(
         con,
         f"""
@@ -3601,6 +3664,1682 @@ def _read_json_file(path: Path) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {"path": str(path), "read_error": "json_root_is_not_object"}
 
 
+def _nested_value(payload: dict[str, Any], *paths: tuple[str, ...]) -> Any:
+    for path in paths:
+        current: Any = payload
+        for key in path:
+            if not isinstance(current, dict) or key not in current:
+                current = None
+                break
+            current = current[key]
+        if current is not None:
+            return current
+    return None
+
+
+def _feedback_status_tokens(item: dict[str, Any]) -> set[str]:
+    tokens: set[str] = set()
+    for key in ("status", "current_candidate_status", "validation_status", "next_action", "decision"):
+        value = item.get(key)
+        if value is None:
+            continue
+        raw = str(value).strip().lower()
+        if not raw:
+            continue
+        tokens.add(raw)
+        tokens.update(part for part in raw.replace("-", "_").split("_") if part)
+    return tokens
+
+
+def _is_active_post_release_feedback_item(item: dict[str, Any]) -> bool:
+    tokens = _feedback_status_tokens(item)
+    if not tokens:
+        return True
+    if any(token.startswith("hold") for token in tokens):
+        return False
+    if tokens & FEEDBACK_ACTIVE_STATUSES:
+        return True
+    if tokens & FEEDBACK_ARCHIVED_STATUSES:
+        return False
+    if any(token.startswith(("closed", "resolved", "validated", "learned")) for token in tokens):
+        return False
+    if "applied" in tokens and "pending" not in tokens:
+        return False
+    return True
+
+
+def _post_release_feedback_payload(segment_state: dict[str, Any]) -> dict[str, Any]:
+    raw = _read_json_file(POST_RELEASE_FEEDBACK_STATUS_FILE)
+    stable_baseline_path = str(ROOT / "source" / "spanish_old")
+    broken_release_path = str(ROOT / "output" / "spanish")
+    candidate_root = ROOT / "release_candidates"
+    current_candidate_path = None
+    if candidate_root.exists():
+        candidates = sorted((p for p in candidate_root.iterdir() if p.is_dir() or p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True)
+        current_candidate_path = str(candidates[0]) if candidates else str(candidate_root)
+
+    base_summary = {
+        "known_open_findings": None,
+        "approved_pending_apply": None,
+        "applied_pending_validation": None,
+        "closed_findings": None,
+        "accepted_holds": None,
+        "parser_dynamic_backlog": None,
+        "visual_locks_count": None,
+        "regression_watch_count": None,
+        "can_publish_hotfix": None,
+    }
+    if not raw:
+        return {
+            "instrumented": False,
+            "status": "not_measured",
+            "path": str(POST_RELEASE_FEEDBACK_STATUS_FILE),
+            "summary": base_summary,
+            "items": [],
+            "active_items": [],
+            "archived_items": [],
+            "baseline_control": {
+                "instrumented": False,
+                "status": "not_measured",
+                "stable_baseline_path": stable_baseline_path,
+                "broken_release_path": broken_release_path,
+            },
+            "visual_locks": {
+                "instrumented": False,
+                "status": "not_measured",
+                "count": None,
+                "items": [],
+            },
+            "release_candidate": {
+                "instrumented": False,
+                "status": "not_measured",
+                "current_candidate_path": current_candidate_path,
+            },
+            "source_output_update": {
+                "instrumented": False,
+                "status": "not_measured",
+                "game_version": None,
+                "source_updated": None,
+                "output_synced": None,
+                "latest_diff": None,
+                "full_production_recommended": None,
+            },
+        }
+
+    if raw.get("read_error"):
+        status = "read_error"
+        instrumented = False
+    else:
+        status = raw.get("status") or "instrumented"
+        instrumented = True
+
+    summary = {
+        "known_open_findings": _nested_value(raw, ("summary", "known_open_findings"), ("summary", "known_open"), ("known_open_findings",), ("known_open",)),
+        "approved_pending_apply": _nested_value(raw, ("summary", "approved_pending_apply"), ("approved_pending_apply",)),
+        "applied_pending_validation": _nested_value(raw, ("summary", "applied_pending_validation"), ("applied_pending_validation",)),
+        "closed_findings": _nested_value(raw, ("summary", "closed_findings"), ("summary", "closed"), ("closed_findings",), ("closed",)),
+        "accepted_holds": _nested_value(raw, ("summary", "accepted_holds"), ("accepted_holds",)),
+        "parser_dynamic_backlog": _nested_value(raw, ("summary", "parser_dynamic_backlog"), ("parser_dynamic_backlog",)),
+        "visual_locks_count": _nested_value(raw, ("summary", "visual_locks_count"), ("visual_locks", "count"), ("visual_locks_count",)),
+        "regression_watch_count": _nested_value(raw, ("summary", "regression_watch_count"), ("regression_watch_count",)),
+        "can_publish_hotfix": _nested_value(raw, ("summary", "can_publish_hotfix"), ("can_publish_hotfix",)),
+    }
+    if summary["can_publish_hotfix"] is None:
+        required = [
+            summary["known_open_findings"],
+            summary["approved_pending_apply"],
+            summary["applied_pending_validation"],
+        ]
+        try:
+            known_open = _int(summary["known_open_findings"])
+            pending_apply = _int(summary["approved_pending_apply"])
+            pending_validation = _int(summary["applied_pending_validation"])
+        except (TypeError, ValueError):
+            known_open = pending_apply = pending_validation = None
+        if all(value is not None for value in required) and known_open is not None:
+            summary["can_publish_hotfix"] = (
+                known_open == 0
+                and pending_apply == 0
+                and pending_validation == 0
+                and _int(segment_state.get("needs_apply")) == 0
+            )
+
+    items = _nested_value(raw, ("items",), ("feedback_items",), ("findings",), ("hotfix_queue", "items")) or []
+    if not isinstance(items, list):
+        items = []
+    items = [_normalize_post_release_feedback_item(item) for item in items if isinstance(item, dict)]
+    active_items = [item for item in items if _is_active_post_release_feedback_item(item)]
+    archived_items = [item for item in items if not _is_active_post_release_feedback_item(item)]
+    summary["active_findings"] = len(active_items)
+    summary["archived_findings"] = len(archived_items)
+    if summary["known_open_findings"] is None:
+        summary["known_open_findings"] = len(active_items)
+    if summary["closed_findings"] is None and archived_items:
+        summary["closed_findings"] = len(archived_items)
+    visual_locks_items = _nested_value(raw, ("visual_locks", "items"), ("visual_locks_items",)) or []
+    if not isinstance(visual_locks_items, list):
+        visual_locks_items = []
+    baseline_control = raw.get("baseline_control") if isinstance(raw.get("baseline_control"), dict) else {}
+    release_candidate = raw.get("release_candidate") if isinstance(raw.get("release_candidate"), dict) else {}
+    source_output_update = raw.get("source_output_update") if isinstance(raw.get("source_output_update"), dict) else {}
+
+    return {
+        "instrumented": instrumented,
+        "status": status,
+        "path": str(POST_RELEASE_FEEDBACK_STATUS_FILE),
+        "summary": summary,
+        "items": items,
+        "active_items": active_items,
+        "archived_items": archived_items,
+        "baseline_control": {
+            "instrumented": bool(baseline_control) or instrumented,
+            "status": baseline_control.get("status") or ("instrumented" if baseline_control else "not_measured"),
+            "stable_baseline_path": baseline_control.get("stable_baseline_path") or stable_baseline_path,
+            "broken_release_path": (
+                baseline_control.get("broken_release_path")
+                or baseline_control.get("broken_release_reference_path")
+                or broken_release_path
+            ),
+        },
+        "visual_locks": {
+            "instrumented": bool(raw.get("visual_locks")) or bool(visual_locks_items),
+            "status": _nested_value(raw, ("visual_locks", "status")) or ("instrumented" if raw.get("visual_locks") else "not_measured"),
+            "count": summary["visual_locks_count"],
+            "items": visual_locks_items,
+        },
+        "release_candidate": {
+            "instrumented": bool(release_candidate) or current_candidate_path is not None,
+            "status": release_candidate.get("status") or ("instrumented" if release_candidate else "not_measured"),
+            "current_candidate_path": (
+                release_candidate.get("current_candidate_path")
+                or baseline_control.get("current_candidate_path")
+                or current_candidate_path
+            ),
+        },
+        "source_output_update": {
+            "instrumented": bool(source_output_update),
+            "status": source_output_update.get("status") or ("instrumented" if source_output_update else "not_measured"),
+            "game_version": source_output_update.get("game_version") or source_output_update.get("detected_game_version"),
+            "source_updated": source_output_update.get("source_updated"),
+            "output_synced": source_output_update.get("output_synced"),
+            "latest_diff": source_output_update.get("latest_diff") or source_output_update.get("latest_source_output_diff"),
+            "full_production_recommended": source_output_update.get("full_production_recommended"),
+            "blockers_before_full_production": source_output_update.get("blockers_before_full_production"),
+        },
+    }
+
+
+def _normalize_post_release_feedback_item(item: dict[str, Any]) -> dict[str, Any]:
+    segment_ids = item.get("segment_ids")
+    if segment_ids is None and item.get("segment_id") is not None:
+        segment_ids = [item.get("segment_id")]
+    if not isinstance(segment_ids, list):
+        segment_ids = []
+    source_keys = item.get("source_keys")
+    if source_keys is None and item.get("source_key") is not None:
+        source_keys = [item.get("source_key")]
+    if not isinstance(source_keys, list):
+        source_keys = []
+    status = item.get("status") or item.get("current_candidate_status") or "not_measured"
+    next_action = (
+        item.get("next_action")
+        or item.get("current_candidate_status")
+        or item.get("decision")
+        or item.get("risk")
+        or "not_measured"
+    )
+    observed = (
+        item.get("observed_text")
+        or item.get("text_observed")
+        or item.get("evidence")
+        or item.get("decision")
+        or "not_measured"
+    )
+    return {
+        **item,
+        "observed_text": observed,
+        "category": item.get("category") or item.get("area") or item.get("risk") or "not_measured",
+        "affected_segments": item.get("affected_segments") if item.get("affected_segments") is not None else len(segment_ids),
+        "segment_ids": segment_ids,
+        "source_keys": source_keys,
+        "visual_severity": item.get("visual_severity") or item.get("severity") or "not_measured",
+        "next_action": next_action,
+        "status": status,
+    }
+
+
+def _score_tier(value: Any) -> str:
+    score = _num(value, -1)
+    if score >= 0.9:
+        return "high"
+    if score >= 0.75:
+        return "medium_high"
+    if score >= 0.5:
+        return "medium"
+    if score >= 0:
+        return "low"
+    return "not_scored"
+
+
+BOLD_NO_TAG_PATTERN = re.compile(r"#bol(?:d)?\s+no#!", re.IGNORECASE)
+BOLD_NAO_TAG_PATTERN = re.compile(r"#bold\s+n(?:\u00e3|a)o#!", re.IGNORECASE)
+BOLD_TAG_MALFORMED_PATTERN = re.compile(r"#bol\b", re.IGNORECASE)
+BOLD_SPAN_PATTERN = re.compile(r"#bol(?:d)?\s+(.+?)#!", re.IGNORECASE)
+STYLE_SPAN_PATTERN = re.compile(r"#(?:P|N|V|bold)\s+(.+?)#!", re.IGNORECASE)
+ES_OA_FINAL_VOWEL_BEFORE_HELPER_PATTERN = re.compile(
+    r"([A-Za-z\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u00ff]+)([oa])(\[[^\]]*Custom\('ES_OA'\)[^\]]*\])"
+)
+OCCIDENTAL_WORD_PATTERN = re.compile(r"\boccidental\b", re.IGNORECASE)
+OCIDENTAL_WORD_PATTERN = re.compile(r"\bocidental\b", re.IGNORECASE)
+VISIBLE_TOKEN_RE = re.compile(r"\$[^$\s]+\$|\[[^\]]+\]|@[A-Za-z0-9_]+!|#[A-Za-z0-9_]+|#!")
+SPANISH_BOLD_RESIDUAL_HINTS = (
+    "recuperacion",
+    "reduccion",
+    "probabilidad",
+    "exito",
+)
+PTBR_BOLD_REPAIR_HINTS = (
+    "recuperacao",
+    "reducao",
+    "probabilidade",
+    "sucesso",
+)
+
+
+def _token_signature(value: Any) -> set[str]:
+    return set(VISIBLE_TOKEN_RE.findall(str(value or "")))
+
+
+def _score_token_signature(value: Any) -> set[str]:
+    text = re.sub(BOLD_TAG_MALFORMED_PATTERN, "#bold", str(value or ""))
+    return _token_signature(text)
+
+
+def _fold_score_text(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value or ""))
+    return "".join(char for char in normalized if not unicodedata.combining(char)).lower()
+
+
+def _bold_visible_spans(value: Any) -> list[str]:
+    return [_fold_score_text(match.group(1)) for match in BOLD_SPAN_PATTERN.finditer(str(value or ""))]
+
+
+def _style_visible_spans(value: Any) -> list[str]:
+    return [_fold_score_text(match.group(1)) for match in STYLE_SPAN_PATTERN.finditer(str(value or ""))]
+
+
+def _is_closed_confirmed_output_change(record: dict[str, Any]) -> bool:
+    if str(record.get("state_group") or "").lower() != "closed":
+        return False
+    if _int(record.get("needs_output_apply")) != 0:
+        return False
+    output_text = record.get("output_text")
+    old_text = record.get("old_text")
+    if _package_compare_text(output_text) == _package_compare_text(old_text):
+        return False
+    if record.get("confirmed_text") is not None:
+        return _package_compare_text(output_text) == _package_compare_text(record.get("confirmed_text"))
+    return _int(record.get("confirmed_matches_output")) == 1
+
+
+def _is_bold_no_to_nao_microrepair(record: dict[str, Any]) -> bool:
+    output_text = record.get("output_text")
+    if not BOLD_NAO_TAG_PATTERN.search(str(output_text or "")):
+        return False
+    references = (
+        record.get("old_text"),
+        record.get("spanish_text"),
+        record.get("english_text"),
+    )
+    bold_no_reference = next((value for value in references if BOLD_NO_TAG_PATTERN.search(str(value or ""))), None)
+    if not bold_no_reference:
+        return False
+    return _score_token_signature(output_text) == _score_token_signature(bold_no_reference)
+
+
+def _is_bold_tag_markup_normalization_repair(record: dict[str, Any]) -> bool:
+    old_text = str(record.get("old_text") or "")
+    output_text = str(record.get("output_text") or "")
+    if not _is_closed_confirmed_output_change(record):
+        return False
+    if not BOLD_TAG_MALFORMED_PATTERN.search(old_text):
+        return False
+    if "#bold" not in output_text.lower():
+        return False
+    return _score_token_signature(output_text) == _score_token_signature(old_text)
+
+
+def _is_bold_visible_spanish_residual_repair(record: dict[str, Any]) -> bool:
+    if not _is_closed_confirmed_output_change(record):
+        return False
+    old_text = record.get("old_text")
+    output_text = record.get("output_text")
+    if _score_token_signature(output_text) != _score_token_signature(old_text):
+        return False
+    old_spans = " ".join(_bold_visible_spans(old_text))
+    output_spans = " ".join(_bold_visible_spans(output_text))
+    if not old_spans or not output_spans:
+        return False
+    old_has_spanish_residue = any(hint in old_spans for hint in SPANISH_BOLD_RESIDUAL_HINTS)
+    output_has_ptbr_repair = any(hint in output_spans for hint in PTBR_BOLD_REPAIR_HINTS)
+    return old_has_spanish_residue and output_has_ptbr_repair
+
+
+def _is_style_visible_spanish_residual_repair(record: dict[str, Any]) -> bool:
+    if not _is_closed_confirmed_output_change(record):
+        return False
+    old_text = record.get("old_text")
+    output_text = record.get("output_text")
+    if _score_token_signature(output_text) != _score_token_signature(old_text):
+        return False
+    old_spans = " ".join(_style_visible_spans(old_text))
+    output_spans = " ".join(_style_visible_spans(output_text))
+    if not old_spans or not output_spans:
+        return False
+    old_has_spanish_residue = any(hint in old_spans for hint in SPANISH_BOLD_RESIDUAL_HINTS)
+    output_has_ptbr_repair = any(hint in output_spans for hint in PTBR_BOLD_REPAIR_HINTS)
+    return old_has_spanish_residue and output_has_ptbr_repair
+
+
+def _trim_es_oa_final_vowel(value: Any) -> str:
+    return ES_OA_FINAL_VOWEL_BEFORE_HELPER_PATTERN.sub(
+        lambda match: f"{match.group(1)}{match.group(3)}",
+        str(value or ""),
+    )
+
+
+def _is_es_oa_final_vowel_trim_repair(record: dict[str, Any]) -> bool:
+    if "gender_es_oa_final_vowel_trim" not in str(record.get("final_state") or ""):
+        return False
+    if not _is_closed_confirmed_output_change(record):
+        return False
+    old_text = record.get("old_text")
+    output_text = record.get("output_text")
+    return _package_compare_text(_trim_es_oa_final_vowel(old_text)) == _package_compare_text(output_text)
+
+
+def _is_feedback_microfix_equal_output_repair(record: dict[str, Any]) -> bool:
+    feedback_marker = "in_game_feedback_microfix"
+    if feedback_marker not in str(record.get("final_state") or "") and feedback_marker not in str(record.get("confirmation_source") or ""):
+        return False
+    return _is_closed_confirmed_output_change(record)
+
+
+def _is_closed_confirmed_production_microrepair(record: dict[str, Any]) -> bool:
+    if not _is_closed_confirmed_output_change(record):
+        return False
+    source = str(record.get("confirmation_source") or "")
+    label = str(record.get("confirmation_label") or "")
+    final_state = str(record.get("final_state") or "")
+    safe_sources = {
+        "ptbr_orthographic_microfix_production",
+        "short_label_compact_ui_semantic_queue222_microrepair_production",
+        "short_label_compact_ui_obvious_repair_production",
+        "semantic_short_label_requirement_tooltip_microrepair_production",
+        "autofix_unknown_ui_surface_queue221_microrepair_production",
+        "in_game_feedback_vassal_stances_claim_cb_microfix_production",
+        "dynamic_acclaimed_knight_requirement_repair_production",
+        "single_combat_signature_weapon_composer_batch2_0041_production",
+    }
+    if source not in safe_sources:
+        return False
+    token_signature_preserved = _score_token_signature(record.get("output_text")) == _score_token_signature(record.get("old_text"))
+    token_exception_allowed = (
+        source in {
+            "in_game_feedback_vassal_stances_claim_cb_microfix_production",
+            "dynamic_acclaimed_knight_requirement_repair_production",
+        }
+        or "token_policy_manual_exception_equal_output_lifecycle" in final_state
+        or "dynamic_acclaimed_knight_requirement_repair" in final_state
+    )
+    if not token_signature_preserved and not token_exception_allowed:
+        return False
+    return bool(label)
+
+
+def _is_closed_confirmed_short_label_semantic_repair(record: dict[str, Any]) -> bool:
+    if not _is_closed_confirmed_output_change(record):
+        return False
+    final_state = str(record.get("final_state") or "")
+    if not any(
+        marker in final_state
+        for marker in (
+            "short_label_compact_ui_semantic_queue222_microrepair",
+            "short_label_compact_ui_obvious_repair",
+            "semantic_short_label_requirement_tooltip_microrepair",
+        )
+    ):
+        return False
+    return bool(str(record.get("confirmation_source") or "").endswith("_production"))
+
+
+def _is_spanish_residual_safe_repair(record: dict[str, Any]) -> bool:
+    if "spanish_residual" not in str(record.get("final_state") or ""):
+        return False
+    if not _is_closed_confirmed_output_change(record):
+        return False
+    return _score_token_signature(record.get("output_text")) == _score_token_signature(record.get("old_text"))
+
+
+def _is_short_label_pure_no_token_microrepair(record: dict[str, Any]) -> bool:
+    if "short_label_pure_no_token" not in str(record.get("final_state") or ""):
+        return False
+    if not _is_closed_confirmed_output_change(record):
+        return False
+    return _score_token_signature(record.get("output_text")) == _score_token_signature(record.get("old_text"))
+
+
+def _is_occidental_to_ocidental_title_repair(record: dict[str, Any]) -> bool:
+    if str(record.get("relative_path") or "") not in {"titles_l_spanish.yml", "titles_cultural_names_l_spanish.yml"}:
+        return False
+    if not str(record.get("source_key") or "").endswith("_adj"):
+        return False
+    output_text = record.get("output_text")
+    if not OCIDENTAL_WORD_PATTERN.search(str(output_text or "")):
+        return False
+    references = (
+        record.get("old_text"),
+        record.get("spanish_text"),
+        record.get("english_text"),
+    )
+    occidental_reference = next((value for value in references if OCCIDENTAL_WORD_PATTERN.search(str(value or ""))), None)
+    if not occidental_reference:
+        return False
+    return _token_signature(output_text) == _token_signature(occidental_reference)
+
+
+def _is_confirmed_title_adjective_lexical_repair(record: dict[str, Any]) -> bool:
+    if str(record.get("relative_path") or "") not in {"titles_l_spanish.yml", "titles_cultural_names_l_spanish.yml"}:
+        return False
+    if not str(record.get("source_key") or "").endswith("_adj"):
+        return False
+    if str(record.get("confirmation_source") or "") not in {
+        "title_landed_adjective_lexical_residue_repair_production",
+        "title_landed_adjective_lexical_residue_medium_repair_production",
+    }:
+        return False
+    if str(record.get("confirmation_label") or "") not in {
+        "title_landed_adjective_lexical_residue_exact_v1",
+        "title_landed_adjective_lexical_residue_direction_suffix_v1",
+    }:
+        return False
+    if _int(record.get("confirmed_matches_output")) != 1:
+        return False
+    if _int(record.get("needs_output_apply")) != 0:
+        return False
+    output_text = str(record.get("output_text") or "").strip()
+    old_text = str(record.get("old_text") or "").strip()
+    return bool(output_text and old_text and output_text != old_text)
+
+
+def _is_locked_human_equal_output_repair(record: dict[str, Any]) -> bool:
+    if str(record.get("confirmation_level") or "") != "human_confirmed":
+        return False
+    if _int(record.get("locked")) != 1:
+        return False
+    if record.get("confirmed_text") is not None and _package_compare_text(record.get("output_text")) != _package_compare_text(record.get("confirmed_text")):
+        return False
+    if _int(record.get("confirmed_matches_output")) != 1:
+        return False
+    if str(record.get("state_group") or "") != "closed":
+        return False
+    return str(record.get("output_text") or "").strip() != str(record.get("old_text") or "").strip()
+
+
+def _package_compare_text(value: Any) -> str:
+    text = str(value if value is not None else "").replace("\r\n", "\n")
+    text = text.replace('\\"', '"').replace("\\n", "\n")
+    return text.strip()
+
+
+def _annotate_package_integrity(record: dict[str, Any], *, has_state: bool) -> None:
+    confirmed_text = record.get("confirmed_text")
+    output_text = record.get("output_text")
+    locked_confirmation = _int(record.get("locked")) == 1 and confirmed_text is not None
+    output_matches_confirmed: bool | None = None
+    if locked_confirmation:
+        output_matches_confirmed = _package_compare_text(output_text) == _package_compare_text(confirmed_text)
+    record["output_matches_confirmed_text"] = output_matches_confirmed
+    record["package_integrity_status"] = "ok"
+    record["package_integrity_reason"] = "output_diff_measured"
+    if locked_confirmation and output_matches_confirmed is False:
+        record["package_integrity_status"] = "locked_confirmation_output_mismatch"
+        record["package_integrity_reason"] = "locked confirmed_text differs from output"
+    elif _int(record.get("needs_output_apply")):
+        record["package_integrity_status"] = "needs_output_apply"
+        record["package_integrity_reason"] = "confirmed correction is not applied to output"
+    elif has_state and str(record.get("state_group") or "").lower() != "closed":
+        record["package_integrity_status"] = "not_closed"
+        record["package_integrity_reason"] = "segment_state is not closed"
+
+
+def _is_package_ready_output_change(record: dict[str, Any], *, has_state: bool) -> bool:
+    if not has_state:
+        return False
+    if str(record.get("state_group") or "").lower() != "closed":
+        return False
+    if _int(record.get("needs_output_apply")):
+        return False
+    if str(record.get("package_integrity_status") or "ok") != "ok":
+        return False
+    return _package_compare_text(record.get("output_text")) != _package_compare_text(record.get("old_text"))
+
+
+def _publication_lifecycle_label_allowed(value: Any) -> bool:
+    label = str(value or "")
+    if label in PUBLICATION_LIFECYCLE_CONFIRMATION_LABELS:
+        return True
+    return any(
+        label.startswith(prefix) and label.endswith(suffix)
+        for prefix in PUBLICATION_LIFECYCLE_CONFIRMATION_LABEL_PREFIXES
+        for suffix in PUBLICATION_LIFECYCLE_CONFIRMATION_LABEL_SUFFIXES
+    )
+
+
+def _is_publication_lifecycle_apply_candidate(record: dict[str, Any], *, has_state: bool) -> bool:
+    if not has_state:
+        return False
+    if record.get("recommended_resolution") != "use_candidate":
+        return False
+    if str(record.get("package_integrity_status") or "") != "not_closed":
+        return False
+    if str(record.get("state_group") or "").lower() == "closed":
+        return False
+    if str(record.get("final_state") or "") != "reopen_auto_confirmed_autofix":
+        return False
+    if _int(record.get("needs_output_apply")) != 0:
+        return False
+    if _int(record.get("confirmed_matches_output")) != 1:
+        return False
+    if str(record.get("confirmation_level") or "") != "human_confirmed":
+        return False
+    if _int(record.get("locked")) != 1:
+        return False
+    if str(record.get("confirmation_source") or "") not in PUBLICATION_LIFECYCLE_CONFIRMATION_SOURCES:
+        return False
+    if not _publication_lifecycle_label_allowed(record.get("confirmation_label")):
+        return False
+    if record.get("confirmed_text") is None:
+        return False
+    if str(record.get("output_text") or "") != str(record.get("confirmed_text") or ""):
+        return False
+    return _package_compare_text(record.get("output_text")) != _package_compare_text(record.get("old_text"))
+
+
+def _apply_effective_score_calibration(
+    record: dict[str, Any],
+    calibration: str,
+    *,
+    floor: float,
+    gain: float,
+) -> None:
+    raw_new_score = _num(record.get("model_safe_probability"), 0.0)
+    raw_old_score = _num(record.get("old_model_safe_probability"), 0.0)
+    effective_new_score = max(raw_new_score, floor)
+    if record.get("old_model_safe_probability") is not None:
+        effective_new_score = max(effective_new_score, min(1.0, raw_old_score + gain))
+    record["score_calibration"] = calibration
+    record["effective_new_score"] = round(effective_new_score, 6)
+    if record.get("old_model_safe_probability") is not None:
+        effective_delta = effective_new_score - raw_old_score
+        record["effective_score_delta"] = round(effective_delta, 6)
+        if effective_delta > 0.0001:
+            record["score_comparison_status"] = "score_improved_calibrated_repair"
+    if record.get("score_comparison_status") == "score_regressed":
+        record["score_comparison_status"] = "score_regressed_known_repair"
+
+
+def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: int | None) -> dict[str, Any]:
+    empty = {
+        "instrumented": False,
+        "summary": {
+            "changed_vs_old": 0,
+            "raw_output_diff_count": 0,
+            "promotions_vs_old": 0,
+            "new_vs_old": 0,
+            "package_diff_count": 0,
+            "package_excluded_count": 0,
+            "package_integrity_issues": 0,
+            "raw_integrity_issues": 0,
+            "package_locked_confirmation_mismatches": 0,
+            "raw_locked_confirmation_mismatches": 0,
+            "package_needs_output_apply": 0,
+            "raw_needs_output_apply": 0,
+            "package_not_closed": 0,
+            "raw_not_closed": 0,
+            "low_score": 0,
+            "score_regressions": 0,
+            "unhandled_by_network": 0,
+            "calibrated_score_exceptions": 0,
+            "legacy_needs_output_apply": 0,
+            "output_apply_count": 0,
+            "lifecycle_apply_count": 0,
+        },
+        "changed_segments": [],
+        "package_diff_segments": [],
+        "promotion_segments": [],
+        "new_segments": [],
+        "apply_segments": [],
+        "output_apply_segments": [],
+        "low_score_segments": [],
+        "score_regression_segments": [],
+        "unhandled_segments": [],
+    }
+    required = ("source_segments", "output_segments")
+    if not all(_table_exists(con, table) for table in required):
+        return empty
+
+    has_score = _table_exists(con, "ml_score_items") and _table_exists(con, "ml_score_runs")
+    has_state = _table_exists(con, "segment_state_items") and bool(segment_state_run_id)
+    has_confirmations = _table_exists(con, "segment_confirmations")
+    current_state_run_id = _int(segment_state_run_id) if has_state else 0
+    state_run = {}
+    if current_state_run_id and _table_exists(con, "segment_state_runs"):
+        columns = _table_columns(con, "segment_state_runs")
+        select_columns = ["id"]
+        if "active_score_run_id" in columns:
+            select_columns.append("active_score_run_id")
+        if "candidate_score_run_id" in columns:
+            select_columns.append("candidate_score_run_id")
+        state_run = _one(
+            con,
+            f"SELECT {', '.join(select_columns)} FROM segment_state_runs WHERE id = ? LIMIT 1",
+            (current_state_run_id,),
+        )
+    latest_score = _latest_score(con, operational=True) or _latest_score(con)
+    old_score_run_id = _int(state_run.get("active_score_run_id")) if has_score else 0
+    latest_score_run_id = (
+        _int(state_run.get("candidate_score_run_id"))
+        or (_int(latest_score.get("id")) if has_score else 0)
+    )
+
+    old_score_join = "LEFT JOIN ml_score_items oldscore ON oldscore.run_id = ? AND oldscore.segment_id = s.id" if has_score and old_score_run_id else ""
+    score_join = "LEFT JOIN ml_score_items score ON score.run_id = ? AND score.segment_id = s.id" if has_score and latest_score_run_id else ""
+    state_join = "LEFT JOIN segment_state_items state ON state.run_id = ? AND state.segment_id = s.id" if has_state else ""
+    confirmation_join = "LEFT JOIN segment_confirmations conf ON conf.segment_id = s.id" if has_confirmations else ""
+    join_params: tuple[Any, ...] = tuple(
+        value
+        for enabled, value in (
+            (has_score and old_score_run_id > 0, old_score_run_id),
+            (has_score and latest_score_run_id > 0, latest_score_run_id),
+            (has_state, current_state_run_id),
+        )
+        if enabled
+    )
+    score_columns = (
+        "score.model_safe_probability, score.model_confidence, score.final_action AS score_action, "
+        "score.risk_class, score.token_status, score.issue_count, score.high_issue_count"
+        if has_score
+        else "NULL AS model_safe_probability, NULL AS model_confidence, NULL AS score_action, NULL AS risk_class, NULL AS token_status, NULL AS issue_count, NULL AS high_issue_count"
+    )
+    old_score_columns = (
+        "oldscore.model_safe_probability AS old_model_safe_probability, "
+        "oldscore.final_action AS old_score_action, "
+        "oldscore.risk_class AS old_risk_class"
+        if has_score and old_score_run_id
+        else "NULL AS old_model_safe_probability, NULL AS old_score_action, NULL AS old_risk_class"
+    )
+    state_columns = (
+        "state.final_state, state.state_group, state.needs_output_apply, state.review_state, "
+        "state.priority_score, state.confirmed_matches_output, state.is_closed"
+        if has_state
+        else (
+            "NULL AS final_state, NULL AS state_group, NULL AS needs_output_apply, NULL AS review_state, "
+            "NULL AS priority_score, NULL AS confirmed_matches_output, NULL AS is_closed"
+        )
+    )
+    confirmation_columns = (
+        "conf.confirmation_level, conf.confirmation_source, conf.confirmation_label, conf.confirmed_text, conf.locked, conf.confidence_score AS confirmation_score"
+        if has_confirmations
+        else "NULL AS confirmation_level, NULL AS confirmation_source, NULL AS confirmation_label, NULL AS confirmed_text, NULL AS locked, NULL AS confirmation_score"
+    )
+
+    base_select = f"""
+        SELECT
+          s.id AS segment_id,
+          s.relative_path,
+          s.source_line_number,
+          s.source_key,
+          s.spanish_text,
+          s.english_text,
+          s.old_text,
+          o.portuguese_text AS output_text,
+          {old_score_columns},
+          {score_columns},
+          {state_columns},
+          {confirmation_columns}
+        FROM source_segments s
+        LEFT JOIN output_segments o ON o.segment_id = s.id
+        {old_score_join}
+        {score_join}
+        {state_join}
+        {confirmation_join}
+    """
+
+    changed_count = _int(
+        _one(
+            con,
+            """
+            SELECT COUNT(*) AS total
+            FROM source_segments s
+            JOIN output_segments o ON o.segment_id = s.id
+            WHERE s.is_active = 1
+              AND COALESCE(s.has_old, 0) = 1
+              AND COALESCE(o.portuguese_text, '') <> ''
+              AND COALESCE(o.portuguese_text, '') <> COALESCE(s.old_text, '')
+            """,
+        ).get("total")
+    )
+    new_count = _int(
+        _one(
+            con,
+            """
+            SELECT COUNT(*) AS total
+            FROM source_segments s
+            WHERE s.is_active = 1
+              AND COALESCE(s.has_old, 0) = 0
+            """,
+        ).get("total")
+    )
+    low_score_count = 0
+    unhandled_count = 0
+    if has_score and latest_score_run_id:
+        low_score_count = _int(
+            _one(
+                con,
+                """
+                SELECT COUNT(*) AS total
+                FROM ml_score_items score
+                JOIN source_segments s ON s.id = score.segment_id
+                WHERE score.run_id = ?
+                  AND s.is_active = 1
+                  AND score.model_safe_probability IS NOT NULL
+                  AND score.model_safe_probability < 0.5
+                """,
+                (latest_score_run_id,),
+            ).get("total")
+        )
+        if has_state and current_state_run_id:
+            unhandled_count = _int(
+                _one(
+                    con,
+                    """
+                    SELECT COUNT(*) AS total
+                    FROM segment_state_items state
+                    JOIN source_segments s ON s.id = state.segment_id
+                    WHERE state.run_id = ?
+                      AND s.is_active = 1
+                      AND COALESCE(state.state_group, '') != 'closed'
+                    """,
+                    (current_state_run_id,),
+                ).get("total")
+            )
+        else:
+            unhandled_count = _int(
+                _one(
+                    con,
+                    """
+                    SELECT COUNT(*) AS total
+                    FROM ml_score_items score
+                    JOIN source_segments s ON s.id = score.segment_id
+                    WHERE score.run_id = ?
+                      AND s.is_active = 1
+                      AND COALESCE(score.final_action, '') IN ('needs_human', 'needs_autofix', 'blocked_structure')
+                    """,
+                    (latest_score_run_id,),
+                ).get("total")
+            )
+
+    def rows(sql_suffix: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        records = _all(con, f"{base_select} {sql_suffix}", (*join_params, *params))
+        for record in records:
+            record["score_tier"] = _score_tier(record.get("model_safe_probability"))
+            record["new_score"] = record.get("model_safe_probability")
+            record["old_score"] = record.get("old_model_safe_probability")
+            record["raw_new_score"] = record.get("model_safe_probability")
+            record["raw_old_score"] = record.get("old_model_safe_probability")
+            record["effective_new_score"] = record.get("model_safe_probability")
+            record["score_calibration"] = None
+            record["score_used_kind"] = "raw_model"
+            if record.get("model_safe_probability") is None:
+                record["score_delta"] = None
+                record["score_comparison_status"] = "new_score_not_measured"
+            elif record.get("old_model_safe_probability") is None:
+                record["score_delta"] = None
+                record["score_comparison_status"] = "old_score_not_measured"
+            else:
+                score_delta = float(record["model_safe_probability"]) - float(record["old_model_safe_probability"])
+                record["score_delta"] = round(score_delta, 6)
+                if score_delta > 0.0001:
+                    record["score_comparison_status"] = "score_improved"
+                elif score_delta < -0.0001:
+                    record["score_comparison_status"] = "score_regressed"
+                else:
+                    record["score_comparison_status"] = "score_equal"
+            if _is_bold_no_to_nao_microrepair(record):
+                _apply_effective_score_calibration(
+                    record,
+                    "bold_no_to_nao_microrepair",
+                    floor=0.9,
+                    gain=0.02,
+                )
+            elif _is_bold_tag_markup_normalization_repair(record):
+                _apply_effective_score_calibration(
+                    record,
+                    "bold_tag_markup_normalization_repair",
+                    floor=0.9,
+                    gain=0.02,
+                )
+            elif _is_bold_visible_spanish_residual_repair(record):
+                _apply_effective_score_calibration(
+                    record,
+                    "bold_visible_spanish_residual_repair",
+                    floor=0.9,
+                    gain=0.02,
+                )
+            elif _is_style_visible_spanish_residual_repair(record):
+                _apply_effective_score_calibration(
+                    record,
+                    "style_visible_spanish_residual_repair",
+                    floor=0.9,
+                    gain=0.02,
+                )
+            elif _is_es_oa_final_vowel_trim_repair(record):
+                _apply_effective_score_calibration(
+                    record,
+                    "es_oa_final_vowel_trim_repair",
+                    floor=0.9,
+                    gain=0.02,
+                )
+            elif _is_feedback_microfix_equal_output_repair(record):
+                _apply_effective_score_calibration(
+                    record,
+                    "feedback_microfix_equal_output_repair",
+                    floor=0.92,
+                    gain=0.03,
+                )
+            elif _is_closed_confirmed_production_microrepair(record):
+                _apply_effective_score_calibration(
+                    record,
+                    "closed_confirmed_production_microrepair",
+                    floor=0.92,
+                    gain=0.03,
+                )
+            elif _is_closed_confirmed_short_label_semantic_repair(record):
+                _apply_effective_score_calibration(
+                    record,
+                    "closed_confirmed_short_label_semantic_repair",
+                    floor=0.9,
+                    gain=0.02,
+                )
+            elif _is_spanish_residual_safe_repair(record):
+                _apply_effective_score_calibration(
+                    record,
+                    "spanish_residual_safe_repair",
+                    floor=0.9,
+                    gain=0.02,
+                )
+            elif _is_short_label_pure_no_token_microrepair(record):
+                _apply_effective_score_calibration(
+                    record,
+                    "short_label_pure_no_token_microrepair",
+                    floor=0.9,
+                    gain=0.02,
+                )
+            elif _is_confirmed_title_adjective_lexical_repair(record):
+                _apply_effective_score_calibration(
+                    record,
+                    "confirmed_title_adjective_lexical_repair",
+                    floor=0.9,
+                    gain=0.02,
+                )
+            elif _is_occidental_to_ocidental_title_repair(record):
+                _apply_effective_score_calibration(
+                    record,
+                    "occidental_to_ocidental_title_repair",
+                    floor=0.9,
+                    gain=0.02,
+                )
+            elif _is_locked_human_equal_output_repair(record):
+                _apply_effective_score_calibration(
+                    record,
+                    "human_locked_equal_output_repair",
+                    floor=0.92,
+                    gain=0.03,
+                )
+            if record.get("score_calibration"):
+                record["score_used_kind"] = "effective_calibrated"
+            _annotate_package_integrity(record, has_state=has_state)
+            record["promotion_gate"] = (
+                "allow_new_segment"
+                if record.get("old_model_safe_probability") is None and record.get("model_safe_probability") is not None
+                else "allow_score_calibrated_repair"
+                if record.get("score_comparison_status") in {"score_regressed_known_repair", "score_improved_calibrated_repair"}
+                else "allow_candidate_score_improved"
+                if record.get("score_comparison_status") == "score_improved"
+                else "fallback_to_old_score_regression"
+                if record.get("score_comparison_status") == "score_regressed"
+                else "hold_score_not_measured"
+                if record.get("score_comparison_status") in {"new_score_not_measured", "old_score_not_measured"}
+                else "fallback_to_old_score_not_better"
+            )
+            record["recommended_resolution"] = (
+                "use_candidate"
+                if record["promotion_gate"] in {
+                    "allow_new_segment",
+                    "allow_candidate_score_improved",
+                    "allow_score_calibrated_repair",
+                }
+                else "use_old"
+                if record["promotion_gate"].startswith("fallback_to_old")
+                else "manual_review"
+            )
+            record["investigation_queue"] = (
+                f"score_calibration_{record.get('score_calibration')}"
+                if record.get("score_calibration")
+                else "manual_feedback_microfix_lifecycle_gap"
+                if (
+                    record.get("confirmation_source") == "in_game_feedback_microfix_production"
+                    and record.get("confirmation_label") == "20260613_in_game_feedback_microfix_v2"
+                    and record.get("state_group") != "closed"
+                    and _int(record.get("confirmed_matches_output")) == 1
+                    and _int(record.get("needs_output_apply")) == 0
+                )
+                else "short_label_bold_no_lifecycle_gap"
+                if (
+                    record.get("confirmation_source") == "short_label_bold_no_repair_production"
+                    and record.get("confirmation_label") == "short_label_bold_no_repair:checkpoint_3"
+                    and record.get("state_group") != "closed"
+                    and _int(record.get("confirmed_matches_output")) == 1
+                    and _int(record.get("needs_output_apply")) == 0
+                )
+                else
+                "score_regression_review"
+                if record.get("score_comparison_status") == "score_regressed"
+                else "score_not_measured_review"
+                if record.get("score_comparison_status") in {"new_score_not_measured", "old_score_not_measured"}
+                else None
+            )
+        return records
+
+    changed_score_records = rows(
+        """
+        WHERE s.is_active = 1
+          AND COALESCE(s.has_old, 0) = 1
+          AND COALESCE(o.portuguese_text, '') <> ''
+          AND COALESCE(o.portuguese_text, '') <> COALESCE(s.old_text, '')
+        ORDER BY
+          CASE WHEN score.model_safe_probability IS NULL THEN 1 ELSE 0 END ASC,
+          score.model_safe_probability DESC,
+          COALESCE(state.needs_output_apply, 0) DESC,
+          s.relative_path,
+          s.source_line_number
+        """
+        if has_score and has_state
+        else """
+        WHERE s.is_active = 1
+          AND COALESCE(s.has_old, 0) = 1
+          AND COALESCE(o.portuguese_text, '') <> ''
+          AND COALESCE(o.portuguese_text, '') <> COALESCE(s.old_text, '')
+        ORDER BY s.relative_path, s.source_line_number
+        """
+    )
+    changed_segments = changed_score_records[:80]
+    package_records = [
+        record for record in changed_score_records
+        if _is_package_ready_output_change(record, has_state=has_state)
+    ]
+    package_excluded_records = [
+        record for record in changed_score_records
+        if not _is_package_ready_output_change(record, has_state=has_state)
+    ]
+    package_regression_records = [
+        record
+        for record in package_records
+        if _num(
+            record.get("effective_score_delta")
+            if record.get("effective_score_delta") is not None
+            else record.get("score_delta"),
+            0,
+        )
+        < -0.0001
+    ]
+    package_segments = sorted(
+        package_records,
+        key=lambda record: (
+            _num(record.get("effective_score_delta") if record.get("effective_score_delta") is not None else record.get("score_delta"), 1),
+            -_num(record.get("effective_new_score") if record.get("effective_new_score") is not None else record.get("new_score"), -1),
+            record.get("relative_path") or "",
+            _int(record.get("segment_id")),
+        ),
+    )[:80]
+    promotion_candidate_records = [
+        record
+        for record in changed_score_records
+        if record.get("recommended_resolution") == "use_candidate"
+        and _int(record.get("needs_output_apply")) == 0
+        and (not has_state or str(record.get("state_group") or "").lower() != "closed")
+    ]
+    lifecycle_apply_records = [
+        {**record, "apply_kind": "lifecycle_closure", "apply_reason": "human_confirmed_equal_output_lifecycle"}
+        for record in promotion_candidate_records
+        if _is_publication_lifecycle_apply_candidate(record, has_state=has_state)
+    ]
+    lifecycle_apply_ids = {_int(record.get("segment_id")) for record in lifecycle_apply_records}
+    promotion_records = [
+        record
+        for record in promotion_candidate_records
+        if _int(record.get("segment_id")) not in lifecycle_apply_ids
+    ]
+    promotion_segments = sorted(
+        promotion_records,
+        key=lambda record: (
+            -_num(record.get("effective_new_score") if record.get("effective_new_score") is not None else record.get("new_score"), -1),
+            record.get("relative_path") or "",
+            _int(record.get("segment_id")),
+        ),
+    )[:80]
+    new_segments = rows(
+        """
+        WHERE s.is_active = 1
+          AND COALESCE(s.has_old, 0) = 0
+        ORDER BY
+          CASE WHEN score.model_safe_probability IS NULL THEN 1 ELSE 0 END ASC,
+          score.model_safe_probability DESC,
+          s.relative_path,
+          s.source_line_number
+        LIMIT 80
+        """
+        if has_score
+        else """
+        WHERE s.is_active = 1
+          AND COALESCE(s.has_old, 0) = 0
+        ORDER BY s.relative_path, s.source_line_number
+        LIMIT 80
+        """
+    )
+    if has_state and current_state_run_id:
+        output_apply_segments = rows(
+            """
+            WHERE s.is_active = 1
+              AND state.run_id = ?
+              AND COALESCE(state.needs_output_apply, 0) = 1
+            ORDER BY
+              COALESCE(state.priority_score, 0) DESC,
+              CASE WHEN score.model_safe_probability IS NULL THEN 1 ELSE 0 END ASC,
+              score.model_safe_probability DESC,
+              s.relative_path,
+              s.source_line_number
+            LIMIT 200
+            """,
+            (current_state_run_id,),
+        ) if has_score and latest_score_run_id else rows(
+            """
+            WHERE s.is_active = 1
+              AND state.run_id = ?
+              AND COALESCE(state.needs_output_apply, 0) = 1
+            ORDER BY
+              COALESCE(state.priority_score, 0) DESC,
+              s.relative_path,
+              s.source_line_number
+            LIMIT 200
+            """,
+            (current_state_run_id,),
+        )
+    else:
+        output_apply_segments = []
+    for record in output_apply_segments:
+        record["apply_kind"] = "output_write"
+        record["apply_reason"] = "legacy_needs_output_apply"
+    apply_segments = sorted(
+        lifecycle_apply_records,
+        key=lambda record: (
+            -_num(record.get("effective_new_score") if record.get("effective_new_score") is not None else record.get("new_score"), -1),
+            record.get("relative_path") or "",
+            _int(record.get("segment_id")),
+        ),
+    )[:200]
+    score_regression_segments = [
+        record
+        for record in sorted(
+            package_regression_records,
+            key=lambda item: (
+                (
+                    item.get("effective_score_delta")
+                    if item.get("effective_score_delta") is not None
+                    else item.get("score_delta")
+                )
+                if (
+                    item.get("effective_score_delta") is not None
+                    or item.get("score_delta") is not None
+                )
+                else 1,
+                item.get("relative_path") or "",
+                _int(item.get("segment_id")),
+            ),
+        )
+    ][:80]
+    if has_score and latest_score_run_id:
+        low_score_segments = rows(
+            """
+            WHERE s.is_active = 1
+              AND score.run_id = ?
+              AND score.model_safe_probability IS NOT NULL
+              AND score.model_safe_probability < 0.5
+            ORDER BY score.model_safe_probability ASC, score.high_issue_count DESC, s.relative_path, s.source_line_number
+            LIMIT 80
+            """,
+            (latest_score_run_id,),
+        )
+        low_score_segments = [
+            record for record in low_score_segments if not record.get("score_calibration")
+        ][:80]
+        if has_state and current_state_run_id:
+            unhandled_segments = rows(
+                """
+                WHERE s.is_active = 1
+                  AND state.run_id = ?
+                  AND COALESCE(state.state_group, '') != 'closed'
+                ORDER BY
+                  CASE WHEN score.model_safe_probability IS NULL THEN 1 ELSE 0 END ASC,
+                  score.model_safe_probability DESC,
+                  COALESCE(state.needs_output_apply, 0) DESC,
+                  COALESCE(state.priority_score, 0) DESC,
+                  s.relative_path,
+                  s.source_line_number
+                LIMIT 80
+                """,
+                (current_state_run_id,),
+            )
+        else:
+            unhandled_segments = rows(
+                """
+                WHERE s.is_active = 1
+                  AND score.run_id = ?
+                  AND COALESCE(score.final_action, '') IN ('needs_human', 'needs_autofix', 'blocked_structure')
+                ORDER BY score.model_safe_probability DESC, score.high_issue_count DESC, s.relative_path, s.source_line_number
+                LIMIT 80
+                """,
+                (latest_score_run_id,),
+            )
+    else:
+        low_score_segments = []
+        unhandled_segments = []
+
+    def score_comparison_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+        measured = [
+            record
+            for record in records
+            if record.get("new_score") is not None and record.get("old_score") is not None
+        ]
+        if not measured:
+            return {
+                "measured_count": 0,
+                "improved_count": 0,
+                "regressed_count": 0,
+                "equal_count": 0,
+                "avg_old_score": None,
+                "avg_new_score": None,
+                "avg_delta": None,
+                "package_quality_score": None,
+            }
+        old_scores = [float(record["old_score"]) for record in measured]
+        new_scores = [
+            float(record.get("effective_new_score") if record.get("effective_new_score") is not None else record["new_score"])
+            for record in measured
+        ]
+        weights = [
+            max(1.0, _num(record.get("priority_score"), 1.0) or 1.0)
+            for record in measured
+        ]
+        weight_total = sum(weights) or float(len(weights))
+        deltas = [
+            float(record.get("effective_score_delta"))
+            if record.get("effective_score_delta") is not None
+            else new - old
+            for old, new, record in zip(old_scores, new_scores, measured)
+        ]
+        weighted_old_score = sum(score * weight for score, weight in zip(old_scores, weights)) / weight_total
+        weighted_new_score = sum(score * weight for score, weight in zip(new_scores, weights)) / weight_total
+        weighted_delta = sum(delta * weight for delta, weight in zip(deltas, weights)) / weight_total
+        return {
+            "measured_count": len(measured),
+            "improved_count": sum(1 for value in deltas if value > 0.0001),
+            "regressed_count": sum(1 for value in deltas if value < -0.0001),
+            "equal_count": sum(1 for value in deltas if abs(value) <= 0.0001),
+            "avg_old_score": round(sum(old_scores) / len(old_scores), 6),
+            "avg_new_score": round(sum(new_scores) / len(new_scores), 6),
+            "avg_delta": round(sum(deltas) / len(deltas), 6),
+            "package_quality_score": round(sum(new_scores) / len(new_scores), 6),
+            "weighted_avg_old_score": round(weighted_old_score, 6),
+            "weighted_avg_new_score": round(weighted_new_score, 6),
+            "weighted_avg_delta": round(weighted_delta, 6),
+            "weighted_package_quality_score": round(weighted_new_score, 6),
+            "calibrated_count": sum(1 for record in measured if record.get("score_calibration")),
+        }
+
+    return {
+        "instrumented": True,
+        "baseline": "source_segments.old_text",
+        "output": "output_segments.portuguese_text",
+        "segment_state_run_id": current_state_run_id,
+        "old_score_run_id": old_score_run_id,
+        "score_run_id": latest_score_run_id,
+        "summary": {
+            "changed_vs_old": changed_count,
+            "raw_output_diff_count": changed_count,
+            "package_diff_count": len(package_records),
+            "package_excluded_count": len(package_excluded_records),
+            "promotions_vs_old": len(promotion_records),
+            "promotion_candidates_vs_old": len(promotion_candidate_records),
+            "new_vs_old": new_count,
+            "needs_apply": len(lifecycle_apply_records),
+            "lifecycle_apply_count": len(lifecycle_apply_records),
+            "output_apply_count": _int(
+                _one(
+                    con,
+                    """
+                    SELECT COUNT(*) AS total
+                    FROM segment_state_items state
+                    JOIN source_segments s ON s.id = state.segment_id
+                    WHERE state.run_id = ?
+                      AND s.is_active = 1
+                      AND COALESCE(state.needs_output_apply, 0) = 1
+                    """,
+                    (current_state_run_id,),
+                ).get("total")
+            ) if has_state and current_state_run_id else 0,
+            "legacy_needs_output_apply": _int(
+                _one(
+                    con,
+                    """
+                    SELECT COUNT(*) AS total
+                    FROM segment_state_items state
+                    JOIN source_segments s ON s.id = state.segment_id
+                    WHERE state.run_id = ?
+                      AND s.is_active = 1
+                      AND COALESCE(state.needs_output_apply, 0) = 1
+                    """,
+                    (current_state_run_id,),
+                ).get("total")
+            ) if has_state and current_state_run_id else 0,
+            "low_score": low_score_count,
+            "score_regressions": len(package_regression_records),
+            "calibrated_score_exceptions": sum(
+                1 for record in changed_score_records if record.get("score_calibration")
+            ),
+            "package_integrity_issues": sum(
+                1 for record in package_records if record.get("package_integrity_status") != "ok"
+            ),
+            "raw_integrity_issues": sum(
+                1 for record in changed_score_records if record.get("package_integrity_status") != "ok"
+            ),
+            "package_locked_confirmation_mismatches": sum(
+                1
+                for record in package_records
+                if record.get("package_integrity_status") == "locked_confirmation_output_mismatch"
+            ),
+            "raw_locked_confirmation_mismatches": sum(
+                1
+                for record in changed_score_records
+                if record.get("package_integrity_status") == "locked_confirmation_output_mismatch"
+            ),
+            "package_needs_output_apply": sum(
+                1 for record in package_records if record.get("package_integrity_status") == "needs_output_apply"
+            ),
+            "raw_needs_output_apply": sum(
+                1 for record in changed_score_records if record.get("package_integrity_status") == "needs_output_apply"
+            ),
+            "package_not_closed": sum(
+                1 for record in package_records if record.get("package_integrity_status") == "not_closed"
+            ),
+            "raw_not_closed": sum(
+                1 for record in changed_score_records if record.get("package_integrity_status") == "not_closed"
+            ),
+            "unhandled_by_network": unhandled_count,
+            "changed_score_comparison": score_comparison_summary(changed_score_records),
+            "package_score_comparison": score_comparison_summary(package_records),
+            "promotion_score_comparison": score_comparison_summary(promotion_records),
+            "new_score_summary": score_comparison_summary(new_segments),
+        },
+        "changed_segments": changed_segments,
+        "package_diff_segments": package_segments,
+        "promotion_segments": promotion_segments,
+        "new_segments": new_segments,
+        "apply_segments": apply_segments,
+        "output_apply_segments": output_apply_segments[:80],
+        "low_score_segments": low_score_segments,
+        "score_regression_segments": score_regression_segments,
+        "unhandled_segments": unhandled_segments,
+    }
+
+
+def _decision_record(record: dict[str, Any], queue: str) -> dict[str, Any]:
+    return {
+        "queue": queue,
+        "segment_id": _int(record.get("segment_id")),
+        "relative_path": record.get("relative_path"),
+        "source_key": record.get("source_key"),
+        "old_text": record.get("old_text"),
+        "output_text": record.get("output_text"),
+        "old_score": record.get("old_score") if record.get("old_score") is not None else record.get("old_model_safe_probability"),
+        "new_score": record.get("effective_new_score") if record.get("effective_new_score") is not None else record.get("new_score"),
+        "raw_new_score": record.get("new_score") if record.get("new_score") is not None else record.get("model_safe_probability"),
+        "raw_old_score": record.get("raw_old_score") if record.get("raw_old_score") is not None else record.get("old_model_safe_probability"),
+        "score_delta": record.get("effective_score_delta") if record.get("effective_score_delta") is not None else record.get("score_delta"),
+        "score_calibration": record.get("score_calibration"),
+        "score_used_kind": record.get("score_used_kind"),
+        "gate": record.get("promotion_gate"),
+        "recommended_resolution": record.get("recommended_resolution"),
+        "final_state": record.get("final_state"),
+        "state_group": record.get("state_group"),
+        "needs_output_apply": _int(record.get("needs_output_apply")),
+        "apply_kind": record.get("apply_kind"),
+        "apply_reason": record.get("apply_reason"),
+        "confirmed_text": record.get("confirmed_text"),
+        "output_matches_confirmed_text": record.get("output_matches_confirmed_text"),
+        "package_integrity_status": record.get("package_integrity_status"),
+        "package_integrity_reason": record.get("package_integrity_reason"),
+        "score_action": record.get("score_action"),
+        "risk_class": record.get("risk_class"),
+        "investigation_queue": record.get("investigation_queue"),
+    }
+
+
+def _evaluation_decision_payload(
+    diff_review: dict[str, Any],
+    *,
+    run_id: str | None = None,
+    source: str = "evaluation",
+) -> dict[str, Any]:
+    summary = diff_review.get("summary") if isinstance(diff_review.get("summary"), dict) else {}
+    queues = {
+        "package": diff_review.get("package_diff_segments") if isinstance(diff_review.get("package_diff_segments"), list) else [],
+        "new": diff_review.get("new_segments") if isinstance(diff_review.get("new_segments"), list) else [],
+        "promotions": diff_review.get("promotion_segments") if isinstance(diff_review.get("promotion_segments"), list) else [],
+        "apply": diff_review.get("apply_segments") if isinstance(diff_review.get("apply_segments"), list) else [],
+        "regressions": diff_review.get("score_regression_segments") if isinstance(diff_review.get("score_regression_segments"), list) else [],
+        "unhandled": diff_review.get("unhandled_segments") if isinstance(diff_review.get("unhandled_segments"), list) else [],
+        "low_score": diff_review.get("low_score_segments") if isinstance(diff_review.get("low_score_segments"), list) else [],
+    }
+    counts = {
+        "package": _int(summary.get("package_diff_count"), len(queues["package"])),
+        "new": _int(summary.get("new_vs_old"), len(queues["new"])),
+        "promotions": _int(summary.get("promotions_vs_old"), len(queues["promotions"])),
+        "apply": _int(summary.get("needs_apply"), len(queues["apply"])),
+        "legacy_needs_output_apply": _int(summary.get("legacy_needs_output_apply")),
+        "output_apply_count": _int(summary.get("output_apply_count")),
+        "lifecycle_apply_count": _int(summary.get("lifecycle_apply_count")),
+        "regressions": _int(summary.get("score_regressions"), len(queues["regressions"])),
+        "unhandled": _int(summary.get("unhandled_by_network"), len(queues["unhandled"])),
+        "low_score": _int(summary.get("low_score"), len(queues["low_score"])),
+        "changed_vs_old": _int(summary.get("changed_vs_old")),
+        "calibrated_score_exceptions": _int(summary.get("calibrated_score_exceptions")),
+    }
+    quality = {
+        "changed": summary.get("changed_score_comparison") if isinstance(summary.get("changed_score_comparison"), dict) else {},
+        "package": summary.get("package_score_comparison") if isinstance(summary.get("package_score_comparison"), dict) else {},
+        "promotions": summary.get("promotion_score_comparison") if isinstance(summary.get("promotion_score_comparison"), dict) else {},
+        "new_segments": summary.get("new_score_summary") if isinstance(summary.get("new_score_summary"), dict) else {},
+    }
+    next_actions: list[str] = []
+    if counts["apply"] > 0:
+        next_actions.append("run_publication_apply_confirmed")
+    if counts["regressions"] > 0:
+        next_actions.append("review_score_regressions")
+    if counts["promotions"] > 0:
+        next_actions.append("materialize_safe_promotions_after_review")
+    if counts["unhandled"] > 0:
+        next_actions.append("triage_unhandled_network_queue")
+    if counts["low_score"] > 0:
+        next_actions.append("improve_low_score_rules_or_manual_review")
+    if not next_actions:
+        next_actions.append("candidate_clear_for_publication_gate")
+    return {
+        "generated_at": _now_iso(),
+        "source": source,
+        "run_id": run_id,
+        "instrumented": bool(diff_review.get("instrumented")),
+        "segment_state_run_id": diff_review.get("segment_state_run_id"),
+        "old_score_run_id": diff_review.get("old_score_run_id"),
+        "score_run_id": diff_review.get("score_run_id"),
+        "baseline": diff_review.get("baseline"),
+        "output": diff_review.get("output"),
+        "counts": counts,
+        "quality": quality,
+        "next_actions": next_actions,
+        "queue_order": ["apply", "package", "new", "promotions", "regressions", "unhandled", "feedback", "low_score"],
+        "queues": {
+            name: [_decision_record(record, name) for record in records[:80]]
+            for name, records in queues.items()
+        },
+    }
+
+
+def _write_evaluation_decision_artifacts(
+    diff_review: dict[str, Any],
+    *,
+    run_id: str | None,
+    source: str = "evaluation",
+) -> dict[str, str]:
+    payload = _evaluation_decision_payload(diff_review, run_id=run_id, source=source)
+    timestamp = run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+    stem = f"{timestamp}_evaluation_decision_report"
+    json_path = ROOT / "reports" / f"{stem}.json"
+    jsonl_path = ROOT / "reports" / f"{stem}.jsonl"
+    md_path = ROOT / "reports" / f"{stem}.md"
+    for path in (json_path, jsonl_path, md_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    with jsonl_path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps({"type": "summary", **{k: v for k, v in payload.items() if k != "queues"}}, ensure_ascii=False) + "\n")
+        for queue_name, records in payload["queues"].items():
+            for record in records:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    counts = payload["counts"]
+    quality = payload["quality"]
+    changed_quality = quality.get("changed") if isinstance(quality.get("changed"), dict) else {}
+    package_quality = quality.get("package") if isinstance(quality.get("package"), dict) else {}
+    promotion_quality = quality.get("promotions") if isinstance(quality.get("promotions"), dict) else {}
+    lines = [
+        "# Evaluation Decision Report",
+        "",
+        f"- Run: `{payload.get('run_id') or 'not_measured'}`",
+        f"- Segment-state: `{payload.get('segment_state_run_id') or 'not_measured'}`",
+        f"- Score runs: `{payload.get('old_score_run_id') or 'sem old'}` -> `{payload.get('score_run_id') or 'not_measured'}`",
+        f"- Baseline: `{payload.get('baseline') or 'not_measured'}`",
+        f"- Output: `{payload.get('output') or 'not_measured'}`",
+        "",
+        "## Queues",
+        "",
+        f"- Package old vs output: `{counts['package']}`",
+        f"- New: `{counts['new']}`",
+        f"- Promotions: `{counts['promotions']}`",
+        f"- Apply: `{counts['apply']}`",
+        f"- Regressions: `{counts['regressions']}`",
+        f"- Unhandled: `{counts['unhandled']}`",
+        f"- Low score: `{counts['low_score']}`",
+        f"- Changed vs old: `{counts['changed_vs_old']}`",
+        f"- Calibrated score exceptions: `{counts['calibrated_score_exceptions']}`",
+        "",
+        "## Quality",
+        "",
+        f"- Package measured: `{package_quality.get('measured_count', 'not_measured')}`",
+        f"- Package weighted score old: `{package_quality.get('weighted_avg_old_score', 'not_measured')}`",
+        f"- Package weighted score new: `{package_quality.get('weighted_avg_new_score', 'not_measured')}`",
+        f"- Package weighted avg delta: `{package_quality.get('weighted_avg_delta', 'not_measured')}`",
+        f"- Changed measured: `{changed_quality.get('measured_count', 'not_measured')}`",
+        f"- Changed package score old: `{changed_quality.get('avg_old_score', 'not_measured')}`",
+        f"- Changed package score new: `{changed_quality.get('avg_new_score', 'not_measured')}`",
+        f"- Changed avg delta: `{changed_quality.get('avg_delta', 'not_measured')}`",
+        f"- Promotions measured: `{promotion_quality.get('measured_count', 'not_measured')}`",
+        f"- Promotions package score: `{promotion_quality.get('package_quality_score', 'not_measured')}`",
+        f"- Promotions avg delta: `{promotion_quality.get('avg_delta', 'not_measured')}`",
+        "",
+        "## Next Actions",
+        "",
+        *[f"- `{action}`" for action in payload["next_actions"]],
+    ]
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    latest_payload = {**payload, "report_paths": {"json": str(json_path), "jsonl": str(jsonl_path), "markdown": str(md_path)}}
+    EVALUATION_DECISION_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+    EVALUATION_DECISION_LATEST_FILE.write_text(
+        json.dumps(latest_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return {"json": str(json_path), "jsonl": str(jsonl_path), "markdown": str(md_path)}
+
+
+def _safe_full_production_payload(post_release_status: dict[str, Any], segment_state: dict[str, Any]) -> dict[str, Any]:
+    policy = _read_json_file(PRODUCTION_SAFETY_POLICY_FILE)
+    preflight = _read_json_file(SAFE_FULL_PRODUCTION_PREFLIGHT_FILE)
+    restore = _read_json_file(PRE_FULL_PRODUCTION_OUTPUT_RESTORE_FILE)
+    locks = _read_json_file(MANUAL_VISUAL_LOCKS_FILE)
+
+    policy_paths = policy.get("paths") if isinstance(policy.get("paths"), dict) else {}
+    preflight_paths = preflight.get("paths") if isinstance(preflight.get("paths"), dict) else {}
+    restore_after = restore.get("after") if isinstance(restore.get("after"), dict) else {}
+    restore_status = preflight.get("output_restore_status") if isinstance(preflight.get("output_restore_status"), dict) else {}
+    post_summary = preflight.get("post_release_summary") if isinstance(preflight.get("post_release_summary"), dict) else post_release_status.get("summary", {})
+    lock_items = locks.get("locks") if isinstance(locks.get("locks"), list) else []
+    preflight_locks = preflight.get("locks") if isinstance(preflight.get("locks"), dict) else {}
+
+    stable_baseline_path = (
+        policy_paths.get("stable_mod_baseline")
+        or preflight_paths.get("stable_baseline_path")
+        or preflight_paths.get("current_stable_baseline")
+        or post_release_status.get("baseline_control", {}).get("stable_baseline_path")
+        or str(ROOT / "source" / "spanish_old")
+    )
+    source_mirror_path = (
+        policy_paths.get("source_mirror_baseline")
+        or preflight_paths.get("source_mirror")
+        or preflight_paths.get("source_mirror_baseline")
+        or restore.get("source_mirror")
+        or str(ROOT / "source" / "spanish_source")
+    )
+    broken_release_path = (
+        policy_paths.get("archived_broken_output_reference")
+        or restore.get("archive_path")
+        or post_release_status.get("baseline_control", {}).get("broken_release_path")
+    )
+    current_candidate_path = (
+        policy_paths.get("current_hotfix_candidate")
+        or preflight_paths.get("current_candidate_path")
+        or preflight_paths.get("current_hotfix_candidate")
+        or post_release_status.get("release_candidate", {}).get("current_candidate_path")
+    )
+
+    can_start_evaluation = preflight.get("can_start_evaluation_full_production_now")
+    if can_start_evaluation is None:
+        can_start_evaluation = _nested_value(policy, ("full_production_modes", "evaluation_full_production", "allowed_after_output_restore"))
+    can_publish = preflight.get("can_publish_after_full_production_now")
+    if can_publish is None:
+        can_publish = post_summary.get("can_publish_hotfix")
+
+    output_restored = (
+        restore_status.get("restored_exactly")
+        if "restored_exactly" in restore_status
+        else restore_after.get("restored_exactly")
+    )
+    visual_locks_count = (
+        post_summary.get("visual_locks_count")
+        if post_summary.get("visual_locks_count") is not None
+        else preflight_locks.get("count")
+        if preflight_locks.get("count") is not None
+        else post_release_status.get("visual_locks", {}).get("count")
+        if post_release_status.get("visual_locks", {}).get("count") is not None
+        else len(lock_items)
+        if lock_items
+        else None
+    )
+    latest_preflight_at = preflight.get("generated_at") or restore.get("generated_at")
+
+    publication_blocking_reasons = preflight.get("publication_blocking_reasons")
+    if not isinstance(publication_blocking_reasons, list):
+        publication_blocking_reasons = preflight.get("blocking_reasons") if isinstance(preflight.get("blocking_reasons"), list) else []
+    evaluation_blocking_reasons = preflight.get("evaluation_blocking_reasons")
+    if not isinstance(evaluation_blocking_reasons, list):
+        evaluation_blocking_reasons = []
+    if segment_state.get("needs_apply"):
+        reason = "needs_output_apply"
+        if reason not in publication_blocking_reasons:
+            publication_blocking_reasons = [*publication_blocking_reasons, reason]
+
+    return {
+        "instrumented": bool(policy or preflight or restore or locks),
+        "status": "instrumented" if (policy or preflight or restore or locks) else "not_measured",
+        "policy": {
+            "instrumented": bool(policy),
+            "path": str(PRODUCTION_SAFETY_POLICY_FILE),
+            "phase": policy.get("phase"),
+            "policy_name": policy.get("policy_name"),
+        },
+        "preflight": {
+            "instrumented": bool(preflight),
+            "path": str(SAFE_FULL_PRODUCTION_PREFLIGHT_FILE),
+            "generated_at": latest_preflight_at,
+            "recommendation": preflight.get("recommendation"),
+        },
+        "evaluation_gate": {
+            "status": "liberada" if can_start_evaluation is True else "bloqueada" if can_start_evaluation is False else "not_measured",
+            "can_start_evaluation_full_production_now": can_start_evaluation,
+            "blocking_reasons": evaluation_blocking_reasons,
+        },
+        "publication_gate": {
+            "status": "liberada" if can_publish is True else "bloqueada" if can_publish is False else "not_measured",
+            "can_publish_after_full_production_now": can_publish,
+            "blocking_reasons": publication_blocking_reasons,
+        },
+        "baseline_control": {
+            "instrumented": bool(policy or preflight or restore),
+            "stable_baseline_path": stable_baseline_path,
+            "source_mirror_path": source_mirror_path,
+            "broken_release_path": broken_release_path,
+            "current_output_path": "output\\spanish",
+            "output_restored_from": source_mirror_path,
+            "output_restored_exactly": output_restored,
+            "archive_path": restore.get("archive_path") or policy_paths.get("archived_broken_output_reference"),
+        },
+        "visual_locks": {
+            "instrumented": bool(locks or preflight_locks),
+            "path": str(MANUAL_VISUAL_LOCKS_FILE),
+            "count": visual_locks_count,
+            "items": lock_items,
+        },
+        "release_candidate": {
+            "instrumented": bool(current_candidate_path),
+            "current_candidate_path": current_candidate_path,
+            "mode": "hotfix_visual_candidate" if current_candidate_path else "not_measured",
+        },
+        "source_output_update": {
+            "instrumented": bool(restore or preflight),
+            "output_restore_status": {
+                "restored_exactly": output_restored,
+                "archive_path": restore.get("archive_path"),
+                "source_mirror": source_mirror_path,
+                "output_target": restore.get("output_target") or "output\\spanish",
+            },
+            "latest_preflight": latest_preflight_at,
+            "source_updated": None,
+            "output_synced": output_restored,
+            "latest_diff": _nested_value(restore, ("after", "source_vs_output", "changed_count")),
+            "full_production_recommended": can_start_evaluation,
+        },
+        "post_release_summary": {
+            "known_open_findings": post_summary.get("known_open_findings"),
+            "approved_pending_apply": post_summary.get("approved_pending_apply"),
+            "applied_pending_validation": post_summary.get("applied_pending_validation"),
+            "closed_findings": post_summary.get("closed_findings"),
+            "accepted_holds": post_summary.get("accepted_holds"),
+            "parser_dynamic_backlog": post_summary.get("parser_dynamic_backlog"),
+        },
+    }
+
+
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -3610,7 +5349,10 @@ def _production_run_id() -> str:
 
 
 def _read_production_run_status() -> dict[str, Any]:
-    return _read_json_file(PRODUCTION_RUN_STATUS_FILE)
+    status = _read_json_file(PRODUCTION_RUN_STATUS_FILE)
+    if isinstance(status.get("stages"), list):
+        _refresh_run_effect_summary(status)
+    return status
 
 
 def _dashboard_cache_file() -> Path:
@@ -3723,6 +5465,38 @@ def _last_production_delta_payload(
     }
 
 
+def _segment_state_trend(con: sqlite3.Connection, limit: int = 12) -> list[dict[str, Any]]:
+    if not _table_exists(con, "segment_state_runs"):
+        return []
+    rows = _all(
+        con,
+        """
+        SELECT id, total_segments, closed_count, pending_count, output_apply_pending_count, finished_at
+        FROM segment_state_runs
+        WHERE finished_at IS NOT NULL
+          AND total_segments > 1000
+        ORDER BY finished_at DESC, id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    trend = []
+    for row in reversed(rows):
+        total = _int(row.get("total_segments")) or (_int(row.get("closed_count")) + _int(row.get("pending_count")))
+        trend.append(
+            {
+                "run_id": _int(row.get("id")),
+                "total_segments": total,
+                "closed_count": _int(row.get("closed_count")),
+                "pending_count": _int(row.get("pending_count")),
+                "needs_apply": _int(row.get("output_apply_pending_count")),
+                "closed_rate": _pct(row.get("closed_count"), total),
+                "finished_at": row.get("finished_at") or "",
+            }
+        )
+    return trend
+
+
 def _output_coverage(con: sqlite3.Connection) -> float:
     if not (_table_exists(con, "source_segments") and _table_exists(con, "output_segments")):
         return 0
@@ -3750,10 +5524,192 @@ def _cache_stage_compact(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "id": stage.get("id"),
                 "label": stage.get("label"),
                 "status": stage.get("status"),
+                "started_at": stage.get("started_at"),
+                "updated_at": stage.get("updated_at"),
+                "finished_at": stage.get("finished_at"),
+                "exit_code": stage.get("exit_code"),
+                "progress_pct": stage.get("progress_pct"),
+                "log_line_count": stage.get("log_line_count"),
+                "heartbeat_at": stage.get("heartbeat_at"),
                 "metrics": stage.get("metrics") or {},
             }
         )
     return result
+
+
+def _pending_by_family_payload(con: sqlite3.Connection, segment_state_run_id: int | None) -> list[dict[str, Any]]:
+    ledger_run_id = _latest_ledger_run_id(con)
+    if not segment_state_run_id or not ledger_run_id:
+        return []
+    if not (_table_exists(con, "segment_state_items") and _table_exists(con, "ml_issue_ledger_items")):
+        return []
+    return _all(
+        con,
+        """
+        SELECT
+          COALESCE(NULLIF(issue_family, ''), 'unknown') AS label,
+          COUNT(DISTINCT segment_id) AS value
+        FROM ml_issue_ledger_items
+        WHERE run_id = ?
+          AND state_group = 'pending'
+          AND COALESCE(status, 'open') = 'open'
+        GROUP BY COALESCE(NULLIF(issue_family, ''), 'unknown')
+        ORDER BY value DESC, label
+        LIMIT 8
+        """,
+        (ledger_run_id,),
+    )
+
+
+def _pending_actionability_payload(con: sqlite3.Connection, segment_state_run_id: int | None) -> dict[str, Any]:
+    ledger_run_id = _latest_ledger_run_id(con)
+    empty = {
+        "ledger_run_id": ledger_run_id,
+        "instrumented_pending": 0,
+        "needs_context": "pending_instrumentation",
+        "needs_domain": "pending_instrumentation",
+        "needs_new_microagent": "pending_instrumentation",
+        "text_repair": "pending_instrumentation",
+        "high_uncertainty": "pending_instrumentation",
+        "other_watch": "pending_instrumentation",
+    }
+    if not segment_state_run_id or not ledger_run_id:
+        return empty
+    if not (_table_exists(con, "segment_state_items") and _table_exists(con, "ml_issue_ledger_items")):
+        return empty
+
+    row = _one(
+        con,
+        """
+        WITH pending_issues AS (
+          SELECT
+            segment_id,
+            lower(COALESCE(issue_family, '')) AS issue_family,
+            lower(COALESCE(issue_kind, '')) AS issue_kind,
+            lower(COALESCE(issue_severity, '')) AS issue_severity,
+            lower(COALESCE(agent_key, '')) AS agent_key,
+            lower(COALESCE(proposed_action, '')) AS proposed_action
+          FROM ml_issue_ledger_items
+          WHERE run_id = ?
+            AND state_group = 'pending'
+            AND COALESCE(status, 'open') = 'open'
+        ),
+        per_segment AS (
+          SELECT
+            segment_id,
+            MAX(CASE
+              WHEN issue_family LIKE '%context%'
+                OR issue_kind LIKE '%context%'
+                OR proposed_action LIKE '%context%'
+              THEN 1 ELSE 0 END) AS needs_context,
+            MAX(CASE
+              WHEN issue_family LIKE '%domain%'
+                OR issue_kind LIKE '%domain%'
+                OR agent_key LIKE '%religion%'
+                OR agent_key LIKE '%culture%'
+                OR agent_key LIKE '%title%'
+                OR agent_key LIKE '%nickname%'
+              THEN 1 ELSE 0 END) AS needs_domain,
+            MAX(CASE
+              WHEN issue_kind LIKE '%new_microagent%'
+                OR proposed_action LIKE '%new_microagent%'
+                OR proposed_action LIKE '%needs_new%'
+              THEN 1 ELSE 0 END) AS needs_new_microagent,
+            MAX(CASE
+              WHEN issue_kind LIKE '%repair%'
+                OR issue_kind LIKE '%residual%'
+                OR issue_kind LIKE '%boundary%'
+                OR issue_kind LIKE '%literal%'
+                OR issue_kind LIKE '%fluency%'
+                OR issue_family LIKE '%spanish_residual%'
+              THEN 1 ELSE 0 END) AS text_repair,
+            MAX(CASE
+              WHEN issue_severity IN ('high', 'error', 'critical')
+                OR issue_kind LIKE '%uncertain%'
+                OR issue_kind LIKE '%conflict%'
+                OR proposed_action LIKE '%human%'
+              THEN 1 ELSE 0 END) AS high_uncertainty
+          FROM pending_issues
+          GROUP BY segment_id
+        )
+        SELECT
+          COUNT(*) AS instrumented_pending,
+          COALESCE(SUM(needs_context), 0) AS needs_context,
+          COALESCE(SUM(needs_domain), 0) AS needs_domain,
+          COALESCE(SUM(needs_new_microagent), 0) AS needs_new_microagent,
+          COALESCE(SUM(text_repair), 0) AS text_repair,
+          COALESCE(SUM(high_uncertainty), 0) AS high_uncertainty,
+          COALESCE(SUM(CASE
+            WHEN needs_context = 0
+             AND needs_domain = 0
+             AND needs_new_microagent = 0
+             AND text_repair = 0
+             AND high_uncertainty = 0
+            THEN 1 ELSE 0 END), 0) AS other_watch
+        FROM per_segment
+        """,
+        (ledger_run_id,),
+    )
+    if not row:
+        return empty
+    if _int(row.get("instrumented_pending")) == 0:
+        return empty
+    return {
+        "ledger_run_id": ledger_run_id,
+        "instrumented_pending": _int(row.get("instrumented_pending")),
+        "needs_context": _int(row.get("needs_context")),
+        "needs_domain": _int(row.get("needs_domain")),
+        "needs_new_microagent": _int(row.get("needs_new_microagent")),
+        "text_repair": _int(row.get("text_repair")),
+        "high_uncertainty": _int(row.get("high_uncertainty")),
+        "other_watch": _int(row.get("other_watch")),
+    }
+
+
+def _pending_next_focus_payload(
+    taxonomy: dict[str, Any],
+    pending_by_family: list[dict[str, Any]],
+    actionability: dict[str, Any],
+    needs_apply: int,
+) -> dict[str, Any]:
+    if needs_apply > 0:
+        return {
+            "label": "needs_apply",
+            "reason": "ha output aguardando aplicacao segura",
+            "status": "acao pronta",
+            "count": needs_apply,
+        }
+    actionable = _int(taxonomy.get("actionable_pending"))
+    if actionable > 0:
+        return {
+            "label": "fila acionavel",
+            "reason": "existe revisao/aplicacao operacional pronta",
+            "status": "acao pronta",
+            "count": actionable,
+        }
+    bridge = _int(taxonomy.get("governed_bridge_pending"))
+    if bridge > 0:
+        return {
+            "label": "ponte governada",
+            "reason": "ha lifecycle/bridge pendente de decisao",
+            "status": "aguardando politica",
+            "count": bridge,
+        }
+    if pending_by_family:
+        top = pending_by_family[0]
+        return {
+            "label": top.get("label") or "familia pendente",
+            "reason": "maior volume pendente mapeado pelo ledger",
+            "status": "amadurecer microagente/politica",
+            "count": _int(top.get("value")),
+        }
+    instrumented = actionability.get("instrumented_pending")
+    return {
+        "label": "pending_instrumentation",
+        "reason": "sem familia acionavel suficiente no payload atual",
+        "status": "instrumentacao pendente",
+        "count": _int(instrumented),
+    }
 
 
 def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
@@ -3761,15 +5717,44 @@ def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
     con.row_factory = sqlite3.Row
     try:
         segment_state = _latest_segment_state_summary(con)
+        post_release_status = _post_release_feedback_payload(segment_state)
+        safety_status = _safe_full_production_payload(post_release_status, segment_state)
         learning = _learning_status_payload(con)
         run = _read_production_run_status()
         production_delta = _last_production_delta_payload(con, run, segment_state)
+        segment_trend = _segment_state_trend(con)
+        previous_state = segment_trend[-2] if len(segment_trend) > 1 else {}
+        taxonomy = _pending_taxonomy_payload(con, segment_state["run_id"])
+        diff_review = _release_diff_review_payload(con, segment_state["run_id"])
+        evaluation_decision = _read_json_file(EVALUATION_DECISION_LATEST_FILE)
+        if evaluation_decision:
+            evaluation_decision["stale"] = (
+                _int(evaluation_decision.get("segment_state_run_id")) != _int(segment_state.get("run_id"))
+            )
+        pending_by_family = _pending_by_family_payload(con, segment_state["run_id"])
+        pending_actionability = _pending_actionability_payload(con, segment_state["run_id"])
+        pending_next_focus = _pending_next_focus_payload(
+            taxonomy,
+            pending_by_family,
+            pending_actionability,
+            segment_state["needs_apply"],
+        )
         run_active = run.get("status") in {"starting", "running"}
         stages = run.get("stages") if run.get("run_id") else _new_production_run_status("preview").get("stages", [])
         stages = stages if isinstance(stages, list) else []
         done_stages = sum(1 for stage in stages if isinstance(stage, dict) and stage.get("status") == "done")
-        progress_pct = round((done_stages / len(stages)) * 100) if stages else (100 if run.get("status") == "completed" else 0)
+        running_stage = next((stage for stage in stages if isinstance(stage, dict) and stage.get("status") == "running"), None)
+        running_progress = 0.0
+        if running_stage:
+            running_progress = min(90.0, max(0.0, float(running_stage.get("progress_pct") or 0))) / 100.0
+        if stages:
+            progress_pct = round(((done_stages + running_progress) / len(stages)) * 100)
+            if run.get("status") == "completed":
+                progress_pct = 100
+        else:
+            progress_pct = 100 if run.get("status") == "completed" else 0
         generated_at = datetime.now().isoformat(timespec="seconds")
+        disk_preflight = _production_disk_preflight_payload()
         release_status = (
             "needs_apply"
             if segment_state["needs_apply"]
@@ -3795,7 +5780,65 @@ def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
                 "latest_segment_state_run_id": segment_state["run_id"],
                 "latest_ledger_run_id": _latest_ledger_run_id(con),
                 "segment_state_finished_at": segment_state["finished_at"],
+                "segment_state_trend": segment_trend,
+                "previous_segment_state_delta": {
+                    "available": bool(previous_state),
+                    "baseline_segment_state_run_id": _int(previous_state.get("run_id")),
+                    "closed_delta": segment_state["closed_count"] - _int(previous_state.get("closed_count")),
+                    "pending_delta": segment_state["pending_count"] - _int(previous_state.get("pending_count")),
+                    "needs_apply_delta": segment_state["needs_apply"] - _int(previous_state.get("needs_apply")),
+                } if previous_state else {"available": False, "reason": "pending_instrumentation"},
                 "since_last_production": production_delta,
+                "qualified_pending": {
+                    "actionable_pending": _int(taxonomy.get("actionable_pending")),
+                    "context_domain": taxonomy.get("context_domain", "pending_instrumentation"),
+                    "policy_waiting": _int(taxonomy.get("governed_bridge_pending")),
+                    "high_uncertainty": _int(taxonomy.get("model_suspicion_watch")),
+                    "raw_pending": _int(taxonomy.get("raw_pending")),
+                },
+                "pending_by_family": pending_by_family,
+                "pending_actionability": pending_actionability,
+                "pending_next_focus": pending_next_focus,
+                "post_release": {
+                    **post_release_status,
+                    **post_release_status.get("summary", {}),
+                    **safety_status.get("post_release_summary", {}),
+                    "diff_review": diff_review,
+                    "evaluation_decision": evaluation_decision,
+                    "stable_baseline_path": post_release_status.get("baseline_control", {}).get("stable_baseline_path"),
+                    "broken_release_path": post_release_status.get("baseline_control", {}).get("broken_release_path"),
+                    "current_candidate_path": post_release_status.get("release_candidate", {}).get("current_candidate_path"),
+                    "summary": {
+                        **post_release_status.get("summary", {}),
+                        **safety_status.get("post_release_summary", {}),
+                        "known_open": post_release_status.get("summary", {}).get("known_open_findings"),
+                        "closed": post_release_status.get("summary", {}).get("closed_findings"),
+                        "parser_dynamic_backlog": post_release_status.get("summary", {}).get("parser_dynamic_backlog"),
+                    },
+                    "feedback_items": post_release_status.get("items", []),
+                    "active_feedback_items": post_release_status.get("active_items", []),
+                    "archived_feedback_items": post_release_status.get("archived_items", []),
+                },
+                "safety": safety_status,
+                "evaluation_gate": safety_status.get("evaluation_gate", {}),
+                "publication_gate": safety_status.get("publication_gate", {}),
+                "baseline_control": {
+                    **post_release_status.get("baseline_control", {}),
+                    **safety_status.get("baseline_control", {}),
+                },
+                "visual_locks": {
+                    **post_release_status.get("visual_locks", {}),
+                    **safety_status.get("visual_locks", {}),
+                },
+                "release_candidate": {
+                    **post_release_status.get("release_candidate", {}),
+                    **safety_status.get("release_candidate", {}),
+                },
+                "source_output_update": {
+                    **post_release_status.get("source_output_update", {}),
+                    **safety_status.get("source_output_update", {}),
+                },
+                "disk_preflight": disk_preflight,
                 "operational_integrity": {
                     "source_status": "pending_instrumentation",
                     "output_status": "pending_instrumentation",
@@ -3822,6 +5865,7 @@ def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
                 "stages_compact": _cache_stage_compact(stages),
                 "summary": {},
                 "readiness": {},
+                "disk_preflight": disk_preflight,
             },
             "navigation": {
                 "dashboard_url": "http://127.0.0.1:5173/#Dashboard",
@@ -3862,6 +5906,46 @@ def _get_dashboard_cache(db_path: Path, *, force: bool = False) -> dict[str, Any
         return _refresh_dashboard_cache(db_path)
 
 
+def _run_diagnostic_segment_state(db_path: Path) -> dict[str, Any]:
+    started_at = _now_iso()
+    previous_run_id = 0
+    try:
+        with sqlite3.connect(db_path) as con:
+            con.row_factory = sqlite3.Row
+            previous_run_id = _latest_segment_state_summary(con).get("run_id") or 0
+    except Exception:
+        previous_run_id = 0
+
+    process = subprocess.run(
+        [sys.executable, "pipeline/main.py", "segment-state"],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+
+    new_run_id = 0
+    try:
+        with sqlite3.connect(db_path) as con:
+            con.row_factory = sqlite3.Row
+            new_run_id = _latest_segment_state_summary(con).get("run_id") or 0
+    except Exception:
+        new_run_id = 0
+
+    stdout_lines = (process.stdout or "").splitlines()
+    stderr_lines = (process.stderr or "").splitlines()
+    return {
+        "started_at": started_at,
+        "finished_at": _now_iso(),
+        "exit_code": process.returncode,
+        "previous_segment_state_run_id": previous_run_id,
+        "new_segment_state_run_id": new_run_id,
+        "created_new_segment_state_run": bool(new_run_id and new_run_id != previous_run_id),
+        "stdout_tail": stdout_lines[-12:],
+        "stderr_tail": stderr_lines[-12:],
+    }
+
+
 def _app_state_payload(db_path: Path, *, force: bool = False) -> dict[str, Any]:
     cache = _get_dashboard_cache(db_path, force=force)
     app_state = cache.get("app_state") or {}
@@ -3876,6 +5960,534 @@ def _app_state_payload(db_path: Path, *, force: bool = False) -> dict[str, Any]:
     return app_state
 
 
+def _latest_local_learning_run_id(db_path: Path) -> int:
+    try:
+        with sqlite3.connect(db_path) as con:
+            con.row_factory = sqlite3.Row
+            if _table_exists(con, "local_learning_candidates"):
+                row = con.execute("SELECT MAX(run_id) AS run_id FROM local_learning_candidates").fetchone()
+                if row is not None and row["run_id"] is not None:
+                    return int(row["run_id"])
+            if _table_exists(con, "local_learning_runs"):
+                row = con.execute("SELECT MAX(id) AS run_id FROM local_learning_runs").fetchone()
+                if row is not None and row["run_id"] is not None:
+                    return int(row["run_id"])
+    except Exception:
+        pass
+    return 0
+
+
+def _publication_lifecycle_apply_readiness(
+    db_path: Path,
+    *,
+    state_run_id: int | None,
+    segment_ids: list[int],
+) -> dict[str, Any]:
+    if not segment_ids:
+        return {
+            "available": True,
+            "state_run_id": state_run_id,
+            "candidates": 0,
+            "ready": 0,
+            "blocked": 0,
+            "result_counts": {},
+        }
+    pipeline_dir = ROOT / "pipeline"
+    if str(pipeline_dir) not in sys.path:
+        sys.path.insert(0, str(pipeline_dir))
+    try:
+        import general_pipe_article_gender_lifecycle_policy_materializer as bridge  # type: ignore
+        import human_confirmed_local_learning_lifecycle_policy_materializer as materializer  # type: ignore
+    except Exception as exc:
+        return {
+            "available": False,
+            "state_run_id": state_run_id,
+            "candidates": len(segment_ids),
+            "ready": 0,
+            "blocked": len(segment_ids),
+            "result_counts": {"materializer_import_failed": len(segment_ids)},
+            "error": str(exc),
+        }
+
+    previous_rule_version = getattr(bridge, "RULE_VERSION", None)
+    previous_target_segment_ids = getattr(bridge, "TARGET_SEGMENT_IDS", ())
+    previous_default_state_run_id = getattr(bridge, "DEFAULT_SEGMENT_STATE_RUN_ID", None)
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=60)
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only = ON")
+        try:
+            selected_state_run_id = _int(state_run_id) or _int(_latest_segment_state_summary(con).get("run_id"))
+            ledger_run_id = _latest_ledger_run_id(con)
+            if not selected_state_run_id or not ledger_run_id:
+                return {
+                    "available": False,
+                    "state_run_id": selected_state_run_id,
+                    "ledger_run_id": ledger_run_id,
+                    "candidates": len(segment_ids),
+                    "ready": 0,
+                    "blocked": len(segment_ids),
+                    "result_counts": {"missing_state_or_ledger": len(segment_ids)},
+                }
+            materializer.configure_bridge(tuple(segment_ids), selected_state_run_id)
+            rows = bridge.collect_rows(con, selected_state_run_id, ledger_run_id)
+        finally:
+            con.close()
+    except Exception as exc:
+        return {
+            "available": False,
+            "state_run_id": state_run_id,
+            "candidates": len(segment_ids),
+            "ready": 0,
+            "blocked": len(segment_ids),
+            "result_counts": {"lifecycle_readiness_failed": len(segment_ids)},
+            "error": str(exc),
+        }
+    finally:
+        if previous_rule_version is not None:
+            bridge.RULE_VERSION = previous_rule_version
+        bridge.TARGET_SEGMENT_IDS = previous_target_segment_ids
+        if previous_default_state_run_id is not None:
+            bridge.DEFAULT_SEGMENT_STATE_RUN_ID = previous_default_state_run_id
+
+    result_counts: dict[str, int] = {}
+    ready = 0
+    for row in rows:
+        if row.get("policy_allowed"):
+            ready += 1
+            result_counts["ready"] = result_counts.get("ready", 0) + 1
+        else:
+            reason = str(row.get("block_reason") or "blocked")
+            result_counts[reason] = result_counts.get(reason, 0) + 1
+    missing = max(0, len(segment_ids) - len(rows))
+    if missing:
+        result_counts["missing_from_materializer"] = result_counts.get("missing_from_materializer", 0) + missing
+    return {
+        "available": True,
+        "state_run_id": state_run_id,
+        "candidates": len(segment_ids),
+        "materializer_rows": len(rows),
+        "ready": ready,
+        "blocked": max(0, len(segment_ids) - ready),
+        "result_counts": result_counts,
+        "policy_name": getattr(bridge, "POLICY_NAME", "human_confirmed_post_apply_repair_lifecycle_bridge"),
+        "policy_action": getattr(bridge, "POLICY_ACTION", "close_reopen_human_confirmed_post_apply_repair_lifecycle"),
+    }
+
+
+def _publication_preflight_payload(db_path: Path, *, force: bool = False) -> dict[str, Any]:
+    app_state = _app_state_payload(db_path, force=force)
+    release = app_state.get("release") or {}
+    post_release = release.get("post_release") or {}
+    diff_review = post_release.get("diff_review") or {}
+    diff_summary = diff_review.get("summary") or {}
+    safety = release.get("safety") or {}
+    publication_gate = safety.get("publication_gate") or release.get("publication_gate") or {}
+    active_feedback = post_release.get("active_feedback_items") or post_release.get("active_items") or []
+
+    state_run_id = _int(release.get("latest_segment_state_run_id")) or None
+    apply_records = diff_review.get("apply_segments") if isinstance(diff_review.get("apply_segments"), list) else []
+    apply_count = _int(diff_summary.get("needs_apply"), len(apply_records))
+    apply_preview_count = len(apply_records)
+    apply_segment_ids = _publication_apply_segment_ids({"app_state": app_state})
+    apply_kind_counts: dict[str, int] = {}
+    for record in apply_records:
+        if not isinstance(record, dict):
+            continue
+        kind = str(record.get("apply_kind") or "unknown")
+        apply_kind_counts[kind] = apply_kind_counts.get(kind, 0) + 1
+    lifecycle_apply_count = apply_kind_counts.get("lifecycle_closure", 0)
+    output_apply_count = apply_kind_counts.get("output_write", 0)
+    mixed_apply_kind = len([count for count in apply_kind_counts.values() if count > 0]) > 1
+    token_policy_run_id = _latest_apply_token_policy_run_id(db_path, state_run_id) if output_apply_count > 0 else None
+    apply_readiness = (
+        _publication_lifecycle_apply_readiness(
+            db_path,
+            state_run_id=state_run_id,
+            segment_ids=apply_segment_ids,
+        )
+        if lifecycle_apply_count > 0 and output_apply_count == 0
+        else _publication_apply_readiness(
+            db_path,
+            state_run_id=state_run_id,
+            segment_ids=apply_segment_ids,
+        )
+        if output_apply_count > 0 and lifecycle_apply_count == 0
+        else {
+            "available": not mixed_apply_kind,
+            "candidates": apply_count,
+            "ready": 0,
+            "blocked": apply_count,
+            "result_counts": {"mixed_apply_kind_not_supported": apply_count} if mixed_apply_kind else {},
+        }
+    )
+    apply_policy_readiness = (
+        _publication_apply_readiness(
+            db_path,
+            state_run_id=state_run_id,
+            segment_ids=apply_segment_ids,
+            require_token_policy_decision=True,
+            token_policy_run_id=token_policy_run_id,
+        )
+        if output_apply_count > 0 and lifecycle_apply_count == 0 and token_policy_run_id is not None
+        else {
+            "available": token_policy_run_id is not None or apply_count == 0 or lifecycle_apply_count > 0,
+            "state_run_id": state_run_id,
+            "require_token_policy_decision": True,
+            "token_policy_run_id": token_policy_run_id,
+            "candidates": 0,
+            "ready": 0,
+            "blocked": output_apply_count,
+            "result_counts": {"missing_token_policy_run": output_apply_count} if output_apply_count > 0 else {},
+        }
+    )
+    apply_mixed_readiness = (
+        _publication_apply_readiness(
+            db_path,
+            state_run_id=state_run_id,
+            segment_ids=apply_segment_ids,
+            allow_token_policy_decision=True,
+            token_policy_run_id=token_policy_run_id,
+        )
+        if output_apply_count > 0 and lifecycle_apply_count == 0 and token_policy_run_id is not None
+        else {
+            "available": token_policy_run_id is not None or apply_count == 0 or lifecycle_apply_count > 0,
+            "state_run_id": state_run_id,
+            "allow_token_policy_decision": True,
+            "token_policy_run_id": token_policy_run_id,
+            "candidates": 0,
+            "ready": 0,
+            "blocked": output_apply_count,
+            "result_counts": {"missing_token_policy_run": output_apply_count} if output_apply_count > 0 else {},
+        }
+    )
+    apply_ready_count = _int(apply_readiness.get("ready"))
+    apply_blocked_count = _int(apply_readiness.get("blocked"))
+    apply_result_counts = apply_readiness.get("result_counts") if isinstance(apply_readiness.get("result_counts"), dict) else {}
+    apply_policy_ready_count = _int(apply_policy_readiness.get("ready"))
+    apply_policy_blocked_count = _int(apply_policy_readiness.get("blocked"))
+    apply_policy_result_counts = (
+        apply_policy_readiness.get("result_counts")
+        if isinstance(apply_policy_readiness.get("result_counts"), dict)
+        else {}
+    )
+    apply_mixed_ready_count = _int(apply_mixed_readiness.get("ready"))
+    apply_mixed_blocked_count = _int(apply_mixed_readiness.get("blocked"))
+    apply_mixed_result_counts = (
+        apply_mixed_readiness.get("result_counts")
+        if isinstance(apply_mixed_readiness.get("result_counts"), dict)
+        else {}
+    )
+    promotion_count = _int(diff_summary.get("promotions_vs_old"), len(diff_review.get("promotion_segments") or []))
+    regression_count = _int(diff_summary.get("score_regressions"))
+    unhandled_count = _int(diff_summary.get("unhandled_by_network"), _int(release.get("pending_count")))
+    low_score_count = _int(diff_summary.get("low_score"))
+    feedback_count = len(active_feedback) if isinstance(active_feedback, list) else _int(post_release.get("active_findings"))
+    changed_quality = diff_summary.get("changed_score_comparison") if isinstance(diff_summary.get("changed_score_comparison"), dict) else {}
+    package_quality = diff_summary.get("package_score_comparison") if isinstance(diff_summary.get("package_score_comparison"), dict) else {}
+    promotion_quality = diff_summary.get("promotion_score_comparison") if isinstance(diff_summary.get("promotion_score_comparison"), dict) else {}
+    new_quality = diff_summary.get("new_score_summary") if isinstance(diff_summary.get("new_score_summary"), dict) else {}
+    package_old_score = package_quality.get("weighted_avg_old_score") or package_quality.get("avg_old_score")
+    package_new_score = (
+        package_quality.get("weighted_avg_new_score")
+        or package_quality.get("avg_new_score")
+        or package_quality.get("package_quality_score")
+    )
+    package_delta = package_quality.get("weighted_avg_delta") or package_quality.get("avg_delta")
+
+    blocking_reasons: list[str] = []
+    warning_reasons: list[str] = []
+
+    if apply_count > 0:
+        blocking_reasons.append("apply_queue_pending")
+    if mixed_apply_kind:
+        blocking_reasons.append("mixed_apply_kind_not_supported")
+    for reason in publication_gate.get("blocking_reasons") or []:
+        if reason not in blocking_reasons:
+            blocking_reasons.append(str(reason))
+    if feedback_count > 0:
+        blocking_reasons.append("active_feedback")
+    if regression_count > 0:
+        warning_reasons.append("score_regressions_require_fallback_review")
+    if unhandled_count > 0:
+        warning_reasons.append("unhandled_segments_require_backlog")
+    if low_score_count > 0:
+        warning_reasons.append("low_score_segments_require_backlog")
+
+    can_publish_now = not blocking_reasons and publication_gate.get("can_publish_after_full_production_now") is True
+    can_apply_normal = (
+        apply_count > 0
+        and apply_preview_count == apply_count
+        and output_apply_count == apply_count
+        and apply_ready_count == apply_count
+    )
+    can_apply_token_policy = (
+        apply_count > 0
+        and apply_preview_count == apply_count
+        and output_apply_count == apply_count
+        and apply_policy_ready_count == apply_count
+    )
+    can_apply_mixed_token_policy = (
+        apply_count > 0
+        and apply_preview_count == apply_count
+        and output_apply_count == apply_count
+        and apply_mixed_ready_count == apply_count
+    )
+    can_apply_lifecycle = (
+        apply_count > 0
+        and apply_preview_count == apply_count
+        and lifecycle_apply_count == apply_count
+        and apply_ready_count == apply_count
+    )
+    can_apply_pending = can_apply_lifecycle or can_apply_normal or can_apply_token_policy or can_apply_mixed_token_policy
+    apply_strategy = (
+        "lifecycle_closure"
+        if can_apply_lifecycle
+        else "normal"
+        if can_apply_normal
+        else "token_policy"
+        if can_apply_token_policy
+        else "mixed_token_policy"
+        if can_apply_mixed_token_policy
+        else "blocked"
+    )
+    status = "ready" if can_publish_now else "blocked"
+    lifecycle_apply_blocked = lifecycle_apply_count > 0 and apply_blocked_count > 0
+    output_apply_blocked = output_apply_count > 0 and apply_blocked_count > 0
+    next_action = (
+        "publish_candidate"
+        if can_publish_now
+        else "apply_confirmed_queue"
+        if can_apply_pending
+        else "review_lifecycle_apply_queue"
+        if lifecycle_apply_blocked
+        else "review_token_mismatch_queue"
+        if output_apply_blocked
+        else "review_apply_queue"
+        if apply_count > 0
+        else "review_publication_blockers"
+    )
+
+    payload = {
+        "generated_at": _now_iso(),
+        "status": status,
+        "can_publish_now": can_publish_now,
+        "can_apply_pending": can_apply_pending,
+        "apply_strategy": apply_strategy,
+        "next_action": next_action,
+        "segment_state_run_id": release.get("latest_segment_state_run_id"),
+        "token_policy_run_id": token_policy_run_id,
+        "score_run_id": diff_summary.get("score_run_id") or diff_review.get("score_run_id"),
+        "old_score_run_id": diff_summary.get("old_score_run_id") or diff_review.get("old_score_run_id"),
+        "counts": {
+            "needs_apply": apply_count,
+            "apply_preview": apply_preview_count,
+            "apply_lifecycle": lifecycle_apply_count,
+            "apply_output_write": output_apply_count,
+            "apply_kind_mixed": 1 if mixed_apply_kind else 0,
+            "apply_ready": apply_ready_count,
+            "apply_blocked": apply_blocked_count,
+            "lifecycle_apply_ready": apply_ready_count if lifecycle_apply_count else 0,
+            "lifecycle_apply_blocked": apply_blocked_count if lifecycle_apply_count else 0,
+            "apply_token_mismatch": _int(apply_result_counts.get("token_mismatch")),
+            "apply_missing_token_policy": _int(apply_result_counts.get("missing_token_policy_decision")),
+            "apply_policy_ready": apply_policy_ready_count,
+            "apply_policy_blocked": apply_policy_blocked_count,
+            "apply_policy_token_mismatch": _int(apply_policy_result_counts.get("token_mismatch")),
+            "apply_policy_missing_decision": _int(apply_policy_result_counts.get("missing_token_policy_decision")),
+            "apply_policy_missing_run": _int(apply_policy_result_counts.get("missing_token_policy_run")),
+            "apply_policy_stale_confirmed_hash": _int(apply_policy_result_counts.get("stale_token_policy_confirmed_hash")),
+            "apply_policy_stale_output_hash": _int(apply_policy_result_counts.get("stale_token_policy_output_hash")),
+            "apply_mixed_ready": apply_mixed_ready_count,
+            "apply_mixed_blocked": apply_mixed_blocked_count,
+            "apply_mixed_token_mismatch": _int(apply_mixed_result_counts.get("token_mismatch")),
+            "apply_mixed_token_policy_ready": _int(apply_mixed_result_counts.get("ready_token_policy_decision")),
+            "apply_mixed_missing_decision": _int(apply_mixed_result_counts.get("missing_token_policy_decision")),
+            "apply_mixed_stale_confirmed_hash": _int(apply_mixed_result_counts.get("stale_token_policy_confirmed_hash")),
+            "apply_mixed_stale_output_hash": _int(apply_mixed_result_counts.get("stale_token_policy_output_hash")),
+            "apply_already_matches": _int(apply_result_counts.get("already_matches"))
+            + _int(apply_result_counts.get("already_matches_line")),
+            "package_diff": _int(diff_summary.get("package_diff_count")),
+            "raw_output_diff": _int(diff_summary.get("raw_output_diff_count"), _int(diff_summary.get("changed_vs_old"))),
+            "package_excluded": _int(diff_summary.get("package_excluded_count")),
+            "promotions": promotion_count,
+            "score_regressions": regression_count,
+            "unhandled_by_network": unhandled_count,
+            "low_score": low_score_count,
+            "active_feedback": feedback_count,
+        },
+        "apply_readiness": apply_readiness,
+        "apply_policy_readiness": apply_policy_readiness,
+        "apply_mixed_readiness": apply_mixed_readiness,
+        "quality": {
+            "package_old_score": package_old_score,
+            "package_new_score": package_new_score,
+            "package_delta": package_delta,
+            "package": package_quality,
+            "changed": changed_quality,
+            "promotions": promotion_quality,
+            "new_segments": new_quality,
+        },
+        "blocking_reasons": blocking_reasons,
+        "warning_reasons": warning_reasons,
+        "publication_gate": publication_gate,
+        "summary": {
+            "apply_queue": (
+                "ready_for_protected_apply"
+                if can_apply_pending
+                else "lifecycle_review_required"
+                if lifecycle_apply_blocked
+                else "token_policy_or_review_required"
+                if output_apply_blocked
+                else "needs_review"
+                if apply_count > 0
+                else "empty"
+            ),
+            "promotions": "available_for_review" if promotion_count > 0 else "empty",
+            "regressions": "fallback_or_review_required" if regression_count > 0 else "clear",
+            "publication": "ready" if can_publish_now else "blocked",
+        },
+    }
+    return {"ok": True, "publication_preflight": payload, "app_state": app_state}
+
+
+def _publication_apply_segment_ids(preflight_payload: dict[str, Any]) -> list[int]:
+    app_state = preflight_payload.get("app_state") if isinstance(preflight_payload, dict) else {}
+    release = app_state.get("release") if isinstance(app_state, dict) else {}
+    post_release = release.get("post_release") if isinstance(release, dict) else {}
+    diff_review = post_release.get("diff_review") if isinstance(post_release, dict) else {}
+    segment_ids: list[int] = []
+    for item in diff_review.get("apply_segments") or []:
+        if not isinstance(item, dict):
+            continue
+        segment_id = _int(item.get("segment_id"))
+        if segment_id:
+            segment_ids.append(segment_id)
+    return list(dict.fromkeys(segment_ids))
+
+
+def _latest_apply_token_policy_run_id(db_path: Path, state_run_id: int | None) -> int | None:
+    try:
+        with sqlite3.connect(db_path) as con:
+            con.row_factory = sqlite3.Row
+            if not _table_exists(con, "segment_token_policy_runs"):
+                return None
+            params: tuple[Any, ...] = ()
+            state_sql = ""
+            if state_run_id:
+                state_sql = "AND state_run_id = ?"
+                params = (state_run_id,)
+            row = con.execute(
+                f"""
+                SELECT id
+                FROM segment_token_policy_runs
+                WHERE finished_at IS NOT NULL
+                  AND total_candidates > 0
+                  {state_sql}
+                ORDER BY finished_at DESC, id DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+            if row is not None:
+                return int(row["id"])
+            if state_run_id:
+                row = con.execute(
+                    """
+                    SELECT id
+                    FROM segment_token_policy_runs
+                    WHERE finished_at IS NOT NULL
+                      AND total_candidates > 0
+                    ORDER BY finished_at DESC, id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                if row is not None:
+                    return int(row["id"])
+    except Exception:
+        return None
+    return None
+
+
+def _publication_apply_readiness(
+    db_path: Path,
+    *,
+    state_run_id: int | None,
+    segment_ids: list[int],
+    require_token_policy_decision: bool = False,
+    allow_token_policy_decision: bool = False,
+    token_policy_run_id: int | None = None,
+) -> dict[str, Any]:
+    if not segment_ids:
+        return {
+            "available": True,
+            "candidates": 0,
+            "ready": 0,
+            "blocked": 0,
+            "result_counts": {},
+        }
+    pipeline_dir = str(ROOT / "pipeline")
+    if pipeline_dir not in sys.path:
+        sys.path.insert(0, pipeline_dir)
+    try:
+        import apply_segment_state_updates as segment_apply
+    except Exception as exc:  # pragma: no cover - import problem should surface in preflight
+        return {
+            "available": False,
+            "error": str(exc),
+            "candidates": 0,
+            "ready": 0,
+            "blocked": len(segment_ids),
+            "result_counts": {"readiness_import_error": len(segment_ids)},
+        }
+
+    settings = segment_apply.db.load_settings()
+    output_root = segment_apply.db.project_path(settings["output_spanish"])
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        selected_run_id = state_run_id or segment_apply.latest_state_run_id(con)
+        candidates = segment_apply.fetch_candidates(
+            con,
+            state_run_id=selected_run_id,
+            review_states=segment_apply.parse_review_states("human_locked,human_confirmed", True),
+            limit=None,
+            path_like=None,
+            segment_ids=set(segment_ids),
+            include_intentional_blank=True,
+            require_token_policy_decision=require_token_policy_decision,
+            allow_token_policy_decision=allow_token_policy_decision,
+            token_policy_run_id=token_policy_run_id,
+        )
+    result_counts, _previews = segment_apply.evaluate_best_candidates(
+        candidates,
+        output_root=output_root,
+        allow_locked_token_override=False,
+        require_token_policy_decision=require_token_policy_decision,
+        allow_token_policy_decision=allow_token_policy_decision,
+        include_intentional_blank=True,
+    )
+    if require_token_policy_decision:
+        missing_decision_candidates = max(0, len(segment_ids) - len(candidates))
+        if missing_decision_candidates:
+            result_counts["missing_token_policy_decision"] += missing_decision_candidates
+    ready = (
+        int(result_counts.get("ready", 0))
+        + int(result_counts.get("ready_token_override", 0))
+        + int(result_counts.get("ready_token_policy_decision", 0))
+    )
+    return {
+        "available": True,
+        "state_run_id": selected_run_id,
+        "require_token_policy_decision": require_token_policy_decision,
+        "allow_token_policy_decision": allow_token_policy_decision,
+        "token_policy_run_id": token_policy_run_id,
+        "candidates": len(candidates),
+        "ready": ready,
+        "blocked": max(0, len(segment_ids) - ready),
+        "result_counts": dict(result_counts),
+    }
+
+
 def _write_production_run_status(status: dict[str, Any]) -> None:
     status["updated_at"] = _now_iso()
     PRODUCTION_RUN_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -3887,44 +6499,51 @@ def _production_run_active() -> bool:
     return status.get("status") in {"starting", "running"}
 
 
-def _new_production_run_status(run_id: str) -> dict[str, Any]:
+def _new_production_run_status(run_id: str, *, evaluation_only: bool = True) -> dict[str, Any]:
     stages = [
-        {"id": "snapshot", "label": "Pre-run Snapshot", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "snapshot_archive", "label": "Archive Snapshot", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "preflight_sync", "label": "Preflight Index Sync", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "segment_state_before", "label": "Segment State", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "apply_general_dry_run", "label": "General Apply Dry-run", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "apply_token_policy_dry_run", "label": "Token Policy Apply Dry-run", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "controlled_token_subpolicy_dry_run", "label": "Controlled Token Subpolicy Dry-run", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "select_cstring_bridge_dry_run", "label": "Select_CString Bridge Dry-run", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "same_token_boundary_repair_audit", "label": "Same-token Boundary Repair Audit", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "same_token_boundary_repair_dry_run", "label": "Same-token Boundary Repair Dry-run", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "title_landed_es_repair_dry_run", "label": "Landed Title -es Repair Dry-run", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "apply_general_write", "label": "Write Regular Output", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "apply_token_policy_write", "label": "Write Token-Policy Output", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "controlled_token_subpolicy_write", "label": "Controlled Token Subpolicy Write", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "select_cstring_bridge_write", "label": "Select_CString Bridge Write", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "same_token_boundary_repair_write", "label": "Same-token Boundary Repair Write/Close", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "title_landed_es_repair_write", "label": "Landed Title -es Repair Write", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "apply_locked_override_write", "label": "Write Locked Manual Overrides", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "segment_state_after", "label": "Post-write Segment State", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "token_policy_after", "label": "Post-write Token Policy", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "controlled_token_subpolicy_reaudit", "label": "Controlled Token Subpolicy Reaudit", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "select_cstring_bridge_reaudit", "label": "Select_CString Bridge Reaudit", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "same_token_boundary_repair_reaudit", "label": "Same-token Boundary Repair Reaudit", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "title_landed_es_repair_reaudit", "label": "Landed Title -es Repair Reaudit", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "composite_review_progress", "label": "Composite Review Progress", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-        {"id": "production_report", "label": "Production Report", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "snapshot", "label": "Snapshot pre-run", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "snapshot_archive", "label": "Arquivar snapshot", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "preflight_sync", "label": "Sincronizar indice", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "segment_state_before", "label": "Segment-state inicial", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "apply_general_dry_run", "label": "Dry-run geral", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "apply_token_policy_dry_run", "label": "Dry-run politica de tokens", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "controlled_token_subpolicy_dry_run", "label": "Dry-run subpolitica controlada", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "select_cstring_bridge_dry_run", "label": "Dry-run Select_CString", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "same_token_boundary_repair_audit", "label": "Auditoria same-token", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "same_token_boundary_repair_dry_run", "label": "Dry-run reparo same-token", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "title_landed_es_repair_dry_run", "label": "Dry-run titulos -es", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
     ]
+    if not evaluation_only:
+        stages.extend([
+        {"id": "apply_general_write", "label": "Escrita regular", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "apply_token_policy_write", "label": "Escrita por politica de token", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "controlled_token_subpolicy_write", "label": "Escrita subpolitica controlada", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "select_cstring_bridge_write", "label": "Escrita Select_CString", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "same_token_boundary_repair_write", "label": "Escrita/fechamento same-token", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "title_landed_es_repair_write", "label": "Escrita titulos -es", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "apply_locked_override_write", "label": "Escrita overrides manuais", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "segment_state_after", "label": "Segment-state pos-escrita", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "token_policy_after", "label": "Politica de tokens pos-escrita", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "controlled_token_subpolicy_reaudit", "label": "Reauditoria subpolitica controlada", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "select_cstring_bridge_reaudit", "label": "Reauditoria Select_CString", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "same_token_boundary_repair_reaudit", "label": "Reauditoria same-token", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "title_landed_es_repair_reaudit", "label": "Reauditoria titulos -es", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        ])
+    stages.append({"id": "composite_review_progress", "label": "Progresso composto", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None})
+    if evaluation_only:
+        stages.append({"id": "package_score_recalibration", "label": "Recalibrar score do pacote", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None})
+    stages.append({"id": "production_report", "label": "Relatorio final", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None})
     snapshot_path = PRODUCTION_SNAPSHOT_ROOT / run_id
     return {
         "run_id": run_id,
         "status": "starting",
-        "mode": "full_production_apply",
-        "apply_output": True,
+        "mode": "evaluation_full_production" if evaluation_only else "full_production_apply",
+        "run_mode": "evaluation" if evaluation_only else "full_production",
+        "apply_output": not evaluation_only,
         "started_at": _now_iso(),
         "updated_at": _now_iso(),
         "finished_at": "",
+        "last_event_at": "",
         "current_stage": "",
         "stages": stages,
         "log_path": str(ROOT / "logs" / f"{run_id}_production_run.log"),
@@ -3934,7 +6553,40 @@ def _new_production_run_status(run_id: str) -> dict[str, Any]:
         "snapshot_archive_path": str(PRODUCTION_SNAPSHOT_ARCHIVE_ROOT / f"{run_id}.zip"),
         "report_paths": [],
         "logs_tail": [],
-        "message": "Full production run queued.",
+        "message": "Evaluation run queued." if evaluation_only else "Full production run queued.",
+    }
+
+
+def _new_publication_apply_status(run_id: str) -> dict[str, Any]:
+    stages = [
+        {"id": "publication_preflight", "label": "Preflight publicavel", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "apply_confirmed_dry_run", "label": "Dry-run apply confirmado", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "apply_confirmed_write", "label": "Aplicar fila confirmada", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "segment_state_after", "label": "Segment-state pos-apply", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "publication_preflight_after", "label": "Preflight pos-apply", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "production_report", "label": "Relatorio final", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+    ]
+    return {
+        "run_id": run_id,
+        "status": "starting",
+        "mode": "publication_apply_confirmed",
+        "run_mode": "publication",
+        "apply_output": True,
+        "started_at": _now_iso(),
+        "updated_at": _now_iso(),
+        "finished_at": "",
+        "last_event_at": "",
+        "current_stage": "",
+        "stages": stages,
+        "log_path": str(ROOT / "logs" / f"{run_id}_publication_apply.log"),
+        "report_path": str(ROOT / "reports" / f"{run_id}_publication_apply_run.txt"),
+        "snapshot_path": "",
+        "snapshot_manifest_path": "",
+        "snapshot_archive_path": "",
+        "report_paths": [],
+        "logs_tail": [],
+        "message": "Publication apply run queued.",
+        "publication_apply_segment_ids": [],
     }
 
 
@@ -3945,10 +6597,52 @@ def _update_stage(run_status: dict[str, Any], stage_id: str, **updates: Any) -> 
             break
 
 
+def _stage_label(run_status: dict[str, Any], stage_id: str | None) -> str:
+    if not stage_id:
+        return ""
+    for stage in run_status.get("stages", []):
+        if isinstance(stage, dict) and stage.get("id") == stage_id:
+            return str(stage.get("label") or stage_id)
+    return str(stage_id)
+
+
 def _append_run_log(status: dict[str, Any], line: str) -> None:
     logs_tail = list(status.get("logs_tail") or [])
     logs_tail.append(line.rstrip())
     status["logs_tail"] = logs_tail[-120:]
+    status["last_event_at"] = _now_iso()
+
+
+def _start_inline_stage(status: dict[str, Any], stage_id: str, message: str, log_handle) -> None:
+    now = _now_iso()
+    _update_stage(status, stage_id, status="running", started_at=now, updated_at=now, progress_pct=15)
+    status["status"] = "running"
+    status["current_stage"] = stage_id
+    status["current_label"] = _stage_label(status, stage_id)
+    status["message"] = message
+    log_handle.write(f"\n=== {stage_id} ===\n")
+    log_handle.write(f"{message}\n")
+    log_handle.flush()
+    _append_run_log(status, f"[{stage_id}] {message}")
+    _write_production_run_status(status)
+
+
+def _finish_inline_stage(status: dict[str, Any], stage_id: str, *, metrics: dict[str, Any] | None = None, message: str = "") -> None:
+    now = _now_iso()
+    updates: dict[str, Any] = {
+        "status": "done",
+        "updated_at": now,
+        "finished_at": now,
+        "exit_code": 0,
+        "progress_pct": 100,
+    }
+    if metrics:
+        updates["metrics"] = metrics
+    _update_stage(status, stage_id, **updates)
+    if message:
+        status["message"] = message
+        _append_run_log(status, f"[{stage_id}] {message}")
+    _write_production_run_status(status)
 
 
 def _update_stage_metric(run_status: dict[str, Any], stage_id: str, key: str, value: Any) -> None:
@@ -4016,6 +6710,52 @@ def _snapshot_ignore(dir_path: str, names: list[str]) -> set[str]:
     return {name for name in names if name in ignored}
 
 
+def _production_snapshot_sources() -> dict[str, Path]:
+    sources = {
+        "source": ROOT / "source",
+        "output": ROOT / "output",
+        "reports": ROOT / "reports",
+        "logs": ROOT / "logs",
+        "memory_light": ROOT / "memory",
+    }
+    optional_models = ROOT / "models"
+    if optional_models.exists():
+        sources["models"] = optional_models
+    return sources
+
+
+def _production_disk_preflight_payload() -> dict[str, Any]:
+    sources = _production_snapshot_sources()
+    sqlite_db_size = DEFAULT_DB.stat().st_size if DEFAULT_DB.exists() else 0
+    estimated_size = DEFAULT_DB.stat().st_size if PRODUCTION_FULL_SQLITE_BACKUP_ENABLED and DEFAULT_DB.exists() else 0
+    estimated_size += sum(_path_size(path, _snapshot_ignore) for path in sources.values())
+    required_space = int(estimated_size * 1.08)
+    usage_path = PRODUCTION_SNAPSHOT_ROOT if PRODUCTION_SNAPSHOT_ROOT.exists() else ROOT
+    usage = shutil.disk_usage(usage_path)
+    missing = max(0, required_space - usage.free)
+    ok = usage.free >= required_space
+    return {
+        "checked_at": _now_iso(),
+        "status": "ok" if ok else "insufficient_disk_space",
+        "ok": ok,
+        "path": str(usage_path),
+        "estimated_snapshot_bytes": estimated_size,
+        "required_free_bytes": required_space,
+        "free_bytes": usage.free,
+        "missing_bytes": missing,
+        "margin_ratio": 1.08,
+        "sqlite_full_backup_enabled": PRODUCTION_FULL_SQLITE_BACKUP_ENABLED,
+        "sqlite_backup_mode": "full_backup" if PRODUCTION_FULL_SQLITE_BACKUP_ENABLED else "metadata_only",
+        "sqlite_db_size_bytes": sqlite_db_size,
+        "message": (
+            "Disk preflight ok."
+            if ok
+            else f"Insufficient disk space for production snapshot. Required {required_space} bytes, free {usage.free} bytes."
+        ),
+        "suggestion": "" if ok else "Limpar ou mover snapshots antigos antes de iniciar a producao.",
+    }
+
+
 def _copy_tree_snapshot(source: Path, target: Path) -> None:
     if source.exists():
         shutil.copytree(source, target, ignore=_snapshot_ignore, dirs_exist_ok=True)
@@ -4034,11 +6774,52 @@ def _sqlite_backup_snapshot(target_db: Path) -> None:
         source.close()
 
 
+def _sqlite_snapshot_metadata() -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "path": str(DEFAULT_DB),
+        "exists": DEFAULT_DB.exists(),
+        "full_backup_enabled": PRODUCTION_FULL_SQLITE_BACKUP_ENABLED,
+        "full_backup_status": "enabled" if PRODUCTION_FULL_SQLITE_BACKUP_ENABLED else "skipped_metadata_only",
+    }
+    if not DEFAULT_DB.exists():
+        return metadata
+
+    stat = DEFAULT_DB.stat()
+    metadata.update(
+        {
+            "size_bytes": stat.st_size,
+            "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+        }
+    )
+    try:
+        con = sqlite3.connect(f"file:{DEFAULT_DB}?mode=ro", uri=True)
+        try:
+            page_size = con.execute("PRAGMA page_size").fetchone()[0]
+            page_count = con.execute("PRAGMA page_count").fetchone()[0]
+            freelist_count = con.execute("PRAGMA freelist_count").fetchone()[0]
+            table_count = con.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'").fetchone()[0]
+            metadata.update(
+                {
+                    "page_size": page_size,
+                    "page_count": page_count,
+                    "freelist_count": freelist_count,
+                    "table_count": table_count,
+                }
+            )
+        finally:
+            con.close()
+    except Exception as exc:
+        metadata["metadata_error"] = str(exc)
+    return metadata
+
+
 def _create_production_snapshot(status: dict[str, Any], log_handle) -> None:
     stage_id = "snapshot"
-    _update_stage(status, stage_id, status="running", started_at=_now_iso())
+    now = _now_iso()
+    _update_stage(status, stage_id, status="running", started_at=now, updated_at=now, progress_pct=0)
     status["status"] = "running"
     status["current_stage"] = stage_id
+    status["current_label"] = _stage_label(status, stage_id)
     status["message"] = "Creating pre-run snapshot"
     _write_production_run_status(status)
 
@@ -4047,35 +6828,32 @@ def _create_production_snapshot(status: dict[str, Any], log_handle) -> None:
         raise RuntimeError(f"Snapshot path already exists: {snapshot_root}")
     snapshot_root.mkdir(parents=True, exist_ok=False)
 
-    sources = {
-        "source": ROOT / "source",
-        "output": ROOT / "output",
-        "reports": ROOT / "reports",
-        "logs": ROOT / "logs",
-        "memory_light": ROOT / "memory",
-    }
-    optional_models = ROOT / "models"
-    if optional_models.exists():
-        sources["models"] = optional_models
-
-    estimated_size = DEFAULT_DB.stat().st_size if DEFAULT_DB.exists() else 0
-    estimated_size += sum(_path_size(path, _snapshot_ignore) for path in sources.values())
-    free_space = shutil.disk_usage(snapshot_root).free
-    required_space = int(estimated_size * 1.08)
+    sources = _production_snapshot_sources()
+    disk_preflight = _production_disk_preflight_payload()
+    estimated_size = int(disk_preflight.get("estimated_snapshot_bytes") or 0)
+    free_space = int(disk_preflight.get("free_bytes") or 0)
+    required_space = int(disk_preflight.get("required_free_bytes") or 0)
     manifest: dict[str, Any] = {
         "run_id": status.get("run_id"),
         "created_at": _now_iso(),
         "snapshot_root": str(snapshot_root),
-        "sqlite_backup": str(snapshot_root / "memory" / "translation_engine.sqlite"),
+        "sqlite_backup": (
+            str(snapshot_root / "memory" / "translation_engine.sqlite")
+            if PRODUCTION_FULL_SQLITE_BACKUP_ENABLED
+            else None
+        ),
+        "sqlite_metadata": _sqlite_snapshot_metadata(),
         "estimated_bytes": estimated_size,
         "required_bytes_with_margin": required_space,
         "free_bytes_before": free_space,
+        "disk_preflight": disk_preflight,
         "copied": [],
         "skipped": [
             "memory/backups",
             "memory/bkp banco",
             "memory/production_snapshots",
             "memory/production_snapshot_archives",
+            "memory/translation_engine.sqlite",
             "memory/translation_engine.sqlite-wal",
             "memory/translation_engine.sqlite-shm",
             "memory/translation_engine_before_*",
@@ -4085,6 +6863,15 @@ def _create_production_snapshot(status: dict[str, Any], log_handle) -> None:
         manifest_path = snapshot_root / "manifest.json"
         manifest["error"] = "insufficient_free_space"
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        status["disk_preflight"] = disk_preflight
+        status["failed_stage"] = stage_id
+        status["failure"] = {
+            "reason": "insufficient_disk_space",
+            "stage": stage_id,
+            "message": disk_preflight["message"],
+            "disk_preflight": disk_preflight,
+        }
+        _write_production_run_status(status)
         raise RuntimeError(
             f"Insufficient disk space for production snapshot. Required {required_space} bytes, free {free_space} bytes."
         )
@@ -4096,10 +6883,16 @@ def _create_production_snapshot(status: dict[str, Any], log_handle) -> None:
     _append_run_log(status, f"[snapshot] root: {snapshot_root}")
     _append_run_log(status, f"[snapshot] estimated bytes: {estimated_size}")
 
-    _sqlite_backup_snapshot(snapshot_root / "memory" / "translation_engine.sqlite")
-    manifest["copied"].append("memory/translation_engine.sqlite")
-    _append_run_log(status, "[snapshot] SQLite backup completed")
-    _write_production_run_status(status)
+    if PRODUCTION_FULL_SQLITE_BACKUP_ENABLED:
+        _sqlite_backup_snapshot(snapshot_root / "memory" / "translation_engine.sqlite")
+        manifest["copied"].append("memory/translation_engine.sqlite")
+        _append_run_log(status, "[snapshot] SQLite backup completed")
+        _write_production_run_status(status)
+    else:
+        _append_run_log(status, "[snapshot] SQLite full backup skipped; metadata recorded")
+        log_handle.write("SQLite full backup: skipped; metadata recorded in manifest.\n")
+        log_handle.flush()
+        _write_production_run_status(status)
 
     for name, source_path in sources.items():
         target_name = "memory" if name == "memory_light" else name
@@ -4112,7 +6905,7 @@ def _create_production_snapshot(status: dict[str, Any], log_handle) -> None:
     manifest_path = Path(status["snapshot_manifest_path"])
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    _update_stage(status, stage_id, status="done", finished_at=_now_iso(), exit_code=0)
+    _update_stage(status, stage_id, status="done", updated_at=_now_iso(), finished_at=_now_iso(), exit_code=0, progress_pct=100)
     status["message"] = "Pre-run snapshot completed"
     _write_production_run_status(status)
 
@@ -4157,6 +6950,29 @@ def _write_production_report(status: dict[str, Any]) -> None:
             f"- {stage.get('id')}: {stage.get('status')} exit={stage.get('exit_code')} "
             f"started={stage.get('started_at')} finished={stage.get('finished_at')}"
         )
+    if status.get("mode") == "publication_apply_confirmed":
+        preflight = status.get("publication_preflight") if isinstance(status.get("publication_preflight"), dict) else {}
+        counts = preflight.get("counts") if isinstance(preflight.get("counts"), dict) else {}
+        quality = preflight.get("quality") if isinstance(preflight.get("quality"), dict) else {}
+        apply_ids = status.get("publication_apply_segment_ids") if isinstance(status.get("publication_apply_segment_ids"), list) else []
+        lines.extend(
+            [
+                "",
+                "Publication summary:",
+                f"- Apply ids: {len(apply_ids)}",
+                f"- Needs apply after run: {counts.get('needs_apply', 'not_measured')}",
+                f"- Apply ready: {counts.get('apply_ready', 'not_measured')}",
+                f"- Apply blocked: {counts.get('apply_blocked', 'not_measured')}",
+                f"- Apply token mismatch: {counts.get('apply_token_mismatch', 'not_measured')}",
+                f"- Promotions measured: {counts.get('promotions', 'not_measured')}",
+                f"- Score regressions: {counts.get('score_regressions', 'not_measured')}",
+                f"- Unhandled by network: {counts.get('unhandled_by_network', 'not_measured')}",
+                f"- Package score old: {quality.get('package_old_score', 'not_measured')}",
+                f"- Package score new: {quality.get('package_new_score', 'not_measured')}",
+                f"- Package delta: {quality.get('package_delta', 'not_measured')}",
+                f"- Next action: {preflight.get('next_action', 'not_measured')}",
+            ]
+        )
     lines.extend(
         [
             "",
@@ -4164,8 +6980,16 @@ def _write_production_report(status: dict[str, Any]) -> None:
             *[f"- {path}" for path in status.get("report_paths", [])],
             "",
             "Interpretation:",
-            "- This production executor creates, verifies and archives a snapshot before writing output.",
-            "- Output writes are restricted to confirmed rows that pass the segment-token policy gate.",
+            (
+                "- This evaluation executor creates, verifies and archives a snapshot, then measures candidates without writing output."
+                if not status.get("apply_output")
+                else "- This production executor creates, verifies and archives a snapshot before writing output."
+            ),
+            (
+                "- Publication/output writes are reserved for the confirmed apply queue."
+                if not status.get("apply_output")
+                else "- Output writes are restricted to confirmed rows that pass the segment-token policy gate."
+            ),
             "- Remaining pending, low-confidence and token-policy items are reported for the learning front.",
             "",
             "Recent log tail:",
@@ -4175,19 +6999,231 @@ def _write_production_report(status: dict[str, Any]) -> None:
     report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _attach_evaluation_decision_report(status: dict[str, Any], *, raise_on_error: bool = False) -> dict[str, Any] | None:
+    state_run_id = _int(status.get("new_segment_state_run_id") or status.get("segment_state_run_id"))
+    try:
+        con = sqlite3.connect(ACTIVE_DB_PATH)
+        con.row_factory = sqlite3.Row
+        try:
+            if not state_run_id:
+                state_run_id = _int(_latest_segment_state_summary(con).get("run_id"))
+            diff_review = _release_diff_review_payload(con, state_run_id)
+        finally:
+            con.close()
+        paths = _write_evaluation_decision_artifacts(
+            diff_review,
+            run_id=str(status.get("run_id") or ""),
+            source="evaluation_full_production",
+        )
+        status["evaluation_decision_report"] = {
+            "generated_at": _now_iso(),
+            "segment_state_run_id": state_run_id,
+            "paths": paths,
+        }
+        existing_paths = status.get("report_paths") if isinstance(status.get("report_paths"), list) else []
+        for path in paths.values():
+            if path not in existing_paths:
+                existing_paths.append(path)
+        status["report_paths"] = existing_paths
+        _append_run_log(status, f"[evaluation_decision] report: {paths.get('markdown')}")
+        return diff_review
+    except Exception as exc:  # pragma: no cover - report metadata should not fail the run
+        status["evaluation_decision_report"] = {
+            "generated_at": _now_iso(),
+            "segment_state_run_id": state_run_id,
+            "error": str(exc),
+        }
+        _append_run_log(status, f"[evaluation_decision] report failed: {exc}")
+        if raise_on_error:
+            raise
+        return None
+
+
+def _run_package_score_recalibration_stage(status: dict[str, Any], log_handle) -> None:
+    stage_id = "package_score_recalibration"
+    _start_inline_stage(
+        status,
+        stage_id,
+        "Recalculating package score, promotion gates and old-vs-output queues with current calibration.",
+        log_handle,
+    )
+    diff_review = _attach_evaluation_decision_report(status, raise_on_error=True) or {}
+    summary = diff_review.get("summary") if isinstance(diff_review.get("summary"), dict) else {}
+    package_score = summary.get("package_score_comparison") if isinstance(summary.get("package_score_comparison"), dict) else {}
+    metrics = {
+        "score_run_id": summary.get("score_run_id") or diff_review.get("score_run_id"),
+        "old_score_run_id": summary.get("old_score_run_id") or diff_review.get("old_score_run_id"),
+        "package_diff": _int(summary.get("package_diff_count")),
+        "promotions": _int(summary.get("promotions_vs_old")),
+        "needs_apply": _int(summary.get("needs_apply")),
+        "score_regressions": _int(summary.get("score_regressions")),
+        "low_score": _int(summary.get("low_score")),
+        "unhandled_by_network": _int(summary.get("unhandled_by_network")),
+        "package_old_score": package_score.get("weighted_avg_old_score") or package_score.get("avg_old_score"),
+        "package_new_score": package_score.get("weighted_avg_new_score") or package_score.get("avg_new_score"),
+        "package_delta": package_score.get("weighted_avg_delta") or package_score.get("avg_delta"),
+    }
+    status["package_score_recalibration"] = {
+        "generated_at": _now_iso(),
+        "method": "release_diff_review_payload_current_calibration",
+        "metrics": metrics,
+    }
+    log_handle.write(
+        "[package_score_recalibration] "
+        f"package_diff={metrics['package_diff']} promotions={metrics['promotions']} "
+        f"needs_apply={metrics['needs_apply']} regressions={metrics['score_regressions']} "
+        f"low_score={metrics['low_score']} unhandled={metrics['unhandled_by_network']}\n"
+    )
+    log_handle.flush()
+    _finish_inline_stage(
+        status,
+        stage_id,
+        metrics=metrics,
+        message="Package score and evaluation queues recalibrated with current rules.",
+    )
+
+
 def _run_production_command(status: dict[str, Any], *, stage_id: str, command: list[str], log_handle) -> int:
-    _update_stage(status, stage_id, status="running", started_at=_now_iso())
+    stage_started_at = _now_iso()
+    _update_stage(status, stage_id, status="running", started_at=stage_started_at, updated_at=stage_started_at, progress_pct=0)
     status["status"] = "running"
     status["current_stage"] = stage_id
-    status["message"] = f"Running {stage_id}"
+    status["current_label"] = _stage_label(status, stage_id)
+    status["message"] = f"Running {status['current_label'] or stage_id}"
     _write_production_run_status(status)
     log_handle.write(f"\n=== {stage_id} ===\n")
     log_handle.write(f"Command: {' '.join(command)}\n")
     log_handle.flush()
 
+    metric_rules = [
+        ("[apply_segment_state_updates]", {
+            "Candidates inspected": "candidates",
+            "Ready to apply": "ready",
+            "Applied updates": "applied",
+            "Files with ready updates": "files_with_ready_updates",
+            "token_mismatch": "token_mismatch",
+            "stale_token_policy_confirmed_hash": "stale_token_policy_confirmed_hash",
+        }),
+        ("[controlled_token_subpolicy_apply]", {
+            "Candidates": "candidates",
+            "Eligible": "eligible",
+            "Ready": "ready",
+            "Applied": "applied",
+            "Stale": "stale",
+            "Blocked": "blocked",
+            "Confirmation promoted": "confirmation_promoted",
+            "Output written": "output_written",
+            "Estimated closed gain": "estimated_closed_gain",
+            "Actual closed gain after reaudit": "actual_closed_gain_after_reaudit",
+        }),
+        ("[auto_confirmation_reopen_text_boundary_repair_production_audit]", {
+            "Audit run id": "audit_run_id",
+            "Lifecycle run id": "lifecycle_run_id",
+            "State run id": "segment_state_run_id",
+            "Eligible controlled production": "eligible",
+            "Estimated closed gain": "estimated_closed_gain",
+            "Real repairs": "real_repairs",
+            "No-op observations": "noop_observations",
+            "Blocked": "blocked",
+        }),
+        ("[same_token_boundary_repair_apply]", {
+            "Audit run id": "audit_run_id",
+            "Lifecycle run id": "lifecycle_run_id",
+            "Segment-state run id": "segment_state_run_id",
+            "Candidates": "candidates",
+            "Eligible": "eligible",
+            "Ready": "ready",
+            "Applied": "applied",
+            "Noop closed": "noop_closed",
+            "Skipped": "skipped",
+            "Stale": "stale",
+            "Blocked": "blocked",
+            "Confirmation promoted": "confirmation_promoted",
+            "Output written": "output_written",
+            "Estimated closed gain": "estimated_closed_gain",
+            "Actual closed gain after segment-state": "actual_closed_gain_after_segment_state",
+        }),
+        ("[select_cstring_governed_bridge_apply]", {
+            "Proposal run id": "proposal_run_id",
+            "Maturity audit run id": "maturity_audit_run_id",
+            "Final overlay run id": "final_overlay_run_id",
+            "Bridge candidate": "bridge_candidate",
+            "Production release allowed": "production_release_allowed",
+            "Candidates": "candidates",
+            "Ready": "ready",
+            "Applied": "applied",
+            "Already applied": "already_applied",
+            "Stale": "stale",
+            "Blocked": "blocked",
+            "Confirmation promoted": "confirmation_promoted",
+            "Output written": "output_written",
+            "Same token": "same_token",
+            "Dynamic payload delta": "dynamic_payload_delta",
+            "Estimated closed gain": "estimated_closed_gain",
+            "Actual closed gain after reaudit": "actual_closed_gain_after_reaudit",
+        }),
+        ("[title_landed_es_reviewed_repair_dry_run]", {
+            "Queue run id": "queue_run_id",
+            "State run id": "segment_state_run_id",
+            "Candidates inspected": "candidates",
+            "ready_confirmation_and_output": "ready",
+            "already_aligned": "already_aligned",
+            "blocked_state": "blocked_state",
+            "blocked_quality": "blocked_quality",
+            "blocked_token_or_structure": "blocked_token_or_structure",
+            "blocked_stale_decision": "blocked_stale_decision",
+        }),
+        ("[title_landed_es_reviewed_repair_apply]", {
+            "Segment-state run id": "segment_state_run_id",
+            "Candidates": "candidates",
+            "Dry-run ready": "dry_run_ready",
+            "Ready": "ready",
+            "Applied": "applied",
+            "Already applied": "already_applied",
+            "Stale": "stale",
+            "Blocked": "blocked",
+            "Skipped": "skipped",
+            "Confirmation promoted": "confirmation_promoted",
+            "Output written": "output_written",
+            "Files touched": "files_touched",
+        }),
+    ]
+
+    def parse_line(line: str) -> None:
+        if "Report:" in line:
+            report_path = line.split("Report:", 1)[1].strip()
+            if report_path and report_path not in status["report_paths"]:
+                status["report_paths"].append(report_path)
+        key_value_metric_map = {
+            "candidate_count": "candidates",
+            "released_count": "released",
+            "blocked_count": "blocked",
+            "policy_run_id": "policy_run_id",
+            "learning_run_id": "learning_run_id",
+        }
+        if "=" in line:
+            key, value = line.split("=", 1)
+            metric_key = key_value_metric_map.get(key.strip())
+            if metric_key:
+                try:
+                    _update_stage_metric(status, stage_id, metric_key, int(value.strip()))
+                except ValueError:
+                    pass
+        for marker, metric_map in metric_rules:
+            if marker not in line:
+                continue
+            for label, key in metric_map.items():
+                if label in line:
+                    parsed = _parse_count_suffix(line)
+                    if parsed is not None:
+                        _update_stage_metric(status, stage_id, key, parsed)
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
     process = subprocess.Popen(
         command,
         cwd=str(ROOT),
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -4195,157 +7231,382 @@ def _run_production_command(status: dict[str, Any], *, stage_id: str, command: l
         errors="replace",
     )
     assert process.stdout is not None
-    for raw_line in process.stdout:
-        line = raw_line.rstrip("\n")
-        log_handle.write(raw_line)
-        if "Report:" in line:
-            report_path = line.split("Report:", 1)[1].strip()
-            if report_path and report_path not in status["report_paths"]:
-                status["report_paths"].append(report_path)
-        if "[apply_segment_state_updates]" in line:
-            metric_map = {
-                "Candidates inspected": "candidates",
-                "Ready to apply": "ready",
-                "Applied updates": "applied",
-                "token_mismatch": "token_mismatch",
-                "stale_token_policy_confirmed_hash": "stale_token_policy_confirmed_hash",
-            }
-            for label, key in metric_map.items():
-                if label in line:
-                    parsed = _parse_count_suffix(line)
-                    if parsed is not None:
-                        _update_stage_metric(status, stage_id, key, parsed)
-        if "[controlled_token_subpolicy_apply]" in line:
-            metric_map = {
-                "Candidates": "candidates",
-                "Eligible": "eligible",
-                "Ready": "ready",
-                "Applied": "applied",
-                "Stale": "stale",
-                "Blocked": "blocked",
-                "Confirmation promoted": "confirmation_promoted",
-                "Output written": "output_written",
-                "Estimated closed gain": "estimated_closed_gain",
-                "Actual closed gain after reaudit": "actual_closed_gain_after_reaudit",
-            }
-            for label, key in metric_map.items():
-                if label in line:
-                    parsed = _parse_count_suffix(line)
-                    if parsed is not None:
-                        _update_stage_metric(status, stage_id, key, parsed)
-        if "[auto_confirmation_reopen_text_boundary_repair_production_audit]" in line:
-            metric_map = {
-                "Audit run id": "audit_run_id",
-                "Lifecycle run id": "lifecycle_run_id",
-                "State run id": "segment_state_run_id",
-                "Eligible controlled production": "eligible",
-                "Estimated closed gain": "estimated_closed_gain",
-                "Real repairs": "real_repairs",
-                "No-op observations": "noop_observations",
-                "Blocked": "blocked",
-            }
-            for label, key in metric_map.items():
-                if label in line:
-                    parsed = _parse_count_suffix(line)
-                    if parsed is not None:
-                        _update_stage_metric(status, stage_id, key, parsed)
-        if "[same_token_boundary_repair_apply]" in line:
-            metric_map = {
-                "Audit run id": "audit_run_id",
-                "Lifecycle run id": "lifecycle_run_id",
-                "Segment-state run id": "segment_state_run_id",
-                "Candidates": "candidates",
-                "Eligible": "eligible",
-                "Ready": "ready",
-                "Applied": "applied",
-                "Noop closed": "noop_closed",
-                "Skipped": "skipped",
-                "Stale": "stale",
-                "Blocked": "blocked",
-                "Confirmation promoted": "confirmation_promoted",
-                "Output written": "output_written",
-                "Estimated closed gain": "estimated_closed_gain",
-                "Actual closed gain after segment-state": "actual_closed_gain_after_segment_state",
-            }
-            for label, key in metric_map.items():
-                if label in line:
-                    parsed = _parse_count_suffix(line)
-                    if parsed is not None:
-                        _update_stage_metric(status, stage_id, key, parsed)
-        if "[select_cstring_governed_bridge_apply]" in line:
-            metric_map = {
-                "Proposal run id": "proposal_run_id",
-                "Maturity audit run id": "maturity_audit_run_id",
-                "Final overlay run id": "final_overlay_run_id",
-                "Bridge candidate": "bridge_candidate",
-                "Production release allowed": "production_release_allowed",
-                "Candidates": "candidates",
-                "Ready": "ready",
-                "Applied": "applied",
-                "Already applied": "already_applied",
-                "Stale": "stale",
-                "Blocked": "blocked",
-                "Confirmation promoted": "confirmation_promoted",
-                "Output written": "output_written",
-                "Same token": "same_token",
-                "Dynamic payload delta": "dynamic_payload_delta",
-                "Estimated closed gain": "estimated_closed_gain",
-                "Actual closed gain after reaudit": "actual_closed_gain_after_reaudit",
-            }
-            for label, key in metric_map.items():
-                if label in line:
-                    parsed = _parse_count_suffix(line)
-                    if parsed is not None:
-                        _update_stage_metric(status, stage_id, key, parsed)
-        if "[title_landed_es_reviewed_repair_dry_run]" in line:
-            metric_map = {
-                "Queue run id": "queue_run_id",
-                "State run id": "segment_state_run_id",
-                "Candidates inspected": "candidates",
-                "ready_confirmation_and_output": "ready",
-                "already_aligned": "already_aligned",
-                "blocked_state": "blocked_state",
-                "blocked_quality": "blocked_quality",
-                "blocked_token_or_structure": "blocked_token_or_structure",
-                "blocked_stale_decision": "blocked_stale_decision",
-            }
-            for label, key in metric_map.items():
-                if label in line:
-                    parsed = _parse_count_suffix(line)
-                    if parsed is not None:
-                        _update_stage_metric(status, stage_id, key, parsed)
-        if "[title_landed_es_reviewed_repair_apply]" in line:
-            metric_map = {
-                "Segment-state run id": "segment_state_run_id",
-                "Candidates": "candidates",
-                "Dry-run ready": "dry_run_ready",
-                "Ready": "ready",
-                "Applied": "applied",
-                "Already applied": "already_applied",
-                "Stale": "stale",
-                "Blocked": "blocked",
-                "Skipped": "skipped",
-                "Confirmation promoted": "confirmation_promoted",
-                "Output written": "output_written",
-                "Files touched": "files_touched",
-            }
-            for label, key in metric_map.items():
-                if label in line:
-                    parsed = _parse_count_suffix(line)
-                    if parsed is not None:
-                        _update_stage_metric(status, stage_id, key, parsed)
-        _append_run_log(status, line)
+    line_count = 0
+    stage_started_monotonic = time.monotonic()
+    last_status_write = time.monotonic()
+    heartbeat_stop = threading.Event()
+
+    def heartbeat_status() -> None:
+        while not heartbeat_stop.wait(5.0):
+            if process.poll() is not None:
+                break
+            now = _now_iso()
+            elapsed = time.monotonic() - stage_started_monotonic
+            progress_pct = min(90, max(8, int(8 + (elapsed // 30) * 5)))
+            status["updated_at"] = now
+            status["message"] = f"Running {stage_id}"
+            _update_stage(
+                status,
+                stage_id,
+                updated_at=now,
+                heartbeat_at=now,
+                log_line_count=line_count,
+                progress_pct=progress_pct,
+            )
+            _write_production_run_status(status)
+
+    heartbeat_thread = threading.Thread(target=heartbeat_status, daemon=True)
+    heartbeat_thread.start()
+    try:
+        for raw_line in process.stdout:
+            line_count += 1
+            line = raw_line.rstrip("\n")
+            log_handle.write(raw_line)
+            parse_line(line)
+            _append_run_log(status, line)
+            event_at = status.get("last_event_at") or _now_iso()
+            status["updated_at"] = event_at
+            _update_stage(status, stage_id, updated_at=event_at, log_line_count=line_count)
+            now_monotonic = time.monotonic()
+            if now_monotonic - last_status_write >= 1.0:
+                _write_production_run_status(status)
+                last_status_write = now_monotonic
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=1.0)
+
     exit_code = process.wait()
     log_handle.flush()
+    finished_at = _now_iso()
+    status["updated_at"] = finished_at
     _update_stage(
         status,
         stage_id,
         status="done" if exit_code == 0 else "failed",
-        finished_at=_now_iso(),
+        updated_at=finished_at,
+        finished_at=finished_at,
         exit_code=exit_code,
+        progress_pct=100 if exit_code == 0 else None,
     )
+    if exit_code == 0 and "segment_state" in stage_id:
+        try:
+            con = sqlite3.connect(ACTIVE_DB_PATH)
+            con.row_factory = sqlite3.Row
+            try:
+                state_summary = _latest_segment_state_summary(con)
+            finally:
+                con.close()
+            state_run_id = _int(state_summary.get("run_id"))
+            if state_run_id:
+                _update_stage_metric(status, stage_id, "segment_state_run_id", state_run_id)
+        except Exception as exc:  # pragma: no cover - diagnostic metadata only
+            _append_run_log(status, f"[dashboard] segment-state metric refresh failed: {exc}")
     _write_production_run_status(status)
     return exit_code
+
+
+def _refresh_run_effect_summary(status: dict[str, Any]) -> None:
+    output_written = 0
+    files_touched = 0
+    segment_state_ids: list[int] = []
+    for stage in status.get("stages") or []:
+        if not isinstance(stage, dict):
+            continue
+        stage_id = str(stage.get("id") or "")
+        metrics = stage.get("metrics") if isinstance(stage.get("metrics"), dict) else {}
+        is_write_stage = stage_id.endswith("_write")
+        stage_output_written = _int(metrics.get("output_written"))
+        stage_files_touched = _int(metrics.get("files_touched"))
+        if is_write_stage:
+            # segment-apply reports written rows as "Applied updates"; other
+            # writers usually expose "Output written". Treat both as output
+            # effects, but only on write stages so dry-runs do not trip the gate.
+            stage_output_written = max(stage_output_written, _int(metrics.get("applied")))
+            if not stage_files_touched and stage_output_written:
+                stage_files_touched = _int(metrics.get("files_with_ready_updates"))
+        output_written += stage_output_written
+        files_touched += stage_files_touched
+        state_id = _int(metrics.get("segment_state_run_id") or metrics.get("state_run_id"))
+        if state_id:
+            segment_state_ids.append(state_id)
+
+    status["output_written_count"] = output_written
+    status["files_touched_count"] = files_touched
+    status["output_changed"] = output_written > 0 or files_touched > 0
+    status["new_segment_state_run_id"] = segment_state_ids[-1] if segment_state_ids else None
+    status["new_segment_state_created"] = bool(segment_state_ids)
+
+
+def _failure_payload(status: dict[str, Any], message: str, stage_id: str | None = None) -> dict[str, Any]:
+    failed_stage = stage_id or status.get("failed_stage") or status.get("current_stage") or ""
+    failure: dict[str, Any] = {
+        "reason": "stage_failed",
+        "stage": failed_stage,
+        "message": message,
+        "report_path": status.get("report_path"),
+    }
+    if "insufficient disk space" in message.lower() or status.get("failure", {}).get("reason") == "insufficient_disk_space":
+        disk_preflight = status.get("disk_preflight") or status.get("failure", {}).get("disk_preflight") or _production_disk_preflight_payload()
+        failure.update(
+            {
+                "reason": "insufficient_disk_space",
+                "message": disk_preflight.get("message") or message,
+                "disk_preflight": disk_preflight,
+            }
+        )
+        status["disk_preflight"] = disk_preflight
+    return failure
+
+
+def _stage_metrics(status: dict[str, Any], stage_id: str) -> dict[str, Any]:
+    for stage in status.get("stages") or []:
+        if isinstance(stage, dict) and stage.get("id") == stage_id:
+            return stage.get("metrics") if isinstance(stage.get("metrics"), dict) else {}
+    return {}
+
+
+def _run_publication_preflight_stage(
+    status: dict[str, Any],
+    log_handle,
+    *,
+    stage_id: str,
+    force: bool = False,
+    require_apply_queue: bool = False,
+) -> tuple[list[int], dict[str, Any]]:
+    _start_inline_stage(status, stage_id, "Validating publication preflight.", log_handle)
+    payload = _publication_preflight_payload(ACTIVE_DB_PATH, force=force)
+    preflight = payload.get("publication_preflight") if isinstance(payload, dict) else {}
+    if not isinstance(preflight, dict):
+        preflight = {}
+    counts = preflight.get("counts") if isinstance(preflight.get("counts"), dict) else {}
+    segment_ids = _publication_apply_segment_ids(payload)
+    expected_apply_count = _int(counts.get("needs_apply"))
+    status["publication_preflight"] = preflight
+    status["publication_apply_segment_ids"] = segment_ids
+    metrics = {
+        "needs_apply": expected_apply_count,
+        "apply_preview": _int(counts.get("apply_preview")),
+        "apply_ready": _int(counts.get("apply_ready")),
+        "apply_blocked": _int(counts.get("apply_blocked")),
+        "apply_token_mismatch": _int(counts.get("apply_token_mismatch")),
+        "apply_missing_token_policy": _int(counts.get("apply_missing_token_policy")),
+        "apply_policy_ready": _int(counts.get("apply_policy_ready")),
+        "apply_policy_blocked": _int(counts.get("apply_policy_blocked")),
+        "apply_policy_missing_decision": _int(counts.get("apply_policy_missing_decision")),
+        "apply_policy_missing_run": _int(counts.get("apply_policy_missing_run")),
+        "apply_policy_stale_confirmed_hash": _int(counts.get("apply_policy_stale_confirmed_hash")),
+        "apply_policy_stale_output_hash": _int(counts.get("apply_policy_stale_output_hash")),
+        "apply_mixed_ready": _int(counts.get("apply_mixed_ready")),
+        "apply_mixed_blocked": _int(counts.get("apply_mixed_blocked")),
+        "apply_mixed_token_policy_ready": _int(counts.get("apply_mixed_token_policy_ready")),
+        "apply_mixed_token_mismatch": _int(counts.get("apply_mixed_token_mismatch")),
+        "apply_mixed_missing_decision": _int(counts.get("apply_mixed_missing_decision")),
+        "apply_mixed_stale_confirmed_hash": _int(counts.get("apply_mixed_stale_confirmed_hash")),
+        "apply_mixed_stale_output_hash": _int(counts.get("apply_mixed_stale_output_hash")),
+        "apply_lifecycle": _int(counts.get("apply_lifecycle")),
+        "apply_output_write": _int(counts.get("apply_output_write")),
+        "apply_kind_mixed": _int(counts.get("apply_kind_mixed")),
+        "lifecycle_apply_ready": _int(counts.get("lifecycle_apply_ready")),
+        "lifecycle_apply_blocked": _int(counts.get("lifecycle_apply_blocked")),
+        "apply_segment_ids": len(segment_ids),
+        "apply_strategy": str(preflight.get("apply_strategy") or "blocked"),
+        "token_policy_run_id": _int(preflight.get("token_policy_run_id")),
+        "promotions": _int(counts.get("promotions")),
+        "score_regressions": _int(counts.get("score_regressions")),
+        "unhandled_by_network": _int(counts.get("unhandled_by_network")),
+        "low_score": _int(counts.get("low_score")),
+        "can_apply_pending": 1 if preflight.get("can_apply_pending") else 0,
+        "can_publish_now": 1 if preflight.get("can_publish_now") else 0,
+    }
+    if require_apply_queue:
+        if preflight.get("can_apply_pending") is not True:
+            raise RuntimeError(
+                "Publication apply blocked by preflight: "
+                f"{preflight.get('next_action') or 'unknown'} "
+                f"(ready {_int(counts.get('apply_ready'))} / needs_apply {expected_apply_count}; "
+                f"token_mismatch {_int(counts.get('apply_token_mismatch'))}; "
+                f"policy_ready {_int(counts.get('apply_policy_ready'))}; "
+                f"policy_missing {_int(counts.get('apply_policy_missing_decision'))}; "
+                f"mixed_ready {_int(counts.get('apply_mixed_ready'))})."
+            )
+        if expected_apply_count <= 0:
+            raise RuntimeError("Publication apply blocked: no confirmed apply queue.")
+        if len(segment_ids) != expected_apply_count:
+            raise RuntimeError(
+                f"Publication apply blocked: preview ids {len(segment_ids)} != needs_apply {expected_apply_count}."
+            )
+    _finish_inline_stage(
+        status,
+        stage_id,
+        metrics=metrics,
+        message=f"Publication preflight ok: {len(segment_ids)} apply ids.",
+    )
+    return segment_ids, preflight
+
+
+def _publication_apply_worker(run_id: str) -> None:
+    status = _new_publication_apply_status(run_id)
+    log_path = Path(status["log_path"])
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_production_run_status(status)
+    try:
+        with log_path.open("w", encoding="utf-8", newline="\n") as log_handle:
+            log_handle.write(f"CK3 PT-BR publication apply run {run_id}\n")
+            log_handle.write("Mode: publication_apply_confirmed\n")
+            segment_ids, preflight = _run_publication_preflight_stage(
+                status,
+                log_handle,
+                stage_id="publication_preflight",
+                force=False,
+                require_apply_queue=True,
+            )
+            segment_ids_csv = ",".join(str(segment_id) for segment_id in segment_ids)
+            apply_strategy = str(preflight.get("apply_strategy") or "normal")
+            token_policy_run_id = _int(preflight.get("token_policy_run_id"))
+            status["publication_apply_strategy"] = apply_strategy
+            base_apply_command = [
+                sys.executable,
+                "pipeline/main.py",
+                "segment-apply",
+                "--segment-ids",
+                segment_ids_csv,
+                "--segment-include-auto-confirmed",
+                "--segment-include-intentional-blank",
+            ]
+            if apply_strategy == "token_policy":
+                base_apply_command.append("--segment-require-token-policy-decision")
+                if token_policy_run_id:
+                    base_apply_command.extend(["--token-policy-run-id", str(token_policy_run_id)])
+            elif apply_strategy == "mixed_token_policy":
+                base_apply_command.append("--segment-allow-token-policy-decision")
+                if token_policy_run_id:
+                    base_apply_command.extend(["--token-policy-run-id", str(token_policy_run_id)])
+            log_handle.write(f"Apply strategy: {apply_strategy}\n")
+            if token_policy_run_id:
+                log_handle.write(f"Token policy run id: {token_policy_run_id}\n")
+            if apply_strategy == "lifecycle_closure":
+                state_run_id = _int(preflight.get("segment_state_run_id"))
+                learning_run_id = _latest_local_learning_run_id(ACTIVE_DB_PATH)
+                if not state_run_id:
+                    raise RuntimeError("Publication lifecycle apply blocked: missing segment-state run id.")
+                if not learning_run_id:
+                    raise RuntimeError("Publication lifecycle apply blocked: missing learning run id.")
+                lifecycle_command = [
+                    sys.executable,
+                    "pipeline/human_confirmed_local_learning_lifecycle_policy_materializer.py",
+                    "--learning-run-id",
+                    str(learning_run_id),
+                    "--segment-state-run-id",
+                    str(state_run_id),
+                    "--segment-ids",
+                    segment_ids_csv,
+                ]
+                dry_exit = _run_production_command(
+                    status,
+                    stage_id="apply_confirmed_dry_run",
+                    command=lifecycle_command,
+                    log_handle=log_handle,
+                )
+                if dry_exit != 0:
+                    raise RuntimeError("Publication lifecycle dry-run failed.")
+                dry_metrics = _stage_metrics(status, "apply_confirmed_dry_run")
+                released_count = _int(dry_metrics.get("released"))
+                blocked_count = _int(dry_metrics.get("blocked"))
+                if released_count != len(segment_ids) or blocked_count:
+                    raise RuntimeError(
+                        f"Publication lifecycle dry-run mismatch: released {released_count}, "
+                        f"blocked {blocked_count}, expected {len(segment_ids)}."
+                    )
+                write_exit = _run_production_command(
+                    status,
+                    stage_id="apply_confirmed_write",
+                    command=[*lifecycle_command, "--apply"],
+                    log_handle=log_handle,
+                )
+                if write_exit != 0:
+                    raise RuntimeError("Publication lifecycle apply failed.")
+                write_metrics = _stage_metrics(status, "apply_confirmed_write")
+                released_count = _int(write_metrics.get("released"))
+                blocked_count = _int(write_metrics.get("blocked"))
+                policy_run_id = _int(write_metrics.get("policy_run_id"))
+                if released_count != len(segment_ids) or blocked_count or not policy_run_id:
+                    raise RuntimeError(
+                        f"Publication lifecycle apply mismatch: released {released_count}, "
+                        f"blocked {blocked_count}, policy_run_id {policy_run_id}, expected {len(segment_ids)}."
+                    )
+            else:
+                dry_exit = _run_production_command(
+                    status,
+                    stage_id="apply_confirmed_dry_run",
+                    command=base_apply_command,
+                    log_handle=log_handle,
+                )
+                if dry_exit != 0:
+                    raise RuntimeError("Publication dry-run failed.")
+                dry_metrics = _stage_metrics(status, "apply_confirmed_dry_run")
+                ready_count = _int(dry_metrics.get("ready"))
+                if ready_count != len(segment_ids):
+                    raise RuntimeError(
+                        f"Publication dry-run mismatch: ready {ready_count} != expected {len(segment_ids)}."
+                    )
+                write_exit = _run_production_command(
+                    status,
+                    stage_id="apply_confirmed_write",
+                    command=[*base_apply_command, "--auto-apply"],
+                    log_handle=log_handle,
+                )
+                if write_exit != 0:
+                    raise RuntimeError("Publication apply failed.")
+                write_metrics = _stage_metrics(status, "apply_confirmed_write")
+                applied_count = _int(write_metrics.get("applied") or write_metrics.get("output_written"))
+                if applied_count != len(segment_ids):
+                    raise RuntimeError(
+                        f"Publication apply mismatch: applied {applied_count} != expected {len(segment_ids)}."
+                    )
+            state_exit = _run_production_command(
+                status,
+                stage_id="segment_state_after",
+                command=[sys.executable, "pipeline/main.py", "segment-state"],
+                log_handle=log_handle,
+            )
+            if state_exit != 0:
+                raise RuntimeError("Publication segment-state failed.")
+            _run_publication_preflight_stage(
+                status,
+                log_handle,
+                stage_id="publication_preflight_after",
+                force=True,
+                require_apply_queue=False,
+            )
+            status["status"] = "completed"
+            status["message"] = "Publication apply run completed."
+            _refresh_run_effect_summary(status)
+            _attach_evaluation_decision_report(status)
+            status["finished_at"] = _now_iso()
+            status["current_stage"] = "production_report"
+            status["current_label"] = _stage_label(status, "production_report")
+            _update_stage(status, "production_report", status="running", started_at=_now_iso(), updated_at=_now_iso(), progress_pct=0)
+            _update_stage(status, "production_report", status="done", updated_at=_now_iso(), finished_at=_now_iso(), exit_code=0, progress_pct=100)
+            _write_production_run_status(status)
+            _write_production_report(status)
+            try:
+                _refresh_dashboard_cache(ACTIVE_DB_PATH)
+            except Exception as exc:  # pragma: no cover - cache should not fail publication apply
+                _append_run_log(status, f"[dashboard_cache] refresh failed: {exc}")
+                _write_production_run_status(status)
+    except Exception as exc:  # pragma: no cover - background publication path
+        current_stage = status.get("current_stage")
+        if current_stage:
+            _update_stage(status, current_stage, status="failed", finished_at=_now_iso(), exit_code=1)
+        status["status"] = "failed"
+        status["message"] = f"Publication apply run failed: {exc}"
+        status["failed_stage"] = current_stage or status.get("failed_stage") or ""
+        status["failure"] = _failure_payload(status, str(exc), status["failed_stage"])
+        _refresh_run_effect_summary(status)
+        status["finished_at"] = _now_iso()
+        _append_run_log(status, status["message"])
+        _write_production_report(status)
+        _write_production_run_status(status)
 
 
 def _production_run_worker(run_id: str) -> None:
@@ -4536,15 +7797,31 @@ def _production_run_worker(run_id: str) -> None:
         ),
         ("composite_review_progress", [sys.executable, "pipeline/main.py", "ml-composite-review-progress"]),
     ]
+    if not status.get("apply_output"):
+        evaluation_stage_ids = {
+            "preflight_sync",
+            "segment_state_before",
+            "apply_general_dry_run",
+            "apply_token_policy_dry_run",
+            "controlled_token_subpolicy_dry_run",
+            "select_cstring_bridge_dry_run",
+            "same_token_boundary_repair_audit",
+            "same_token_boundary_repair_dry_run",
+            "title_landed_es_repair_dry_run",
+            "composite_review_progress",
+        }
+        commands = [(stage_id, command) for stage_id, command in commands if stage_id in evaluation_stage_ids]
     try:
         with log_path.open("w", encoding="utf-8", newline="\n") as log_handle:
             log_handle.write(f"CK3 PT-BR production run {run_id}\n")
-            log_handle.write("Mode: full_production_apply\n")
+            log_handle.write(f"Mode: {status.get('mode')}\n")
             _create_production_snapshot(status, log_handle)
             archive_exit = _archive_production_snapshot(status, log_handle)
             if archive_exit != 0:
                 status["status"] = "failed"
                 status["message"] = "Stage failed: snapshot_archive"
+                status["failed_stage"] = "snapshot_archive"
+                status["failure"] = _failure_payload(status, status["message"], "snapshot_archive")
             for stage_id, command in commands:
                 if status.get("status") == "failed":
                     break
@@ -4552,15 +7829,26 @@ def _production_run_worker(run_id: str) -> None:
                 if exit_code != 0:
                     status["status"] = "failed"
                     status["message"] = f"Stage failed: {stage_id}"
+                    status["failed_stage"] = stage_id
+                    status["failure"] = _failure_payload(status, status["message"], stage_id)
                     break
+            _refresh_run_effect_summary(status)
+            if status.get("status") != "failed" and not status.get("apply_output"):
+                _run_package_score_recalibration_stage(status, log_handle)
             if status.get("status") != "failed":
                 status["status"] = "completed"
-                status["message"] = "Full production run completed."
+                status["message"] = (
+                    "Evaluation run completed."
+                    if not status.get("apply_output")
+                    else "Full production run completed."
+                )
             status["finished_at"] = _now_iso()
-            _update_stage(status, "production_report", status="running", started_at=_now_iso())
-            _write_production_report(status)
-            _update_stage(status, "production_report", status="done", finished_at=_now_iso(), exit_code=0)
+            status["current_stage"] = "production_report"
+            status["current_label"] = _stage_label(status, "production_report")
+            _update_stage(status, "production_report", status="running", started_at=_now_iso(), updated_at=_now_iso(), progress_pct=0)
+            _update_stage(status, "production_report", status="done", updated_at=_now_iso(), finished_at=_now_iso(), exit_code=0, progress_pct=100)
             _write_production_run_status(status)
+            _write_production_report(status)
             try:
                 _refresh_dashboard_cache(ACTIVE_DB_PATH)
             except Exception as exc:  # pragma: no cover - cache should not fail production
@@ -4572,6 +7860,9 @@ def _production_run_worker(run_id: str) -> None:
             _update_stage(status, current_stage, status="failed", finished_at=_now_iso(), exit_code=1)
         status["status"] = "failed"
         status["message"] = f"Production run failed: {exc}"
+        status["failed_stage"] = current_stage or status.get("failed_stage") or ""
+        status["failure"] = _failure_payload(status, str(exc), status["failed_stage"])
+        _refresh_run_effect_summary(status)
         status["finished_at"] = _now_iso()
         _append_run_log(status, status["message"])
         _write_production_report(status)
@@ -4587,6 +7878,19 @@ def _start_production_run() -> dict[str, Any]:
         status = _new_production_run_status(run_id)
         _write_production_run_status(status)
         thread = threading.Thread(target=_production_run_worker, args=(run_id,), daemon=True)
+        thread.start()
+        return {"accepted": True, "status": "running", "run": status}
+
+
+def _start_publication_apply_run() -> dict[str, Any]:
+    with PRODUCTION_RUN_LOCK:
+        if _production_run_active():
+            status = _read_production_run_status()
+            return {"accepted": False, "status": "already_running", "run": status}
+        run_id = _production_run_id()
+        status = _new_publication_apply_status(run_id)
+        _write_production_run_status(status)
+        thread = threading.Thread(target=_publication_apply_worker, args=(run_id,), daemon=True)
         thread.start()
         return {"accepted": True, "status": "running", "run": status}
 
@@ -6336,6 +9640,416 @@ def _agents_payload(con: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def _neural_registry_summary_payload(con: sqlite3.Connection) -> dict[str, Any]:
+    def latest_inventory_diagnostic() -> dict[str, Any]:
+        try:
+            reports = sorted((ROOT / "reports").glob("*agent_inventory_diagnostic.json"))
+            if not reports:
+                return {}
+            with reports[-1].open("r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            return {}
+
+    def latest_json_report(pattern: str) -> dict[str, Any]:
+        try:
+            reports = sorted((ROOT / "reports").glob(pattern))
+            if not reports:
+                return {}
+            with reports[-1].open("r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            return {}
+
+    if not _table_exists(con, "ml_agent_registry"):
+        return {
+            "available": False,
+            "registered_agents": 0,
+            "active_agents": 0,
+            "experimental_agents": 0,
+            "planned_agents": 0,
+            "operational_agents": 0,
+            "active_subspecialists": 0,
+            "operational_false_safe": 0,
+            "status_counts": {},
+            "operational_state_counts": {},
+            "status_operational_state_counts": {},
+            "dashboard_group_counts": {},
+            "classification_counts": {},
+            "active_by_type": {},
+            "experimental_by_type": {},
+            "planned_by_type": {},
+            "shadow_agents": 0,
+            "lab_useful_evidence": 0,
+            "requirement_effect_router": {},
+            "effect_list_package": {},
+            "criterion": "pending_instrumentation",
+        }
+
+    counts = _one(
+        con,
+        """
+        SELECT
+          COUNT(*) AS registered_agents,
+          SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_agents,
+          SUM(CASE WHEN status = 'experimental' THEN 1 ELSE 0 END) AS experimental_agents,
+          SUM(CASE WHEN status = 'planned' THEN 1 ELSE 0 END) AS planned_agents,
+          SUM(CASE WHEN status = 'active' AND operational_state IN ('authoritative', 'operational', 'dry_run') THEN 1 ELSE 0 END) AS operational_agents,
+          SUM(CASE WHEN status = 'active' AND agent_type = 'subspecialist' THEN 1 ELSE 0 END) AS active_subspecialists
+        FROM ml_agent_registry
+        """,
+    )
+
+    def by_type(status: str) -> dict[str, int]:
+        return {
+            row.get("agent_type") or "unknown": _int(row.get("total"))
+            for row in _all(
+                con,
+                """
+                SELECT COALESCE(agent_type, 'unknown') AS agent_type, COUNT(*) AS total
+                FROM ml_agent_registry
+                WHERE status = ?
+                GROUP BY COALESCE(agent_type, 'unknown')
+                ORDER BY total DESC, agent_type
+                """,
+                (status,),
+            )
+        }
+
+    status_counts = {
+        row.get("status") or "unknown": _int(row.get("total"))
+        for row in _all(
+            con,
+            """
+            SELECT COALESCE(status, 'unknown') AS status, COUNT(*) AS total
+            FROM ml_agent_registry
+            GROUP BY COALESCE(status, 'unknown')
+            """,
+        )
+    }
+    operational_state_counts = {
+        row.get("operational_state") or "unknown": _int(row.get("total"))
+        for row in _all(
+            con,
+            """
+            SELECT COALESCE(operational_state, 'unknown') AS operational_state, COUNT(*) AS total
+            FROM ml_agent_registry
+            GROUP BY COALESCE(operational_state, 'unknown')
+            """,
+        )
+    }
+    status_operational_state_counts = {
+        f"{row.get('status') or 'unknown'}/{row.get('operational_state') or 'unknown'}": _int(row.get("total"))
+        for row in _all(
+            con,
+            """
+            SELECT
+              COALESCE(status, 'unknown') AS status,
+              COALESCE(operational_state, 'unknown') AS operational_state,
+              COUNT(*) AS total
+            FROM ml_agent_registry
+            GROUP BY COALESCE(status, 'unknown'), COALESCE(operational_state, 'unknown')
+            """,
+        )
+    }
+    dashboard_group_counts = {
+        row.get("dashboard_group") or "unknown": _int(row.get("total"))
+        for row in _all(
+            con,
+            """
+            SELECT COALESCE(dashboard_group, 'unknown') AS dashboard_group, COUNT(*) AS total
+            FROM ml_agent_registry
+            GROUP BY COALESCE(dashboard_group, 'unknown')
+            """,
+        )
+    }
+    diagnostic = latest_inventory_diagnostic()
+    post_architecture = latest_json_report("*global_post_not_requirement_effect_router_diagnostic_inventory.json") or latest_json_report("*global_post_architecture_diagnostic_inventory.json")
+    post_summary = post_architecture.get("summary") or {}
+    effect_list_inventory = latest_json_report("*effect_list_policy_catalog_inventory.json")
+    effect_list_summary = effect_list_inventory.get("summary") or {}
+    classification_counts = diagnostic.get("classification_counts") or {}
+    router = _one(
+        con,
+        """
+        SELECT
+          agent_key,
+          agent_type,
+          parent_agent_key,
+          status,
+          operational_state,
+          decision_role,
+          scope_group,
+          scope_description,
+          dashboard_group,
+          updated_at
+        FROM ml_agent_registry
+        WHERE agent_key = 'requirement_effect_router_readonly'
+        LIMIT 1
+        """,
+    )
+    router_children = _all(
+        con,
+        """
+        SELECT
+          agent_key,
+          agent_type,
+          status,
+          operational_state,
+          decision_role,
+          dashboard_group
+        FROM ml_agent_registry
+        WHERE parent_agent_key = 'requirement_effect_router_readonly'
+        ORDER BY decision_role, agent_key
+        """,
+    )
+    router_terminal_count = sum(1 for row in router_children if row.get("decision_role") == "terminal_guard")
+    router_splitter_count = sum(1 for row in router_children if row.get("decision_role") == "route_and_split")
+    requirement_effect_router = {
+        "registered": bool(router),
+        **router,
+        "children_count": len(router_children),
+        "terminal_policies": router_terminal_count,
+        "splitters": router_splitter_count,
+        "requirement_effect_agents": _int(post_summary.get("requirement_effect_agents")),
+        "effect_list_package_registered": bool(effect_list_summary),
+        "read_only": True,
+        "auto_apply_allowed": 0,
+        "production_release_allowed": 0,
+        "lifecycle_allowed": 0,
+        "children": router_children,
+    }
+    effect_list_agents = _all(
+        con,
+        """
+        WITH RECURSIVE effect_list_tree(agent_key) AS (
+          SELECT agent_key
+          FROM ml_agent_registry
+          WHERE agent_key LIKE '%effect_list%'
+             OR parent_agent_key LIKE '%effect_list%'
+             OR scope_group LIKE '%effect_list%'
+          UNION
+          SELECT child.agent_key
+          FROM ml_agent_registry child
+          JOIN effect_list_tree parent
+            ON child.parent_agent_key = parent.agent_key
+        )
+        SELECT
+          a.agent_key,
+          a.agent_type,
+          a.parent_agent_key,
+          a.status,
+          a.operational_state,
+          a.decision_role,
+          a.scope_group,
+          a.scope_description,
+          a.dashboard_group
+        FROM ml_agent_registry a
+        JOIN effect_list_tree t ON t.agent_key = a.agent_key
+        ORDER BY a.decision_role, a.agent_key
+        """,
+    )
+    effect_list_top_blockers = [
+        {
+            "route": row.get("route"),
+            "segments": _int(row.get("segments")),
+        }
+        for row in (post_architecture.get("top_routes_without_spec") or effect_list_inventory.get("large_routes_without_spec") or [])[:8]
+        if row.get("route")
+    ]
+    effect_list_subroutes = [
+        {
+            "route": row.get("subroute"),
+            "segments": _int(row.get("segments")),
+            "registered": bool(row.get("registered")),
+            "terminal_policy": bool(row.get("terminal_policy")),
+        }
+        for row in (effect_list_inventory.get("effect_list_subroute_counts") or [])[:10]
+        if row.get("subroute")
+    ]
+    effect_list_package = {
+        "registered": bool(effect_list_summary),
+        "agents": effect_list_agents,
+        "agents_count": _int(post_summary.get("effect_list_agents") or len(effect_list_agents)),
+        "registered_rows": len(effect_list_agents),
+        "specs": _int(effect_list_summary.get("specs_effect_list_loaded")),
+        "terminal_policies": _int(effect_list_summary.get("terminal_effect_list_policies")),
+        "splitters": _int(effect_list_summary.get("splitter_effect_list_policies")),
+        "registry_created": _int(effect_list_summary.get("spec_only_to_create")),
+        "registry_updated": _int(effect_list_summary.get("registered_effect_list_specs")),
+        "coverage_before": _int(post_summary.get("segments_with_spec_associated_before_effect_list") or effect_list_summary.get("segments_with_spec_associated_before")),
+        "coverage_after": _int(post_summary.get("segments_with_spec_associated_after_effect_list") or effect_list_summary.get("segments_with_spec_associated_after")),
+        "coverage_gain": _int(post_summary.get("architecture_material_gain_segments")),
+        "route_count": _int(post_summary.get("segments_with_effect_list_route") or effect_list_summary.get("segments_with_effect_list_route")),
+        "with_spec": _int(post_summary.get("segments_with_effect_list_spec_associated") or effect_list_summary.get("segments_with_spec_effect_list_associated")),
+        "terminal_registered": _int(post_summary.get("segments_with_effect_list_registered_terminal_policy") or effect_list_summary.get("segments_with_registered_terminal_effect_list_policy")),
+        "segments_without_useful_spec": _int(post_summary.get("segments_without_useful_spec")),
+        "top_blockers": effect_list_top_blockers,
+        "subroutes": effect_list_subroutes,
+        "read_only": True,
+        "auto_apply_allowed": 0,
+        "production_release_allowed": 0,
+        "lifecycle_allowed": 0,
+    }
+    not_requirement_effect_agents = _all(
+        con,
+        """
+        SELECT
+          agent_key,
+          agent_type,
+          parent_agent_key,
+          status,
+          operational_state,
+          decision_role,
+          scope_group,
+          scope_description,
+          dashboard_group
+        FROM ml_agent_registry
+        WHERE agent_key LIKE '%not_requirement_effect%'
+           OR parent_agent_key LIKE '%not_requirement_effect%'
+           OR scope_group LIKE '%not_requirement_effect%'
+        ORDER BY decision_role, agent_key
+        """,
+    )
+    not_requirement_effect_package = {
+        "registered": bool(not_requirement_effect_agents),
+        "agents": not_requirement_effect_agents,
+        "agents_count": _int(post_summary.get("not_requirement_effect_agents") or len(not_requirement_effect_agents)),
+        "universe": _int(post_summary.get("not_requirement_effect_universe")),
+        "review_total": _int(post_summary.get("not_requirement_effect_review_total")),
+        "reuse_existing_policies": _int(post_summary.get("not_requirement_effect_reuse_existing_policies")),
+        "new_router_needed": _int(post_summary.get("not_requirement_effect_new_router_needed")),
+        "reuse_semantic_review_router": _int(post_summary.get("not_req_reuse_semantic_review_router")),
+        "reuse_gender_local_player_policy": _int(post_summary.get("not_req_reuse_gender_local_player_policy")),
+        "needs_culture_religion_router": _int(post_summary.get("needs_not_req_culture_religion_router")),
+        "reuse_short_label_style_policy": _int(post_summary.get("not_req_reuse_short_label_style_policy")),
+        "reuse_autofix_unknown_router": _int(post_summary.get("not_req_reuse_autofix_unknown_router")),
+        "unrouted_or_preserved": _int(post_summary.get("not_requirement_effect_unrouted_or_preserved")),
+        "chain_complete": bool(post_summary.get("chain_complete")),
+        "validated_chain": post_architecture.get("validated_chain") or [
+            "not_requirement_effect_global_router",
+            "not_requirement_effect_culture_religion_router",
+            "not_requirement_effect_culture_policy",
+            "not_requirement_effect_culture_tradition_heritage_policy",
+        ],
+        "read_only": True,
+        "auto_apply_allowed": 0,
+        "production_release_allowed": 0,
+        "lifecycle_allowed": 0,
+    }
+    registry_agents = _all(
+        con,
+        """
+        SELECT
+          agent_key,
+          agent_type,
+          parent_agent_key,
+          status,
+          operational_state,
+          decision_role,
+          scope_group,
+          scope_description,
+          dashboard_group
+        FROM ml_agent_registry
+        ORDER BY dashboard_group, priority, agent_key
+        """,
+    )
+
+    operational_false_safe = 0
+    if _table_exists(con, "ml_model_runs"):
+        row = _one(
+            con,
+            """
+            WITH latest_agent_model AS (
+              SELECT
+                a.agent_key,
+                a.status,
+                a.operational_state,
+                COALESCE(m.false_safe_count, 0) AS false_safe_count
+              FROM ml_agent_registry a
+              LEFT JOIN ml_model_runs m
+                ON m.model_kind = a.model_kind
+               AND m.finished_at IS NOT NULL
+               AND m.id = (
+                 SELECT MAX(m2.id)
+                 FROM ml_model_runs m2
+                 WHERE m2.model_kind = a.model_kind
+                   AND m2.finished_at IS NOT NULL
+               )
+            )
+            SELECT COALESCE(SUM(false_safe_count), 0) AS operational_false_safe
+            FROM latest_agent_model
+            WHERE status = 'active'
+              AND operational_state IN ('authoritative', 'operational', 'dry_run')
+            """,
+        )
+        operational_false_safe = _int(row.get("operational_false_safe"))
+
+    return {
+        "available": True,
+        "registered_agents": _int(counts.get("registered_agents")),
+        "active_agents": _int(counts.get("active_agents")),
+        "experimental_agents": _int(counts.get("experimental_agents")),
+        "planned_agents": _int(counts.get("planned_agents")),
+        "operational_agents": _int(post_summary.get("operational_agents") or counts.get("operational_agents")),
+        "operational_agents_live_sql": _int(counts.get("operational_agents")),
+        "active_subspecialists": _int(counts.get("active_subspecialists")),
+        "operational_false_safe": operational_false_safe,
+        "status_counts": status_counts,
+        "operational_state_counts": operational_state_counts,
+        "status_operational_state_counts": status_operational_state_counts,
+        "dashboard_group_counts": dashboard_group_counts,
+        "classification_counts": classification_counts,
+        "active_by_type": by_type("active"),
+        "experimental_by_type": by_type("experimental"),
+        "planned_by_type": by_type("planned"),
+        "shadow_agents": _int(post_summary.get("shadow_agents") or operational_state_counts.get("shadow")),
+        "lab_useful_evidence": _int(classification_counts.get("lab_useful_evidence")),
+        "planned_backlog": _int(classification_counts.get("planned_backlog")),
+        "dry_run_agents": _int(post_summary.get("dry_run_agents") or operational_state_counts.get("dry_run")),
+        "terminal_guard_agents": _int(post_summary.get("terminal_guard_agents")),
+        "splitter_agents": _int(post_summary.get("splitter_agents")),
+        "requirement_effect_agents": _int(post_summary.get("requirement_effect_agents")),
+        "not_requirement_effect_agents": _int(post_summary.get("not_requirement_effect_agents") or not_requirement_effect_package.get("agents_count")),
+        "effect_list_agents": _int(post_summary.get("effect_list_agents") or effect_list_package.get("agents_count")),
+        "artifact_activity_agents": _int(post_summary.get("artifact_activity_agents")),
+        "building_modifier_agents": _int(post_summary.get("building_modifier_agents")),
+        "event_context_agents": _int(post_summary.get("event_context_agents")),
+        "residual_agents": _int(post_summary.get("residual_agents")),
+        "accolade_trait_agents": _int(post_summary.get("accolade_trait_agents")),
+        "script_value_agents": _int(post_summary.get("script_value_agents")),
+        "holy_site_agents": _int(post_summary.get("holy_site_agents")),
+        "culture_religion_agents": _int(post_summary.get("culture_religion_agents")),
+        "spec_associated_after_effect_list": _int(post_summary.get("segments_with_spec_associated_after_effect_list")),
+        "spec_associated_after_requirement_effect_maturation": _int(post_summary.get("segments_with_spec_associated_after_requirement_effect_maturation")),
+        "spec_associated_after_not_requirement_effect": _int(post_summary.get("segments_with_spec_associated_after_not_requirement_effect")),
+        "registered_terminal_policy_segments": _int(post_summary.get("segments_with_registered_terminal_policy")),
+        "shadow_splitter_policy_segments": _int(post_summary.get("segments_with_shadow_splitter_policy")),
+        "coverage_gain_since_effect_list": _int(post_summary.get("coverage_gain_since_effect_list")),
+        "coverage_gain_since_post_holy_site": _int(post_summary.get("coverage_gain_since_post_holy_site")),
+        "segments_without_useful_spec": _int(post_summary.get("segments_without_useful_spec")),
+        "remaining_gaps": {
+            "domain_context_after_requirement_effect": _int(post_summary.get("domain_context_after_requirement_effect")),
+            "blocked_uncertain": _int(post_summary.get("blocked_uncertain")),
+            "script_value_effect_residual_repair_or_preserved_sublane": _int(post_summary.get("script_value_effect_residual_repair_or_preserved_sublane")),
+            "accolade_trait_residual_repair_or_preserved_sublane": _int(post_summary.get("accolade_trait_residual_repair_or_preserved_sublane")),
+            "residual_culture_or_name_policy": _int(post_summary.get("residual_culture_or_name_policy")),
+            "not_requirement_effect_unrouted_or_preserved": _int(post_summary.get("not_requirement_effect_unrouted_or_preserved")),
+            "macro_lane_router_missing_parent": _int(post_summary.get("macro_lane_router_missing_parent")),
+        },
+        "requirement_effect_router": requirement_effect_router,
+        "effect_list_package": effect_list_package,
+        "not_requirement_effect_package": not_requirement_effect_package,
+        "registry_agents": registry_agents,
+        "diagnostic_generated_at": diagnostic.get("generated_at"),
+        "post_architecture_generated_at": post_architecture.get("generated_at") or post_summary.get("generated_at"),
+        "post_architecture_summary": post_summary,
+        "post_architecture_source": post_architecture.get("source"),
+        "diagnostic_totals": diagnostic.get("totals") or {},
+        "criterion": "status='active' AND operational_state IN ('authoritative','operational','dry_run')",
+    }
+
+
 def _lifecycle_payload(con: sqlite3.Connection) -> dict[str, Any]:
     def output_apply_payload() -> dict[str, Any]:
         if not (_table_exists(con, "segment_output_apply_runs") and _table_exists(con, "segment_output_apply_items")):
@@ -7731,6 +11445,7 @@ def _dashboard_payload(db_path: Path) -> dict[str, Any]:
                 "safeRecall": round(_num(row.get("safe_recall")), 4),
                 "falseSafe": _int(row.get("false_safe_count")),
                 "predictedSafe": _int(row.get("predicted_safe_count")),
+                "startedAt": row.get("started_at"),
             }
             for row in model_rows
         ]
@@ -8126,22 +11841,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _send_html(self, status: int, html: str) -> None:
         data = html.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except OSError as exc:
+            if _is_client_disconnect(exc):
+                return
+            raise
 
     def _send_json(self, status: int, payload: Any) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
+            self.wfile.write(data)
+        except OSError as exc:
+            if _is_client_disconnect(exc):
+                return
+            raise
 
     def do_OPTIONS(self) -> None:
         self._send_json(204, {})
@@ -8199,11 +11924,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": f"Neural visualization file not found: {NEURAL_VISUALIZATION_FILE}"})
                 return
             try:
+                registry_summary: dict[str, Any] = {}
+                current_segment_state: dict[str, Any] = {}
+                if self.db_path.exists():
+                    con = sqlite3.connect(self.db_path)
+                    con.row_factory = sqlite3.Row
+                    try:
+                        registry_summary = _neural_registry_summary_payload(con)
+                        current_segment_state = _latest_segment_state_summary(con)
+                    finally:
+                        con.close()
                 self._send_json(
                     200,
                     {
                         "network": json.loads(NEURAL_VISUALIZATION_FILE.read_text(encoding="utf-8")),
                         "sourcePath": str(NEURAL_VISUALIZATION_FILE),
+                        "registrySummary": registry_summary,
+                        "currentSegmentState": current_segment_state,
                     },
                 )
             except Exception as exc:  # pragma: no cover - server diagnostic path
@@ -8220,6 +11957,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._send_json(200, {"production": _production_payload(con)})
                 finally:
                     con.close()
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"error": str(exc)})
+            return
+        if path == "/api/production/preflight/disk":
+            try:
+                self._send_json(200, {"disk_preflight": _production_disk_preflight_payload()})
             except Exception as exc:  # pragma: no cover - server diagnostic path
                 self._send_json(500, {"error": str(exc)})
             return
@@ -8249,8 +11992,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"error": f"SQLite not found: {self.db_path}"})
                 return
             try:
+                segment_state_refresh = _run_diagnostic_segment_state(self.db_path)
+                if segment_state_refresh.get("exit_code") != 0:
+                    message = "\n".join(segment_state_refresh.get("stderr_tail") or segment_state_refresh.get("stdout_tail") or [])
+                    raise RuntimeError(message or "segment-state diagnostic refresh failed")
                 cache = _get_dashboard_cache(self.db_path, force=True)
-                self._send_json(200, {"ok": True, "cache": cache.get("app_state", {}).get("cache", {}), "app_state": cache.get("app_state", {})})
+                self._send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "cache": cache.get("app_state", {}).get("cache", {}),
+                        "app_state": cache.get("app_state", {}),
+                        "diagnostic_segment_state": segment_state_refresh,
+                    },
+                )
             except Exception as exc:  # pragma: no cover - server diagnostic path
                 self._send_json(500, {"ok": False, "error": str(exc)})
             return
@@ -8274,8 +12029,89 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         },
                     )
                     return
+                segment_state = _latest_segment_state_summary(con)
+                post_release_status = _post_release_feedback_payload(segment_state)
+                safety_status = _safe_full_production_payload(post_release_status, segment_state)
+                evaluation_gate = safety_status.get("evaluation_gate", {})
+                if evaluation_gate.get("can_start_evaluation_full_production_now") is not True:
+                    self._send_json(
+                        423,
+                        {
+                            "accepted": False,
+                            "status": "blocked",
+                            "gate": "evaluation",
+                            "evaluation_gate": evaluation_gate,
+                            "message": "Production evaluation is blocked by safety preflight.",
+                        },
+                    )
+                    return
+                disk_preflight = _production_disk_preflight_payload()
+                if disk_preflight.get("ok") is not True:
+                    self._send_json(
+                        507,
+                        {
+                            "accepted": False,
+                            "status": "blocked",
+                            "gate": "disk_preflight",
+                            "error": "Insufficient disk space",
+                            "message": disk_preflight.get("message"),
+                            "disk_preflight": disk_preflight,
+                        },
+                    )
+                    return
                 result = _start_production_run()
                 self._send_json(202 if result.get("accepted") else 409, result)
+            finally:
+                con.close()
+            return
+        if path == "/api/production/publication/preflight":
+            if not self.db_path.exists():
+                self._send_json(500, {"ok": False, "error": f"SQLite not found: {self.db_path}"})
+                return
+            try:
+                self._send_json(200, _publication_preflight_payload(self.db_path))
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        if path == "/api/production/publication/apply-confirmed/start":
+            if not self.db_path.exists():
+                self._send_json(500, {"ok": False, "error": f"SQLite not found: {self.db_path}"})
+                return
+            con = sqlite3.connect(self.db_path)
+            con.row_factory = sqlite3.Row
+            try:
+                learning = _learning_status_payload(con)
+                lock = learning.get("lock") or _training_lock_payload(con)
+                if not learning.get("can_start_production"):
+                    self._send_json(
+                        423,
+                        {
+                            "accepted": False,
+                            "status": "blocked",
+                            "lock": lock,
+                            "learning": learning,
+                        },
+                    )
+                    return
+                preflight_payload = _publication_preflight_payload(self.db_path)
+                preflight = preflight_payload.get("publication_preflight") or {}
+                if preflight.get("can_apply_pending") is not True:
+                    self._send_json(
+                        423,
+                        {
+                            "accepted": False,
+                            "status": "blocked",
+                            "gate": "publication_apply",
+                            "message": "Publication apply is blocked by preflight.",
+                            "publication_preflight": preflight,
+                        },
+                    )
+                    return
+                result = _start_publication_apply_run()
+                result["publication_preflight"] = preflight
+                self._send_json(202 if result.get("accepted") else 409, result)
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"ok": False, "error": str(exc)})
             finally:
                 con.close()
             return

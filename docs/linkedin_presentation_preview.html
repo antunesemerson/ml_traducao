@@ -1,0 +1,944 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ML Tradução CK3 PT-BR - Apresentação LinkedIn</title>
+    <style>
+      :root {
+        --bg: #090b10;
+        --panel: #111722;
+        --panel-2: #151d2a;
+        --text: #f4f7fb;
+        --muted: #a7b2c2;
+        --soft: #657286;
+        --line: rgba(255, 255, 255, 0.12);
+        --red: #e34b4b;
+        --gold: #d8a247;
+        --cyan: #42b8d9;
+        --green: #48b77a;
+        --blue: #5d7ce2;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: Inter, "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+
+      body {
+        overflow: hidden;
+      }
+
+      button {
+        font: inherit;
+      }
+
+      .app {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 320px;
+        height: 100vh;
+        background:
+          linear-gradient(115deg, rgba(227, 75, 75, 0.16), transparent 34%),
+          linear-gradient(250deg, rgba(66, 184, 217, 0.11), transparent 38%),
+          #090b10;
+      }
+
+      .stage-wrap {
+        min-width: 0;
+        padding: 28px;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        gap: 18px;
+      }
+
+      .topbar,
+      .controls,
+      .side {
+        border: 1px solid var(--line);
+        background: rgba(17, 23, 34, 0.82);
+        backdrop-filter: blur(18px);
+      }
+
+      .topbar {
+        min-height: 68px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        padding: 14px 16px;
+      }
+
+      .brand {
+        min-width: 0;
+      }
+
+      .eyebrow {
+        margin: 0 0 5px;
+        color: var(--gold);
+        font-size: 12px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .topbar h1 {
+        margin: 0;
+        font-size: 20px;
+        line-height: 1.15;
+      }
+
+      .topbar p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .status-pills {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      .pill {
+        min-height: 30px;
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 6px 10px;
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.06);
+        font-size: 12px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      .pill.red {
+        border-color: rgba(227, 75, 75, 0.42);
+        color: #ffb2b2;
+        background: rgba(227, 75, 75, 0.13);
+      }
+
+      .pill.cyan {
+        border-color: rgba(66, 184, 217, 0.42);
+        color: #a8ebff;
+        background: rgba(66, 184, 217, 0.12);
+      }
+
+      .stage-shell {
+        min-height: 0;
+        display: grid;
+        place-items: center;
+      }
+
+      .stage {
+        position: relative;
+        width: min(100%, calc((100vh - 188px) * 16 / 9));
+        aspect-ratio: 16 / 9;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 8px;
+        background: #0d111a;
+        box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
+      }
+
+      .slide {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        gap: 26px;
+        padding: 54px;
+        opacity: 0;
+        transform: translateX(28px) scale(0.985);
+        pointer-events: none;
+        transition:
+          opacity 480ms ease,
+          transform 480ms ease;
+      }
+
+      .slide.active {
+        opacity: 1;
+        transform: translateX(0) scale(1);
+        pointer-events: auto;
+      }
+
+      .slide::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background:
+          linear-gradient(90deg, rgba(8, 10, 16, 0.72), rgba(8, 10, 16, 0.22) 52%, rgba(8, 10, 16, 0.5)),
+          radial-gradient(circle at 84% 20%, rgba(216, 162, 71, 0.14), transparent 28%);
+      }
+
+      .slide > * {
+        position: relative;
+        z-index: 1;
+      }
+
+      .slide.two-col {
+        grid-template-columns: 0.92fr 1.08fr;
+        align-items: center;
+      }
+
+      .slide.center {
+        place-items: center;
+        text-align: center;
+      }
+
+      .slide.stacked {
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+
+      .slide-title {
+        max-width: 760px;
+      }
+
+      .slide h2 {
+        margin: 0;
+        font-size: clamp(36px, 5vw, 76px);
+        line-height: 0.95;
+        letter-spacing: 0;
+      }
+
+      .slide h3 {
+        margin: 0;
+        font-size: clamp(28px, 3.4vw, 48px);
+        line-height: 1;
+        letter-spacing: 0;
+      }
+
+      .lead {
+        margin: 18px 0 0;
+        max-width: 760px;
+        color: #d8e0ec;
+        font-size: clamp(18px, 1.75vw, 27px);
+        line-height: 1.35;
+      }
+
+      .small {
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.55;
+      }
+
+      .accent {
+        color: var(--gold);
+      }
+
+      .red-text {
+        color: #ff9c9c;
+      }
+
+      .kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 14px;
+      }
+
+      .kpi {
+        min-height: 118px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.065);
+        padding: 18px;
+      }
+
+      .kpi strong {
+        display: block;
+        font-size: clamp(28px, 3.2vw, 46px);
+        line-height: 1;
+      }
+
+      .kpi span {
+        display: block;
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.35;
+      }
+
+      .media-stack {
+        display: grid;
+        gap: 14px;
+      }
+
+      .media-slot {
+        position: relative;
+        min-height: 170px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 8px;
+        background:
+          linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.03)),
+          repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.035) 0 1px, transparent 1px 12px);
+        display: grid;
+        align-content: center;
+        gap: 8px;
+        padding: 22px;
+        overflow: hidden;
+      }
+
+      .media-slot.has-image {
+        min-height: 250px;
+        align-content: end;
+        padding: 0;
+        background: #0b1018;
+      }
+
+      .media-slot.has-image img {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        filter: saturate(1.03) contrast(1.02);
+      }
+
+      .media-slot.has-image::after {
+        content: "";
+        position: absolute;
+        inset: auto 0 0;
+        height: 48%;
+        background: linear-gradient(180deg, transparent, rgba(5, 8, 13, 0.92));
+      }
+
+      .media-caption {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        gap: 5px;
+        padding: 18px;
+      }
+
+      .media-slot.tall {
+        min-height: 430px;
+      }
+
+      .media-slot .label {
+        color: var(--text);
+        font-weight: 900;
+        font-size: 20px;
+      }
+
+      .media-slot .hint {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .token-line {
+        border: 1px solid rgba(66, 184, 217, 0.32);
+        border-radius: 8px;
+        background: rgba(5, 10, 18, 0.72);
+        padding: 18px;
+        font-family: "Cascadia Code", Consolas, monospace;
+        color: #d9edf7;
+        font-size: clamp(16px, 1.5vw, 22px);
+        line-height: 1.55;
+      }
+
+      .token-line mark {
+        border-radius: 4px;
+        padding: 2px 5px;
+        background: rgba(216, 162, 71, 0.22);
+        color: #ffd892;
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        gap: 10px;
+        align-items: stretch;
+      }
+
+      .node {
+        min-height: 132px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.07);
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+
+      .node strong {
+        font-size: 15px;
+        line-height: 1.18;
+      }
+
+      .node span {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .node:nth-child(1) {
+        border-color: rgba(216, 162, 71, 0.44);
+      }
+
+      .node:nth-child(3) {
+        border-color: rgba(66, 184, 217, 0.44);
+      }
+
+      .node:nth-child(5) {
+        border-color: rgba(72, 183, 122, 0.44);
+      }
+
+      .guard-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 14px;
+      }
+
+      .guard {
+        min-height: 132px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.06);
+        padding: 18px;
+      }
+
+      .guard strong {
+        display: block;
+        margin-bottom: 8px;
+        color: var(--text);
+      }
+
+      .guard span {
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.45;
+      }
+
+      .quote {
+        display: grid;
+        gap: 14px;
+        justify-items: center;
+      }
+
+      .quote-line {
+        width: min(680px, 100%);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.07);
+        padding: 18px 22px;
+        font-size: clamp(24px, 3vw, 42px);
+        font-weight: 900;
+      }
+
+      .quote-line:nth-child(1) {
+        color: #a8ebff;
+      }
+
+      .quote-line:nth-child(2) {
+        color: #ffd892;
+      }
+
+      .quote-line:nth-child(3) {
+        color: #b9ffd3;
+      }
+
+      .controls {
+        min-height: 58px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px;
+      }
+
+      .button-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .control-btn {
+        min-width: 42px;
+        height: 38px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.07);
+        cursor: pointer;
+        transition: background 160ms ease, transform 160ms ease;
+      }
+
+      .control-btn:hover {
+        background: rgba(255, 255, 255, 0.12);
+      }
+
+      .control-btn:active {
+        transform: translateY(1px);
+      }
+
+      .control-btn.primary {
+        min-width: 104px;
+        border-color: rgba(66, 184, 217, 0.44);
+        background: rgba(66, 184, 217, 0.16);
+        color: #c6f3ff;
+        font-weight: 900;
+      }
+
+      .progress {
+        min-width: 240px;
+        height: 8px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.1);
+        overflow: hidden;
+      }
+
+      .progress-bar {
+        height: 100%;
+        width: 14.28%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--red), var(--gold), var(--cyan));
+        transition: width 320ms ease;
+      }
+
+      .side {
+        min-width: 0;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        gap: 14px;
+        padding: 18px;
+        border-width: 0 0 0 1px;
+        overflow: hidden;
+      }
+
+      .side h2 {
+        margin: 0;
+        font-size: 18px;
+      }
+
+      .side p {
+        margin: 6px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .scene-list {
+        min-height: 0;
+        overflow: auto;
+        display: grid;
+        gap: 10px;
+        padding-right: 4px;
+      }
+
+      .scene-card {
+        width: 100%;
+        min-height: 88px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.055);
+        color: var(--text);
+        text-align: left;
+        padding: 12px;
+        cursor: pointer;
+      }
+
+      .scene-card.active {
+        border-color: rgba(216, 162, 71, 0.66);
+        background: rgba(216, 162, 71, 0.12);
+      }
+
+      .scene-card strong {
+        display: block;
+        font-size: 13px;
+      }
+
+      .scene-card span {
+        display: block;
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .asset-list {
+        display: grid;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.4;
+      }
+
+      .asset-list strong {
+        color: var(--text);
+      }
+
+      .platform-split {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+        margin-top: 20px;
+      }
+
+      .platform-card {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.065);
+        padding: 14px;
+      }
+
+      .platform-card strong {
+        display: block;
+        font-size: 30px;
+        line-height: 1;
+      }
+
+      .platform-card span {
+        display: block;
+        margin-top: 7px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      @media (max-width: 1180px) {
+        .app {
+          grid-template-columns: 1fr;
+          overflow: auto;
+        }
+
+        body {
+          overflow: auto;
+        }
+
+        .stage-wrap {
+          min-height: 100vh;
+        }
+
+        .side {
+          border-width: 1px 0 0;
+          min-height: 420px;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .stage-wrap {
+          padding: 12px;
+        }
+
+        .topbar {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .stage {
+          width: 100%;
+        }
+
+        .slide {
+          padding: 22px;
+          gap: 14px;
+        }
+
+        .slide.two-col {
+          grid-template-columns: 1fr;
+        }
+
+        .kpi-grid,
+        .guard-grid,
+        .flow {
+          grid-template-columns: 1fr;
+        }
+
+        .media-slot.tall {
+          min-height: 210px;
+        }
+
+        .controls {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .progress {
+          width: 100%;
+          min-width: 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <main class="stage-wrap">
+        <header class="topbar">
+          <div class="brand">
+            <p class="eyebrow">Estúdio de apresentação</p>
+            <h1>ML Tradução CK3 PT-BR</h1>
+            <p>Base visual para carrossel e vídeo curto de LinkedIn.</p>
+          </div>
+          <div class="status-pills">
+            <span class="pill red">793 inscritos</span>
+            <span class="pill cyan">288 mil segmentos</span>
+            <span class="pill">Produto publicado</span>
+          </div>
+        </header>
+
+        <section class="stage-shell" aria-label="Prévia da apresentação">
+          <div class="stage" id="stage">
+            <article class="slide two-col active" data-title="Produto real publicado">
+              <div class="slide-title">
+                <p class="eyebrow">Produto real publicado</p>
+                <h2>288 mil linhas. Um mod PT-BR real.</h2>
+                <p class="lead">Machine Learning, NLP e engenharia de dados aplicados à tradução brasileira de Crusader Kings III.</p>
+                <div class="platform-split">
+                  <div class="platform-card">
+                    <strong>529</strong>
+                    <span>inscritos na Steam Workshop</span>
+                  </div>
+                  <div class="platform-card">
+                    <strong>264</strong>
+                    <span>subscribers na Paradox Mods</span>
+                  </div>
+                </div>
+              </div>
+              <div class="media-stack">
+                <div class="media-slot has-image">
+                  <img src="publicity_assets/steam-workshop-stats.png" alt="Estatísticas da Steam Workshop do mod Tradução PT-BR" />
+                  <div class="media-caption">
+                    <span class="label">Steam Workshop</span>
+                    <span class="hint">529 inscritos, 833 acessos únicos e 18 favoritos.</span>
+                  </div>
+                </div>
+                <div class="media-slot has-image">
+                  <img src="publicity_assets/paradox-mods-page.png" alt="Página da Paradox Mods do mod Tradução PT-BR" />
+                  <div class="media-caption">
+                    <span class="label">Paradox Mods</span>
+                    <span class="hint">264 subscribers, avaliação 4/5 e página pública do mod.</span>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="slide two-col" data-title="O problema">
+              <div class="slide-title">
+                <p class="eyebrow">O problema</p>
+                <h2>Traduzir um jogo de nicho parece simples...</h2>
+                <p class="lead">Até você encontrar cultura, fé, títulos, gênero, eventos dinâmicos e contexto medieval mudando o texto em milhares de variações.</p>
+              </div>
+              <div class="token-line">
+                event_text: "[Character.GetName] recebe <mark>$game_concept_title$</mark> de [Select_CString(...)]"
+                <br />
+                <br />
+                Tokens, scopes e condicionais precisam continuar intactos.
+              </div>
+            </article>
+
+            <article class="slide stacked" data-title="A escala">
+              <div class="slide-title">
+                <p class="eyebrow">A escala</p>
+                <h2>Alta volumetria de localização</h2>
+                <p class="lead">A entrega precisa lidar com corpus grande, revisão contínua e rastreabilidade de decisões.</p>
+              </div>
+              <div class="kpi-grid">
+                <div class="kpi">
+                  <strong>288.100</strong>
+                  <span>segmentos ativos de localização</span>
+                </div>
+                <div class="kpi">
+                  <strong>793</strong>
+                  <span>inscritos/subscribers somados nas stores</span>
+                </div>
+                <div class="kpi">
+                  <strong>0</strong>
+                  <span>automação cega como princípio de produção</span>
+                </div>
+              </div>
+            </article>
+
+            <article class="slide stacked" data-title="Arquitetura">
+              <div class="slide-title">
+                <p class="eyebrow">A arquitetura</p>
+                <h2>Rede neuro-simbólica de agentes e policies</h2>
+                <p class="lead">O sistema combina ML local, regras determinísticas, memória, revisão humana e gates de segurança.</p>
+              </div>
+              <div class="flow">
+                <div class="node"><strong>Dados do jogo</strong><span>YAML, fontes, output e memória</span></div>
+                <div class="node"><strong>Agentes</strong><span>Risco, estilo, tokens e contexto</span></div>
+                <div class="node"><strong>Diagnóstico</strong><span>Classificação e filas de revisão</span></div>
+                <div class="node"><strong>Humano</strong><span>Confirma, corrige e ensina</span></div>
+                <div class="node"><strong>Apply protegido</strong><span>Dry-run, diff e validação</span></div>
+                <div class="node"><strong>Lifecycle</strong><span>Snapshots, rollback e auditoria</span></div>
+                <div class="node"><strong>Mod publicado</strong><span>Entrega real para jogadores</span></div>
+              </div>
+            </article>
+
+            <article class="slide two-col" data-title="Dashboard">
+              <div class="slide-title">
+                <p class="eyebrow">Observabilidade</p>
+                <h2>Dashboard para acompanhar qualidade e produção</h2>
+                <p class="lead">Métricas, filas, agentes, policies e progresso ajudam a decidir onde automatizar, revisar ou bloquear.</p>
+              </div>
+              <div class="media-slot tall">
+                <span class="label">Print do dashboard ou rede neural</span>
+                <span class="hint">Aqui entram KPIs reais, visual de agentes, pendências e lifecycle.</span>
+              </div>
+            </article>
+
+            <article class="slide stacked" data-title="Segurança">
+              <div class="slide-title">
+                <p class="eyebrow">Segurança e qualidade</p>
+                <h2>Automação com controle de risco</h2>
+                <p class="lead">O objetivo é acelerar com segurança, sem deixar uma previsão virar publicação automaticamente.</p>
+              </div>
+              <div class="guard-grid">
+                <div class="guard"><strong>Dry-run e diff preview</strong><span>Antes de escrever qualquer output, o impacto é simulado e inspecionado.</span></div>
+                <div class="guard"><strong>Snapshots e rollback</strong><span>Cada ciclo importante deixa um ponto de retorno controlado.</span></div>
+                <div class="guard"><strong>Validação pós-apply</strong><span>Tokens, estrutura e lifecycle são verificados depois da escrita.</span></div>
+              </div>
+            </article>
+
+            <article class="slide center" data-title="Fechamento">
+              <div>
+                <p class="eyebrow">Princípio do projeto</p>
+                <div class="quote">
+                  <div class="quote-line">ML recomenda.</div>
+                  <div class="quote-line">Regras protegem.</div>
+                  <div class="quote-line">Humano confirma.</div>
+                </div>
+                <p class="lead">Produto publicado + engenharia aplicada em um projeto real com usuários reais.</p>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <footer class="controls">
+          <div class="button-row">
+            <button class="control-btn" id="prev" type="button" aria-label="Cena anterior">‹</button>
+            <button class="control-btn" id="next" type="button" aria-label="Próxima cena">›</button>
+            <button class="control-btn primary" id="autoplay" type="button">Autoplay</button>
+          </div>
+          <div class="progress" aria-hidden="true">
+            <div class="progress-bar" id="progressBar"></div>
+          </div>
+          <div class="pill" id="counter">1 / 7</div>
+        </footer>
+      </main>
+
+      <aside class="side">
+        <div>
+          <p class="eyebrow">Storyboard</p>
+          <h2>Narrativa em 7 cenas</h2>
+          <p>Esta base serve para revisar o ritmo, gravar a tela e trocar placeholders por prints reais.</p>
+        </div>
+
+        <div class="scene-list" id="sceneList"></div>
+
+        <div class="asset-list">
+          <strong>Próximos assets:</strong>
+          <span>1. Print Steam Workshop: aplicado</span>
+          <span>2. Print Paradox Mods: aplicado</span>
+          <span>3. Print dashboard/rede</span>
+          <span>4. Exemplo antes/depois com token CK3</span>
+        </div>
+
+        <div class="asset-list">
+          <strong>Links públicos:</strong>
+          <span>GitHub: https://github.com/antunesemerson/ml_traducao</span>
+          <span>Steam: https://steamcommunity.com/sharedfiles/filedetails/?id=3728653302</span>
+          <span>Paradox: https://mods.paradoxplaza.com/mods/144303/Any</span>
+        </div>
+      </aside>
+    </div>
+
+    <script>
+      const slides = Array.from(document.querySelectorAll(".slide"));
+      const sceneList = document.querySelector("#sceneList");
+      const counter = document.querySelector("#counter");
+      const progressBar = document.querySelector("#progressBar");
+      const autoplayButton = document.querySelector("#autoplay");
+      let index = 0;
+      let timer = null;
+
+      const summaries = [
+        "Steam, Paradox e a promessa do produto real.",
+        "Localização dinâmica, tokens e contexto medieval.",
+        "Volumetria, usuários e escala operacional.",
+        "Fluxo de dados até release publicado.",
+        "Dashboard, rede e observabilidade.",
+        "Dry-run, snapshots, rollback e validação.",
+        "Mensagem central para fechar o vídeo."
+      ];
+
+      slides.forEach((slide, slideIndex) => {
+        const button = document.createElement("button");
+        button.className = "scene-card";
+        button.type = "button";
+        button.innerHTML = `<strong>${slideIndex + 1}. ${slide.dataset.title}</strong><span>${summaries[slideIndex]}</span>`;
+        button.addEventListener("click", () => setSlide(slideIndex));
+        sceneList.appendChild(button);
+      });
+
+      const sceneButtons = Array.from(document.querySelectorAll(".scene-card"));
+
+      function setSlide(nextIndex) {
+        index = (nextIndex + slides.length) % slides.length;
+        slides.forEach((slide, slideIndex) => slide.classList.toggle("active", slideIndex === index));
+        sceneButtons.forEach((button, buttonIndex) => button.classList.toggle("active", buttonIndex === index));
+        counter.textContent = `${index + 1} / ${slides.length}`;
+        progressBar.style.width = `${((index + 1) / slides.length) * 100}%`;
+      }
+
+      function stopAutoplay() {
+        if (timer) {
+          window.clearInterval(timer);
+          timer = null;
+        }
+        autoplayButton.textContent = "Autoplay";
+      }
+
+      function toggleAutoplay() {
+        if (timer) {
+          stopAutoplay();
+          return;
+        }
+        autoplayButton.textContent = "Pausar";
+        timer = window.setInterval(() => setSlide(index + 1), 4200);
+      }
+
+      document.querySelector("#prev").addEventListener("click", () => {
+        stopAutoplay();
+        setSlide(index - 1);
+      });
+
+      document.querySelector("#next").addEventListener("click", () => {
+        stopAutoplay();
+        setSlide(index + 1);
+      });
+
+      autoplayButton.addEventListener("click", toggleAutoplay);
+
+      window.addEventListener("keydown", (event) => {
+        if (event.key === "ArrowRight") {
+          stopAutoplay();
+          setSlide(index + 1);
+        }
+        if (event.key === "ArrowLeft") {
+          stopAutoplay();
+          setSlide(index - 1);
+        }
+        if (event.key === " ") {
+          event.preventDefault();
+          toggleAutoplay();
+        }
+      });
+
+      setSlide(0);
+    </script>
+  </body>
+</html>

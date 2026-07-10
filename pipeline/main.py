@@ -444,6 +444,11 @@ def main() -> None:
         help="During segment-apply, only apply token mismatches with an approved segment token policy decision.",
     )
     parser.add_argument(
+        "--segment-allow-token-policy-decision",
+        action="store_true",
+        help="During segment-apply, allow approved token policy decisions only for rows that need them.",
+    )
+    parser.add_argument(
         "--bootstrap-old",
         action="store_true",
         help="During apply/full, initialize output/spanish from spanish_old before incremental cycles.",
@@ -3454,6 +3459,7 @@ def main() -> None:
                         include_intentional_blank=args.segment_include_intentional_blank,
                         allow_locked_token_override=args.segment_allow_locked_token_override,
                         require_token_policy_decision=args.segment_require_token_policy_decision,
+                        allow_token_policy_decision=args.segment_allow_token_policy_decision,
                         token_policy_run_id=args.token_policy_run_id,
                         apply=args.auto_apply,
                         create_backup=not args.apply_no_backup,

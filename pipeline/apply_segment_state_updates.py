@@ -134,12 +134,12 @@ def fetch_candidates(
     segment_ids: set[int],
     include_intentional_blank: bool,
     require_token_policy_decision: bool,
+    allow_token_policy_decision: bool,
     token_policy_run_id: int | None,
 ) -> list[dict[str, Any]]:
-    params: list[Any] = [state_run_id, *review_states]
+    params: list[Any] = []
     placeholders = ", ".join("?" for _ in review_states)
     decision_join = ""
-    decision_sql = ""
     decision_select = """
             NULL AS token_policy_decision_id,
             NULL AS token_policy_decision,
@@ -148,15 +148,18 @@ def fetch_candidates(
             NULL AS token_policy_confirmed_text_hash,
             NULL AS token_policy_output_text_hash,
     """
-    if require_token_policy_decision:
-        decision_join = """
-        JOIN segment_token_policy_decisions tpd
+    if require_token_policy_decision or allow_token_policy_decision:
+        join_type = "JOIN" if require_token_policy_decision else "LEFT JOIN"
+        decision_run_sql = ""
+        if token_policy_run_id is not None:
+            decision_run_sql = "AND tpd.policy_run_id = ?"
+            params.append(token_policy_run_id)
+        decision_join = f"""
+        {join_type} segment_token_policy_decisions tpd
           ON tpd.segment_id = i.segment_id
          AND tpd.approved_for_apply = 1
+         {decision_run_sql}
         """
-        if token_policy_run_id is not None:
-            decision_sql = "AND tpd.policy_run_id = ?"
-            params.append(token_policy_run_id)
         decision_select = """
             tpd.id AS token_policy_decision_id,
             tpd.decision AS token_policy_decision,
@@ -165,6 +168,7 @@ def fetch_candidates(
             tpd.confirmed_text_hash AS token_policy_confirmed_text_hash,
             tpd.output_text_hash AS token_policy_output_text_hash,
         """
+    params.extend([state_run_id, *review_states])
     path_sql = ""
     if path_like:
         path_sql = "AND i.relative_path LIKE ?"
@@ -214,7 +218,6 @@ def fetch_candidates(
         WHERE i.run_id = ?
           AND i.needs_output_apply = 1
           AND i.review_state IN ({placeholders})
-          {decision_sql}
           {path_sql}
           {segment_ids_sql}
           {blank_sql}
@@ -248,6 +251,7 @@ def validate_candidate(
     output_root: Path,
     allow_locked_token_override: bool,
     require_token_policy_decision: bool,
+    allow_token_policy_decision: bool,
     include_intentional_blank: bool,
 ) -> tuple[str, str | None, str | None]:
     confirmed_text = row["confirmed_text"]
@@ -277,7 +281,10 @@ def validate_candidate(
     token_mismatch = spanish_tokens != confirmed_tokens
     locked_override = allow_locked_token_override and row["review_state"] == "human_locked" and int(row["locked"] or 0) == 1
     token_policy_decision = row.get("token_policy_decision_id") is not None
-    if token_mismatch and require_token_policy_decision:
+    token_policy_allowed = require_token_policy_decision or allow_token_policy_decision
+    if token_mismatch and require_token_policy_decision and not token_policy_decision:
+        return "missing_token_policy_decision", None, None
+    if token_mismatch and token_policy_allowed and token_policy_decision:
         if not token_policy_decision:
             return "missing_token_policy_decision", None, None
         if row.get("token_policy_confirmed_text_hash") != sha256_text(confirmed_text):
@@ -331,6 +338,7 @@ def evaluate_best_candidates(
     output_root: Path,
     allow_locked_token_override: bool,
     require_token_policy_decision: bool,
+    allow_token_policy_decision: bool,
     include_intentional_blank: bool,
 ) -> tuple[Counter, list[tuple[dict[str, Any], str, str | None, str | None]]]:
     grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -355,6 +363,7 @@ def evaluate_best_candidates(
                     output_root,
                     allow_locked_token_override,
                     require_token_policy_decision,
+                    allow_token_policy_decision,
                     include_intentional_blank,
                 ),
             )
@@ -588,6 +597,7 @@ def main(
     include_intentional_blank: bool = False,
     allow_locked_token_override: bool = False,
     require_token_policy_decision: bool = False,
+    allow_token_policy_decision: bool = False,
     token_policy_run_id: int | None = None,
     apply: bool = False,
     create_backup: bool = True,
@@ -609,6 +619,7 @@ def main(
     print(f"[apply_segment_state_updates] Review states: {', '.join(review_states)}")
     print(f"[apply_segment_state_updates] Allow locked token override: {allow_locked_token_override}")
     print(f"[apply_segment_state_updates] Require token policy decision: {require_token_policy_decision}")
+    print(f"[apply_segment_state_updates] Allow token policy decision: {allow_token_policy_decision}")
     print(f"[apply_segment_state_updates] Token policy run id: {token_policy_run_id or 'latest/any'}")
 
     result_counts: Counter = Counter()
@@ -644,6 +655,7 @@ def main(
             segment_ids=segment_ids,
             include_intentional_blank=include_intentional_blank,
             require_token_policy_decision=require_token_policy_decision,
+            allow_token_policy_decision=allow_token_policy_decision,
             token_policy_run_id=token_policy_run_id,
         )
         conn.commit()
@@ -653,6 +665,7 @@ def main(
         output_root=output_root,
         allow_locked_token_override=allow_locked_token_override,
         require_token_policy_decision=require_token_policy_decision,
+        allow_token_policy_decision=allow_token_policy_decision,
         include_intentional_blank=include_intentional_blank,
     )
     for row, status, _current_line, new_line in previews:
@@ -690,6 +703,7 @@ def main(
         f"Review states: {', '.join(review_states)}",
         f"Allow locked token override: {allow_locked_token_override}",
         f"Require token policy decision: {require_token_policy_decision}",
+        f"Allow token policy decision: {allow_token_policy_decision}",
         f"Token policy run id: {token_policy_run_id or 'latest/any'}",
         f"Backup root: {backup_root if apply and create_backup else 'not created'}",
         "",
@@ -770,6 +784,7 @@ if __name__ == "__main__":
     parser.add_argument("--include-intentional-blank", action="store_true")
     parser.add_argument("--allow-locked-token-override", action="store_true")
     parser.add_argument("--require-token-policy-decision", action="store_true")
+    parser.add_argument("--allow-token-policy-decision", action="store_true")
     parser.add_argument("--token-policy-run-id", type=int, default=None)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--no-backup", action="store_true")
@@ -784,6 +799,7 @@ if __name__ == "__main__":
         include_intentional_blank=args.include_intentional_blank,
         allow_locked_token_override=args.allow_locked_token_override,
         require_token_policy_decision=args.require_token_policy_decision,
+        allow_token_policy_decision=args.allow_token_policy_decision,
         token_policy_run_id=args.token_policy_run_id,
         apply=args.apply,
         create_backup=not args.no_backup,

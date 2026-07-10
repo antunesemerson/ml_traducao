@@ -7,6 +7,10 @@ __pycache__/
 
 # Runtime data
 memory/
+*.db
+*.sqlite
+*.sqlite-*
+release_candidates/
 memory/*.sqlite
 memory/*.sqlite-*
 memory/backups/

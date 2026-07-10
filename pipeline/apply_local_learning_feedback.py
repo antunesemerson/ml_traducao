@@ -211,6 +211,21 @@ def confirmation_text(row) -> str | None:
     return None
 
 
+def locked_confirmation_mismatch(conn, row) -> bool:
+    text = confirmation_text(row)
+    if not text:
+        return False
+    existing = conn.execute(
+        """
+        SELECT confirmed_text, locked
+        FROM segment_confirmations
+        WHERE segment_id = ?
+        """,
+        (row["segment_id"],),
+    ).fetchone()
+    return bool(existing and int(existing["locked"] or 0) == 1 and existing["confirmed_text"] != text)
+
+
 def sync_human_confirmation(conn, row, timestamp: str) -> str:
     text = confirmation_text(row)
     if not text:
@@ -352,7 +367,10 @@ def main() -> None:
             """
             SELECT
                 id,
+                segment_id,
                 human_label,
+                suggested_text,
+                corrected_text,
                 origin,
                 match_type,
                 suggestion_status,
@@ -375,6 +393,20 @@ def main() -> None:
         pattern_counts: Counter[str] = Counter()
         timestamp = now()
         for row in rows:
+            if locked_confirmation_mismatch(conn, row):
+                conn.execute(
+                    """
+                    UPDATE local_learning_candidates
+                    SET
+                        human_label = 'superseded_by_human_correction',
+                        local_status = 'blocked_locked_confirmation_mismatch',
+                        learned_at = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (timestamp, timestamp, row["id"]),
+                )
+                continue
             keys = pattern_keys(row)
             for key in keys:
                 upsert_pattern(conn, key, row["human_label"], row["id"])

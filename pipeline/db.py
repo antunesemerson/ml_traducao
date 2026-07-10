@@ -116,6 +116,93 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
 
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS package_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version_number INTEGER NOT NULL UNIQUE,
+            version_label TEXT NOT NULL,
+            package_name TEXT NOT NULL,
+            package_role TEXT NOT NULL,
+            parent_version_id INTEGER,
+            source_path TEXT NOT NULL,
+            package_hash TEXT NOT NULL,
+            file_count INTEGER NOT NULL DEFAULT 0,
+            segment_count INTEGER NOT NULL DEFAULT 0,
+            measured_score_count INTEGER NOT NULL DEFAULT 0,
+            full_average_score REAL,
+            change_cohort_score REAL,
+            change_cohort_delta REAL,
+            changed_from_parent_count INTEGER NOT NULL DEFAULT 0,
+            segment_state_run_id INTEGER,
+            score_run_id INTEGER,
+            score_rule_version TEXT,
+            closed_count INTEGER NOT NULL DEFAULT 0,
+            pending_count INTEGER NOT NULL DEFAULT 0,
+            needs_output_apply_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'frozen',
+            metadata_json TEXT,
+            frozen_at TEXT NOT NULL,
+            FOREIGN KEY(parent_version_id) REFERENCES package_versions(id) ON DELETE SET NULL,
+            FOREIGN KEY(segment_state_run_id) REFERENCES segment_state_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(score_run_id) REFERENCES ml_score_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS package_version_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            text_hash TEXT,
+            score REAL,
+            score_action TEXT,
+            risk_class TEXT,
+            token_status TEXT,
+            final_state TEXT,
+            state_group TEXT,
+            is_closed INTEGER NOT NULL DEFAULT 0,
+            needs_output_apply INTEGER NOT NULL DEFAULT 0,
+            confirmation_locked INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(version_id) REFERENCES package_versions(id) ON DELETE CASCADE,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(version_id, segment_id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS package_version_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version_id INTEGER NOT NULL,
+            parent_version_id INTEGER,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            previous_text TEXT,
+            current_text TEXT,
+            previous_text_hash TEXT,
+            current_text_hash TEXT,
+            previous_score REAL,
+            current_score REAL,
+            score_delta REAL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(version_id) REFERENCES package_versions(id) ON DELETE CASCADE,
+            FOREIGN KEY(parent_version_id) REFERENCES package_versions(id) ON DELETE SET NULL,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(version_id, segment_id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS files (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             package_name TEXT NOT NULL,
@@ -8248,6 +8335,30 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         """
         CREATE INDEX IF NOT EXISTS idx_ml_composite_subpolicy_promotion_items_run
         ON ml_composite_subpolicy_promotion_audit_items(run_id, promotion_status, suggested_route)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_package_versions_parent
+        ON package_versions(parent_version_id, version_number)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_package_version_items_version_score
+        ON package_version_items(version_id, score, segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_package_version_items_segment
+        ON package_version_items(segment_id, version_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_package_version_changes_version_delta
+        ON package_version_changes(version_id, score_delta, segment_id)
         """
     )
     conn.execute(

@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MEMORY_DIR = PROJECT_ROOT / "memory"
 DEFAULT_SNAPSHOTS_ROOT = MEMORY_DIR / "production_snapshots"
 DEFAULT_ARCHIVES_ROOT = MEMORY_DIR / "production_snapshot_archives"
+DEFAULT_ARCHIVE_RETENTION_COUNT = 5
 
 
 def now_iso() -> str:
@@ -182,6 +183,38 @@ def delete_verified_original(snapshot_id: str, snapshots_root: Path, archives_ro
     return 0
 
 
+def is_retained_production_archive(path: Path) -> bool:
+    stem = path.stem
+    return (
+        path.suffix.lower() == ".zip"
+        and len(stem) == 15
+        and stem[8] == "_"
+        and stem.replace("_", "").isdigit()
+    )
+
+
+def enforce_archive_retention(archives_root: Path, *, keep_count: int, execute: bool) -> list[dict[str, str]]:
+    if keep_count < 1:
+        print(f"[retention] Invalid keep count: {keep_count}")
+        return []
+    archives_root.mkdir(parents=True, exist_ok=True)
+    archives = sorted(
+        (path for path in archives_root.glob("*.zip") if is_retained_production_archive(path)),
+        key=lambda path: (path.stat().st_mtime, path.name),
+        reverse=True,
+    )
+    to_delete = archives[keep_count:]
+    print(f"[retention] Production archives: {len(archives)} | keep latest: {keep_count} | delete: {len(to_delete)}")
+    deleted: list[dict[str, str]] = []
+    for path in to_delete:
+        size = format_size(path.stat().st_size)
+        print(f"[retention] {'Deleting' if execute else 'Would delete'} {path.name} ({size})")
+        deleted.append({"name": path.name, "size": size})
+        if execute:
+            path.unlink()
+    return deleted
+
+
 def archive_snapshot(
     snapshot_id: str,
     snapshots_root: Path,
@@ -241,6 +274,8 @@ def archive_snapshot(
     if not verify_archive(archive_path, snapshot_id):
         print("[archive] Verification failed. Original snapshot was kept.")
         return 1
+
+    enforce_archive_retention(archives_root, keep_count=DEFAULT_ARCHIVE_RETENTION_COUNT, execute=True)
 
     if delete_original:
         # Last guard: resolve again immediately before deletion.

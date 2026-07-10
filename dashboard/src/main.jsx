@@ -22,7 +22,7 @@ import {
   Moon,
   PackageSearch,
   Play,
-  RefreshCw,
+  RotateCcw,
   Route,
   Scale,
   Rocket,
@@ -32,6 +32,7 @@ import {
   Star,
   Sun,
   TerminalSquare,
+  Unlock,
   Workflow,
   XCircle,
 } from 'lucide-react';
@@ -61,6 +62,102 @@ const compact = (value) => Intl.NumberFormat('pt-BR', { notation: 'compact', max
 const pct = (value) => `${Number(value ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })}%`;
 const metric = (value) => Number(value ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: 4 });
 const pctMetric = (value) => pct(Number(value ?? 0) * 100);
+const fmtBytes = (value) => {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes)) return 'nao medido';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let size = Math.abs(bytes);
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const sign = bytes < 0 ? '-' : '';
+  return `${sign}${size.toLocaleString('pt-BR', { maximumFractionDigits: unitIndex === 0 ? 0 : 1 })} ${units[unitIndex]}`;
+};
+const shortDateTime = (value) => {
+  if (!value) return 'pending_instrumentation';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+};
+const compactDateTime = (value) => {
+  if (!value) return 'pendente';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+const parseRunIdDate = (value) => {
+  const match = String(value ?? '').match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second] = match;
+  const date = new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second)
+  );
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+const runDateTimeLabel = (runId, fallbackIso) => {
+  const fallback = fallbackIso ? new Date(fallbackIso) : null;
+  const date = parseRunIdDate(runId) ?? (fallback && !Number.isNaN(fallback.getTime()) ? fallback : null);
+  if (!date) return runId ? String(runId) : '-';
+  return date.toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+const ageLabel = (value) => {
+  if (!value) return 'pending_instrumentation';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'pending_instrumentation';
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 0) return 'agora';
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours} h`;
+  return `${Math.floor(hours / 24)} dias`;
+};
+const timestampMs = (value) => {
+  if (!value) return null;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+};
+const durationLabel = (ms) => {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value < 0) return 'nao medido';
+  const totalSeconds = Math.floor(value / 1000);
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}min`;
+  if (minutes > 0) return `${minutes}min ${String(seconds).padStart(2, '0')}s`;
+  return `${seconds}s`;
+};
+const clampNumber = (value, min = 0, max = 100) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return min;
+  return Math.max(min, Math.min(max, parsed));
+};
+const logLineText = (line) => {
+  if (line === null || line === undefined) return '';
+  if (typeof line === 'string') return line;
+  return line.message ?? line.line ?? line.event ?? JSON.stringify(line);
+};
 
 const colorClasses = {
   blue: 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400',
@@ -176,7 +273,7 @@ const ModelSnapshotColumn = ({ model }) => (
 const MetricTile = ({ title, value, tone = 'slate', className = '' }) => (
   <div className={`rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5 ${className}`}>
     <p className="text-[0.68rem] font-semibold uppercase tracking-wide text-[var(--dash-muted)]">{title}</p>
-    <p className={`mt-0.5 text-base font-black ${tone === 'emerald' ? 'text-emerald-400' : tone === 'red' ? 'text-red-400' : tone === 'blue' ? 'text-blue-400' : tone === 'amber' ? 'text-amber-400' : 'text-[var(--dash-text)]'}`}>{value}</p>
+    <p className={`mt-0.5 text-base font-black ${tone === 'emerald' ? 'text-emerald-400' : tone === 'red' ? 'text-red-400' : tone === 'blue' ? 'text-blue-400' : tone === 'amber' ? 'text-amber-400' : tone === 'violet' ? 'text-violet-400' : 'text-[var(--dash-text)]'}`}>{value}</p>
   </div>
 );
 
@@ -1926,25 +2023,48 @@ function Network({ data }) {
 }
 
 const statusTone = (status) => {
-  if (['done', 'ready_for_game_test', 'ready_with_known_issues', 'idle'].includes(status)) return 'emerald';
-  if (['starting', 'running', 'queued_visual_stub', 'checking'].includes(status)) return 'blue';
-  if (['blocked', 'failed', 'learning_locked'].includes(status)) return 'red';
+  const key = String(status ?? '').trim().toLowerCase();
+  if (['done', 'completed', 'ready_for_game_test', 'ready_with_known_issues', 'idle'].includes(key)) return 'emerald';
+  if (['starting', 'running', 'queued_visual_stub', 'checking'].includes(key)) return 'blue';
+  if (['blocked', 'failed', 'learning_locked'].includes(key)) return 'red';
+  if (['cancelled'].includes(key)) return 'amber';
   return 'amber';
 };
 
-const statusLabel = (status) => ({
-  done: 'Done',
-  starting: 'Starting',
-  running: 'Running',
-  blocked: 'Blocked',
-  pending: 'Pending',
-  failed: 'Failed',
-  idle: 'Idle',
-  learning_locked: 'Learning locked',
-  ready_for_game_test: 'Ready for game test',
-  ready_with_known_issues: 'Ready with known issues',
-  queued_visual_stub: 'Etapa',
-}[status] ?? status ?? 'Unknown');
+const statusLabel = (status) => {
+  const key = String(status ?? '').trim().toLowerCase();
+  return ({
+    done: 'Done',
+    completed: 'Completed',
+    starting: 'Starting',
+    running: 'Running',
+    blocked: 'Blocked',
+    pending: 'Pending',
+    failed: 'Failed',
+    cancelled: 'Cancelled',
+    idle: 'Idle',
+    learning_locked: 'Learning locked',
+    ready_for_game_test: 'Ready for game test',
+    ready_with_known_issues: 'Ready with known issues',
+    queued_visual_stub: 'Etapa',
+  }[key] ?? status ?? 'Unknown');
+};
+
+const normalizedStageStatus = (status) => {
+  const key = String(status ?? '').trim().toLowerCase();
+  return ({
+    completed: 'done',
+    complete: 'done',
+    success: 'done',
+    started: 'running',
+    active: 'running',
+    in_progress: 'running',
+    queued: 'pending',
+    queued_visual_stub: 'pending',
+  }[key] ?? key ?? 'pending');
+};
+
+const normalizedRunStatus = (status) => String(status ?? '').trim().toLowerCase();
 
 const openDashboardTab = (tab) => {
   const target = `${window.location.origin}${window.location.pathname}#${encodeURIComponent(tab)}`;
@@ -1973,6 +2093,7 @@ const neuralProductionStages = {
   same_token_boundary_repair_reaudit: 'Mede ganho real dos reparos same-token depois do segment-state.',
   title_landed_es_repair_reaudit: 'Confere fechamento real dos titulos -es apos segment-state.',
   composite_review_progress: 'Atualiza progresso do gate composto e handoff de aprendizado.',
+  package_score_recalibration: 'Reaplica a calibragem atual do score e reconstroi filas old vs output.',
 };
 
 const productionStageDetails = {
@@ -2001,36 +2122,56 @@ const productionStageDetails = {
   same_token_boundary_repair_reaudit: neuralProductionStages.same_token_boundary_repair_reaudit,
   title_landed_es_repair_reaudit: neuralProductionStages.title_landed_es_repair_reaudit,
   composite_review_progress: neuralProductionStages.composite_review_progress,
+  package_score_recalibration: neuralProductionStages.package_score_recalibration,
   production_report: 'Gera relatorio final com logs, pendencias e proximas acoes.',
 };
 
 const productionStageBlueprint = [
-  ['snapshot', 'Pre-run Snapshot'],
-  ['snapshot_archive', 'Archive Snapshot'],
-  ['preflight_sync', 'Preflight Index Sync'],
-  ['segment_state_before', 'Segment State'],
-  ['apply_general_dry_run', 'General Apply Dry-run'],
-  ['apply_token_policy_dry_run', 'Token Policy Apply Dry-run'],
-  ['controlled_token_subpolicy_dry_run', 'Controlled Token Subpolicy Dry-run'],
-  ['select_cstring_bridge_dry_run', 'Select_CString Bridge Dry-run'],
-  ['same_token_boundary_repair_audit', 'Same-token Boundary Repair Audit'],
-  ['same_token_boundary_repair_dry_run', 'Same-token Boundary Repair Dry-run'],
-  ['title_landed_es_repair_dry_run', 'Landed Title -es Repair Dry-run'],
-  ['apply_general_write', 'Write Regular Output'],
-  ['apply_token_policy_write', 'Write Token-Policy Output'],
-  ['controlled_token_subpolicy_write', 'Controlled Token Subpolicy Write'],
-  ['select_cstring_bridge_write', 'Select_CString Bridge Write'],
-  ['same_token_boundary_repair_write', 'Same-token Boundary Repair Write/Close'],
-  ['title_landed_es_repair_write', 'Landed Title -es Repair Write'],
-  ['apply_locked_override_write', 'Write Locked Manual Overrides'],
-  ['segment_state_after', 'Post-write Segment State'],
-  ['token_policy_after', 'Post-write Token Policy'],
-  ['controlled_token_subpolicy_reaudit', 'Controlled Token Subpolicy Reaudit'],
-  ['select_cstring_bridge_reaudit', 'Select_CString Bridge Reaudit'],
-  ['same_token_boundary_repair_reaudit', 'Same-token Boundary Repair Reaudit'],
-  ['title_landed_es_repair_reaudit', 'Landed Title -es Repair Reaudit'],
-  ['composite_review_progress', 'Composite Review Progress'],
-  ['production_report', 'Production Report'],
+  ['snapshot', 'Snapshot pre-run'],
+  ['snapshot_archive', 'Arquivar snapshot'],
+  ['preflight_sync', 'Sincronizar indice'],
+  ['segment_state_before', 'Segment-state inicial'],
+  ['apply_general_dry_run', 'Dry-run geral'],
+  ['apply_token_policy_dry_run', 'Dry-run politica de tokens'],
+  ['controlled_token_subpolicy_dry_run', 'Dry-run subpolitica controlada'],
+  ['select_cstring_bridge_dry_run', 'Dry-run Select_CString'],
+  ['same_token_boundary_repair_audit', 'Auditoria same-token'],
+  ['same_token_boundary_repair_dry_run', 'Dry-run reparo same-token'],
+  ['title_landed_es_repair_dry_run', 'Dry-run titulos -es'],
+  ['apply_general_write', 'Escrita regular'],
+  ['apply_token_policy_write', 'Escrita por politica de token'],
+  ['controlled_token_subpolicy_write', 'Escrita subpolitica controlada'],
+  ['select_cstring_bridge_write', 'Escrita Select_CString'],
+  ['same_token_boundary_repair_write', 'Escrita/fechamento same-token'],
+  ['title_landed_es_repair_write', 'Escrita titulos -es'],
+  ['apply_locked_override_write', 'Escrita overrides manuais'],
+  ['segment_state_after', 'Segment-state pos-escrita'],
+  ['token_policy_after', 'Politica de tokens pos-escrita'],
+  ['controlled_token_subpolicy_reaudit', 'Reauditoria subpolitica controlada'],
+  ['select_cstring_bridge_reaudit', 'Reauditoria Select_CString'],
+  ['same_token_boundary_repair_reaudit', 'Reauditoria same-token'],
+  ['title_landed_es_repair_reaudit', 'Reauditoria titulos -es'],
+  ['composite_review_progress', 'Progresso composto'],
+  ['package_score_recalibration', 'Recalibrar score do pacote'],
+  ['production_report', 'Relatorio final'],
+].map(([id, label]) => ({ id, label, status: 'queued_visual_stub' }));
+
+const publicationStageDetails = {
+  publication_preflight: 'Confere gates, score do pacote e fila confirmada antes de qualquer escrita.',
+  apply_confirmed_dry_run: 'Simula a aplicacao exata dos segmentos em needs apply.',
+  apply_confirmed_write: 'Escreve somente a fila confirmada que passou no dry-run.',
+  segment_state_after: 'Recalcula fechamento apos o apply publicavel.',
+  publication_preflight_after: 'Recalcula gates, needs apply e score do pacote depois da escrita.',
+  production_report: 'Gera relatorio final do fluxo publicavel.',
+};
+
+const publicationStageBlueprint = [
+  ['publication_preflight', 'Preflight publicavel'],
+  ['apply_confirmed_dry_run', 'Dry-run apply confirmado'],
+  ['apply_confirmed_write', 'Aplicar fila confirmada'],
+  ['segment_state_after', 'Segment-state pos-apply'],
+  ['publication_preflight_after', 'Preflight pos-apply'],
+  ['production_report', 'Relatorio final'],
 ].map(([id, label]) => ({ id, label, status: 'queued_visual_stub' }));
 
 const productionPhaseBlueprint = [
@@ -2042,7 +2183,7 @@ const productionPhaseBlueprint = [
   },
   {
     id: 'analysis_policy',
-    title: 'Analise e Politicas',
+    title: 'Analise',
     purpose: 'Combina travas deterministicas, memoria e aprendizado promovido.',
     stageIds: [
       'apply_general_dry_run',
@@ -2056,7 +2197,7 @@ const productionPhaseBlueprint = [
   },
   {
     id: 'controlled_apply',
-    title: 'Aplicacao Controlada',
+    title: 'Escrita',
     purpose: 'Escreve somente o que passou pelos gates e confirmacoes.',
     stageIds: [
       'apply_general_write',
@@ -2070,7 +2211,7 @@ const productionPhaseBlueprint = [
   },
   {
     id: 'validation_handoff',
-    title: 'Validacao e Handoff',
+    title: 'Validacao',
     purpose: 'Recalcula estado, mede ganho real e entrega relatorio para aprendizado.',
     stageIds: [
       'segment_state_after',
@@ -2085,26 +2226,102 @@ const productionPhaseBlueprint = [
   },
 ];
 
+const evaluationPhaseBlueprint = [
+  {
+    id: 'preparation',
+    title: 'Preparacao',
+    purpose: 'Snapshot, arquivo, indice e segment-state antes da avaliacao.',
+    stageIds: ['snapshot', 'snapshot_archive', 'preflight_sync', 'segment_state_before'],
+  },
+  {
+    id: 'analysis_policy',
+    title: 'Analise',
+    purpose: 'Dry-runs e politicas medem o que pode ser promovido com seguranca.',
+    stageIds: [
+      'apply_general_dry_run',
+      'apply_token_policy_dry_run',
+      'controlled_token_subpolicy_dry_run',
+      'select_cstring_bridge_dry_run',
+      'same_token_boundary_repair_audit',
+      'same_token_boundary_repair_dry_run',
+      'title_landed_es_repair_dry_run',
+    ],
+  },
+  {
+    id: 'queue_report',
+    title: 'Fila e score',
+    purpose: 'Consolida promocoes, regressões, pendencias e fila candidata para apply.',
+    stageIds: ['composite_review_progress', 'package_score_recalibration'],
+  },
+  {
+    id: 'evaluation_report',
+    title: 'Relatorio',
+    purpose: 'Entrega comparativo old vs output e proximas acoes sem escrever output.',
+    stageIds: ['production_report'],
+  },
+];
+
+const publicationPhaseBlueprint = [
+  {
+    id: 'publication_gates',
+    title: 'Gates',
+    purpose: 'Confere bloqueios, score do pacote e fila confirmada.',
+    stageIds: ['publication_preflight'],
+  },
+  {
+    id: 'apply_confirmed',
+    title: 'Apply confirmado',
+    purpose: 'Simula e escreve apenas o que ja esta confirmado para output.',
+    stageIds: ['apply_confirmed_dry_run', 'apply_confirmed_write'],
+  },
+  {
+    id: 'publication_validation',
+    title: 'Validacao',
+    purpose: 'Recalcula estado e preflight depois da escrita protegida.',
+    stageIds: ['segment_state_after', 'publication_preflight_after'],
+  },
+  {
+    id: 'publication_report',
+    title: 'Relatorio',
+    purpose: 'Entrega comparativo final old vs output e status de publicacao.',
+    stageIds: ['production_report'],
+  },
+];
+
 const stageById = (stages) => stages.reduce((acc, stage) => {
   acc[stage.id] = stage;
   return acc;
 }, {});
 
-const buildProductionPhases = (stages) => {
-  const map = stageById(stages.length ? stages : productionStageBlueprint);
-  return productionPhaseBlueprint.map((phase) => {
-    const phaseStages = phase.stageIds.map((id) => map[id] ?? productionStageBlueprint.find((stage) => stage.id === id)).filter(Boolean);
+const buildProductionPhases = (stages, mode = 'evaluation') => {
+  const stageBlueprint = mode === 'publication' ? publicationStageBlueprint : productionStageBlueprint;
+  const phaseBlueprint = mode === 'publication'
+    ? publicationPhaseBlueprint
+    : mode === 'evaluation'
+      ? evaluationPhaseBlueprint
+      : productionPhaseBlueprint;
+  const stageDetails = mode === 'publication' ? publicationStageDetails : productionStageDetails;
+  const map = stageById(stages.length ? stages : stageBlueprint);
+  return phaseBlueprint.map((phase) => {
+    const phaseStages = phase.stageIds.map((id) => {
+      const blueprint = stageBlueprint.find((stage) => stage.id === id);
+      const live = map[id] ?? blueprint;
+      return live ? { ...live, label: blueprint?.label ?? live.label, description: stageDetails[id] ?? live.description } : null;
+    }).filter(Boolean);
     const done = phaseStages.filter((stage) => stage.status === 'done').length;
     const running = phaseStages.find((stage) => stage.status === 'running');
     const failed = phaseStages.find((stage) => stage.status === 'failed');
     const status = failed ? 'failed' : running ? 'running' : done === phaseStages.length && phaseStages.length ? 'done' : 'pending';
+    const runningContribution = running
+      ? clampNumber(Number(running.progress_pct ?? running.metrics?.progress_pct ?? 35), 8, 90) / 100
+      : 0;
     return {
       ...phase,
       status,
       stages: phaseStages,
       done,
       total: phaseStages.length,
-      progress: phaseStages.length ? Math.round((done / phaseStages.length) * 100) : 0,
+      progress: phaseStages.length ? Math.round(((done + runningContribution) / phaseStages.length) * 100) : 0,
       currentStage: running ?? phaseStages.find((stage) => stage.status !== 'done') ?? phaseStages.at(-1),
     };
   });
@@ -2376,7 +2593,7 @@ function ProductionControl({ data }) {
   );
 }
 
-function ProductionControlCompact({ data }) {
+function ProductionControlCompact({ data, onRefreshAppState }) {
   const appState = data.appState ?? {};
   const release = appState.release ?? {};
   const cache = appState.cache ?? {};
@@ -2385,25 +2602,225 @@ function ProductionControlCompact({ data }) {
   const lastRun = productionState.last_run ?? {};
   const productionDelta = release.since_last_production ?? {};
   const integrity = release.operational_integrity ?? {};
+  const postRelease = release.post_release ?? release.feedback ?? {};
+  const feedbackSummary = postRelease.summary ?? {};
+  const safety = release.safety ?? {};
+  const evaluationGate = release.evaluation_gate ?? safety.evaluation_gate ?? {};
+  const publicationGate = release.publication_gate ?? safety.publication_gate ?? {};
+  const baselineControl = release.baseline_control ?? safety.baseline_control ?? {};
+  const visualLocks = release.visual_locks ?? safety.visual_locks ?? {};
+  const releaseCandidate = release.release_candidate ?? safety.release_candidate ?? {};
+  const gameUpdate = release.game_update ?? release.source_output_update ?? safety.source_output_update ?? {};
   const compactStages = productionState.stages_compact ?? [];
+  const initialDiskPreflight = productionState.disk_preflight ?? release.disk_preflight ?? safety.disk_preflight ?? null;
   const [startStatus, setStartStatus] = useState(null);
   const [startError, setStartError] = useState(null);
   const [runStatus, setRunStatus] = useState(lastRun?.run_id ? lastRun : null);
   const [refreshing, setRefreshing] = useState(false);
-  const runStages = runStatus?.stages ?? compactStages;
-  const displayPhases = buildProductionPhases(runStages?.length ? runStages : productionStageBlueprint);
-  const runActive = runStatus?.status === 'starting' || runStatus?.status === 'running';
-  const canStart = Boolean(learning.can_start_production) && !runActive;
+  const [selectedMode, setSelectedMode] = useState('diagnostic');
+  const [postReleaseView, setPostReleaseView] = useState('apply');
+  const [lastDiagnostic, setLastDiagnostic] = useState(null);
+  const [actionNotice, setActionNotice] = useState(null);
+  const [diskPreflight, setDiskPreflight] = useState(initialDiskPreflight);
+  const [clockTick, setClockTick] = useState(0);
+  const [diagnosticStartedAt, setDiagnosticStartedAt] = useState(null);
+  const [diagnosticFinishedAt, setDiagnosticFinishedAt] = useState(null);
+  const terminalRefreshRef = useRef('');
+  const runStatusValue = normalizedRunStatus(runStatus?.status);
+  const actionNoticeStatus = normalizedRunStatus(actionNotice?.status);
+  const startStatusValue = normalizedRunStatus(startStatus);
+  const runActive = ['starting', 'running'].includes(runStatusValue);
+  const activeRunMode = runStatus?.run_mode === 'publication' || runStatus?.mode === 'publication_apply_confirmed'
+    ? 'publication'
+    : 'evaluation';
+  const pendingActionMode = actionNotice?.mode === 'publication' ? 'publication' : 'evaluation';
+  const visualRunMode = runActive ? activeRunMode : pendingActionMode;
+  const activeStageBlueprint = visualRunMode === 'publication' ? publicationStageBlueprint : productionStageBlueprint;
+  const evaluationStartPending = actionNotice?.mode === 'evaluation'
+    && !runActive
+    && !runStatus?.run_id
+    && ['checking', 'starting', 'running'].includes(actionNoticeStatus || startStatusValue);
+  const publicationStartPending = actionNotice?.mode === 'publication'
+    && !runActive
+    && !runStatus?.run_id
+    && ['checking', 'starting', 'running'].includes(actionNoticeStatus || startStatusValue);
+  const runStartPending = evaluationStartPending || publicationStartPending;
+  const hasLiveRunStages = Array.isArray(runStatus?.stages) && runStatus.stages.length > 0;
+  const normalizedLiveStages = hasLiveRunStages
+    ? runStatus.stages.map((stage) => ({ ...stage, status: normalizedStageStatus(stage.status ?? stage.state) }))
+    : [];
+  const liveStagesHaveActivity = normalizedLiveStages.some((stage) => ['running', 'done', 'failed', 'cancelled'].includes(stage.status));
+  const currentStageIndex = runStatus?.current_stage
+    ? activeStageBlueprint.findIndex((stage) => stage.id === runStatus.current_stage)
+    : -1;
+  const fallbackRunningStageIndex = currentStageIndex >= 0 ? currentStageIndex : 0;
+  const liveStagesForDisplay = normalizedLiveStages.length && runActive && !liveStagesHaveActivity
+    ? normalizedLiveStages.map((stage, index) => ({
+        ...stage,
+        status: index < fallbackRunningStageIndex ? 'done' : index === fallbackRunningStageIndex ? 'running' : 'pending',
+        progress_pct: index === fallbackRunningStageIndex ? (stage.progress_pct ?? 8) : stage.progress_pct,
+      }))
+    : normalizedLiveStages;
+  const evaluationVisualActive = runActive || runStartPending;
+  const activeBlueprintStages = evaluationVisualActive
+    ? activeStageBlueprint.map((stage, index) => ({
+        ...stage,
+        status: currentStageIndex < 0 ? (index === 0 ? 'running' : 'pending') : index < currentStageIndex ? 'done' : index === currentStageIndex ? 'running' : 'pending',
+      }))
+    : [];
+  const runStages = liveStagesForDisplay.length
+    ? liveStagesForDisplay
+    : evaluationVisualActive
+      ? activeBlueprintStages
+      : compactStages.map((stage) => ({ ...stage, status: normalizedStageStatus(stage.status ?? stage.state) }));
+  const displayPhases = buildProductionPhases(runStages?.length ? runStages : activeStageBlueprint, visualRunMode);
+  const canStart = Boolean(learning.can_start_production) && !runActive && !runStartPending;
   const doneStages = (runStages ?? []).filter((stage) => stage.status === 'done').length;
-  const runProgress = (runStages ?? []).length ? Math.round((doneStages / runStages.length) * 100) : Number(productionState.progress_pct ?? 0);
   const currentStage = (runStages ?? []).find((stage) => stage.id === runStatus?.current_stage) ?? (runStages ?? []).find((stage) => stage.status === 'running');
+  const runningStageContribution = evaluationVisualActive && currentStage
+    ? clampNumber(Number(currentStage.progress_pct ?? currentStage.metrics?.progress_pct ?? 35), 8, 90) / 100
+    : 0;
+  const runProgress = (runStages ?? []).length ? Math.round(((doneStages + runningStageContribution) / runStages.length) * 100) : runActive ? 0 : Number(productionState.progress_pct ?? 0);
+  const runTerminal = ['completed', 'failed', 'cancelled'].includes(runStatusValue);
+  const outputRestoreStatus = gameUpdate.output_restore_status ?? safety.source_output_update?.output_restore_status ?? {};
+  const evaluationAllowed = evaluationGate.can_start_evaluation_full_production_now === true;
+  const publicationAllowed = publicationGate.can_publish_after_full_production_now === true;
+  const diskBlocksProduction = diskPreflight?.ok === false;
+  const evaluationReasons = Array.isArray(evaluationGate.blocking_reasons) ? evaluationGate.blocking_reasons : [];
+  const publicationReasons = Array.isArray(publicationGate.blocking_reasons) ? publicationGate.blocking_reasons : [];
+  const evaluatedDiffSummary = postRelease.diff_review?.summary && typeof postRelease.diff_review.summary === 'object'
+    ? postRelease.diff_review.summary
+    : {};
+  const evaluatedApplyCount = Number(evaluatedDiffSummary.needs_apply ?? 0);
+  const hasVerifiedApplyQueue = evaluatedApplyCount > 0;
+  const publicationActionAllowed = publicationAllowed && hasVerifiedApplyQueue;
+  const publicationModeStatus = publicationActionAllowed
+    ? 'liberada'
+    : publicationAllowed
+      ? 'sem apply'
+      : 'bloqueada';
+  const publicationModeTone = publicationActionAllowed ? 'emerald' : publicationAllowed ? 'blue' : 'red';
+  const publicationModeStatusKind = publicationActionAllowed ? 'open' : 'blocked';
+  const publicationModeWarning = publicationActionAllowed
+    ? `${compact(evaluatedApplyCount)} apply verificado pela avaliacao.`
+    : publicationAllowed
+      ? 'Bloqueada para execucao: avaliacao nao tem apply verificado para aplicar.'
+      : 'Bloqueada pelos gates de publicacao.';
+  const releaseModes = [
+    {
+      id: 'diagnostic',
+      label: 'Diagnóstico',
+      shortLabel: 'Diagnóstico',
+      status: 'liberado',
+      tone: 'blue',
+      color: 'blue',
+      statusKind: 'open',
+      button: 'Atualizar diagnóstico',
+      actionLabel: 'Atualizar',
+      description: 'Atualiza cache, métricas e preflight. Não altera output.',
+      warning: 'Leitura segura para validar estado visual e operacional.',
+    },
+    {
+      id: 'evaluation',
+      label: 'Produção de avaliação',
+      shortLabel: 'Avaliação',
+      status: evaluationAllowed && !diskBlocksProduction ? 'liberada' : 'bloqueada',
+      tone: evaluationAllowed && !diskBlocksProduction ? 'emerald' : 'red',
+      color: 'emerald',
+      statusKind: evaluationAllowed && !diskBlocksProduction ? 'open' : 'blocked',
+      button: 'Rodar produção de avaliação',
+      actionLabel: 'Rodar',
+      description: 'Gera novo output para medir score, diff, regressão e fallback.',
+      warning: diskBlocksProduction ? 'Bloqueada por espaço em disco insuficiente.' : 'Não libera publicação. Gera métricas e comparação contra baseline.',
+    },
+    {
+      id: 'publication',
+      label: 'Produção publicável',
+      shortLabel: 'Publicável',
+      status: publicationModeStatus,
+      tone: publicationModeTone,
+      color: 'violet',
+      statusKind: publicationModeStatusKind,
+      button: 'Validar publicavel',
+      actionLabel: 'Validar',
+      description: 'Valida gates, fila de apply, promocoes e qualidade final do pacote.',
+      warning: publicationModeWarning,
+    },
+    {
+      id: 'hotfix',
+      label: 'Hotfix visual',
+      shortLabel: 'Hotfix',
+      status: releaseCandidate.current_candidate_path ? 'instrumentado' : 'não instrumentado',
+      tone: releaseCandidate.current_candidate_path ? 'amber' : 'slate',
+      color: 'amber',
+      statusKind: releaseCandidate.current_candidate_path ? 'instrumented' : 'unknown',
+      button: releaseCandidate.current_candidate_path ? 'Abrir fila de hotfix' : 'Gerar pacote de hotfix visual',
+      actionLabel: releaseCandidate.current_candidate_path ? 'Abrir' : 'Preparar',
+      description: 'Opera sobre release candidate pequeno baseado em feedback visual.',
+      warning: 'Não substitui uma produção full ampla.',
+    },
+  ];
+  const effectiveSelectedMode = runActive ? activeRunMode : selectedMode;
+  const selectedModeInfo = releaseModes.find((mode) => mode.id === effectiveSelectedMode) ?? releaseModes[0];
+  const modeActionNotice = actionNotice?.mode === effectiveSelectedMode ? actionNotice : null;
+  const latestPublicationPreflight = modeActionNotice?.publicationPreflight
+    ?? productionState.publication_preflight
+    ?? lastRun?.publication_preflight
+    ?? null;
+  const publicationCanApply = effectiveSelectedMode === 'publication'
+    && !runActive
+    && hasVerifiedApplyQueue
+    && latestPublicationPreflight?.can_apply_pending === true;
+  const actionRunId = modeActionNotice?.runId ?? null;
+  const actionRunMatches = Boolean(actionRunId && runStatus?.run_id === actionRunId);
+  const actionWaitingForRun = (modeActionNotice?.mode === 'evaluation' || modeActionNotice?.mode === 'publication')
+    && !actionRunId
+    && ['starting', 'running'].includes(actionNoticeStatus);
+  const actionRunStatus = actionRunMatches || (runActive && !actionRunId) ? runStatus : null;
+  const evaluationExecutionVisible = !refreshing && (
+    actionWaitingForRun
+    || Boolean(runActive && (actionRunMatches || !actionRunId))
+    || Boolean(
+      (modeActionNotice?.mode === 'evaluation' || modeActionNotice?.mode === 'publication')
+      && ['failed', 'blocked'].includes(actionNoticeStatus)
+      && actionRunMatches
+    )
+  );
 
   useEffect(() => {
     setRunStatus(lastRun?.run_id ? lastRun : null);
   }, [lastRun?.run_id, lastRun?.status]);
 
   useEffect(() => {
-    if (!runActive) return undefined;
+    if (initialDiskPreflight) setDiskPreflight(initialDiskPreflight);
+  }, [initialDiskPreflight?.checked_at, initialDiskPreflight?.status]);
+
+  useEffect(() => {
+    if (runActive && selectedMode !== activeRunMode) {
+      setSelectedMode(activeRunMode);
+    }
+  }, [activeRunMode, runActive, selectedMode]);
+
+  const refreshDiskPreflight = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/production/preflight/disk`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error ?? `API ${response.status}`);
+      const next = payload.disk_preflight ?? payload;
+      setDiskPreflight(next);
+      return next;
+    } catch (err) {
+      setDiskPreflight((current) => current ?? { ok: null, status: 'not_measured', message: err.message });
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    refreshDiskPreflight();
+  }, []);
+
+  useEffect(() => {
+    if (!runActive && !runStartPending) return undefined;
     const timer = setInterval(async () => {
       try {
         const response = await fetch(`${API_BASE}/production/runs/latest`);
@@ -2415,17 +2832,112 @@ function ProductionControlCompact({ data }) {
       }
     }, 4000);
     return () => clearInterval(timer);
-  }, [runActive]);
+  }, [runActive, runStartPending]);
+
+  useEffect(() => {
+    if (!runActive && !runStartPending && !refreshing) return undefined;
+    const timer = setInterval(() => setClockTick((tick) => tick + 1), 1000);
+    return () => clearInterval(timer);
+  }, [runActive, runStartPending, refreshing]);
+
+  useEffect(() => {
+    if (!runStatus?.run_id || !['completed', 'failed'].includes(runStatus.status)) return;
+    const key = `${runStatus.run_id}:${runStatus.status}`;
+    if (terminalRefreshRef.current === key) return;
+    terminalRefreshRef.current = key;
+    const refreshTerminal = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/production/runs/latest`);
+        if (response.ok) {
+          const payload = await response.json();
+          const latestRun = payload.run ?? null;
+          if (latestRun?.run_id) {
+            setRunStatus(latestRun);
+            if (latestRun.status === 'failed' || latestRun.status === 'completed') {
+              const latestMode = latestRun.run_mode === 'publication' || latestRun.mode === 'publication_apply_confirmed'
+                ? 'publication'
+                : 'evaluation';
+              setActionNotice((current) => ({
+                ...(current ?? {}),
+                mode: latestMode,
+                status: latestRun.status,
+                tone: latestRun.status === 'failed' ? 'red' : 'emerald',
+                outputChanged: Boolean(latestRun.output_changed),
+                title: latestRun.status === 'failed'
+                  ? 'Execucao falhou'
+                  : latestMode === 'publication'
+                    ? 'Producao publicavel concluida'
+                    : 'Producao de avaliacao concluida',
+                body: latestRun.message ?? (latestRun.status === 'failed' ? 'A producao terminou com falha.' : 'Run completed.'),
+                runId: latestRun.run_id,
+                diskPreflight: latestRun.disk_preflight ?? latestRun.failure?.disk_preflight ?? current?.diskPreflight,
+                publicationPreflight: latestRun.publication_preflight ?? current?.publicationPreflight,
+              }));
+            }
+          }
+        }
+      } catch {
+        // A run terminal continua visivel mesmo se o refresh pontual falhar.
+      }
+      try {
+        await onRefreshAppState?.();
+      } catch {
+        // O polling/cache global recupera depois.
+      }
+      if (runStatus.status === 'completed' || runStatus.status === 'failed') {
+        setStartStatus(runStatus.status);
+        refreshDiskPreflight();
+      }
+    };
+    refreshTerminal();
+  }, [runStatus?.run_id, runStatus?.status, onRefreshAppState]);
 
   const refreshCache = async () => {
     setRefreshing(true);
     setStartError(null);
+    setStartStatus('refreshing');
+    setDiagnosticStartedAt(Date.now());
+    setDiagnosticFinishedAt(null);
     try {
       const response = await fetch(`${API_BASE}/cache/refresh`, { method: 'POST' });
-      if (!response.ok) throw new Error(`API ${response.status}`);
-      window.location.reload();
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error ?? `API ${response.status}`);
+      const completedAt = new Date().toLocaleString('pt-BR', { hour12: false });
+      const diagnostic = {
+        completedAt,
+        cacheUpdated: true,
+        outputChanged: false,
+        productionRunStarted: false,
+        cacheGeneratedAt: payload.cache?.generated_at ?? payload.generated_at ?? completedAt,
+        segmentStateRunId: payload.diagnostic_segment_state?.new_segment_state_run_id ?? null,
+      };
+      setLastDiagnostic(diagnostic);
+      setStartStatus('refresh_completed');
+      setActionNotice({
+        mode: 'diagnostic',
+        status: 'completed',
+        tone: 'emerald',
+        title: 'Diagnóstico atualizado',
+        body: `Refresh concluído às ${completedAt}. Segment-state ${payload.diagnostic_segment_state?.new_segment_state_run_id ? `#${payload.diagnostic_segment_state.new_segment_state_run_id}` : 'recalculado'}, cache atualizado, nenhum output alterado e nenhuma produção iniciada.`,
+        outputChanged: false,
+        runId: null,
+      });
+      setDiagnosticFinishedAt(Date.now());
+      await onRefreshAppState?.();
+      await refreshDiskPreflight();
     } catch (err) {
       setStartError(err.message);
+      setStartStatus('failed');
+      setActionNotice({
+        mode: 'diagnostic',
+        status: 'failed',
+        tone: 'red',
+        title: 'Falha ao atualizar diagnóstico',
+        body: err.message,
+        outputChanged: false,
+        runId: null,
+      });
+      setDiagnosticFinishedAt(Date.now());
     } finally {
       setRefreshing(false);
     }
@@ -2434,21 +2946,222 @@ function ProductionControlCompact({ data }) {
   const startProduction = async () => {
     setStartStatus('checking');
     setStartError(null);
+    const disk = await refreshDiskPreflight();
+    if (disk?.ok === false) {
+      const message = disk.message ?? 'Insufficient disk space';
+      setStartStatus('blocked');
+      setStartError(message);
+      setActionNotice({
+        mode: 'evaluation',
+        status: 'blocked',
+        tone: 'red',
+        title: 'Execução bloqueada por espaço em disco',
+        body: message,
+        outputChanged: false,
+        runId: null,
+        diskPreflight: disk,
+      });
+      return;
+    }
+    setActionNotice({
+      mode: 'evaluation',
+      status: 'starting',
+      tone: 'blue',
+      title: 'Iniciando produção de avaliação',
+      body: 'Solicitando novo run em modo evaluation/full production.',
+      outputChanged: true,
+      runId: null,
+    });
+    setRunStatus(null);
     try {
       const response = await fetch(`${API_BASE}/production/start`, { method: 'POST' });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
+        if (payload.disk_preflight) setDiskPreflight(payload.disk_preflight);
         setStartStatus(payload.status ?? 'blocked');
         setStartError(payload.lock?.message ?? payload.error ?? `API ${response.status}`);
         if (payload.run) setRunStatus(payload.run);
+        setActionNotice({
+          mode: 'evaluation',
+          status: 'blocked',
+          tone: 'red',
+          title: 'Produção de avaliação bloqueada',
+          body: payload.lock?.message ?? payload.error ?? `API ${response.status}`,
+          outputChanged: false,
+          runId: payload.run?.run_id ?? null,
+          diskPreflight: payload.disk_preflight ?? disk,
+        });
         return;
       }
       setStartStatus(payload.status ?? 'running');
       setStartError(payload.message ?? null);
       if (payload.run) setRunStatus(payload.run);
+      setActionNotice({
+        mode: 'evaluation',
+        status: payload.run?.status ?? payload.status ?? 'running',
+        tone: 'blue',
+        title: 'Produção de avaliação iniciada',
+        body: `Modo evaluation/full production · status inicial ${payload.run?.status ?? payload.status ?? 'running'} · etapa ${payload.run?.current_stage ?? 'preparando'}.`,
+        outputChanged: true,
+        runId: payload.run?.run_id ?? null,
+      });
     } catch (err) {
       setStartStatus('failed');
       setStartError(err.message);
+      setActionNotice({
+        mode: 'evaluation',
+        status: 'failed',
+        tone: 'red',
+        title: 'Falha ao iniciar produção',
+        body: err.message,
+        outputChanged: false,
+        runId: null,
+      });
+    }
+  };
+
+  const startPublicationPreflight = async () => {
+    setStartStatus('checking');
+    setStartError(null);
+    setActionNotice({
+      mode: 'publication',
+      status: 'starting',
+      tone: 'violet',
+      title: 'Checando candidato publicavel',
+      body: 'Validando gates, fila de apply, promocoes e bloqueios antes de qualquer publicacao.',
+      outputChanged: false,
+      runId: null,
+    });
+    try {
+      const response = await fetch(`${API_BASE}/production/publication/preflight`, { method: 'POST' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error ?? `API ${response.status}`);
+      const preflight = payload.publication_preflight ?? {};
+      const counts = preflight.counts ?? {};
+      const ready = preflight.status === 'ready' || preflight.can_publish_now === true;
+      const applyReady = preflight.can_apply_pending === true;
+      const applyCount = Number(counts.needs_apply ?? 0);
+      const applyReadyCount = Number(counts.apply_ready ?? 0);
+      const applyBlockedCount = Number(counts.apply_blocked ?? 0);
+      const applyTokenMismatchCount = Number(counts.apply_token_mismatch ?? 0);
+      const promotionCount = Number(counts.promotions ?? 0);
+      const regressionCount = Number(counts.score_regressions ?? 0);
+      const unhandledCount = Number(counts.unhandled_by_network ?? 0);
+      const quality = preflight.quality ?? {};
+      const oldPackageScore = scoreLabel(quality.package_old_score);
+      const newPackageScore = scoreLabel(quality.package_new_score);
+      const packageDelta = scoreDeltaLabel({ score_delta: quality.package_delta });
+      const qualityText = quality.package_new_score === null || quality.package_new_score === undefined
+        ? 'score do pacote nao medido'
+        : `score pacote ${oldPackageScore} -> ${newPackageScore} (${packageDelta})`;
+      const body = ready
+        ? `Publicavel: sem bloqueios. ${qualityText}. Promocoes ${compact(promotionCount)}, regressoes ${compact(regressionCount)}, pendentes ${compact(unhandledCount)}.`
+        : applyReady
+          ? `Fila confirmada pronta: aplicar ${compact(applyCount)} ajustes protegidos. ${qualityText}. Promocoes ${compact(promotionCount)}, regressoes ${compact(regressionCount)}, pendentes ${compact(unhandledCount)}.`
+          : `Bloqueado: ${qualityText}. Apply ${compact(applyReadyCount)}/${compact(applyCount)} pronto, ${compact(applyBlockedCount)} bloqueado, token mismatch ${compact(applyTokenMismatchCount)}. Promocoes ${compact(promotionCount)}, regressoes ${compact(regressionCount)}, pendentes ${compact(unhandledCount)}. Proximo passo: ${preflight.next_action ?? 'revisar bloqueios'}.`;
+      setStartStatus(ready || applyReady ? 'completed' : 'blocked');
+      setActionNotice({
+        mode: 'publication',
+        status: ready || applyReady ? 'completed' : 'blocked',
+        tone: ready ? 'emerald' : applyReady ? 'amber' : 'red',
+        title: ready ? 'Candidato publicavel liberado' : applyReady ? 'Fila confirmada pronta para apply' : 'Candidato publicavel bloqueado',
+        body,
+        outputChanged: false,
+        runId: null,
+        publicationPreflight: preflight,
+      });
+      await onRefreshAppState?.();
+    } catch (err) {
+      setStartStatus('failed');
+      setStartError(err.message);
+      setActionNotice({
+        mode: 'publication',
+        status: 'failed',
+        tone: 'red',
+        title: 'Falha no preflight publicavel',
+        body: err.message,
+        outputChanged: false,
+        runId: null,
+      });
+    }
+  };
+
+  const startPublicationApplyConfirmed = async () => {
+    setStartStatus('checking');
+    setStartError(null);
+    setActionNotice({
+      mode: 'publication',
+      status: 'starting',
+      tone: 'violet',
+      title: 'Iniciando apply publicavel',
+      body: 'Aplicando somente a fila confirmada em needs apply.',
+      outputChanged: true,
+      runId: null,
+      publicationPreflight: modeActionNotice?.publicationPreflight,
+    });
+    setRunStatus(null);
+    try {
+      const response = await fetch(`${API_BASE}/production/publication/apply-confirmed/start`, { method: 'POST' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setStartStatus(payload.status ?? 'blocked');
+        setStartError(payload.lock?.message ?? payload.error ?? `API ${response.status}`);
+        if (payload.run) setRunStatus(payload.run);
+        setActionNotice({
+          mode: 'publication',
+          status: payload.status ?? 'blocked',
+          tone: 'red',
+          title: 'Apply publicavel bloqueado',
+          body: payload.lock?.message ?? payload.error ?? `API ${response.status}`,
+          outputChanged: false,
+          runId: payload.run?.run_id ?? null,
+          publicationPreflight: payload.publication_preflight ?? modeActionNotice?.publicationPreflight,
+        });
+        return;
+      }
+      setStartStatus(payload.status ?? 'running');
+      if (payload.run) setRunStatus(payload.run);
+      setActionNotice({
+        mode: 'publication',
+        status: payload.run?.status ?? payload.status ?? 'running',
+        tone: 'violet',
+        title: 'Apply publicavel iniciado',
+        body: `Fila confirmada em execucao. Status ${payload.run?.status ?? payload.status ?? 'running'}; etapa ${payload.run?.current_stage ?? 'preparando'}.`,
+        outputChanged: true,
+        runId: payload.run?.run_id ?? null,
+        publicationPreflight: payload.publication_preflight ?? modeActionNotice?.publicationPreflight,
+      });
+    } catch (err) {
+      setStartStatus('failed');
+      setStartError(err.message);
+      setActionNotice({
+        mode: 'publication',
+        status: 'failed',
+        tone: 'red',
+        title: 'Falha ao iniciar apply publicavel',
+        body: err.message,
+        outputChanged: false,
+        runId: null,
+        publicationPreflight: modeActionNotice?.publicationPreflight,
+      });
+    }
+  };
+
+  const runSelectedModeAction = () => {
+    if (effectiveSelectedMode === 'diagnostic') {
+      refreshCache();
+      return;
+    }
+    if (effectiveSelectedMode === 'evaluation') {
+      startProduction();
+      return;
+    }
+    if (effectiveSelectedMode === 'publication') {
+      if (publicationCanApply) {
+        startPublicationApplyConfirmed();
+      } else {
+        startPublicationPreflight();
+      }
     }
   };
 
@@ -2469,6 +3182,692 @@ function ProductionControlCompact({ data }) {
         : deltaAvailable && deltaClosed > 0
           ? 'Seguro para rodar producao'
           : 'Monitorar estado atual';
+  const modeButtonDisabled =
+    runActive || runStartPending
+      ? true
+      : effectiveSelectedMode === 'diagnostic'
+      ? refreshing
+      : effectiveSelectedMode === 'evaluation'
+        ? (!evaluationAllowed || diskBlocksProduction || runActive || startStatus === 'checking')
+        : effectiveSelectedMode === 'publication'
+          ? (refreshing || startStatus === 'checking' || (!publicationActionAllowed && !publicationCanApply))
+        : true;
+  const modeButtonClass = (mode, active) => {
+    const base = 'group relative flex h-10 min-w-0 flex-col justify-center overflow-hidden rounded-xl border px-2.5 pr-7 text-left text-white shadow-lg transition hover:-translate-y-0.5 hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-white/45';
+    const palette =
+      mode.color === 'emerald' ? 'border-emerald-200/35 bg-emerald-600 shadow-emerald-950/35 hover:bg-emerald-500' :
+        mode.color === 'violet' ? 'border-violet-200/35 bg-violet-600 shadow-violet-950/35 hover:bg-violet-500' :
+          mode.color === 'amber' ? 'border-amber-200/35 bg-amber-600 shadow-amber-950/35 hover:bg-amber-500' :
+            mode.color === 'blue' ? 'border-blue-200/35 bg-blue-600 shadow-blue-950/35 hover:bg-blue-500' :
+              'border-slate-200/25 bg-slate-600 shadow-slate-950/25 hover:bg-slate-500';
+    return cn(
+      base,
+      palette,
+      active ? 'z-10 scale-[1.025] translate-y-[-1px] border-white/70 opacity-100 ring-2 ring-white/65 brightness-115 shadow-2xl' : 'opacity-70 saturate-[0.78] hover:opacity-95'
+    );
+  };
+  const modeStatusIcon = (mode) => {
+    if (mode.statusKind === 'blocked') return <Lock size={10} />;
+    if (mode.statusKind === 'instrumented') return <ShieldCheck size={10} />;
+    if (mode.statusKind === 'unknown') return <FileWarning size={10} />;
+    return <Unlock size={10} />;
+  };
+  const modeTooltip = (mode) => `${mode.label}: ${mode.description} ${mode.warning} Status: ${mode.status}.`;
+  // Campos de feedback/hotfix ainda sao opcionais. Quando o backend nao medir,
+  // a tela mostra "nao medido" em vez de inferir estado operacional.
+  const valueOrPending = (value) => {
+    if (value === null || value === undefined || value === '' || value === 'pending_instrumentation') return 'nao medido';
+    return value;
+  };
+  const numberOrNull = (value) => {
+    if (value === null || value === undefined || value === '' || value === 'pending_instrumentation') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const metricValue = (value) => {
+    const parsed = numberOrNull(value);
+    return parsed === null ? 'nao medido' : compact(parsed);
+  };
+  const stageMetrics = (run, stageId) => {
+    const stages = Array.isArray(run?.stages) ? run.stages : [];
+    const stage = stages.find((item) => item?.id === stageId);
+    return stage?.metrics && typeof stage.metrics === 'object' ? stage.metrics : {};
+  };
+  const runLifecycleApplyCount = (run) => {
+    const writeMetrics = stageMetrics(run, 'apply_confirmed_write');
+    const dryRunMetrics = stageMetrics(run, 'apply_confirmed_dry_run');
+    const preflightMetrics = stageMetrics(run, 'publication_preflight');
+    return numberOrNull(
+      writeMetrics.released
+        ?? writeMetrics.candidates
+        ?? dryRunMetrics.released
+        ?? preflightMetrics.apply_lifecycle
+        ?? preflightMetrics.lifecycle_apply_ready
+    ) ?? 0;
+  };
+  const runOutputWriteCount = (run) => {
+    const writeMetrics = stageMetrics(run, 'apply_confirmed_write');
+    const preflightMetrics = stageMetrics(run, 'publication_preflight');
+    return numberOrNull(
+      run?.output_written_count
+        ?? writeMetrics.output_written
+        ?? writeMetrics.output_write
+        ?? preflightMetrics.apply_output_write
+    ) ?? 0;
+  };
+  const runOutputStatusLabel = (run, mayChange = false) => {
+    if (mayChange) return 'output pode mudar';
+    if (!run?.run_id) return 'output nao medido';
+    const lifecycleCount = runLifecycleApplyCount(run);
+    const writtenCount = runOutputWriteCount(run);
+    if (writtenCount > 0) return `output alterado (${compact(writtenCount)} escritas)`;
+    if (lifecycleCount > 0) return `apply ${compact(lifecycleCount)} lifecycle`;
+    if (run?.output_changed) return 'output alterado';
+    return 'sem escrita no output';
+  };
+  const toneForCount = (value, zeroTone = 'emerald') => {
+    const parsed = numberOrNull(value);
+    if (parsed === null) return 'slate';
+    return parsed > 0 ? 'amber' : zeroTone;
+  };
+  const knownOpen = numberOrNull(feedbackSummary.known_open_findings ?? feedbackSummary.known_open ?? postRelease.known_open_findings ?? postRelease.known_open);
+  const approvedPendingApply = numberOrNull(feedbackSummary.approved_pending_apply ?? postRelease.approved_pending_apply ?? release.needs_apply) ?? Number(release.needs_apply ?? 0);
+  const appliedPendingValidation = numberOrNull(feedbackSummary.applied_pending_validation ?? postRelease.applied_pending_validation);
+  const closedFeedback = numberOrNull(feedbackSummary.closed_findings ?? feedbackSummary.closed ?? postRelease.closed_findings ?? postRelease.closed_feedback);
+  const feedbackAffected = numberOrNull(feedbackSummary.affected_segments ?? postRelease.affected_segments);
+  const feedbackClosed = numberOrNull(feedbackSummary.closed_segments ?? postRelease.closed_segments);
+  const acceptedHolds = numberOrNull(feedbackSummary.accepted_holds ?? postRelease.accepted_holds);
+  const parserBacklog = numberOrNull(feedbackSummary.parser_dynamic_backlog ?? postRelease.parser_dynamic_backlog);
+  const feedbackItems = Array.isArray(postRelease.active_feedback_items)
+    ? postRelease.active_feedback_items
+    : Array.isArray(postRelease.active_items)
+      ? postRelease.active_items
+      : Array.isArray(postRelease.items)
+        ? postRelease.items
+        : Array.isArray(postRelease.feedback_items)
+          ? postRelease.feedback_items
+          : Array.isArray(postRelease.findings)
+            ? postRelease.findings
+            : [];
+  const archivedFeedbackItems = Array.isArray(postRelease.archived_feedback_items)
+    ? postRelease.archived_feedback_items
+    : Array.isArray(postRelease.archived_items)
+      ? postRelease.archived_items
+      : [];
+  const diffReview = postRelease.diff_review ?? {};
+  const diffSummary = diffReview.summary ?? {};
+  const changedScoreComparison = diffSummary.changed_score_comparison ?? {};
+  const packageScoreComparison = diffSummary.package_score_comparison ?? {};
+  const rawChangedSegments = Array.isArray(diffReview.changed_segments) ? diffReview.changed_segments : [];
+  const rawPackageSegments = Array.isArray(diffReview.package_diff_segments)
+    ? diffReview.package_diff_segments
+    : rawChangedSegments.filter((item) => String(item?.state_group ?? '').toLowerCase() === 'closed' && Number(item?.needs_output_apply ?? 0) === 0);
+  const rawPromotionSegments = Array.isArray(diffReview.promotion_segments)
+    ? diffReview.promotion_segments
+    : rawChangedSegments.filter((item) => item?.recommended_resolution === 'use_candidate' && Number(item?.needs_output_apply ?? 0) === 0);
+  const rawNewSegments = Array.isArray(diffReview.new_segments) ? diffReview.new_segments : [];
+  const rawApplySegments = Array.isArray(diffReview.apply_segments) ? diffReview.apply_segments : [];
+  const rawLowScoreSegments = Array.isArray(diffReview.low_score_segments) ? diffReview.low_score_segments : [];
+  const rawScoreRegressionSegments = Array.isArray(diffReview.score_regression_segments) ? diffReview.score_regression_segments : [];
+  const rawUnhandledSegments = Array.isArray(diffReview.unhandled_segments) ? diffReview.unhandled_segments : [];
+  const scoreValue = (score) => {
+    if (score === null || score === undefined || score === '' || score === 'not_measured') return null;
+    const parsed = Number(score);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const segmentNewScore = (item) => scoreValue(item?.effective_new_score ?? item?.new_score ?? item?.model_safe_probability);
+  const segmentOldScore = (item) => scoreValue(item?.old_score ?? item?.old_model_safe_probability);
+  const segmentDelta = (item) => scoreValue(item?.effective_score_delta ?? item?.score_delta);
+  const sortSegmentsByScoreDesc = (items) => [...items].sort((a, b) => {
+    const bScore = segmentNewScore(b);
+    const aScore = segmentNewScore(a);
+    const scoreDiff = (bScore ?? -1) - (aScore ?? -1);
+    if (scoreDiff !== 0) return scoreDiff;
+    return Number(a?.segment_id ?? 0) - Number(b?.segment_id ?? 0);
+  });
+  const sortSegmentsByRegressionDelta = (items) => [...items].sort((a, b) => {
+    const aDelta = segmentDelta(a);
+    const bDelta = segmentDelta(b);
+    const deltaDiff = (aDelta ?? 1) - (bDelta ?? 1);
+    if (deltaDiff !== 0) return deltaDiff;
+    return Number(a?.segment_id ?? 0) - Number(b?.segment_id ?? 0);
+  });
+  const sortSegmentsByScoreAsc = (items) => [...items].sort((a, b) => {
+    const aScore = segmentNewScore(a);
+    const bScore = segmentNewScore(b);
+    const aMissing = Number.isFinite(aScore) ? 1 : 0;
+    const bMissing = Number.isFinite(bScore) ? 1 : 0;
+    if (aMissing !== bMissing) return aMissing - bMissing;
+    const scoreDiff = (aScore ?? 0) - (bScore ?? 0);
+    if (scoreDiff !== 0) return scoreDiff;
+    return Number(a?.segment_id ?? 0) - Number(b?.segment_id ?? 0);
+  });
+  const changedSegments = sortSegmentsByScoreDesc(rawChangedSegments);
+  const packageSegments = sortSegmentsByRegressionDelta(rawPackageSegments);
+  const promotionSegments = sortSegmentsByScoreDesc(rawPromotionSegments);
+  const newSegments = sortSegmentsByScoreDesc(rawNewSegments);
+  const applySegments = sortSegmentsByScoreDesc(rawApplySegments);
+  const lowScoreSegments = sortSegmentsByScoreAsc(rawLowScoreSegments.filter((item) => {
+    const score = segmentNewScore(item);
+    return Number.isFinite(score) && score < 0.5;
+  }));
+  const scoreRegressionSegments = sortSegmentsByRegressionDelta(rawScoreRegressionSegments);
+  const unhandledSegments = sortSegmentsByScoreDesc(rawUnhandledSegments);
+  const scoreTone = (score) => {
+    const parsed = scoreValue(score);
+    if (!Number.isFinite(parsed)) return 'slate';
+    if (parsed >= 0.9) return 'emerald';
+    if (parsed >= 0.75) return 'blue';
+    if (parsed >= 0.5) return 'amber';
+    return 'red';
+  };
+  const scoreLabel = (score) => {
+    const parsed = scoreValue(score);
+    return Number.isFinite(parsed) ? pctMetric(parsed) : 'sem score';
+  };
+  const scoreDeltaLabel = (item) => {
+    const delta = scoreValue(item?.effective_score_delta ?? item?.score_delta);
+    if (!Number.isFinite(delta)) return 'sem delta';
+    const sign = delta > 0 ? '+' : '';
+    return `${sign}${pctMetric(delta)}`;
+  };
+  const scoreDeltaTone = (item) => {
+    const delta = scoreValue(item?.effective_score_delta ?? item?.score_delta);
+    if (!Number.isFinite(delta)) return 'slate';
+    if (delta > 0.0001) return 'emerald';
+    if (delta < -0.0001) return 'red';
+    return 'amber';
+  };
+  const scoreCellTitle = (item) => {
+    const rawNew = scoreLabel(item?.new_score ?? item?.model_safe_probability);
+    const rawOld = scoreLabel(item?.raw_old_score ?? item?.old_model_safe_probability ?? item?.old_score);
+    const effectiveNew = scoreLabel(item?.effective_new_score ?? item?.new_score ?? item?.model_safe_probability);
+    const rawDelta = scoreDeltaLabel({ score_delta: item?.score_delta });
+    if (item?.score_calibration) {
+      return `Score calibrado por ${item.score_calibration}. Old bruto: ${rawOld}; novo bruto: ${rawNew}; novo efetivo: ${effectiveNew}; delta bruto: ${rawDelta}.`;
+    }
+    return `Score bruto. Old: ${rawOld}; novo: ${rawNew}.`;
+  };
+  const integrityLabel = (item) => {
+    const status = String(item?.package_integrity_status ?? 'ok');
+    if (status === 'locked_confirmation_output_mismatch') return 'conf. travada diverge';
+    if (status === 'needs_output_apply') return 'needs apply';
+    if (status === 'not_closed') return 'nao fechado';
+    if (status === 'ok') return 'ok';
+    return status.replaceAll('_', ' ');
+  };
+  const integrityTone = (item) => {
+    const status = String(item?.package_integrity_status ?? 'ok');
+    if (status === 'ok') return 'emerald';
+    if (status === 'needs_output_apply' || status === 'not_closed') return 'amber';
+    return 'red';
+  };
+  const integrityTitle = (item) => {
+    const status = item?.package_integrity_status ?? 'ok';
+    const reason = item?.package_integrity_reason ?? '';
+    const confirmed = item?.confirmed_text;
+    const confirmedPart = confirmed !== null && confirmed !== undefined ? ` Confirmado: ${confirmed}` : '';
+    return `${status}${reason ? `: ${reason}` : ''}.${confirmedPart}`;
+  };
+  const feedbackSegmentLabel = (item) => {
+    if (Array.isArray(item.segment_ids) && item.segment_ids.length) return item.segment_ids.join(', ');
+    if (item.segment_id !== null && item.segment_id !== undefined) return String(item.segment_id);
+    const affected = numberOrNull(item.affected_segments);
+    return affected === null ? 'nao medido' : compact(affected);
+  };
+  const activeFeedbackItems = feedbackItems.filter((item) => {
+    const status = String(item.status ?? '').trim().toLowerCase();
+    const inactiveStatuses = new Set(['closed', 'hold', 'accepted_hold', 'applied_to_candidate', 'archived', 'done', 'resolved', 'cancelled']);
+    return status && !inactiveStatuses.has(status);
+  });
+  const feedbackRows = activeFeedbackItems.map((item, index) => ({
+    ...item,
+    row_id: item.id ?? `feedback-${index}`,
+    observed_text: item.observed_text ?? item.text_observed ?? item.evidence ?? 'nao medido',
+    category: item.category ?? item.area ?? item.risk ?? 'nao medido',
+    segment_label: feedbackSegmentLabel(item),
+    visual_severity: item.visual_severity ?? item.severity ?? 'nao medido',
+    next_action: item.next_action ?? item.current_candidate_status ?? item.decision ?? 'nao medido',
+  }));
+  const packageOldScore = packageScoreComparison.weighted_avg_old_score ?? packageScoreComparison.avg_old_score;
+  const packageNewScore = packageScoreComparison.weighted_avg_new_score ?? packageScoreComparison.avg_new_score ?? packageScoreComparison.package_quality_score;
+  const packageDelta = packageScoreComparison.weighted_avg_delta ?? packageScoreComparison.avg_delta;
+  const packageScoreSummaryLabel = Number(packageScoreComparison.measured_count ?? 0) > 0
+    ? `score old ${scoreLabel(packageOldScore)} -> output ${scoreLabel(packageNewScore)} (${scoreDeltaLabel({ score_delta: packageDelta })})`
+    : 'score pacote nao medido';
+  const rawOutputDiffCount = diffSummary.raw_output_diff_count ?? diffSummary.changed_vs_old ?? rawChangedSegments.length;
+  const packageExcludedCount = diffSummary.package_excluded_count ?? Math.max(0, Number(rawOutputDiffCount ?? 0) - Number(diffSummary.package_diff_count ?? packageSegments.length ?? 0));
+  const reviewTabs = [
+    { id: 'apply', label: 'Apply', count: diffSummary.needs_apply ?? applySegments.length, tone: applySegments.length ? 'amber' : 'slate' },
+    { id: 'package', label: 'Pacote', count: diffSummary.package_diff_count ?? packageSegments.length, tone: packageSegments.length ? 'blue' : 'slate' },
+    { id: 'new', label: 'Novos', count: diffSummary.new_vs_old ?? newSegments.length, tone: newSegments.length ? 'blue' : 'slate' },
+    { id: 'promotions', label: 'Promocoes', count: diffSummary.promotions_vs_old ?? promotionSegments.length, tone: promotionSegments.length ? 'emerald' : 'slate' },
+    { id: 'regressions', label: 'Regressoes', count: diffSummary.score_regressions ?? scoreRegressionSegments.length, tone: scoreRegressionSegments.length ? 'red' : 'slate' },
+    { id: 'unhandled', label: 'Pendentes', count: diffSummary.unhandled_by_network ?? unhandledSegments.length, tone: unhandledSegments.length ? 'amber' : 'slate' },
+    { id: 'feedback', label: 'Feedbacks', count: feedbackRows.length, tone: feedbackRows.length ? 'blue' : 'slate' },
+    { id: 'low_score', label: 'Baixo score', count: lowScoreSegments.length, tone: lowScoreSegments.length ? 'red' : 'slate' },
+  ];
+  const reviewTabClass = (tab, active) => {
+    const base = 'group relative inline-flex min-h-9 min-w-[118px] items-center justify-between gap-2 rounded-xl border px-3 py-2 text-[11px] font-black shadow-sm transition focus:outline-none focus:ring-2 focus:ring-white/35';
+    if (!active) {
+      const toneClass = tab.tone === 'red'
+        ? 'border-red-300/25 bg-red-500/10 text-red-100/75 hover:bg-red-500/18'
+        : tab.tone === 'amber'
+          ? 'border-amber-300/25 bg-amber-500/10 text-amber-100/75 hover:bg-amber-500/18'
+          : tab.tone === 'emerald'
+            ? 'border-emerald-300/25 bg-emerald-500/10 text-emerald-100/75 hover:bg-emerald-500/18'
+            : tab.tone === 'blue'
+              ? 'border-blue-300/25 bg-blue-500/10 text-blue-100/75 hover:bg-blue-500/18'
+              : 'border-[var(--dash-border)] bg-[var(--dash-card)] text-[var(--dash-muted)] hover:border-blue-300/35 hover:text-blue-100';
+      return cn(base, toneClass, 'hover:-translate-y-0.5');
+    }
+    if (tab.tone === 'red') return cn(base, 'border-red-200/45 bg-red-500/25 text-red-50 shadow-red-950/30');
+    if (tab.tone === 'amber') return cn(base, 'border-amber-200/45 bg-amber-500/25 text-amber-50 shadow-amber-950/30');
+    if (tab.tone === 'emerald') return cn(base, 'border-emerald-200/45 bg-emerald-500/25 text-emerald-50 shadow-emerald-950/30');
+    if (tab.tone === 'blue') return cn(base, 'border-blue-200/45 bg-blue-500/25 text-blue-50 shadow-blue-950/30');
+    return cn(base, 'border-slate-200/25 bg-slate-500/15 text-slate-100');
+  };
+  const comparisonSegments = postReleaseView === 'package' ? packageSegments : promotionSegments;
+  const missingReleaseReadiness = [knownOpen, appliedPendingValidation].some((value) => value === null);
+  const publishStatus = publicationAllowed ? 'Liberada' : publicationGate.status === 'not_measured' ? 'Não medida' : 'Bloqueada';
+  const publishTone = publicationAllowed ? 'emerald' : publicationGate.status === 'not_measured' ? 'slate' : 'red';
+  const productionPublicationStatus = publicationActionAllowed
+    ? 'Publicável'
+    : publicationAllowed
+      ? 'Sem apply'
+      : publishStatus;
+  const productionPublicationTone = publicationActionAllowed ? 'emerald' : publicationAllowed ? 'blue' : publishTone;
+  const latestPublicationCounts = latestPublicationPreflight?.counts && typeof latestPublicationPreflight.counts === 'object'
+    ? latestPublicationPreflight.counts
+    : {};
+  const outputPackageDiffCount = numberOrNull(
+    diffSummary.package_diff_count
+      ?? latestPublicationCounts.package_diff
+      ?? evaluatedDiffSummary.package_diff_count
+      ?? evaluatedDiffSummary.package_diff
+  );
+  const outputRawDiffCount = numberOrNull(
+    diffSummary.raw_output_diff_count
+      ?? diffSummary.changed_vs_old
+      ?? latestPublicationCounts.raw_output_diff
+      ?? evaluatedDiffSummary.raw_output_diff_count
+      ?? evaluatedDiffSummary.raw_output_diff
+      ?? evaluatedDiffSummary.changed_vs_old
+  );
+  const outputCurrentDiffCount = outputPackageDiffCount ?? outputRawDiffCount;
+  const outputCurrentLabel = outputCurrentDiffCount !== null && outputCurrentDiffCount > 0
+    ? `${compact(outputCurrentDiffCount)} mudancas`
+    : outputRestoreStatus.restored_exactly
+      ? 'restaurado'
+      : valueOrPending(outputRestoreStatus.restored_exactly);
+  const outputCurrentTone = outputCurrentDiffCount !== null && outputCurrentDiffCount > 0
+    ? 'amber'
+    : outputRestoreStatus.restored_exactly
+      ? 'emerald'
+      : 'slate';
+  const mainBlocker = release.needs_apply
+    ? `needs_output_apply: ${compact(release.needs_apply)}`
+    : publicationReasons.length
+      ? publicationReasons.join(', ')
+      : missingReleaseReadiness
+        ? 'feedback pos-release nao medido'
+        : publicationAllowed
+          ? 'sem bloqueador'
+          : 'publicacao bloqueada';
+  const postReleaseCards = [
+    { title: 'Pendências conhecidas', value: metricValue(knownOpen), tone: toneForCount(knownOpen, 'emerald') },
+    { title: 'Em validacao', value: metricValue(appliedPendingValidation), tone: toneForCount(appliedPendingValidation, 'emerald') },
+    { title: 'Fechadas', value: metricValue(closedFeedback), tone: closedFeedback === null ? 'slate' : 'emerald' },
+    { title: 'Holds', value: metricValue(acceptedHolds), tone: acceptedHolds === null ? 'slate' : 'blue' },
+  ];
+  const miniPostReleaseChips = [
+    approvedPendingApply ? { label: 'aplicar', value: compact(approvedPendingApply), tone: 'amber' } : null,
+    parserBacklog !== null ? { label: 'parser', value: compact(parserBacklog), tone: parserBacklog ? 'amber' : 'emerald' } : null,
+    feedbackAffected !== null ? { label: 'afetados', value: compact(feedbackAffected), tone: 'blue' } : null,
+    feedbackClosed !== null ? { label: 'segmentos fechados', value: compact(feedbackClosed), tone: 'emerald' } : null,
+  ].filter(Boolean);
+  const gateCards = [
+    {
+      title: 'Gate de avaliação',
+      status: evaluationAllowed ? 'Liberado' : evaluationGate.status === 'not_measured' ? 'Não medido' : 'Bloqueado',
+      tone: evaluationAllowed ? 'emerald' : evaluationGate.status === 'not_measured' ? 'slate' : 'red',
+      source: 'can_start_evaluation_full_production_now',
+      reasons: evaluationReasons,
+    },
+    {
+      title: 'Gate de publicação',
+      status: publishStatus,
+      tone: publishTone,
+      source: 'can_publish_after_full_production_now',
+      reasons: publicationReasons,
+    },
+  ];
+  const releaseReadinessItems = [
+    { label: 'Gate avaliação', value: evaluationAllowed ? 'Liberada' : valueOrPending(evaluationGate.status), tone: evaluationAllowed ? 'emerald' : 'red' },
+    { label: 'Gate publicação', value: publishStatus, tone: publishTone },
+    { label: 'Needs apply', value: compact(release.needs_apply), tone: release.needs_apply ? 'amber' : 'emerald' },
+    { label: 'Locks visuais', value: metricValue(visualLocks.count), tone: visualLocks.count == null ? 'slate' : 'blue' },
+    { label: 'Pendências', value: metricValue(knownOpen), tone: toneForCount(knownOpen, 'emerald') },
+    { label: 'Validação', value: metricValue(appliedPendingValidation), tone: toneForCount(appliedPendingValidation, 'emerald') },
+  ];
+  const sourceOutputChecklist = [
+    { label: 'Baseline', value: baselineControl.stable_baseline_path ?? 'source\\spanish_old', tone: 'blue' },
+    { label: 'Output atual', value: outputCurrentLabel, tone: outputCurrentTone },
+    { label: 'Candidate', value: releaseCandidate.current_candidate_path ? 'hotfix candidate' : 'nao medido', tone: releaseCandidate.current_candidate_path ? 'amber' : 'slate' },
+    { label: 'Último preflight', value: compactDateTime(gameUpdate.latest_preflight ?? safety.preflight?.generated_at), tone: gameUpdate.latest_preflight || safety.preflight?.generated_at ? 'blue' : 'slate' },
+  ];
+  const updateChecklist = [
+    { label: 'Snapshot', ok: Boolean(runStatus?.snapshot_path || runStatus?.snapshot_archive_path), pending: runStatus?.snapshot_archive_path ? 'ok' : 'nao medido' },
+    { label: 'Output restaurado', ok: outputRestoreStatus.restored_exactly === true, pending: outputRestoreStatus.restored_exactly ? 'ok' : 'nao medido' },
+    { label: 'Locks carregados', ok: numberOrNull(visualLocks.count) !== null, pending: visualLocks.count == null ? 'nao medido' : `${compact(visualLocks.count)} locks` },
+    { label: 'Produção de avaliação', ok: evaluationAllowed, pending: evaluationAllowed ? 'liberada' : 'bloqueada' },
+    { label: 'Publicação', ok: publicationAllowed, pending: publicationAllowed ? 'liberada' : 'bloqueada' },
+  ];
+  const productionStateRows = [
+    { label: 'Baseline', value: baselineControl.stable_baseline_path ?? 'source\\spanish_old', tone: 'blue' },
+    { label: 'Output', value: outputCurrentLabel, tone: outputCurrentTone },
+    { label: 'Preflight', value: compactDateTime(gameUpdate.latest_preflight ?? safety.preflight?.generated_at), tone: gameUpdate.latest_preflight || safety.preflight?.generated_at ? 'blue' : 'slate' },
+    { label: 'Apply verificado', value: hasVerifiedApplyQueue ? compact(evaluatedApplyCount) : '0', tone: hasVerifiedApplyQueue ? 'amber' : 'blue' },
+    { label: 'Avaliação', value: evaluationAllowed ? 'liberada' : 'bloqueada', tone: evaluationAllowed ? 'emerald' : 'red' },
+    { label: 'Publicável', value: productionPublicationStatus.toLowerCase(), tone: productionPublicationTone },
+  ];
+  const blockingSummary = publicationActionAllowed
+    ? `${compact(evaluatedApplyCount)} apply verificado pela avaliação`
+    : publicationAllowed
+      ? 'sem apply verificado para aplicar'
+      : publicationReasons.length
+        ? publicationReasons.join(', ')
+        : evaluationReasons.length
+          ? evaluationReasons.join(', ')
+          : 'not_measured';
+  const lastDiagnosticLine = lastDiagnostic
+    ? `Diagnóstico atualizado: ${lastDiagnostic.completedAt} · cache atualizado · sem produção iniciada · output intacto`
+    : `Último diagnóstico: cache ${cache.generated_at ? `atualizado em ${cache.generated_at}` : 'pendente'} · sem produção iniciada nesta sessão`;
+  const visibleProductionRun = runStatus?.run_id ? runStatus : lastRun;
+  const visibleProductionRunId = visibleProductionRun?.run_id ?? productionDelta.last_production_run_id ?? '-';
+  const visibleProductionStatus = visibleProductionRun?.status ?? 'idle';
+  const lastProductionLine = `Última produção: ${visibleProductionRunId} · ${statusLabel(visibleProductionStatus)} · Segment-state #${visibleProductionRun?.new_segment_state_run_id ?? release.latest_segment_state_run_id ?? '-'} · Coverage ${pct(release.output_coverage)}`;
+  const currentActionRun = actionRunStatus ?? (runActive ? runStatus : null);
+  const currentActionStatus = normalizedRunStatus(currentActionRun?.status);
+  const currentRunLine = currentActionRun?.run_id
+    ? `Run ${currentActionRun.run_id} · ${statusLabel(currentActionRun.status)} · etapa ${currentStage?.label ?? currentActionRun.current_label ?? currentActionRun.current_stage ?? 'sem etapa ativa'}`
+    : 'Nenhum run de produção iniciado nesta sessão.';
+  const lastResultLine = effectiveSelectedMode === 'diagnostic' ? lastDiagnosticLine : lastProductionLine;
+  const runFailure = currentActionStatus === 'failed' ? (currentActionRun.failure ?? {}) : {};
+  const failedStageId = currentActionRun?.failed_stage ?? runFailure.stage ?? currentActionRun?.current_stage ?? '';
+  const failedStage = (runStages ?? []).find((stage) => stage.id === failedStageId);
+  const failedStageLabel = failedStage?.label ?? failedStageId ?? 'nao medido';
+  const failureMessage = runFailure.message ?? currentActionRun?.message ?? startError ?? '';
+  const failureDisk = modeActionNotice?.diskPreflight ?? currentActionRun?.disk_preflight ?? runFailure.disk_preflight ?? diskPreflight;
+  const terminalDiskFailure = currentActionStatus === 'failed'
+    ? (runFailure.reason === 'insufficient_disk_space' || /insufficient disk space/i.test(failureMessage))
+    : false;
+  const actionDiskBlock = modeActionNotice?.status === 'blocked' && modeActionNotice?.diskPreflight?.ok === false;
+  const diskFailure = effectiveSelectedMode === 'evaluation' && (terminalDiskFailure || actionDiskBlock);
+  const actionMayChangeOutput = runActive || actionWaitingForRun || ['starting', 'running'].includes(actionNoticeStatus);
+  const runOutputLabel = actionMayChangeOutput
+    ? 'output pode mudar'
+    : currentActionRun?.run_id
+      ? runOutputStatusLabel(currentActionRun)
+      : modeActionNotice?.outputChanged
+        ? 'output alterado'
+        : modeActionNotice
+          ? 'sem escrita no output'
+          : 'output nao medido';
+  const runOutputChanged = Boolean(currentActionRun?.output_changed || modeActionNotice?.outputChanged);
+  const runOutputBadgeTone = actionMayChangeOutput || runOutputChanged
+    ? 'amber'
+    : runOutputLabel === 'output nao medido'
+      ? 'slate'
+      : 'emerald';
+  const runSegmentStateId = currentActionRun?.new_segment_state_run_id ?? currentActionRun?.segment_state_run_id ?? null;
+  const runSegmentStateLabel = runSegmentStateId ? `segment-state #${runSegmentStateId}` : 'sem novo segment-state';
+  const executionStatus = modeActionNotice?.mode === 'evaluation' || modeActionNotice?.mode === 'publication'
+    ? (currentActionRun?.status ?? modeActionNotice.status)
+    : modeActionNotice?.status;
+  const executionStatusValue = normalizedRunStatus(executionStatus);
+  const executionTone = executionStatusValue === 'failed' || executionStatusValue === 'blocked'
+    ? 'red'
+    : executionStatusValue === 'completed' || executionStatusValue === 'refresh_completed'
+      ? 'emerald'
+      : modeActionNotice?.tone ?? selectedModeInfo.tone ?? 'blue';
+  const diagnosticElapsedMs = diagnosticStartedAt
+    ? (refreshing ? Date.now() : (diagnosticFinishedAt ?? Date.now())) - diagnosticStartedAt
+    : 0;
+  const diagnosticProgress = refreshing
+    ? clampNumber(18 + Math.floor(diagnosticElapsedMs / 1000) * 2, 18, 96)
+    : executionStatusValue === 'failed'
+      ? 100
+      : modeActionNotice?.mode === 'diagnostic'
+        ? 100
+        : 0;
+  const executionProgress = modeActionNotice?.mode === 'diagnostic' || (refreshing && effectiveSelectedMode === 'diagnostic')
+    ? diagnosticProgress
+    : modeActionNotice?.mode === 'evaluation' || modeActionNotice?.mode === 'publication'
+      ? (runActive ? Math.max(8, runProgress) : currentActionStatus === 'completed' ? 100 : currentActionStatus === 'failed' ? 100 : runStartPending ? 8 : ['completed', 'blocked', 'failed'].includes(executionStatusValue) ? 100 : executionStatusValue === 'starting' ? 8 : 0)
+      : 0;
+  const diagnosticExecutionActive = refreshing && effectiveSelectedMode === 'diagnostic';
+  const diagnosticElapsedLabel = diagnosticStartedAt ? durationLabel(diagnosticElapsedMs) : 'nao medido';
+  const diagnosticCurrentStepLabel = diagnosticProgress < 50
+    ? 'Segment-state'
+    : diagnosticProgress < 68
+      ? 'Cache'
+      : diagnosticProgress < 88
+        ? 'Preflight'
+        : refreshing
+          ? 'Consolidar painel'
+          : 'Concluido';
+  const diagnosticStepStatus = (stepIndex) => {
+    if (startStatus === 'failed') return stepIndex === 0 ? 'failed' : 'pending';
+    if (!refreshing) return modeActionNotice?.mode === 'diagnostic' ? 'done' : 'pending';
+    if (stepIndex === 0) return diagnosticProgress < 50 ? 'running' : 'done';
+    if (stepIndex === 1) return diagnosticProgress < 50 ? 'pending' : diagnosticProgress < 68 ? 'running' : 'done';
+    if (stepIndex === 2) return diagnosticProgress < 68 ? 'pending' : diagnosticProgress < 88 ? 'running' : 'done';
+    if (stepIndex === 3) return diagnosticProgress < 88 ? 'pending' : 'running';
+    return 'pending';
+  };
+  const executionTitle = modeActionNotice?.mode === 'diagnostic'
+    ? (refreshing ? 'Diagnóstico em execução' : modeActionNotice?.title)
+    : modeActionNotice?.mode === 'evaluation'
+      ? (currentActionStatus === 'failed' ? 'Execução falhou' : runActive ? 'Produção de avaliação em execução' : currentActionStatus === 'completed' ? 'Produção de avaliação concluída' : modeActionNotice?.title)
+      : modeActionNotice?.title;
+  const executionDetail = modeActionNotice?.mode === 'evaluation'
+    ? currentActionStatus === 'failed'
+      ? `Run ${currentActionRun.run_id} · falha em ${failedStageLabel} · ${failureMessage || 'mensagem nao medida'}`
+      : `Modo Producao de avaliacao · ${currentActionRun?.run_id ? `run ${currentActionRun.run_id}` : 'aguardando run'} · etapa ${currentStage?.label ?? currentActionRun?.current_label ?? currentActionRun?.current_stage ?? 'preparando'}`
+    : modeActionNotice?.body;
+  const displayExecutionDetail = modeActionNotice?.mode === 'evaluation' && currentActionStatus === 'completed'
+    ? `Run ${currentActionRun.run_id} concluida Â· ${runOutputLabel} Â· ${runSegmentStateLabel}`
+    : executionDetail;
+  const runModeUsesPipeline = modeActionNotice?.mode === 'evaluation' || modeActionNotice?.mode === 'publication';
+  const displayExecutionTitle = modeActionNotice?.mode === 'diagnostic'
+    ? (refreshing ? 'Diagnostico em execucao' : modeActionNotice?.title)
+    : modeActionNotice?.mode === 'evaluation'
+      ? (currentActionStatus === 'failed' ? 'Execucao falhou' : runActive ? 'Producao de avaliacao em execucao' : currentActionStatus === 'completed' ? 'Producao de avaliacao concluida' : modeActionNotice?.title)
+      : modeActionNotice?.mode === 'publication'
+        ? (currentActionStatus === 'failed' ? 'Execucao falhou' : runActive ? 'Producao publicavel em execucao' : currentActionStatus === 'completed' ? 'Producao publicavel concluida' : modeActionNotice?.title)
+        : executionTitle;
+  const displayExecutionDetailText = runModeUsesPipeline
+    ? currentActionStatus === 'completed'
+      ? `Run ${currentActionRun?.run_id ?? '-'} concluida - ${runOutputLabel} - ${runSegmentStateLabel}`
+      : currentActionStatus === 'failed'
+        ? `Run ${currentActionRun?.run_id ?? '-'} - falha em ${failedStageLabel} - ${failureMessage || 'mensagem nao medida'}`
+        : `Modo ${modeActionNotice?.mode === 'publication' ? 'Producao publicavel' : 'Producao de avaliacao'} - ${currentActionRun?.run_id ? `run ${currentActionRun.run_id}` : 'aguardando run'} - etapa ${currentStage?.label ?? currentActionRun?.current_label ?? currentActionRun?.current_stage ?? 'preparando'}`
+    : displayExecutionDetail;
+  const selectedModePreviewSteps = {
+    diagnostic: [
+      { label: 'Segment-state', status: refreshing ? 'running' : 'pending' },
+      { label: 'Cache', status: 'pending' },
+      { label: 'Preflight', status: 'pending' },
+      { label: 'Consolidar painel', status: 'pending' },
+    ],
+    evaluation: [
+      { label: 'Preparacao', status: evaluationAllowed && !diskBlocksProduction ? 'pending' : 'failed', detail: 'Snapshot, arquivo, indice e segment-state antes da escrita.' },
+      { label: 'Analise', status: 'pending', detail: 'Dry-runs e politicas medem o que pode ser promovido com seguranca.' },
+      { label: 'Escrita', status: 'pending', detail: 'Gera output de avaliacao para medir score, diff e regressao.' },
+      { label: 'Validacao', status: 'pending', detail: 'Recalcula estado, reaudita e emite relatorio final.' },
+    ],
+    publication: [
+      { label: 'Gates', status: publicationAllowed ? 'pending' : 'failed', detail: 'Confere bloqueios, feedback ativo e estado de publicacao.' },
+      { label: 'Apply confirmado', status: 'pending', detail: 'Valida correcoes ja confirmadas antes de escrever no output.' },
+      { label: 'Promocoes', status: 'pending', detail: 'Revisa candidatos melhores que o old antes de virarem apply.' },
+      { label: 'Relatorio final', status: 'pending', detail: 'Compara old vs output final, score do pacote e motivos de bloqueio.' },
+    ],
+    hotfix: [
+      { label: 'Fila', status: releaseCandidate.current_candidate_path ? 'pending' : 'failed' },
+      { label: 'Pacote', status: 'pending' },
+      { label: 'Validar', status: 'pending' },
+      { label: 'Handoff', status: 'pending' },
+    ],
+  }[effectiveSelectedMode] ?? [];
+  const executionTerminalProblem = executionStatusValue === 'failed' || executionStatusValue === 'blocked';
+  const publicationPreflight = latestPublicationPreflight ?? {};
+  const publicationPreflightCounts = publicationPreflight.counts ?? {};
+  const publicationPreflightReady = publicationPreflight.status === 'ready' || publicationPreflight.can_publish_now === true;
+  const publicationPreflightApply = Number(publicationPreflightCounts.needs_apply ?? 0);
+  const publicationPreflightApplyReady = Number(publicationPreflightCounts.apply_ready ?? 0);
+  const publicationPreflightApplyBlocked = Number(publicationPreflightCounts.apply_blocked ?? 0);
+  const publicationPreflightTokenMismatch = Number(publicationPreflightCounts.apply_token_mismatch ?? 0);
+  const publicationPreflightPromotions = Number(publicationPreflightCounts.promotions ?? 0);
+  const publicationPreflightRegressions = Number(publicationPreflightCounts.score_regressions ?? 0);
+  const publicationPreflightUnhandled = Number(publicationPreflightCounts.unhandled_by_network ?? 0);
+  const publicationPreflightQuality = publicationPreflight.quality ?? {};
+  const publicationPackageScoreLabel = publicationPreflightQuality.package_new_score === null || publicationPreflightQuality.package_new_score === undefined
+    ? 'score do pacote nao medido'
+    : `score pacote ${scoreLabel(publicationPreflightQuality.package_old_score)} -> ${scoreLabel(publicationPreflightQuality.package_new_score)} (${scoreDeltaLabel({ score_delta: publicationPreflightQuality.package_delta })})`;
+  const evaluationPipelineVisible = runModeUsesPipeline && evaluationExecutionVisible;
+  const executionSteps = runModeUsesPipeline && evaluationPipelineVisible
+    ? displayPhases.map((phase) => ({
+        label: phase.title,
+        status: phase.status,
+        detail: phase.currentStage?.label ?? phase.currentStage?.id ?? '',
+      }))
+    : runModeUsesPipeline && ['failed', 'blocked'].includes(executionStatusValue)
+      ? [
+          { label: 'Preparacao', status: executionTerminalProblem ? 'failed' : 'done', detail: failureMessage || 'Nao foi possivel iniciar a producao de avaliacao.' },
+          { label: 'Analise', status: 'pending' },
+          { label: 'Escrita', status: 'pending' },
+          { label: 'Validacao', status: 'pending' },
+        ]
+    : modeActionNotice?.mode === 'diagnostic' || diagnosticExecutionActive
+      ? [
+          { label: 'Segment-state', status: diagnosticStepStatus(0), detail: 'Recalcula fechamentos, pendencias e needs apply sem alterar output.' },
+          { label: 'Cache', status: diagnosticStepStatus(1), detail: 'Atualiza app-state e cache do dashboard.' },
+          { label: 'Preflight', status: diagnosticStepStatus(2), detail: 'Rele estado, gates e disponibilidade operacional.' },
+          { label: 'Consolidar painel', status: diagnosticStepStatus(3), detail: 'Monta metricas, filas e comparativos para atualizar a tela.' },
+        ]
+      : modeActionNotice?.mode === 'publication'
+        ? [
+            {
+              label: 'Gates',
+              status: publicationPreflightReady ? 'done' : executionStatusValue === 'failed' ? 'failed' : 'failed',
+              detail: (publicationPreflight.blocking_reasons ?? []).length
+                ? `Bloqueios: ${publicationPreflight.blocking_reasons.join(', ')}`
+                : 'Sem bloqueios de publicacao.',
+            },
+            {
+              label: 'Apply',
+              status: publicationPreflightApply > 0
+                ? publicationPreflightApplyReady === publicationPreflightApply ? 'done' : 'failed'
+                : 'done',
+              detail: publicationPreflightApply > 0
+                ? `${compact(publicationPreflightApplyReady)}/${compact(publicationPreflightApply)} pronto para escrita; ${compact(publicationPreflightApplyBlocked)} bloqueado; token mismatch ${compact(publicationPreflightTokenMismatch)}.`
+                : 'Sem correcoes confirmadas aguardando escrita.',
+            },
+            {
+              label: 'Promocoes',
+              status: publicationPreflightPromotions > 0 ? 'done' : 'pending',
+              detail: `${compact(publicationPreflightPromotions)} promocoes medidas contra baseline.`,
+            },
+            {
+              label: 'Relatorio',
+              status: executionStatusValue === 'failed' ? 'failed' : 'done',
+              detail: `${publicationPackageScoreLabel}. Regressoes ${compact(publicationPreflightRegressions)} - Pendentes ${compact(publicationPreflightUnhandled)} - Proximo: ${publicationPreflight.next_action ?? 'revisar'}.`,
+            },
+          ]
+        : selectedModePreviewSteps;
+  const executionStepClass = (status) => (
+    status === 'done'
+      ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300'
+      : status === 'running'
+        ? 'border-blue-400/40 bg-blue-500/15 text-blue-300'
+      : status === 'failed'
+          ? 'border-red-400/35 bg-red-500/10 text-red-300'
+          : status === 'cancelled'
+            ? 'border-amber-400/35 bg-amber-500/10 text-amber-300'
+          : 'border-[var(--dash-border)] bg-[var(--dash-card)] text-[var(--dash-muted)]'
+  );
+  const selectedModeTitle = {
+    diagnostic: 'Atualiza cache e preflight.',
+    evaluation: 'Gera output de avaliação.',
+    publication: 'Valida pacote publicavel.',
+    hotfix: 'Opera hotfix visual.',
+  }[effectiveSelectedMode] ?? selectedModeInfo.description;
+  const latestRunFailure = visibleProductionRun?.status === 'failed' ? (visibleProductionRun.failure ?? {}) : {};
+  const latestRunFailureMessage = latestRunFailure.message ?? visibleProductionRun?.message ?? '';
+  const latestTerminalDiskFailure = visibleProductionRun?.status === 'failed'
+    ? (latestRunFailure.reason === 'insufficient_disk_space' || /insufficient disk space/i.test(latestRunFailureMessage))
+    : false;
+  const latestRunStageLabel = visibleProductionRun?.current_label ?? visibleProductionRun?.current_stage ?? 'sem etapa ativa';
+  const latestRunStartedLabel = runDateTimeLabel(visibleProductionRun?.run_id, visibleProductionRun?.started_at);
+  const latestRunFinishedLabel = visibleProductionRun?.finished_at ? compactDateTime(visibleProductionRun.finished_at) : null;
+  const latestRunLine = visibleProductionRun?.run_id
+    ? `Run ${latestRunStartedLabel} - ${statusLabel(visibleProductionRun.status)} - etapa ${latestRunStageLabel}${latestRunFinishedLabel ? ` - fim ${latestRunFinishedLabel}` : ''}`
+    : lastProductionLine;
+  const latestRunOutputLabel = visibleProductionRun?.run_id
+    ? runOutputStatusLabel(visibleProductionRun)
+    : 'output nao medido';
+  const latestRunSegmentStateId = visibleProductionRun?.new_segment_state_run_id ?? visibleProductionRun?.segment_state_run_id ?? null;
+  const latestRunSegmentStateLabel = latestRunSegmentStateId ? `segment-state #${latestRunSegmentStateId}` : 'sem novo segment-state';
+  const latestRunTone = visibleProductionRun?.status === 'failed'
+    ? (latestTerminalDiskFailure ? 'amber' : 'red')
+    : visibleProductionRun?.status === 'completed'
+      ? 'emerald'
+      : runActive
+        ? 'blue'
+        : 'slate';
+  const latestRunTitle = visibleProductionRun?.status === 'failed'
+    ? (latestTerminalDiskFailure ? 'Espaço em disco insuficiente' : 'Execução falhou')
+    : visibleProductionRun?.run_id
+      ? `Run ${latestRunStartedLabel}`
+      : 'Sem run recente';
+  const latestRunDetail = visibleProductionRun?.status === 'failed'
+    ? (latestRunFailureMessage || 'Falha sem mensagem detalhada.')
+    : visibleProductionRun?.run_id
+      ? latestRunLine
+      : lastProductionLine;
+  const latestRunDisk = visibleProductionRun?.disk_preflight ?? latestRunFailure.disk_preflight ?? diskPreflight;
+  const nowMs = Date.now() + clockTick * 0;
+  const runStartedMs = timestampMs(runStatus?.started_at ?? runStatus?.created_at);
+  const runUpdatedMs = timestampMs(runStatus?.updated_at ?? runStatus?.last_event_at ?? runStatus?.finished_at ?? runStatus?.started_at);
+  const stageStartedMs = timestampMs(currentStage?.started_at ?? currentStage?.updated_at ?? currentStage?.finished_at ?? runStatus?.updated_at);
+  const runElapsed = runStartedMs ? durationLabel(nowMs - runStartedMs) : 'nao medido';
+  const stageElapsed = stageStartedMs ? durationLabel(nowMs - stageStartedMs) : 'nao medido';
+  const updateElapsed = runUpdatedMs ? durationLabel(nowMs - runUpdatedMs) : 'nao medido';
+  const staleUpdateMs = runUpdatedMs ? nowMs - runUpdatedMs : null;
+  const staleUpdateWarning = runActive && Number.isFinite(staleUpdateMs) && staleUpdateMs > 120000;
+  const liveLogs = (Array.isArray(runStatus?.logs_tail) ? runStatus.logs_tail : [])
+    .map(logLineText)
+    .filter(Boolean)
+    .slice(-5);
+  const liveDiskPreflight = runStatus?.disk_preflight ?? diskPreflight ?? {};
+  const sqliteBackupMode = liveDiskPreflight.sqlite_backup_mode ?? 'not_measured';
+  const sqliteBackupLabel = sqliteBackupMode === 'metadata_only' ? 'metadata only' : valueOrPending(sqliteBackupMode);
+  const currentStageLabel = currentStage?.label ?? runStatus?.current_label ?? runStatus?.current_stage ?? 'preparando';
+  const liveModeLabel = runStatus?.mode === 'publication_apply_confirmed' || runStatus?.run_mode === 'publication'
+    ? 'Producao publicavel'
+    : runStatus?.mode === 'full_production_apply' || runStatus?.mode === 'evaluation_full_production' || runStatus?.run_mode === 'evaluation'
+    ? 'Producao de avaliacao'
+    : runStatus?.mode ?? runStatus?.run_mode ?? selectedModeInfo.label;
+  const liveRunStatusTone = runStatusValue === 'failed'
+    ? 'red'
+    : runStatusValue === 'cancelled'
+      ? 'amber'
+      : runActive
+        ? 'blue'
+        : runStatusValue === 'completed'
+          ? 'emerald'
+          : 'slate';
   const integrityItems = [
     { label: 'source', value: integrity.source_status ?? 'pending_instrumentation', tone: integrity.source_status === 'clean' ? 'emerald' : 'slate' },
     { label: 'output', value: integrity.output_status ?? 'pending_instrumentation', tone: integrity.output_status?.includes?.('alter') ? 'amber' : 'slate' },
@@ -2476,6 +3875,28 @@ function ProductionControlCompact({ data }) {
     { label: 'needs_apply', value: compact(release.needs_apply), tone: release.needs_apply ? 'amber' : 'emerald' },
     { label: 'gate', value: gateText, tone: learning.can_start_production ? 'emerald' : 'red' },
   ];
+  const terminalProblem = executionTerminalProblem;
+  const executionPanelActive = runActive || refreshing || Boolean(modeActionNotice?.mode === effectiveSelectedMode && (terminalProblem || ['starting', 'running'].includes(executionStatusValue)));
+  const executionPanelTitle = runActive
+    ? 'Execucao em andamento'
+    : refreshing
+      ? 'Diagnostico em execucao'
+    : executionStatusValue === 'failed' || executionStatusValue === 'blocked'
+      ? 'Execucao interrompida'
+      : executionStatusValue === 'completed' || executionStatusValue === 'refresh_completed'
+        ? 'Execucao concluida'
+        : displayExecutionTitle || 'Execucao preparada';
+  const executionPanelCurrent = runActive
+    ? currentStageLabel
+    : modeActionNotice?.mode === 'evaluation' && currentActionStatus === 'completed'
+      ? (runOutputChanged ? 'Concluida com alteracoes' : 'Concluida sem alteracoes')
+      : modeActionNotice?.mode === 'evaluation' && currentActionStatus === 'failed'
+        ? `Falha em ${failedStageLabel}`
+    : modeActionNotice?.mode === 'publication'
+      ? modeActionNotice?.body ?? selectedModeInfo.description
+    : effectiveSelectedMode === 'diagnostic'
+      ? refreshing ? 'Atualizando cache e preflight' : modeActionNotice?.title ?? selectedModeInfo.description
+      : selectedModeInfo.description;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 pb-0">
@@ -2486,9 +3907,9 @@ function ProductionControlCompact({ data }) {
               <Activity size={17} />
             </div>
             <div className="min-w-0">
-              <h2 className="truncate text-lg font-black text-[var(--dash-text)]">CK3 PT-BR Production Control</h2>
+              <h2 className="truncate text-lg font-black text-[var(--dash-text)]">CK3 PT-BR Release Control</h2>
               <p className="truncate text-xs text-[var(--dash-muted)]">
-                Cache {cache.generated_at ? `atualizado em ${cache.generated_at}` : 'pendente'} · SQLite {cache.stale ? 'mudou desde o cache' : 'sincronizado'}
+                Pos-release QA e hotfix seguro · Cache {cache.generated_at ? `atualizado em ${cache.generated_at}` : 'pendente'} · SQLite {cache.stale ? 'mudou desde o cache' : 'sincronizado'}
               </p>
             </div>
           </div>
@@ -2500,61 +3921,214 @@ function ProductionControlCompact({ data }) {
           </div>
         </div>
 
-        <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-5">
-          <MetricTile title="Readiness" value={release.readiness ?? 'unknown'} tone={readinessTone} />
-          <MetricTile title="Closed" value={`${pct(release.closed_rate)} · ${compact(release.closed_count)}`} tone="emerald" />
-          <MetricTile title="Pending" value={compact(release.pending_count)} tone={release.pending_count ? 'amber' : 'emerald'} />
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] px-2.5 py-2 text-xs font-bold text-[var(--dash-muted)]">
+          <span><span className="text-blue-400">{compact(release.total_segments)}</span> segmentos</span>
+          <span className="text-[var(--dash-soft)]">·</span>
+          <span><span className="text-emerald-400">{pct(release.closed_rate)}</span> fechados</span>
+          <span className="text-[var(--dash-soft)]">·</span>
+          <span><span className={release.pending_count ? 'text-amber-400' : 'text-emerald-400'}>{compact(release.pending_count)}</span> pendentes</span>
+          <span className="text-[var(--dash-soft)]">·</span>
+          <span>needs apply <span className={release.needs_apply ? 'text-amber-400' : 'text-emerald-400'}>{compact(release.needs_apply)}</span></span>
+          <span className="text-[var(--dash-soft)]">·</span>
+          <span>modo <span className="text-[var(--dash-text)]">{selectedModeInfo.shortLabel}</span></span>
+        </div>
+
+        <div className="hidden">
+          <MetricTile title="Segmentos totais" value={compact(release.total_segments)} tone="blue" />
+          <MetricTile title="Fechados" value={`${pct(release.closed_rate)} · ${compact(release.closed_count)}`} tone="emerald" />
+          <MetricTile title="Pendências operacionais" value={compact(release.pending_count)} tone={release.pending_count ? 'amber' : 'emerald'} />
           <MetricTile title="Needs Apply" value={compact(release.needs_apply)} tone={release.needs_apply ? 'amber' : 'emerald'} />
-          <MetricTile title="Learning Gate" value={gateText} tone={learning.can_start_production ? 'emerald' : 'red'} />
+          <MetricTile title="Modo atual" value={selectedModeInfo.label} tone={selectedModeInfo.tone} />
         </div>
       </Card>
 
-      <div className="grid min-h-0 flex-1 gap-2 xl:grid-cols-[0.7fr_1.3fr]">
-        <Card className="flex min-h-0 flex-col p-2.5">
+      <div className="grid min-h-0 flex-1 gap-2 xl:grid-cols-[0.58fr_1.42fr]">
+        <Card className="dashboard-card-scroll flex min-h-0 flex-col overflow-y-auto p-2">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h3 className="text-sm font-black text-[var(--dash-text)]">Controle</h3>
-              <p className="mt-1 text-xs text-[var(--dash-muted)]">{learning.reason || learning.next_action || 'Produção protegida pelo learning gate.'}</p>
+              <h3 className="text-sm font-black text-[var(--dash-text)]">Production Control</h3>
+              <p className="mt-1 text-xs text-[var(--dash-muted)]">Escolha o tipo de execução antes de iniciar qualquer etapa.</p>
             </div>
-            <Badge tone={learning.can_start_production ? 'emerald' : 'red'}>{gateText}</Badge>
+            <Badge tone={selectedModeInfo.tone}>{selectedModeInfo.status}</Badge>
+          </div>
+
+          <div className="mt-2 grid grid-cols-4 gap-1.5">
+            {releaseModes.map((mode) => (
+              <button
+                key={mode.id}
+                type="button"
+                aria-disabled={runActive || runStartPending}
+                onClick={() => {
+                  if (!runActive && !runStartPending) setSelectedMode(mode.id);
+                }}
+                className={cn(modeButtonClass(mode, effectiveSelectedMode === mode.id), (runActive || runStartPending) && 'cursor-not-allowed')}
+                title={runActive ? 'Aguarde a execução atual terminar.' : modeTooltip(mode)}
+                aria-label={runActive ? 'Aguarde a execução atual terminar.' : modeTooltip(mode)}
+              >
+                <span
+                  className={cn(
+                    'pointer-events-none absolute inset-x-2 top-0 h-1 rounded-b-full bg-white/80 opacity-0 shadow-[0_0_12px_rgba(255,255,255,0.85)] transition',
+                    effectiveSelectedMode === mode.id && 'opacity-100'
+                  )}
+                />
+                <span className="block truncate text-[11px] font-black leading-4 text-white drop-shadow-sm">{mode.shortLabel}</span>
+                <span
+                  className={cn(
+                    'absolute right-1.5 top-1.5 grid h-4 w-4 place-items-center rounded-full border shadow-sm',
+                    mode.statusKind === 'blocked' ? 'border-red-100/40 bg-red-500 text-white' :
+                      mode.statusKind === 'instrumented' ? 'border-amber-100/45 bg-amber-400 text-amber-950' :
+                        mode.statusKind === 'unknown' ? 'border-slate-100/35 bg-slate-500 text-white' :
+                          'border-emerald-100/45 bg-emerald-400 text-emerald-950'
+                  )}
+                  title={`Status: ${mode.status}`}
+                >
+                  {modeStatusIcon(mode)}
+                </span>
+              </button>
+            ))}
           </div>
 
           <button
-            onClick={startProduction}
-            disabled={!canStart || startStatus === 'checking'}
+            onClick={runSelectedModeAction}
+            disabled={modeButtonDisabled}
+            title={`${selectedModeInfo.button}: ${selectedModeInfo.description} ${selectedModeInfo.warning}`}
+            aria-label={selectedModeInfo.button}
             className={cn(
-              'mt-2 inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl px-4 text-sm font-black transition',
-              canStart ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20 hover:bg-blue-500' : 'bg-red-500/15 text-red-300'
+              'mt-2 inline-flex h-9 w-full items-center justify-center gap-2 rounded-xl px-4 text-sm font-black transition',
+              !modeButtonDisabled ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20 hover:bg-blue-500' : 'bg-slate-500/10 text-[var(--dash-muted)]'
             )}
           >
-            <Play size={18} /> {runActive ? 'Run em execução...' : startStatus === 'checking' ? 'Checando...' : 'Start Production Run'}
+            <Play size={18} /> {runActive ? (activeRunMode === 'publication' ? 'Executando publicavel...' : 'Executando avaliacao...') : refreshing ? 'Atualizando...' : startStatus === 'checking' ? 'Checando...' : publicationCanApply ? 'Aplicar confirmados' : selectedModeInfo.actionLabel}
           </button>
 
-          <div className="mt-2 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Proxima acao</p>
-                <p className="truncate text-sm font-black text-[var(--dash-text)]">{nextAction}</p>
+          <div className="mt-2 flex h-[156px] flex-col justify-between overflow-hidden rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
+            {runActive ? (
+              <>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Modo real ativo</p>
+                    <p className="line-clamp-1 text-sm font-black text-[var(--dash-text)]">Avaliação em execução</p>
+                  </div>
+                  <Badge tone="blue">Running</Badge>
+                </div>
+                <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-500/20">
+                  <div className="h-full rounded-full bg-blue-500 transition-all duration-500" style={{ width: `${Math.max(0, Math.min(100, runProgress))}%` }} />
+                </div>
+                <div className="mt-2 grid grid-cols-3 gap-1 text-[10px] font-bold">
+                  <span className="truncate rounded-md bg-black/15 px-1.5 py-0.5" title={String(runStatus?.run_id ?? '-')}>run {runStatus?.run_id ?? '-'}</span>
+                  <span className="truncate rounded-md bg-black/15 px-1.5 py-0.5" title={currentStageLabel}>etapa {currentStageLabel}</span>
+                  <span className="rounded-md bg-black/15 px-1.5 py-0.5">progresso {Math.round(runProgress)}%</span>
+                  <span className="rounded-md bg-black/15 px-1.5 py-0.5">total {runElapsed}</span>
+                  <span className="rounded-md bg-black/15 px-1.5 py-0.5">etapa {stageElapsed}</span>
+                  <span className={cn('rounded-md bg-black/15 px-1.5 py-0.5', staleUpdateWarning ? 'text-amber-300' : '')}>evento {updateElapsed}</span>
+                </div>
+              </>
+            ) : (modeActionNotice || diagnosticExecutionActive) ? (
+              <>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Modo selecionado</p>
+                  <p className="line-clamp-1 text-sm font-black text-[var(--dash-text)]">{displayExecutionTitle || selectedModeTitle}</p>
+                </div>
+                <Badge tone={executionTone}>{statusLabel(executionStatus ?? startStatus ?? selectedModeInfo.status)}</Badge>
               </div>
-              <Badge tone={cache.stale || release.needs_apply || !learning.can_start_production ? 'amber' : 'emerald'}>operacional</Badge>
-            </div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-500/20">
+                <div
+                  className={cn('h-full rounded-full transition-all duration-500', executionTone === 'red' ? 'bg-red-500' : executionTone === 'emerald' ? 'bg-emerald-500' : 'bg-blue-500')}
+                  style={{ width: `${Math.max(0, Math.min(100, executionProgress))}%` }}
+                />
+              </div>
+              {executionSteps.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {executionSteps.map((step) => (
+                    <span
+                      key={step.label}
+                      title={step.detail || step.label}
+                      className={cn('inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-bold', executionStepClass(step.status))}
+                    >
+                      <span className={cn('h-1.5 w-1.5 rounded-full', step.status === 'done' ? 'bg-emerald-400' : step.status === 'running' ? 'bg-blue-400 animate-pulse' : step.status === 'failed' ? 'bg-red-400' : 'bg-slate-400')} />
+                      {step.label}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {(modeActionNotice?.mode === 'diagnostic' || diagnosticExecutionActive) && (
+                <div className="mt-2 grid grid-cols-3 gap-1 text-[10px] font-bold">
+                  <span className="rounded-md bg-black/15 px-1.5 py-0.5">total {diagnosticElapsedLabel}</span>
+                  <span className="truncate rounded-md bg-black/15 px-1.5 py-0.5" title={diagnosticCurrentStepLabel}>etapa {diagnosticCurrentStepLabel}</span>
+                  <span className="rounded-md bg-black/15 px-1.5 py-0.5">progresso {Math.round(executionProgress)}%</span>
+                </div>
+              )}
+              {startError && <p className="mt-1 font-bold text-red-300">{startError}</p>}
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Modo selecionado</p>
+                    <p className="line-clamp-1 text-sm font-black leading-snug text-[var(--dash-text)]">{selectedModeTitle}</p>
+                  </div>
+                  <Badge tone={selectedModeInfo.tone}>{selectedModeInfo.status}</Badge>
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-500/20">
+                  <div className={cn('h-full rounded-full', selectedModeInfo.tone === 'red' ? 'bg-red-500' : selectedModeInfo.tone === 'emerald' ? 'bg-emerald-500' : selectedModeInfo.tone === 'amber' ? 'bg-amber-500' : 'bg-blue-500')} style={{ width: '0%' }} />
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {selectedModePreviewSteps.map((step) => (
+                    <span
+                      key={step.label}
+                      title={step.detail || step.label}
+                      className={cn('inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-bold', executionStepClass(step.status))}
+                    >
+                      <span className={cn('h-1.5 w-1.5 rounded-full', step.status === 'done' ? 'bg-emerald-400' : step.status === 'running' ? 'bg-blue-400 animate-pulse' : step.status === 'failed' ? 'bg-red-400' : 'bg-slate-400')} />
+                      {step.label}
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
 
-          {(startError || startStatus) && (
-            <div className="mt-3 rounded-lg border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-3 text-xs text-[var(--dash-muted)]">
-              <span className="font-bold text-[var(--dash-text)]">{statusLabel(startStatus ?? lastRunStatus)}</span>
-              {startError && <span> · {startError}</span>}
-            </div>
-          )}
-
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            <MetricTile title="Última run" value={runStatus?.run_id ?? '-'} tone="blue" />
-            <MetricTile title="Status" value={statusLabel(lastRunStatus)} tone={statusTone(lastRunStatus)} />
-            <MetricTile title="Progresso" value={`${runProgress}%`} tone={runActive ? 'blue' : statusTone(lastRunStatus)} />
-            <MetricTile title="Etapa" value={currentStage?.label ?? runStatus?.current_stage ?? '-'} tone="slate" />
+          <div className="hidden">
+            {gateCards.map((gate) => (
+              <div key={gate.title} className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h4 className="text-xs font-black text-[var(--dash-text)]">{gate.title}</h4>
+                    <p className="mt-0.5 truncate text-[10px] text-[var(--dash-soft)]" title={gate.source}>{gate.source}</p>
+                  </div>
+                  <Badge tone={gate.tone}>{gate.status}</Badge>
+                </div>
+                <p className="mt-2 line-clamp-2 text-xs font-bold text-[var(--dash-muted)]">
+                  {gate.reasons.length ? gate.reasons.join(', ') : gate.tone === 'emerald' ? 'sem bloqueador' : 'not_measured'}
+                </p>
+              </div>
+            ))}
           </div>
 
-          <div className="mt-2 grid gap-2 md:grid-cols-2">
+          <div className="mt-2 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <h4 className="text-xs font-black text-[var(--dash-text)]">Estado de produção</h4>
+              <Badge tone={productionPublicationTone}>{productionPublicationStatus.toLowerCase()}</Badge>
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-1.5">
+              {productionStateRows.map((item) => (
+                <div key={item.label} className="min-w-0 rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1.5">
+                  <p className="text-[9px] font-black uppercase tracking-wide text-[var(--dash-muted)]">{item.label}</p>
+                  <p className={cn('mt-0.5 truncate text-xs font-black', item.tone === 'emerald' ? 'text-emerald-400' : item.tone === 'red' ? 'text-red-400' : item.tone === 'amber' ? 'text-amber-400' : item.tone === 'blue' ? 'text-blue-400' : 'text-[var(--dash-text)]')} title={String(item.value)}>{String(item.value)}</p>
+                </div>
+              ))}
+            </div>
+            <p className="mt-2 line-clamp-2 text-[10px] font-bold text-[var(--dash-muted)]">Motivos: {blockingSummary}</p>
+          </div>
+
+          <div className="hidden">
+            {releaseReadinessItems.map((item) => (
+              <MetricTile key={item.label} title={item.label} value={item.value} tone={item.tone} />
+            ))}
+          </div>
+
+          <div className="hidden">
             <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
               <h4 className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Delta desde producao</h4>
               {deltaAvailable ? (
@@ -2579,78 +4153,581 @@ function ProductionControlCompact({ data }) {
             </div>
 
             <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
-              <h4 className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Pre-flight</h4>
+              <h4 className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Controle de publicação</h4>
               <div className="mt-1 flex flex-wrap gap-1.5">
-                {integrityItems.map((item) => (
-                  <Badge key={item.label} tone={item.tone}>{item.label}: {item.value}</Badge>
-                ))}
+                <Badge tone={evaluationAllowed ? 'emerald' : 'red'}>Avaliação {evaluationAllowed ? 'liberada' : 'bloqueada'}</Badge>
+                <Badge tone={publishTone}>Publicação {publishStatus}</Badge>
               </div>
+              <p className="mt-1 truncate text-[10px] text-[var(--dash-soft)]">Preflight: {compactDateTime(gameUpdate.latest_preflight ?? safety.preflight?.generated_at)}</p>
             </div>
           </div>
 
-          <div className="mt-2 min-h-0 flex-1 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
+          <div className={cn(
+            'mt-2 rounded-xl border p-2.5',
+            visibleProductionRun?.status === 'failed'
+              ? latestTerminalDiskFailure
+                ? 'border-amber-400/35 bg-amber-500/10 text-amber-100'
+                : 'border-red-400/35 bg-red-500/10 text-red-100'
+              : 'border-[var(--dash-border)] bg-[var(--dash-subtle)] text-[var(--dash-text)]'
+          )}>
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Status da última run</p>
+                <p className="mt-0.5 line-clamp-1 text-sm font-black" title={latestRunDetail}>{latestRunTitle}</p>
+              </div>
+              <Badge tone={latestRunTone}>{statusLabel(visibleProductionRun?.status ?? 'idle')}</Badge>
+            </div>
+            <p className="mt-1 line-clamp-1 text-xs font-bold" title={latestRunDetail}>{latestRunDetail}</p>
+            <div className="mt-1.5 grid grid-cols-2 gap-1 text-[10px] font-bold xl:grid-cols-4">
+              <span className="rounded-md bg-black/15 px-1.5 py-0.5" title={visibleProductionRun?.run_id ? `Run id ${visibleProductionRun.run_id}` : undefined}>Run {visibleProductionRun?.run_id ? latestRunStartedLabel : '-'}</span>
+              <span className="rounded-md bg-black/15 px-1.5 py-0.5">{visibleProductionRun?.report_path ? 'relatório disponível' : 'relatório não medido'}</span>
+              <span className="rounded-md bg-black/15 px-1.5 py-0.5">{latestRunOutputLabel}</span>
+              <span className="rounded-md bg-black/15 px-1.5 py-0.5">{latestRunSegmentStateLabel}</span>
+            </div>
+            {latestTerminalDiskFailure && (
+              <div className="mt-1.5 space-y-1 text-[10px] font-black">
+                <div className="grid grid-cols-3 gap-1">
+                  <span className="rounded-md bg-black/15 px-1.5 py-0.5">Requerido {fmtBytes(latestRunDisk?.required_free_bytes)}</span>
+                  <span className="rounded-md bg-black/15 px-1.5 py-0.5">Livre {fmtBytes(latestRunDisk?.free_bytes)}</span>
+                  <span className="rounded-md bg-black/15 px-1.5 py-0.5">Faltam {fmtBytes(latestRunDisk?.missing_bytes)}</span>
+                </div>
+                <p className="line-clamp-1 text-amber-200" title={latestRunDisk?.suggestion || 'Sugestão: limpar ou mover snapshots antigos.'}>
+                  {latestRunDisk?.suggestion || 'Sugestão: limpar ou mover snapshots antigos.'}
+                </p>
+              </div>
+            )}
+            {visibleProductionRun?.report_path && (
+              <details className="mt-1 text-[10px] text-[var(--dash-muted)]">
+                <summary className="cursor-pointer font-bold text-blue-400">detalhes</summary>
+                <p className="mt-1 truncate" title={visibleProductionRun.report_path}>Relatório: {visibleProductionRun.report_path}</p>
+              </details>
+            )}
+          </div>
+
+          <div className="hidden">
             <h4 className="text-xs font-black uppercase tracking-wide text-[var(--dash-muted)]">Último resultado</h4>
             <p className="mt-1 text-sm font-bold text-[var(--dash-text)]">{runStatus?.message ?? 'Nenhuma run ativa ou recente carregada.'}</p>
             <div className="mt-2 space-y-0.5 text-xs text-[var(--dash-muted)]">
               <p>Segment-state: <span className="font-bold text-[var(--dash-text)]">#{release.latest_segment_state_run_id ?? '-'}</span></p>
               <p>Ledger: <span className="font-bold text-[var(--dash-text)]">#{release.latest_ledger_run_id ?? '-'}</span></p>
               <p>Output coverage: <span className="font-bold text-[var(--dash-text)]">{pct(release.output_coverage)}</span></p>
-              {runStatus?.report_path && <p className="truncate">Relatório: <span className="font-bold text-[var(--dash-text)]">{runStatus.report_path}</span></p>}
+              {visibleProductionRun?.report_path && <p className="truncate">Relatório: <span className="font-bold text-[var(--dash-text)]">{visibleProductionRun.report_path}</span></p>}
             </div>
           </div>
         </Card>
 
-        <Card className="flex min-h-0 flex-col p-2.5">
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <div>
-              <h3 className="text-sm font-black text-[var(--dash-text)]">Fluxo de Produção</h3>
-              <p className="text-xs text-[var(--dash-muted)]">4 fases compactas; detalhes técnicos ficam nos relatórios.</p>
-            </div>
-            <Badge tone={runActive ? 'blue' : statusTone(lastRunStatus)}>{statusLabel(lastRunStatus)}</Badge>
-          </div>
-          <div className="h-2 overflow-hidden rounded-full bg-slate-500/20">
-            <div className={cn('h-full rounded-full', runStatus?.status === 'failed' ? 'bg-red-500' : runActive ? 'bg-blue-500' : 'bg-emerald-500')} style={{ width: `${Math.max(0, Math.min(100, runProgress))}%` }} />
-          </div>
-          <div className="mt-2 grid min-h-0 flex-1 grid-rows-2 gap-2 lg:grid-cols-2">
-            {displayPhases.map((phase, index) => (
-              <div key={phase.id} className="min-h-0 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-soft)]">Fase {index + 1}/4</p>
-                    <h4 className="truncate text-sm font-black text-[var(--dash-text)]">{phase.title}</h4>
-                    <p className="mt-1 text-xs leading-snug text-[var(--dash-muted)]">{phase.purpose}</p>
-                  </div>
-                  <Badge tone={statusTone(phase.status)}>{statusLabel(phase.status)}</Badge>
+        <Card className="flex min-h-0 overflow-hidden p-2.5">
+          {executionPanelActive ? (
+            <div className="flex min-h-0 w-full flex-col">
+              <div className="mb-2 flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="text-sm font-black text-[var(--dash-text)]">{executionPanelTitle}</h3>
+                  <p className="text-xs text-[var(--dash-muted)]">
+                    {runActive ? 'Agora' : 'Resultado'}: <span className="font-black text-blue-400">{executionPanelCurrent}</span>
+                  </p>
                 </div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {phase.stages.map((stage) => {
-                    const isMl = Boolean(neuralProductionStages[stage.id]);
-                    return (
-                      <span
-                        key={stage.id}
-                        title={`${stage.label} · ${productionStageDetails[stage.id] ?? stage.id}`}
-                        className={cn(
-                          'inline-flex max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-bold',
-                          stage.status === 'failed'
-                            ? 'border-red-400/30 bg-red-500/10 text-red-200'
-                            : isMl
-                              ? 'border-violet-400/45 bg-violet-500/10 text-violet-700 dark:border-violet-400/35 dark:bg-violet-500/15 dark:text-violet-200'
-                              : stage.status === 'done'
-                                ? 'border-emerald-400/35 bg-slate-100 text-emerald-600 dark:border-emerald-400/25 dark:bg-slate-800/70 dark:text-emerald-300'
-                                : stage.status === 'running'
-                                  ? 'border-blue-400/30 bg-blue-500/10 text-blue-200'
-                                  : 'border-slate-400/15 bg-slate-900/20 text-[var(--dash-muted)]'
-                        )}
-                      >
-                        {isMl && <BrainCircuit size={11} className="text-violet-600 dark:text-violet-200" />}
-                        <span className="truncate">{stage.label}</span>
-                      </span>
-                    );
-                  })}
+                <div className="flex flex-wrap justify-end gap-1.5 text-[10px] font-bold">
+                  <Badge tone="blue">{runStatus?.run_id ? `run ${runStatus.run_id}` : selectedModeInfo.shortLabel}</Badge>
+                  <Badge tone={runActive ? liveRunStatusTone : executionTone}>{runActive ? statusLabel(runStatus?.status) : statusLabel(executionStatus ?? startStatus ?? 'idle')}</Badge>
+                  <Badge tone={runOutputBadgeTone}>{runOutputLabel}</Badge>
                 </div>
               </div>
-            ))}
+
+              <div className="mb-2">
+                <div className="h-1.5 overflow-hidden rounded-full bg-slate-500/20">
+                  <div
+                    className={cn('h-full rounded-full transition-all duration-500', executionTone === 'red' ? 'bg-red-500' : executionTone === 'emerald' ? 'bg-emerald-500' : executionTone === 'amber' ? 'bg-amber-500' : 'bg-blue-500')}
+                    style={{ width: `${Math.max(0, Math.min(100, runActive ? runProgress : executionProgress))}%` }}
+                  />
+                </div>
+                <div className="mt-1 flex items-center justify-between gap-2 text-[10px] font-bold text-[var(--dash-muted)]">
+                  <span>Modo {runActive ? liveModeLabel : selectedModeInfo.label}</span>
+                  <span>{Math.round(runActive ? runProgress : executionProgress)}%</span>
+                </div>
+              </div>
+
+              {evaluationPipelineVisible ? (
+              <div className="mt-2 grid min-h-0 flex-1 gap-2 xl:grid-cols-2">
+                {displayPhases.map((phase, index) => (
+                  <div
+                    key={phase.id}
+                    className={cn(
+                      'flex min-h-0 flex-col rounded-xl border bg-[var(--dash-subtle)] p-2',
+                      phase.status === 'running' ? 'border-blue-400/35 shadow-[0_0_0_1px_rgba(59,130,246,0.12)]' : 'border-[var(--dash-border)]'
+                    )}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-[9px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Fase {index + 1}/4</p>
+                        <h4 className="truncate text-sm font-black text-[var(--dash-text)]">{phase.title}</h4>
+                        <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-[var(--dash-muted)]">{phase.purpose}</p>
+                      </div>
+                      <Badge tone={statusTone(phase.status)}>{statusLabel(phase.status)}</Badge>
+                    </div>
+                    <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-500/15">
+                      <div
+                        className={cn(
+                          'h-full rounded-full transition-all duration-500',
+                          phase.status === 'failed' ? 'bg-red-500' : phase.status === 'running' ? 'bg-blue-500' : phase.status === 'done' ? 'bg-emerald-500' : 'bg-slate-500'
+                        )}
+                        style={{ width: `${phase.progress}%` }}
+                      />
+                    </div>
+                    <div className="dashboard-card-scroll mt-2 min-h-0 flex-1 overflow-auto pr-1">
+                      <div className="flex flex-wrap gap-1">
+                        {phase.stages.map((stage) => (
+                          <span
+                            key={stage.id}
+                            title={[
+                              `${stage.label ?? stage.id}: ${statusLabel(stage.status)}`,
+                              stage.started_at ? `Inicio: ${stage.started_at}` : null,
+                              stage.finished_at ? `Fim: ${stage.finished_at}` : null,
+                              stage.started_at && stage.finished_at ? `Duracao: ${durationLabel(timestampMs(stage.finished_at) - timestampMs(stage.started_at))}` : null,
+                              stage.log_line_count !== undefined ? `Logs: ${stage.log_line_count}` : null,
+                            ].filter(Boolean).join('\n')}
+                            className={cn('inline-flex max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-bold', executionStepClass(stage.status))}
+                          >
+                            <span className={cn(
+                              'h-1.5 w-1.5 shrink-0 rounded-full',
+                              stage.status === 'done' ? 'bg-emerald-400' :
+                                stage.status === 'running' ? 'animate-pulse bg-blue-400' :
+                                  stage.status === 'failed' ? 'bg-red-400' :
+                                    stage.status === 'cancelled' ? 'bg-amber-400' : 'bg-slate-400'
+                            )} />
+                            <span className="truncate">{stage.label ?? stage.id}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              ) : (
+              <div className="mt-2 grid min-h-0 flex-1 content-start gap-2 xl:grid-cols-2">
+                {executionSteps.map((step, index) => (
+                  <div key={step.label} className={cn('rounded-xl border bg-[var(--dash-subtle)] p-3', executionStepClass(step.status))}>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-[9px] font-black uppercase tracking-wide opacity-70">Etapa {index + 1}/{executionSteps.length}</p>
+                        <h4 className="mt-1 truncate text-sm font-black">{step.label}</h4>
+                        {step.detail && <p className="mt-1 line-clamp-2 text-xs opacity-80">{step.detail}</p>}
+                      </div>
+                      <span className={cn(
+                        'mt-1 h-2 w-2 shrink-0 rounded-full',
+                        step.status === 'done' ? 'bg-emerald-400' :
+                          step.status === 'running' ? 'animate-pulse bg-blue-400' :
+                            step.status === 'failed' ? 'bg-red-400' :
+                              step.status === 'cancelled' ? 'bg-amber-400' : 'bg-slate-400'
+                      )} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              )}
+
+              {evaluationPipelineVisible ? (
+              <div className="mt-2 grid gap-2 xl:grid-cols-2">
+                <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 p-2">
+                  <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-wide text-emerald-300">
+                    <Database size={13} /> Snapshot / preflight
+                  </div>
+                  <div className="mt-1.5 grid grid-cols-3 gap-1 text-[10px] font-bold">
+                    <span className="rounded-md bg-black/10 px-1.5 py-0.5">SQLite: {sqliteBackupLabel}</span>
+                    <span className="rounded-md bg-black/10 px-1.5 py-0.5">Snapshot: {fmtBytes(liveDiskPreflight.estimated_snapshot_bytes)}</span>
+                    <span className="rounded-md bg-black/10 px-1.5 py-0.5">DB não duplicado</span>
+                  </div>
+                </div>
+                <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2">
+                  <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">
+                    <TerminalSquare size={13} /> Logs recentes
+                  </div>
+                  <div className="mt-1.5 space-y-0.5 text-[10px] font-bold text-[var(--dash-muted)]">
+                    {liveLogs.length ? liveLogs.map((line, index) => (
+                      <p key={`${index}-${line.slice(0, 16)}`} className="truncate" title={line}>{line}</p>
+                    )) : (
+                      <p>Aguardando eventos da etapa atual.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+              ) : (
+              <div className="mt-2 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2">
+                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">
+                  <TerminalSquare size={13} /> Resumo da execucao
+                </div>
+                <p className="mt-1.5 line-clamp-2 text-xs font-bold text-[var(--dash-muted)]">
+                  {displayExecutionDetailText || selectedModeInfo.warning || 'Aguardando execucao do modo selecionado.'}
+                </p>
+              </div>
+              )}
+            </div>
+          ) : (
+          <div className="flex min-h-0 w-full flex-col">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-black text-[var(--dash-text)]">Feedback e pos-release</h3>
+              <p className="text-xs text-[var(--dash-muted)]">Fila visual, hotfix protegido e preparo para update source/output.</p>
+            </div>
+            <Badge tone={release.needs_apply ? 'amber' : 'emerald'}>{release.needs_apply ? 'hotfix pendente' : 'limpo'}</Badge>
           </div>
+
+          <div className="mt-2 flex min-h-0 flex-1">
+            <div className="flex min-h-0 w-full flex-1 flex-col rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-black text-[var(--dash-text)]">
+                    {postReleaseView === 'feedback'
+                      ? 'Feedback visual / hotfix'
+                      : postReleaseView === 'package'
+                        ? 'Pacote old vs output'
+                      : postReleaseView === 'promotions'
+                        ? 'Promocoes'
+                        : postReleaseView === 'regressions'
+                          ? 'Regressoes de score'
+                          : postReleaseView === 'apply'
+                            ? 'Needs apply'
+                            : postReleaseView === 'new'
+                              ? 'Novos segmentos'
+                              : postReleaseView === 'low_score'
+                                ? 'Baixo score'
+                                : 'Pendentes'}
+                  </h4>
+                  <p className="text-xs text-[var(--dash-muted)]">
+                    {postReleaseView === 'feedback'
+                      ? 'Somente feedback aberto ou aguardando acao. Itens fechados e holds aceitos ficam arquivados.'
+                      : postReleaseView === 'package'
+                        ? `Comparativo final fechado entre source\\spanish_old e output\\spanish. ${packageScoreSummaryLabel}. Diferencas brutas: ${compact(rawOutputDiffCount)}; fora do pacote: ${compact(packageExcludedCount)}.`
+                      : postReleaseView === 'promotions'
+                        ? 'Promocoes contra o old que passaram no gate e podem virar apply confirmado.'
+                        : postReleaseView === 'regressions'
+                          ? 'Regressoes em que o score novo ficou abaixo do score old, ordenadas pelo pior delta.'
+                          : postReleaseView === 'apply'
+                            ? 'Confirmados cujo output atual ainda difere do texto aprovado e precisa de aplicacao protegida.'
+                            : postReleaseView === 'new'
+                              ? 'Segmentos sem equivalente no old, ordenados por score novo.'
+                      : postReleaseView === 'low_score'
+                                ? 'Fila objetiva de baixa confianca: score novo abaixo de 50%, ordenada do menor para o maior.'
+                                : 'Pendencias operacionais do segment-state: o que ainda nao fechou e precisa explicar o motivo.'}
+                  </p>
+                </div>
+                <Badge tone={diffReview.instrumented || feedbackRows.length ? 'blue' : 'slate'}>
+                  {postReleaseView === 'feedback'
+                    ? feedbackRows.length ? `${feedbackRows.length} ativos` : archivedFeedbackItems.length ? 'fila limpa' : 'nao instrumentado'
+                    : postReleaseView === 'package'
+                      ? packageScoreSummaryLabel
+                    : diffReview.old_score_run_id
+                      ? `score #${diffReview.old_score_run_id} -> #${diffReview.score_run_id ?? '-'}`
+                      : `score #${diffReview.score_run_id ?? '-'}`}
+                </Badge>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {reviewTabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setPostReleaseView(tab.id)}
+                    className={reviewTabClass(tab, postReleaseView === tab.id)}
+                  >
+                    {tab.label}
+                    <Badge tone={tab.tone}>{compact(tab.count)}</Badge>
+                  </button>
+                ))}
+              </div>
+              <div className="dashboard-card-scroll mt-2 min-h-0 flex-1 overflow-auto rounded-lg border border-[var(--dash-border)]">
+                {postReleaseView === 'feedback' ? (
+                  <table className="w-full min-w-[760px] text-left text-xs">
+                    <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                      <tr>
+                        <th className="px-2 py-2">ID</th>
+                        <th className="px-2 py-2">Evidencia</th>
+                        <th className="px-2 py-2">Categoria</th>
+                        <th className="px-2 py-2">Segmentos</th>
+                        <th className="px-2 py-2">Status</th>
+                        <th className="px-2 py-2">Sev.</th>
+                        <th className="px-2 py-2">Proxima acao</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {feedbackRows.length ? feedbackRows.slice(0, 24).map((item) => (
+                        <tr key={item.row_id} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
+                          <td className="max-w-[220px] truncate px-2 py-2 font-bold" title={item.id ?? '-'}>{item.id ?? '-'}</td>
+                          <td className="max-w-[360px] truncate px-2 py-2" title={item.observed_text}>{item.observed_text}</td>
+                          <td className="max-w-[140px] truncate px-2 py-2" title={item.category}>{item.category}</td>
+                          <td className="px-2 py-2">{item.segment_label}</td>
+                          <td className="px-2 py-2"><Badge tone={item.status === 'closed' ? 'emerald' : item.status === 'accepted_hold' || item.status === 'hold' ? 'blue' : 'amber'}>{item.status ?? 'nao medido'}</Badge></td>
+                          <td className="px-2 py-2">{item.visual_severity}</td>
+                          <td className="max-w-[220px] truncate px-2 py-2" title={item.next_action}>{item.next_action}</td>
+                        </tr>
+                      )) : (
+                        <tr>
+                          <td colSpan={7} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">
+                            Nenhum feedback ativo. Itens fechados/aplicados ficam fora desta fila.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                ) : postReleaseView === 'promotions' || postReleaseView === 'package' ? (
+                  <table className="w-full min-w-[1340px] text-left text-xs">
+                    <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                      <tr>
+                        <th className="px-2 py-2">Segmento</th>
+                        <th className="px-2 py-2">Arquivo / chave</th>
+                        <th className="px-2 py-2">Old</th>
+                        <th className="px-2 py-2">Output</th>
+                        <th className="px-2 py-2">Score old</th>
+                        <th className="px-2 py-2">Score novo</th>
+                        <th className="px-2 py-2">Delta</th>
+                        <th className="px-2 py-2">Integridade</th>
+                        <th className="px-2 py-2">Gate</th>
+                        <th className="px-2 py-2">Estado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {comparisonSegments.length ? comparisonSegments.slice(0, 80).map((item) => (
+                        <tr key={`${postReleaseView}-${item.segment_id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
+                          <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
+                          <td className="max-w-[220px] truncate px-2 py-2" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
+                          <td className="max-w-[260px] truncate px-2 py-2" title={item.old_text ?? ''}>{item.old_text ?? '-'}</td>
+                          <td className="max-w-[260px] truncate px-2 py-2" title={item.output_text ?? ''}>{item.output_text ?? '-'}</td>
+                          <td className="px-2 py-2"><Badge tone={scoreTone(segmentOldScore(item))}>{scoreLabel(segmentOldScore(item))}</Badge></td>
+                          <td className="px-2 py-2" title={scoreCellTitle(item)}><Badge tone={scoreTone(segmentNewScore(item))}>{scoreLabel(segmentNewScore(item))}</Badge></td>
+                          <td className="px-2 py-2" title={scoreCellTitle(item)}><Badge tone={scoreDeltaTone(item)}>{scoreDeltaLabel(item)}</Badge></td>
+                          <td className="max-w-[180px] truncate px-2 py-2" title={integrityTitle(item)}><Badge tone={integrityTone(item)}>{integrityLabel(item)}</Badge></td>
+                          <td className="max-w-[170px] truncate px-2 py-2" title={item.promotion_gate ?? ''}>{item.promotion_gate ?? 'nao medido'}</td>
+                          <td className="max-w-[180px] truncate px-2 py-2" title={item.final_state ?? item.score_action ?? ''}>{item.final_state ?? item.score_action ?? 'nao medido'}</td>
+                        </tr>
+                      )) : (
+                        <tr><td colSpan={10} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">{postReleaseView === 'package' ? 'Nenhuma diferenca entre old e output medida.' : 'Nenhuma promocao contra o old medida.'}</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                ) : postReleaseView === 'regressions' ? (
+                  <table className="w-full min-w-[1160px] text-left text-xs">
+                    <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                      <tr>
+                        <th className="px-2 py-2">Segmento</th>
+                        <th className="px-2 py-2">Arquivo / chave</th>
+                        <th className="px-2 py-2">Old</th>
+                        <th className="px-2 py-2">Output</th>
+                        <th className="px-2 py-2">Score old</th>
+                        <th className="px-2 py-2">Score novo</th>
+                        <th className="px-2 py-2">Delta</th>
+                        <th className="px-2 py-2">{postReleaseView === 'unhandled' ? 'Estado' : 'Acao'}</th>
+                        <th className="px-2 py-2">Estado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {scoreRegressionSegments.length ? scoreRegressionSegments.slice(0, 80).map((item) => (
+                        <tr key={`regression-${item.segment_id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
+                          <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
+                          <td className="max-w-[220px] truncate px-2 py-2" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
+                          <td className="max-w-[250px] truncate px-2 py-2" title={item.old_text ?? ''}>{item.old_text ?? '-'}</td>
+                          <td className="max-w-[250px] truncate px-2 py-2" title={item.output_text ?? ''}>{item.output_text ?? '-'}</td>
+                          <td className="px-2 py-2"><Badge tone={scoreTone(segmentOldScore(item))}>{scoreLabel(segmentOldScore(item))}</Badge></td>
+                          <td className="px-2 py-2" title={scoreCellTitle(item)}><Badge tone={scoreTone(segmentNewScore(item))}>{scoreLabel(segmentNewScore(item))}</Badge></td>
+                          <td className="px-2 py-2" title={scoreCellTitle(item)}><Badge tone={scoreDeltaTone(item)}>{scoreDeltaLabel(item)}</Badge></td>
+                          <td className="max-w-[150px] truncate px-2 py-2">{item.score_action ?? 'nao medido'}</td>
+                          <td className="max-w-[190px] truncate px-2 py-2" title={item.final_state ?? ''}>{item.final_state ?? 'nao medido'}</td>
+                        </tr>
+                      )) : (
+                        <tr><td colSpan={9} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">Nenhuma regressao de score medida.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                ) : postReleaseView === 'apply' ? (
+                  <table className="w-full min-w-[1160px] text-left text-xs">
+                    <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                      <tr>
+                        <th className="px-2 py-2">Segmento</th>
+                        <th className="px-2 py-2">Arquivo / chave</th>
+                        <th className="px-2 py-2">Output atual</th>
+                        <th className="px-2 py-2">Confirmado</th>
+                        <th className="px-2 py-2">Score novo</th>
+                        <th className="px-2 py-2">Acao</th>
+                        <th className="px-2 py-2">Estado</th>
+                        <th className="px-2 py-2">Motivo</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {applySegments.length ? applySegments.slice(0, 120).map((item) => (
+                        <tr key={`apply-${item.segment_id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
+                          <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
+                          <td className="max-w-[220px] truncate px-2 py-2" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
+                          <td className="max-w-[250px] truncate px-2 py-2" title={item.output_text ?? ''}>{item.output_text ?? '-'}</td>
+                          <td className="max-w-[250px] truncate px-2 py-2" title={item.confirmed_text ?? ''}>{item.confirmed_text ?? '-'}</td>
+                          <td className="px-2 py-2" title={scoreCellTitle(item)}><Badge tone={scoreTone(segmentNewScore(item))}>{scoreLabel(segmentNewScore(item))}</Badge></td>
+                          <td className="max-w-[150px] truncate px-2 py-2" title={item.score_action ?? item.active_action ?? item.candidate_action ?? ''}>{item.score_action ?? item.active_action ?? item.candidate_action ?? 'nao medido'}</td>
+                          <td className="max-w-[180px] truncate px-2 py-2" title={item.final_state ?? item.review_state ?? ''}>{item.final_state ?? item.review_state ?? 'nao medido'}</td>
+                          <td className="max-w-[250px] truncate px-2 py-2" title={item.reasons_json ?? item.confirmation_label ?? ''}>{item.confirmation_label ?? item.reasons_json ?? 'nao medido'}</td>
+                        </tr>
+                      )) : (
+                        <tr><td colSpan={8} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">Nenhum needs apply medido.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                ) : postReleaseView === 'new' ? (
+                  <table className="w-full min-w-[900px] text-left text-xs">
+                    <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                      <tr>
+                        <th className="px-2 py-2">Segmento</th>
+                        <th className="px-2 py-2">Arquivo / chave</th>
+                        <th className="px-2 py-2">Source</th>
+                        <th className="px-2 py-2">Output</th>
+                        <th className="px-2 py-2">Score novo</th>
+                        <th className="px-2 py-2">Acao</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {newSegments.length ? newSegments.slice(0, 80).map((item) => (
+                        <tr key={`new-${item.segment_id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
+                          <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
+                          <td className="max-w-[220px] truncate px-2 py-2" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
+                          <td className="max-w-[260px] truncate px-2 py-2" title={item.spanish_text ?? ''}>{item.spanish_text ?? '-'}</td>
+                          <td className="max-w-[260px] truncate px-2 py-2" title={item.output_text ?? ''}>{item.output_text ?? '-'}</td>
+                          <td className="px-2 py-2"><Badge tone={scoreTone(segmentNewScore(item))}>{scoreLabel(segmentNewScore(item))}</Badge></td>
+                          <td className="max-w-[160px] truncate px-2 py-2" title={postReleaseView === 'unhandled' ? item.final_state ?? item.score_action ?? '' : item.score_action ?? item.final_state ?? ''}>
+                            {postReleaseView === 'unhandled' ? item.final_state ?? item.score_action ?? 'nao medido' : item.score_action ?? item.final_state ?? 'nao medido'}
+                          </td>
+                        </tr>
+                      )) : (
+                        <tr><td colSpan={6} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">Nenhum segmento novo medido.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                ) : (
+                  <table className="w-full min-w-[900px] text-left text-xs">
+                    <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                      <tr>
+                        <th className="px-2 py-2">Segmento</th>
+                        <th className="px-2 py-2">Arquivo / chave</th>
+                        <th className="px-2 py-2">Output</th>
+                        <th className="px-2 py-2">Score novo</th>
+                        <th className="px-2 py-2">Acao</th>
+                        <th className="px-2 py-2">Risco</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(postReleaseView === 'low_score' ? lowScoreSegments : unhandledSegments).length ? (postReleaseView === 'low_score' ? lowScoreSegments : unhandledSegments).slice(0, 80).map((item) => (
+                        <tr key={`${postReleaseView}-${item.segment_id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
+                          <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
+                          <td className="max-w-[240px] truncate px-2 py-2" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
+                          <td className="max-w-[330px] truncate px-2 py-2" title={item.output_text ?? item.old_text ?? ''}>{item.output_text ?? item.old_text ?? '-'}</td>
+                          <td className="px-2 py-2"><Badge tone={scoreTone(segmentNewScore(item))}>{scoreLabel(segmentNewScore(item))}</Badge></td>
+                          <td className="max-w-[160px] truncate px-2 py-2">{item.score_action ?? item.final_state ?? 'nao medido'}</td>
+                          <td className="max-w-[120px] truncate px-2 py-2">{item.risk_class ?? item.score_tier ?? 'nao medido'}</td>
+                        </tr>
+                      )) : (
+                        <tr><td colSpan={6} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">Nenhuma fila medida para esta aba.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+
+            <div className="hidden">
+              <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h4 className="text-sm font-black text-[var(--dash-text)]">Estado de produção</h4>
+                    <p className="text-xs text-[var(--dash-muted)]">Baseline, output, preflight e gates em uma leitura única.</p>
+                  </div>
+                  <Badge tone={productionPublicationTone}>{productionPublicationStatus}</Badge>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-1.5">
+                  {productionStateRows.map((item) => (
+                    <div key={item.label} className="min-w-0 rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1.5">
+                      <p className="text-[9px] font-black uppercase tracking-wide text-[var(--dash-muted)]">{item.label}</p>
+                      <p className={cn('mt-0.5 truncate text-xs font-black', item.tone === 'emerald' ? 'text-emerald-400' : item.tone === 'red' ? 'text-red-400' : item.tone === 'amber' ? 'text-amber-400' : item.tone === 'blue' ? 'text-blue-400' : 'text-[var(--dash-text)]')} title={String(item.value)}>{String(item.value)}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-2 rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1.5">
+                  <p className="text-[9px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Motivos de bloqueio</p>
+                  <p className="mt-0.5 line-clamp-3 text-xs font-bold text-[var(--dash-text)]" title={blockingSummary}>{blockingSummary}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="hidden">
+              <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h4 className="text-sm font-black text-[var(--dash-text)]">Gate de publicação</h4>
+                    <p className="text-xs text-[var(--dash-muted)]">Publicação fica separada da produção de avaliação.</p>
+                  </div>
+                  <Badge tone={publishTone}>{publishStatus}</Badge>
+                </div>
+                <div className="mt-2 space-y-1.5 text-xs">
+                  <div className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1.5">
+                    <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Motivos</p>
+                    <p className="mt-1 line-clamp-2 font-bold text-[var(--dash-text)]">
+                      {publicationReasons.length ? publicationReasons.join(', ') : publicationAllowed ? 'sem bloqueador' : 'not_measured'}
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <div className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1.5">
+                      <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Baseline</p>
+                      <p className="mt-1 truncate font-bold text-blue-400" title={baselineControl.stable_baseline_path ?? 'source\\spanish_old'}>{baselineControl.stable_baseline_path ?? 'source\\spanish_old'}</p>
+                    </div>
+                    <div className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1.5">
+                      <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Output</p>
+                      <p className={cn('mt-1 truncate font-bold', outputCurrentTone === 'amber' ? 'text-amber-400' : outputCurrentTone === 'emerald' ? 'text-emerald-400' : 'text-[var(--dash-text)]')} title={baselineControl.output_restored_from ?? 'source\\spanish_source'}>
+                        {outputCurrentLabel}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h4 className="text-sm font-black text-[var(--dash-text)]">Source/output/update</h4>
+                    <p className="text-xs text-[var(--dash-muted)]">Status para pequena atualizacao do jogo.</p>
+                  </div>
+                  <Badge tone={cache.stale ? 'amber' : 'slate'}>{cache.stale ? 'cache defasado' : 'baseline atual'}</Badge>
+                </div>
+                <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                  {sourceOutputChecklist.map((item) => (
+                    <div key={item.label} className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] p-1.5">
+                      <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">{item.label}</p>
+                      <p className={cn('mt-1 truncate text-xs font-black', item.tone === 'emerald' ? 'text-emerald-400' : item.tone === 'amber' ? 'text-amber-400' : 'text-[var(--dash-text)]')}>{String(item.value)}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2">
+                <h4 className="text-sm font-black text-[var(--dash-text)]">Checklist full production</h4>
+                <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                  {updateChecklist.map((item) => (
+                    <div key={item.label} className="flex items-center justify-between gap-2 rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1.5">
+                      <span className="truncate text-xs font-bold text-[var(--dash-text)]">{item.label}</span>
+                      <Badge tone={item.ok ? 'emerald' : 'slate'}>{item.ok ? 'ok' : item.pending}</Badge>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2">
+                <h4 className="text-sm font-black text-[var(--dash-text)]">Fluxo protegido</h4>
+                <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-500/20">
+                  <div className={cn('h-full rounded-full', runStatus?.status === 'failed' ? 'bg-red-500' : runActive ? 'bg-blue-500' : 'bg-emerald-500')} style={{ width: `${Math.max(0, Math.min(100, runProgress))}%` }} />
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {displayPhases.map((phase, index) => (
+                    <span key={phase.id} title={`${phase.title}: ${phase.purpose}`} className="inline-flex items-center gap-1 rounded-md border border-violet-400/25 bg-violet-500/10 px-2 py-1 text-[10px] font-bold text-violet-200">
+                      <BrainCircuit size={11} /> {index + 1}/4 {phase.title}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+          </div>
+          )}
         </Card>
       </div>
     </div>
@@ -2683,11 +4760,14 @@ function ProjectIntelligenceDashboard({ data }) {
   const agents = data.agents ?? {};
   const summary = data.production?.summary ?? lifecycle.taxonomy ?? {};
   const agentSummary = agents.summary ?? {};
+  const learningByLabel = agents.learningByLabel ?? [];
+  const learningByFocus = agents.learningByFocus ?? [];
   const modelTrend = mlPerformance.mlTrendByModel ?? mlPerformance.mlTrend ?? [];
   const datasetComposition = mlPerformance.datasetComposition ?? [];
   const outputEvolution = lifecycle.outputApply?.evolution ?? [];
   const packageBacklog = lifecycle.packageBacklog ?? [];
   const tokenBuckets = lifecycle.tokenPolicy?.bucketDistribution ?? [];
+  const cache = appState.cache ?? {};
 
   useEffect(() => {
     const onHashChange = () => setView(dashboardViewFromHash());
@@ -2708,38 +4788,283 @@ function ProjectIntelligenceDashboard({ data }) {
     { name: 'Pendentes', value: Number(release.pending_count ?? summary.raw_pending ?? 0), color: '#f59e0b' },
     { name: 'Needs apply', value: Number(release.needs_apply ?? summary.needs_apply ?? 0), color: '#3b82f6' },
   ].filter((item) => item.value > 0);
-  const releaseTrend = outputEvolution.slice(-10).map((row) => ({
+  const releaseTrendSource = (release.segment_state_trend?.length ? release.segment_state_trend : outputEvolution).slice(-12);
+  const releaseTrend = releaseTrendSource.map((row) => ({
     run: `#${row.state_run_id ?? row.run_id ?? '-'}`,
     fechado: Number(row.closed_pct ?? row.closed_rate ?? release.closed_rate ?? 0),
-    pendencias: Number(row.pending_count ?? 0),
-    apply: Number(row.output_apply_pending_count ?? 0),
+    pendencias: Number(row.pending_count ?? row.pending ?? 0),
+    apply: Number(row.output_apply_pending_count ?? row.needs_apply ?? 0),
   }));
-  const learningMix = datasetComposition.length
-    ? datasetComposition.slice(0, 8).map((row) => ({
-      label: row.label ?? row.name ?? row.decision ?? 'dataset',
-      value: Number(row.value ?? row.count ?? row.total ?? 0),
-    }))
-    : [
-      { label: 'agentes', value: Number(agentSummary.registered_agents ?? agentSummary.total_agents ?? 0) },
-      { label: 'operacionais', value: Number(agentSummary.operational_agents ?? agentSummary.active_agents ?? 0) },
-      { label: 'evidencias', value: Number(agentSummary.recommendation_evidence ?? 0) },
-    ].filter((row) => row.value > 0);
+  const previousDelta = release.previous_segment_state_delta ?? {};
+  const productionDelta = release.since_last_production ?? {};
+  const qualifiedPending = release.qualified_pending ?? {};
+  const corpusTotal = Number(release.total_segments ?? 0) || Number(release.closed_count ?? 0) + Number(release.pending_count ?? 0) + Number(release.needs_apply ?? 0);
+  const overviewNextAction = cache.stale
+    ? 'Atualizar cache'
+    : Number(release.needs_apply ?? 0) > 0
+      ? 'Revisar needs_apply'
+      : !learning.can_start_production
+        ? 'Aguardar gate'
+        : Number(release.pending_count ?? 0) > 0
+          ? 'Revisar pendencias qualificadas'
+          : 'Seguro para release';
+  const qualifiedPendingCards = [
+    { label: 'Acionaveis', value: qualifiedPending.actionable_pending, tone: Number(qualifiedPending.actionable_pending ?? 0) ? 'amber' : 'emerald' },
+    { label: 'Contexto/dominio', value: qualifiedPending.context_domain ?? 'pending_instrumentation', tone: qualifiedPending.context_domain === 'pending_instrumentation' ? 'slate' : 'blue' },
+    { label: 'Aguardando politica', value: qualifiedPending.policy_waiting, tone: Number(qualifiedPending.policy_waiting ?? 0) ? 'blue' : 'emerald' },
+    { label: 'Alta incerteza', value: qualifiedPending.high_uncertainty, tone: Number(qualifiedPending.high_uncertainty ?? 0) ? 'violet' : 'emerald' },
+  ];
+  const learningCycleActive = Boolean(learning.current_phase_label || learning.status === 'running' || production.active);
+  const learningCycleLabel = learning.current_phase_label || (learningCycleActive ? 'Ciclo em andamento' : 'Sem ciclo ativo');
+  const learningCycleStatus = learningCycleActive
+    ? (learning.status || 'em andamento')
+    : (learning.can_start_production ? 'Ultima execucao concluida' : 'Aguardando liberacao');
+  const learningResponsible = learning.next_action?.toLowerCase?.().includes('prompt') || learning.next_action?.toLowerCase?.().includes('chat')
+    ? 'Chat Execucao'
+    : 'Chat Treino';
+  const learningNextAction = cache.stale
+    ? 'Atualizar cache'
+    : learning.next_action || (learning.can_start_production ? 'Aguardar proximo foco' : 'Liberar gate de aprendizado');
+  const learningFocus = learning.next_focus ?? learning.focus ?? 'pending_instrumentation';
+  const maturityCards = [
+    { label: 'Policies ativas', value: agentSummary.active_policies ?? 'pending_instrumentation', tone: agentSummary.active_policies == null ? 'slate' : 'emerald' },
+    { label: 'Microagentes ativos', value: agentSummary.operational_agents ?? agentSummary.agents_operational ?? 'pending_instrumentation', tone: (agentSummary.operational_agents ?? agentSummary.agents_operational) == null ? 'slate' : 'emerald' },
+    { label: 'Lifecycle bridges', value: agentSummary.lifecycle_bridges ?? 'pending_instrumentation', tone: agentSummary.lifecycle_bridges == null ? 'slate' : 'violet' },
+    { label: 'Watch', value: agentSummary.operational_false_safe ?? agentSummary.latest_false_safe ?? 0, tone: Number(agentSummary.operational_false_safe ?? agentSummary.latest_false_safe ?? 0) ? 'amber' : 'emerald' },
+  ];
+  const actionReadinessCards = [
+    { label: 'Lifecycle pronto', value: qualifiedPending.policy_waiting ?? 'pending_instrumentation', tone: qualifiedPending.policy_waiting == null ? 'slate' : 'blue' },
+    { label: 'Apply protegido', value: release.needs_apply ?? 0, tone: Number(release.needs_apply ?? 0) ? 'amber' : 'emerald' },
+    { label: 'Precisa contexto', value: qualifiedPending.context_domain ?? 'pending_instrumentation', tone: qualifiedPending.context_domain === 'pending_instrumentation' ? 'slate' : 'amber' },
+    { label: 'Novo microagente', value: agentSummary.recommendation_evidence ?? 'pending_instrumentation', tone: agentSummary.recommendation_evidence == null ? 'slate' : 'violet' },
+  ];
+  const recentLearningEvents = [
+    release.latest_segment_state_run_id ? `Run #${release.latest_segment_state_run_id}: segment-state atualizado` : null,
+    release.latest_ledger_run_id ? `Ledger #${release.latest_ledger_run_id}: sinais disponiveis` : null,
+    productionDelta.available ? `Desde producao: +${compact(productionDelta.closed_delta)} fechados` : null,
+  ].filter(Boolean);
+  const learningEvidenceSource = learningByLabel.length
+    ? learningByLabel
+    : learningByFocus.length
+      ? learningByFocus
+      : [];
+  const learningMix = learningEvidenceSource.slice(0, 8).map((row) => ({
+    label: row.human_label ?? row.focus_group ?? row.label ?? row.name ?? 'evidencia',
+    value: Number(row.total ?? row.value ?? row.count ?? 0),
+    corrected: Number(row.corrected ?? row.corrected_total ?? 0),
+  })).filter((row) => row.value > 0);
+  const learningDataState = learningMix.length
+    ? 'loaded'
+    : data._fullDashboardLoaded
+      ? 'empty'
+      : 'loading';
   const pendingHotspots = (packageBacklog.length ? packageBacklog : tokenBuckets).slice(0, 8).map((row) => ({
     label: row.package_name ?? row.package ?? row.relative_path ?? row.policy_bucket ?? row.name ?? 'grupo',
     value: Number(row.pending_count ?? row.pending ?? row.total ?? row.count ?? 0),
   })).filter((row) => row.value > 0);
+  const pendingFamilyHotspots = (release.pending_by_family ?? []).slice(0, 8).map((row) => ({
+    label: row.label ?? row.issue_family ?? row.family ?? 'familia',
+    value: Number(row.value ?? row.count ?? row.total ?? 0),
+  })).filter((row) => row.value > 0);
+  const pendingPrimaryData = pendingFamilyHotspots.length ? pendingFamilyHotspots : pendingHotspots;
+  const pendingPrimaryTitle = pendingFamilyHotspots.length ? 'Gargalos por familia' : 'Pendencias por pacote';
+  const pendingPrimarySubtitle = pendingFamilyHotspots.length
+    ? 'Issue families pendentes no ledger mais recente.'
+    : 'Fallback por pacote/path quando familia ainda nao esta instrumentada.';
+  const pendingActionability = release.pending_actionability ?? {};
+  const pendingNextFocus = release.pending_next_focus ?? {};
+  const watchValue = (key) => pendingActionability[key] ?? 'pending_instrumentation';
+  const pendingWatchCards = [
+    { label: 'Precisa contexto', value: watchValue('needs_context'), tone: watchValue('needs_context') === 'pending_instrumentation' ? 'slate' : 'blue' },
+    { label: 'Precisa dominio', value: watchValue('needs_domain'), tone: watchValue('needs_domain') === 'pending_instrumentation' ? 'slate' : 'violet' },
+    { label: 'Novo microagente', value: watchValue('needs_new_microagent'), tone: watchValue('needs_new_microagent') === 'pending_instrumentation' ? 'slate' : 'violet' },
+    { label: 'Reparo textual', value: watchValue('text_repair'), tone: watchValue('text_repair') === 'pending_instrumentation' ? 'slate' : 'amber' },
+    { label: 'Alta incerteza', value: watchValue('high_uncertainty'), tone: watchValue('high_uncertainty') === 'pending_instrumentation' ? 'slate' : 'red' },
+  ];
+  const largestPendingVolume = pendingPrimaryData[0] ?? {};
+  const readyActionCount = Number(release.needs_apply ?? 0)
+    + Number(summary.actionable_pending ?? qualifiedPending.actionable_pending ?? 0)
+    + Number(summary.governed_bridge_pending ?? qualifiedPending.policy_waiting ?? 0);
+  const readyActionLabel = Number(release.needs_apply ?? 0) > 0
+    ? 'needs_apply'
+    : Number(summary.actionable_pending ?? qualifiedPending.actionable_pending ?? 0) > 0
+      ? 'fila acionavel'
+      : Number(summary.governed_bridge_pending ?? qualifiedPending.policy_waiting ?? 0) > 0
+        ? 'ponte governada'
+        : 'nenhuma fila segura';
+  const pendingHealthBadges = [
+    { label: `Needs apply: ${compact(release.needs_apply ?? 0)}`, tone: Number(release.needs_apply ?? 0) ? 'amber' : 'emerald' },
+    { label: release.operational_integrity?.source_status === 'pending_instrumentation' ? 'Source: pending_instrumentation' : `Source: ${release.operational_integrity?.source_status}`, tone: release.operational_integrity?.source_status === 'pending_instrumentation' ? 'slate' : 'emerald' },
+    { label: release.operational_integrity?.output_status === 'pending_instrumentation' ? 'Output: pending_instrumentation' : `Output: ${release.operational_integrity?.output_status}`, tone: release.operational_integrity?.output_status === 'pending_instrumentation' ? 'slate' : 'emerald' },
+    { label: `Segment-state: #${release.latest_segment_state_run_id ?? '-'}`, tone: 'blue' },
+  ];
   const qualityCards = [
     { label: 'Modelo atual', value: latestModel.modelVersion ?? mlPerformance.kpis?.active_model ?? 'pendente', tone: 'blue' },
     { label: 'Macro F1', value: latestModel.macroF1 != null ? pctMetric(latestModel.macroF1) : pct(mlPerformance.kpis?.macro_f1), tone: 'emerald' },
     { label: 'Falso seguro', value: compact(agentSummary.operational_false_safe ?? mlPerformance.kpis?.false_safe ?? 0), tone: Number(agentSummary.operational_false_safe ?? 0) ? 'red' : 'emerald' },
     { label: 'Ganho rede', value: compact(agentSummary.ensemble_gain ?? agentSummary.active_gate_guarded_releases ?? 0), tone: 'violet' },
   ];
+  const currentF1 = latestModel.macroF1 != null ? Number(latestModel.macroF1) : Number(mlPerformance.kpis?.macroF1 ?? 0);
+  const previousF1 = previousModel.macroF1 != null ? Number(previousModel.macroF1) : null;
+  const deltaF1 = previousF1 == null ? null : currentF1 - previousF1;
+  const currentFalseSafe = Number(latestModel.falseSafe ?? agentSummary.operational_false_safe ?? 0);
+  const previousFalseSafe = Number(previousModel.falseSafe ?? 0);
+  const currentSafePrecision = latestModel.safePrecision != null ? Number(latestModel.safePrecision) : Number(mlPerformance.kpis?.safePrecision ?? 0);
+  const currentSafeRecall = latestModel.safeRecall != null ? Number(latestModel.safeRecall) : Number(mlPerformance.kpis?.holdoutCoverage ?? 0);
+  const networkGain = Number(agentSummary.ensemble_gain ?? agentSummary.active_gate_guarded_releases ?? 0);
+  const qualityStatus = currentFalseSafe > 0
+    ? 'bloquear'
+    : deltaF1 == null
+      ? 'manter'
+      : deltaF1 > 0
+        ? 'promover'
+        : deltaF1 < -0.02
+          ? 'auditar'
+          : 'manter';
+  const qualityTone = qualityStatus === 'bloquear'
+    ? 'red'
+    : qualityStatus === 'auditar'
+      ? 'amber'
+      : qualityStatus === 'promover'
+        ? 'emerald'
+        : 'blue';
+  const qualityReason = currentFalseSafe > 0
+    ? 'falso seguro detectado no modelo atual'
+    : deltaF1 == null
+      ? 'sem modelo anterior suficiente para delta'
+      : deltaF1 > 0
+        ? 'F1 melhorou e falso seguro esta zerado'
+        : deltaF1 < 0
+          ? 'F1 caiu vs anterior, mas falso seguro permanece zerado'
+          : 'F1 estavel e falso seguro zerado';
+  const qualityNextAction = qualityStatus === 'bloquear'
+    ? 'bloquear promocao e auditar falso seguro'
+    : qualityStatus === 'auditar'
+      ? 'auditar regressao de F1'
+      : qualityStatus === 'promover'
+        ? 'avaliar promocao do candidato'
+        : 'manter modelo atual';
+  const f1ComparisonData = [
+    { label: 'Anterior', f1: previousF1 == null ? 0 : Number((previousF1 * 100).toFixed(2)) },
+    { label: 'Atual', f1: Number((currentF1 * 100).toFixed(2)) },
+  ];
+  const gainBreakdown = [
+    { label: 'Modelo', value: 'pending_instrumentation', tone: 'slate' },
+    { label: 'Lifecycle/policies', value: 'pending_instrumentation', tone: 'slate' },
+    { label: 'Reparos protegidos', value: 'pending_instrumentation', tone: 'slate' },
+    { label: 'Ganho consolidado', value: compact(networkGain), tone: networkGain ? 'violet' : 'slate' },
+  ];
+  const qualityRiskCards = [
+    { label: 'Delta F1', value: deltaF1 == null ? 'pending_instrumentation' : `${deltaF1 >= 0 ? '+' : ''}${(deltaF1 * 100).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} p.p.`, tone: deltaF1 == null ? 'slate' : deltaF1 >= 0 ? 'emerald' : currentFalseSafe ? 'red' : 'amber' },
+    { label: 'Falso seguro atual', value: fmt(currentFalseSafe), tone: currentFalseSafe ? 'red' : 'emerald' },
+    { label: 'Falso seguro anterior', value: fmt(previousFalseSafe), tone: previousFalseSafe ? 'red' : 'emerald' },
+    { label: 'Holdout/Safe recall', value: pctMetric(currentSafeRecall), tone: 'blue' },
+  ];
+  const cacheAttention = Boolean(appState.cache?.stale);
+  const gateOk = Boolean(learning.can_start_production);
+  const needsApplyOk = Number(release.needs_apply ?? 0) === 0;
+  const outputCoverageOk = Number(release.output_coverage ?? 0) > 99;
+  const runIdle = !production.active;
+  const integrity = release.operational_integrity ?? {};
+  const sourceKnown = integrity.source_status && integrity.source_status !== 'pending_instrumentation';
+  const outputKnown = integrity.output_status && integrity.output_status !== 'pending_instrumentation';
+  const productionOutdated = Boolean(productionDelta.available && (Number(productionDelta.closed_delta ?? 0) > 0 || Number(productionDelta.pending_delta ?? 0) < 0 || Number(productionDelta.needs_apply_delta ?? 0) !== 0));
+  const releaseBlocked = !gateOk || !needsApplyOk || !runIdle || integrity.source_status === 'attention' || integrity.output_status === 'attention';
+  const releaseAttention = !releaseBlocked && (cacheAttention || productionOutdated || !sourceKnown || !outputKnown);
+  const productionReadiness = releaseBlocked ? 'bloqueada' : releaseAttention ? 'pronta com atencao' : 'pronta';
+  const publicationReadiness = productionOutdated
+    ? 'aguardando nova producao'
+    : releaseBlocked
+      ? 'bloqueada'
+      : cacheAttention
+        ? 'atualize cache antes'
+        : 'pronta para avaliar';
+  const releaseTone = releaseBlocked ? 'red' : releaseAttention ? 'amber' : 'emerald';
+  const releaseNextAction = production.active
+    ? 'aguardar run atual finalizar'
+    : cacheAttention
+      ? 'atualizar cache'
+      : !gateOk
+        ? 'aguardar learning gate'
+        : !needsApplyOk
+          ? 'revisar needs_apply'
+          : productionOutdated
+            ? 'rodar nova producao'
+            : 'avaliar publicacao';
   const releaseChecklist = [
-    { label: 'Cache local', ok: !appState.cache?.stale, detail: appState.cache?.generated_at ?? 'nao gerado' },
-    { label: 'Learning gate', ok: Boolean(learning.can_start_production), detail: learning.reason ?? learning.status ?? '-' },
-    { label: 'Needs apply', ok: Number(release.needs_apply ?? 0) === 0, detail: fmt(release.needs_apply) },
-    { label: 'Output coverage', ok: Number(release.output_coverage ?? 0) > 99, detail: pct(release.output_coverage) },
-    { label: 'Run ativa', ok: !production.active, detail: production.active ? production.current_stage ?? 'running' : 'livre' },
+    {
+      label: 'Cache local',
+      status: cacheAttention ? 'atencao' : 'ok',
+      tone: cacheAttention ? 'amber' : 'emerald',
+      value: appState.cache?.generated_at ? shortDateTime(appState.cache.generated_at) : 'nao gerado',
+      detail: cacheAttention ? 'SQLite mudou desde o cache; atualize antes de decidir release.' : 'Cache alinhado para leitura visual.',
+    },
+    {
+      label: 'Learning gate',
+      status: gateOk ? 'ok' : 'bloqueado',
+      tone: gateOk ? 'emerald' : 'red',
+      value: gateOk ? 'Liberado' : 'Bloqueado',
+      detail: learning.reason ?? learning.status ?? 'Sem detalhe do gate.',
+    },
+    {
+      label: 'Needs apply',
+      status: needsApplyOk ? 'ok' : 'bloqueado',
+      tone: needsApplyOk ? 'emerald' : 'red',
+      value: fmt(release.needs_apply),
+      detail: needsApplyOk ? 'Nao ha escrita pendente no output.' : 'Existem alteracoes aguardando aplicacao.',
+    },
+    {
+      label: 'Output coverage',
+      status: outputCoverageOk ? 'ok' : 'atencao',
+      tone: outputCoverageOk ? 'emerald' : 'amber',
+      value: pct(release.output_coverage),
+      detail: 'Cobertura de segmentos ativos com output.',
+    },
+    {
+      label: 'Run ativa',
+      status: runIdle ? 'ok' : 'bloqueado',
+      tone: runIdle ? 'emerald' : 'red',
+      value: production.active ? production.current_stage ?? 'running' : 'livre',
+      detail: runIdle ? 'Nenhuma execucao em andamento.' : 'Aguarde finalizar antes de release.',
+    },
+    {
+      label: 'Source limpo',
+      status: sourceKnown ? 'ok' : 'desconhecido',
+      tone: sourceKnown ? 'emerald' : 'slate',
+      value: integrity.source_status ?? 'pending_instrumentation',
+      detail: sourceKnown ? 'Sinal operacional disponivel.' : 'Ainda sem instrumentacao direta de source.',
+    },
+    {
+      label: 'Output alinhado',
+      status: outputKnown ? 'ok' : 'desconhecido',
+      tone: outputKnown ? 'emerald' : 'slate',
+      value: integrity.output_status ?? 'pending_instrumentation',
+      detail: outputKnown ? 'Sinal operacional disponivel.' : 'Ainda sem instrumentacao direta de output.',
+    },
+    {
+      label: 'Segment-state atual',
+      status: release.latest_segment_state_run_id ? 'ok' : 'desconhecido',
+      tone: release.latest_segment_state_run_id ? 'blue' : 'slate',
+      value: `#${release.latest_segment_state_run_id ?? '-'}`,
+      detail: release.segment_state_finished_at ? shortDateTime(release.segment_state_finished_at) : 'pending_instrumentation',
+    },
+    {
+      label: 'Ultima producao',
+      status: productionOutdated ? 'atencao' : production.last_run?.run_id ? 'ok' : 'desconhecido',
+      tone: productionOutdated ? 'amber' : production.last_run?.run_id ? 'blue' : 'slate',
+      value: production.last_run?.run_id ?? 'pending_instrumentation',
+      detail: production.last_run?.finished_at ? `${ageLabel(production.last_run.finished_at)} atras` : 'Sem timestamp final.',
+    },
+  ];
+  const releaseExecutionCards = [
+    { label: 'Run', value: production.last_run?.run_id ?? '-', tone: 'blue' },
+    { label: 'Status', value: statusLabel(production.last_run?.status ?? 'idle'), tone: statusTone(production.last_run?.status) },
+    { label: 'Etapa final', value: production.current_stage ?? production.last_run?.current_stage ?? '-', tone: 'slate' },
+    { label: 'Progresso', value: `${production.progress_pct ?? 0}%`, tone: Number(production.progress_pct ?? 0) === 100 ? 'emerald' : 'blue' },
+    { label: 'Segment-state', value: production.last_run?.summary?.segment_state_run_id ? `#${production.last_run.summary.segment_state_run_id}` : `#${release.latest_segment_state_run_id ?? '-'}`, tone: 'blue' },
+    { label: 'Ledger', value: production.last_run?.summary?.ledger_run_id ? `#${production.last_run.summary.ledger_run_id}` : `#${release.latest_ledger_run_id ?? '-'}`, tone: 'violet' },
+    { label: 'Output coverage', value: pct(release.output_coverage), tone: 'emerald' },
+    { label: 'Idade', value: ageLabel(production.last_run?.finished_at), tone: productionOutdated ? 'amber' : 'slate' },
   ];
 
   if (view === 'network') {
@@ -2754,7 +5079,7 @@ function ProjectIntelligenceDashboard({ data }) {
             <MetricTile title="Fechados" value={`${pct(release.closed_rate)} · ${compact(release.closed_count)}`} tone="emerald" />
             <MetricTile title="Pendencias" value={compact(release.pending_count)} tone={release.pending_count ? 'amber' : 'emerald'} />
             <MetricTile title="Needs Apply" value={compact(release.needs_apply)} tone={release.needs_apply ? 'amber' : 'emerald'} />
-            <MetricTile title="Output" value={pct(release.output_coverage)} tone="blue" />
+            <MetricTile title="Cobertura de Output" value={pct(release.output_coverage)} tone="blue" />
             <MetricTile title="Segment-state" value={`#${release.latest_segment_state_run_id ?? '-'}`} tone="slate" />
             <MetricTile title="Gate" value={learning.can_start_production ? 'Liberado' : 'Bloqueado'} tone={learning.can_start_production ? 'emerald' : 'red'} />
           </div>
@@ -2762,41 +5087,81 @@ function ProjectIntelligenceDashboard({ data }) {
             <Card className="flex min-h-0 flex-col p-5">
               <div className="mb-4 flex shrink-0 items-start justify-between gap-3">
                 <div>
-                  <h3 className="text-sm font-black text-[var(--dash-text)]">Evolucao de fechamento</h3>
-                  <p className="text-xs text-[var(--dash-muted)]">Leitura macro por runs de segment-state.</p>
+                  <h3 className="text-sm font-black text-[var(--dash-text)]">{releaseTrend.length > 1 ? 'Evolucao de fechamento' : 'Snapshot atual'}</h3>
+                  <p className="text-xs text-[var(--dash-muted)]">
+                    Total do corpus: <span className="font-bold text-[var(--dash-text)]">{compact(corpusTotal)}</span> · dados {cache.stale ? 'defasados' : 'atualizados'}
+                  </p>
                 </div>
                 <Badge tone={release.pending_count ? 'amber' : 'emerald'}>{release.readiness ?? 'status'}</Badge>
               </div>
+              <div className="mb-3 flex shrink-0 items-center justify-between gap-3 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] px-3 py-2">
+                <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Proxima acao macro</p>
+                <p className="truncate text-xs font-black text-[var(--dash-text)]">{overviewNextAction}</p>
+              </div>
               <div className="min-h-0 flex-1">
-                <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart data={releaseTrend.length ? releaseTrend : [{ run: `#${release.latest_segment_state_run_id ?? '-'}`, fechado: release.closed_rate, pendencias: release.pending_count, apply: release.needs_apply }]}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.08} />
-                    <XAxis dataKey="run" tick={chartText} />
-                    <YAxis yAxisId="left" tick={chartText} />
-                    <YAxis yAxisId="right" orientation="right" tick={chartText} />
-                    <Tooltip content={<ModelTooltip />} />
-                    <Bar yAxisId="right" dataKey="pendencias" name="Pendencias" fill="#f59e0b" radius={[5, 5, 0, 0]} />
-                    <Line yAxisId="left" type="monotone" dataKey="fechado" name="Fechado %" stroke="#10b981" strokeWidth={3} dot={false} />
-                    <Line yAxisId="right" type="monotone" dataKey="apply" name="Needs apply" stroke="#3b82f6" strokeWidth={2} dot={false} />
-                  </ComposedChart>
-                </ResponsiveContainer>
+                {releaseTrend.length > 1 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={releaseTrend}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.08} />
+                      <XAxis dataKey="run" tick={chartText} />
+                      <YAxis yAxisId="left" tick={chartText} domain={[0, 100]} tickFormatter={(value) => `${value}%`} />
+                      <YAxis yAxisId="right" orientation="right" tick={chartText} tickFormatter={(value) => compact(value)} />
+                      <Tooltip content={<ModelTooltip />} />
+                      <Legend />
+                      <Bar yAxisId="right" dataKey="pendencias" name="Pendentes" fill="#f59e0b" radius={[5, 5, 0, 0]} />
+                      <Line yAxisId="left" type="monotone" dataKey="fechado" name="% fechado" stroke="#10b981" strokeWidth={3} dot={false} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="grid h-full grid-cols-2 gap-3">
+                    <MetricTile title="Run atual" value={`#${release.latest_segment_state_run_id ?? '-'}`} tone="blue" />
+                    <MetricTile title="Total corpus" value={compact(corpusTotal)} tone="slate" />
+                    <MetricTile title="Fechados" value={compact(release.closed_count)} tone="emerald" />
+                    <MetricTile title="Pendentes" value={compact(release.pending_count)} tone="amber" />
+                    <MetricTile title="Delta run anterior" value={previousDelta.available ? `+${compact(previousDelta.closed_delta)} / ${compact(previousDelta.pending_delta)}` : 'pending_instrumentation'} tone={previousDelta.available ? 'emerald' : 'slate'} />
+                    <MetricTile title="Desde producao" value={productionDelta.available ? `+${compact(productionDelta.closed_delta)}` : 'pending_instrumentation'} tone={productionDelta.available ? 'violet' : 'slate'} />
+                  </div>
+                )}
               </div>
             </Card>
             <Card className="flex min-h-0 flex-col p-5">
               <div className="shrink-0">
                 <h3 className="text-sm font-black text-[var(--dash-text)]">Distribuicao atual</h3>
-                <p className="mt-1 text-xs text-[var(--dash-muted)]">Fechado, pendente e aplicacao pendente.</p>
+                <p className="mt-1 text-xs text-[var(--dash-muted)]">Fechado, pendente e aplicacao pendente com leitura direta.</p>
               </div>
-              <div className="mt-4 min-h-0 flex-1">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie data={pendingDistribution} innerRadius={58} outerRadius={92} dataKey="value" nameKey="name" paddingAngle={2}>
-                      {pendingDistribution.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
-                    </Pie>
-                    <Tooltip formatter={(value) => fmt(value)} />
-                    <Legend />
-                  </PieChart>
-                </ResponsiveContainer>
+              <div className="mt-4 grid min-h-0 flex-1 grid-rows-[1fr_auto] gap-3">
+                <div className="relative min-h-0">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={pendingDistribution} innerRadius={62} outerRadius={100} dataKey="value" nameKey="name" paddingAngle={2}>
+                        {pendingDistribution.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+                      </Pie>
+                      <Tooltip formatter={(value) => fmt(value)} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div className="pointer-events-none absolute inset-0 grid place-items-center text-center">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Corpus</p>
+                      <p className="text-xl font-black text-[var(--dash-text)]">{compact(corpusTotal)}</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <MetricTile title="Fechados" value={compact(release.closed_count)} tone="emerald" />
+                  <MetricTile title="Pendentes" value={compact(release.pending_count)} tone="amber" />
+                  <MetricTile title="Needs apply" value={compact(release.needs_apply)} tone={release.needs_apply ? 'amber' : 'emerald'} />
+                </div>
+                <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
+                  <div className="mb-2 flex items-center justify-between">
+                    <h4 className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Pendencia qualificada</h4>
+                    <Badge tone={cache.stale ? 'amber' : 'emerald'}>{cache.stale ? 'cache defasado' : 'dados atuais'}</Badge>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {qualifiedPendingCards.map((item) => (
+                      <MetricTile key={item.label} title={item.label} value={typeof item.value === 'number' ? compact(item.value) : item.value ?? 'pending_instrumentation'} tone={item.tone} />
+                    ))}
+                  </div>
+                </div>
               </div>
             </Card>
           </div>
@@ -2805,63 +5170,319 @@ function ProjectIntelligenceDashboard({ data }) {
 
       {view === 'learning' && (
         <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[0.75fr_1.25fr]">
-          <Card className="p-5">
-            <h3 className="text-sm font-black text-[var(--dash-text)]">Estado do aprendizado</h3>
-            <div className="mt-4 grid gap-3">
-              <MetricTile title="Gate" value={learning.can_start_production ? 'Liberado' : 'Em treino'} tone={learning.can_start_production ? 'emerald' : 'amber'} />
-              <MetricTile title="Fase atual" value={learning.current_phase_label ?? learning.status ?? '-'} tone="blue" />
-              <MetricTile title="Progresso" value={learning.progress_pct != null ? `${learning.progress_pct}%` : '-'} tone="slate" />
-              <MetricTile title="Proxima acao" value={learning.next_action ?? 'monitorar'} tone="violet" />
+          <div className="grid min-h-0 gap-3">
+            <Card className="p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-black text-[var(--dash-text)]">Estado do aprendizado</h3>
+                  <p className="mt-1 text-xs text-[var(--dash-muted)]">Gate, ciclo e responsavel operacional.</p>
+                </div>
+                <Badge tone={learning.can_start_production ? 'emerald' : 'amber'}>{learning.can_start_production ? 'Liberado' : 'Em treino'}</Badge>
+              </div>
+              <div className="mt-4 grid gap-2">
+                <MetricTile title="Gate" value={learning.can_start_production ? 'Liberado' : 'Bloqueado'} tone={learning.can_start_production ? 'emerald' : 'amber'} />
+                <MetricTile title="Ciclo atual" value={learningCycleLabel} tone="blue" />
+                <MetricTile title="Status do ciclo" value={learningCycleStatus} tone={learningCycleActive ? 'blue' : 'emerald'} />
+                <MetricTile title="Responsavel" value={learningResponsible} tone="violet" />
+              </div>
+            </Card>
+
+            <Card className="p-5">
+              <h3 className="text-sm font-black text-[var(--dash-text)]">Proxima acao</h3>
+              <div className="mt-3 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-3">
+                <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Acao recomendada</p>
+                <p className="mt-1 text-sm font-black text-[var(--dash-text)]">{learningNextAction}</p>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  <Badge tone="violet">Responsavel: {learningResponsible}</Badge>
+                  <Badge tone={learningCycleActive ? 'blue' : 'emerald'}>{learningCycleActive ? 'Em andamento' : 'Aguardando'}</Badge>
+                </div>
+              </div>
+            </Card>
+
+            <Card className="p-5">
+              <h3 className="text-sm font-black text-[var(--dash-text)]">Proximo foco</h3>
+              <div className="mt-3 grid gap-2">
+                <MetricTile title="Foco recomendado" value={learningFocus} tone={learningFocus === 'pending_instrumentation' ? 'slate' : 'violet'} />
+                <MetricTile title="Motivo" value={learning.reason ?? 'pending_instrumentation'} tone={learning.reason ? 'blue' : 'slate'} />
+              </div>
+            </Card>
+          </div>
+
+          <div className="grid min-h-0 gap-3">
+            <Card className="flex min-h-0 flex-col p-5">
+              <div className="flex shrink-0 items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-black text-[var(--dash-text)]">Evidencia de aprendizado</h3>
+                  <p className="mt-1 text-xs text-[var(--dash-muted)]">Sinais fortes podem ser subconjuntos da evidencia revisada.</p>
+                </div>
+                <Badge tone="violet">evidencia</Badge>
+              </div>
+              <div className="mt-4 min-h-0 flex-1">
+                {learningMix.length ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={learningMix} margin={{ top: 12, right: 12, left: 0, bottom: 8 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.08} />
+                      <XAxis dataKey="label" tick={chartText} interval={0} angle={-10} textAnchor="end" height={68} />
+                      <YAxis tick={chartText} tickFormatter={(value) => compact(value)} />
+                      <Tooltip formatter={(value, name) => [fmt(value), name === 'corrected' ? 'corrigidos' : 'revisados']} />
+                      <Bar dataKey="value" name="revisados" fill="#8b5cf6" radius={[5, 5, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex h-full min-h-[220px] items-center justify-center rounded-2xl border border-dashed border-[var(--dash-border)] bg-[var(--dash-subtle)] text-center">
+                    <div>
+                      <p className="text-sm font-black text-[var(--dash-text)]">
+                        {learningDataState === 'loading' ? 'Carregando evidencias revisadas' : 'Sem evidencia revisada instrumentada'}
+                      </p>
+                      <p className="mt-1 text-xs text-[var(--dash-muted)]">
+                        {learningDataState === 'loading'
+                          ? 'Aguardando o payload analitico completo do dashboard.'
+                          : 'O banco nao retornou learningByLabel/learningByFocus para este cache.'}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </Card>
+
+            <div className="grid gap-3 lg:grid-cols-2">
+              <Card className="p-4">
+                <h3 className="text-sm font-black text-[var(--dash-text)]">Maturidade da rede</h3>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  {maturityCards.map((item) => (
+                    <MetricTile key={item.label} title={item.label} value={typeof item.value === 'number' ? compact(item.value) : item.value} tone={item.tone} />
+                  ))}
+                </div>
+              </Card>
+              <Card className="p-4">
+                <h3 className="text-sm font-black text-[var(--dash-text)]">Pronto para acao</h3>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  {actionReadinessCards.map((item) => (
+                    <MetricTile key={item.label} title={item.label} value={typeof item.value === 'number' ? compact(item.value) : item.value} tone={item.tone} />
+                  ))}
+                </div>
+              </Card>
             </div>
-          </Card>
-          <Card className="flex min-h-0 flex-col p-5">
-            <h3 className="text-sm font-black text-[var(--dash-text)]">Evidencia de aprendizado</h3>
-            <div className="mt-4 min-h-0 flex-1">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={learningMix}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.08} />
-                  <XAxis dataKey="label" tick={chartText} interval={0} angle={-12} textAnchor="end" height={70} />
-                  <YAxis tick={chartText} />
-                  <Tooltip formatter={(value) => fmt(value)} />
-                  <Bar dataKey="value" fill="#8b5cf6" radius={[5, 5, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </Card>
+
+            <Card className="p-4">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-black text-[var(--dash-text)]">Ultimas acoes</h3>
+                <Badge tone={recentLearningEvents.length ? 'blue' : 'slate'}>{recentLearningEvents.length ? 'resumo' : 'pending_instrumentation'}</Badge>
+              </div>
+              <div className="mt-3 grid gap-2 md:grid-cols-3">
+                {(recentLearningEvents.length ? recentLearningEvents : ['pending_instrumentation']).slice(0, 3).map((event) => (
+                  <div key={event} className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] px-3 py-2 text-xs font-bold text-[var(--dash-text)]">
+                    {event}
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
         </div>
       )}
 
       {view === 'pending' && (
         <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[1.15fr_0.85fr]">
           <Card className="flex min-h-0 flex-col p-5">
-            <h3 className="text-sm font-black text-[var(--dash-text)]">Gargalos restantes</h3>
-            <p className="mt-1 text-xs text-[var(--dash-muted)]">Top grupos para decidir o proximo neuroniozinho ou politica.</p>
+            <div className="flex shrink-0 items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-black text-[var(--dash-text)]">{pendingPrimaryTitle}</h3>
+                <p className="mt-1 text-xs text-[var(--dash-muted)]">{pendingPrimarySubtitle}</p>
+              </div>
+              <Badge tone={pendingFamilyHotspots.length ? 'violet' : 'amber'}>{pendingFamilyHotspots.length ? 'familia' : 'pacote'}</Badge>
+            </div>
             <div className="mt-4 min-h-0 flex-1">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={pendingHotspots} layout="vertical" margin={{ left: 24 }}>
+                <BarChart data={pendingPrimaryData} layout="vertical" margin={{ left: 24, right: 24 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.08} />
-                  <XAxis type="number" tick={chartText} />
-                  <YAxis type="category" dataKey="label" tick={chartText} width={170} />
-                  <Tooltip formatter={(value) => fmt(value)} />
+                  <XAxis type="number" tick={chartText} tickFormatter={(value) => compact(value)} />
+                  <YAxis type="category" dataKey="label" tick={chartText} width={190} />
+                  <Tooltip
+                    formatter={(value) => [fmt(value), 'pendencias']}
+                    labelFormatter={(label) => `${pendingFamilyHotspots.length ? 'Familia' : 'Pacote'}: ${label}`}
+                  />
                   <Bar dataKey="value" fill="#f59e0b" radius={[0, 5, 5, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
-          </Card>
-          <Card className="p-5">
-            <h3 className="text-sm font-black text-[var(--dash-text)]">Leitura operacional</h3>
-            <div className="mt-4 space-y-3">
-              <MetricTile title="Pendencia bruta" value={compact(release.pending_count)} tone="amber" />
-              <MetricTile title="Watch ML" value={compact(summary.model_suspicion_watch ?? 0)} tone="violet" />
-              <MetricTile title="Ponte pendente" value={compact(summary.governed_bridge_pending ?? 0)} tone="blue" />
-              <MetricTile title="Acionavel" value={compact(summary.actionable_pending ?? 0)} tone={(summary.actionable_pending ?? 0) ? 'amber' : 'emerald'} />
+            <div className="mt-3 grid shrink-0 gap-2 md:grid-cols-2">
+              <MetricTile
+                title="Maior volume"
+                value={largestPendingVolume.label ? `${largestPendingVolume.label} - ${compact(largestPendingVolume.value)}` : 'pending_instrumentation'}
+                tone={largestPendingVolume.label ? 'amber' : 'slate'}
+              />
+              <MetricTile
+                title="Maior acao pronta"
+                value={readyActionCount ? `${readyActionLabel} - ${compact(readyActionCount)}` : 'nenhuma fila segura'}
+                tone={readyActionCount ? 'emerald' : 'slate'}
+              />
             </div>
           </Card>
+          <div className="grid min-h-0 gap-2">
+            <Card className="p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-black text-[var(--dash-text)]">Leitura operacional</h3>
+                  <p className="mt-1 text-xs text-[var(--dash-muted)]">Volume bruto separado de filas realmente acionaveis.</p>
+                </div>
+                <Badge tone={(summary.actionable_pending ?? 0) ? 'amber' : 'emerald'}>{(summary.actionable_pending ?? 0) ? 'acao aberta' : 'sem fila manual'}</Badge>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <MetricTile className="p-2" title="Pendencia bruta" value={compact(release.pending_count)} tone="amber" />
+                <MetricTile className="p-2" title="Watch ML" value={compact(summary.model_suspicion_watch ?? qualifiedPending.high_uncertainty ?? 0)} tone="violet" />
+                <MetricTile className="p-2" title="Ponte pendente" value={compact(summary.governed_bridge_pending ?? qualifiedPending.policy_waiting ?? 0)} tone="blue" />
+                <MetricTile className="p-2" title="Acionavel" value={compact(summary.actionable_pending ?? qualifiedPending.actionable_pending ?? 0)} tone={(summary.actionable_pending ?? qualifiedPending.actionable_pending ?? 0) ? 'amber' : 'emerald'} />
+              </div>
+              <p className="mt-2 line-clamp-2 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] px-2.5 py-1.5 text-[0.72rem] leading-4 text-[var(--dash-muted)]" title="Acionavel 0 significa que nao ha fila manual segura aberta agora; Watch alto indica volume aguardando contexto, politica ou microagente.">
+                Acionavel 0 significa que nao ha fila manual segura aberta agora; Watch alto indica volume aguardando contexto, politica ou microagente.
+              </p>
+            </Card>
+
+            <Card className="p-3">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-black text-[var(--dash-text)]">Watch ML por causa</h3>
+                <Badge tone={pendingActionability.instrumented_pending ? 'violet' : 'slate'}>{pendingActionability.instrumented_pending ? `ledger #${pendingActionability.ledger_run_id ?? '-'}` : 'pending_instrumentation'}</Badge>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                {pendingWatchCards.map((item) => (
+                  <MetricTile
+                    key={item.label}
+                    className="p-2"
+                    title={item.label}
+                    value={typeof item.value === 'number' ? compact(item.value) : item.value}
+                    tone={item.tone}
+                  />
+                ))}
+              </div>
+            </Card>
+
+            <Card className="p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-black text-[var(--dash-text)]">Proximo gargalo</h3>
+                  <p className="mt-1 text-xs text-[var(--dash-muted)]">Escolha sugerida pelos sinais atuais, sem hardcode.</p>
+                </div>
+                <Badge tone={pendingNextFocus.label === 'pending_instrumentation' ? 'slate' : 'violet'}>{pendingNextFocus.status ?? 'pending_instrumentation'}</Badge>
+              </div>
+              <div className="mt-2 grid gap-2">
+                <MetricTile className="p-2" title="Foco recomendado" value={pendingNextFocus.label ?? 'pending_instrumentation'} tone={pendingNextFocus.label === 'pending_instrumentation' ? 'slate' : 'violet'} />
+                <MetricTile className="p-2" title="Motivo" value={pendingNextFocus.reason ?? 'pending_instrumentation'} tone={pendingNextFocus.reason ? 'blue' : 'slate'} />
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {pendingHealthBadges.map((item) => (
+                  <Badge key={item.label} tone={item.tone}>{item.label}</Badge>
+                ))}
+              </div>
+            </Card>
+          </div>
         </div>
       )}
 
       {view === 'release' && (
-        <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[0.85fr_1.15fr]">
+        <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+          <div className="grid min-h-0 gap-3">
+            <Card className="p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-black text-[var(--dash-text)]">Status de release</h3>
+                  <p className="mt-1 text-xs text-[var(--dash-muted)]">Prontidao para rodar producao e decidir publicacao.</p>
+                </div>
+                <Badge tone={releaseTone}>{releaseBlocked ? 'bloqueado' : releaseAttention ? 'atencao' : 'pronto'}</Badge>
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                <MetricTile title="Producao" value={productionReadiness} tone={releaseTone} />
+                <MetricTile title="Release" value={publicationReadiness} tone={publicationReadiness.includes('aguardando') ? 'amber' : releaseTone} />
+              </div>
+              <div className="mt-3 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-3">
+                <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Proxima acao segura</p>
+                <p className="mt-1 text-base font-black text-[var(--dash-text)]">{releaseNextAction}</p>
+              </div>
+            </Card>
+
+            <Card className="flex min-h-0 flex-col p-5">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-black text-[var(--dash-text)]">Checklist de release</h3>
+                <Badge tone={releaseTone}>{releaseChecklist.filter((item) => item.status === 'ok').length}/{releaseChecklist.length} ok</Badge>
+              </div>
+              <div className="dashboard-card-scroll mt-4 grid min-h-0 max-h-[calc(100vh-500px)] gap-2 overflow-y-auto pr-1">
+                {releaseChecklist.map((item) => (
+                  <div key={item.label} className="grid grid-cols-[1fr_auto] gap-3 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="truncate text-sm font-black text-[var(--dash-text)]">{item.label}</p>
+                        <p className="truncate text-xs font-bold text-[var(--dash-muted)]">{item.value}</p>
+                      </div>
+                      <p className="mt-0.5 line-clamp-1 text-xs text-[var(--dash-muted)]" title={item.detail}>{item.detail}</p>
+                    </div>
+                    <Badge tone={item.tone}>{item.status}</Badge>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
+
+          <div className="grid min-h-0 gap-3">
+            <Card className="p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-black text-[var(--dash-text)]">Estado atual vs ultima producao</h3>
+                  <p className="mt-1 text-xs text-[var(--dash-muted)]">Mostra se a rede ja evoluiu depois do ultimo pacote produzido.</p>
+                </div>
+                <Badge tone={productionOutdated ? 'amber' : productionDelta.available ? 'emerald' : 'slate'}>
+                  {productionOutdated ? 'producao defasada' : productionDelta.available ? 'alinhado' : 'pending_instrumentation'}
+                </Badge>
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <MetricTile title="Segment-state atual" value={`#${release.latest_segment_state_run_id ?? '-'}`} tone="blue" />
+                <MetricTile title="Ultima producao" value={productionDelta.last_production_run_id ?? production.last_run?.run_id ?? 'pending_instrumentation'} tone="slate" />
+                <MetricTile title="Ganho pos-producao" value={productionDelta.available ? `+${compact(productionDelta.closed_delta)}` : 'pending_instrumentation'} tone={productionDelta.available ? 'emerald' : 'slate'} />
+                <MetricTile title="Pendencias reduzidas" value={productionDelta.available ? compact(Math.abs(Number(productionDelta.pending_delta ?? 0))) : 'pending_instrumentation'} tone={productionDelta.available ? 'amber' : 'slate'} />
+              </div>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                <Badge tone="blue">Baseline: #{productionDelta.baseline_segment_state_run_id ?? '-'}</Badge>
+                <Badge tone={Number(productionDelta.needs_apply_delta ?? 0) === 0 ? 'emerald' : 'amber'}>Needs apply delta: {productionDelta.available ? fmt(productionDelta.needs_apply_delta) : 'pending_instrumentation'}</Badge>
+                <Badge tone={cache.stale ? 'amber' : 'emerald'}>{cache.stale ? 'cache defasado' : 'cache atual'}</Badge>
+              </div>
+            </Card>
+
+            <Card className="p-5">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-black text-[var(--dash-text)]">Ultima execucao</h3>
+                <Badge tone={productionOutdated ? 'amber' : statusTone(production.last_run?.status)}>{productionOutdated ? 'defasada' : statusLabel(production.last_run?.status ?? 'idle')}</Badge>
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
+                {releaseExecutionCards.map((item) => (
+                  <MetricTile key={item.label} title={item.label} value={item.value} tone={item.tone} />
+                ))}
+              </div>
+              <div className="mt-3 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-3">
+                <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Resultado</p>
+                <p className="mt-1 text-sm font-black text-[var(--dash-text)]">{production.last_run?.message ?? 'Sem run ativa. O cache preserva a ultima leitura ate novo ciclo ou refresh.'}</p>
+                <p className="mt-2 truncate text-xs text-[var(--dash-muted)]" title={production.last_run?.report_path ?? production.last_run?.summary?.report_path ?? ''}>
+                  Relatorio: {production.last_run?.report_path ?? production.last_run?.summary?.report_path ?? 'pending_instrumentation'}
+                </p>
+              </div>
+            </Card>
+
+            <Card className="p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-black text-[var(--dash-text)]">Separacao operacional</h3>
+                  <p className="mt-1 text-xs text-[var(--dash-muted)]">Rede madura nao significa pacote publicado; a producao gera o pacote testavel.</p>
+                </div>
+                <Badge tone={publicationReadiness.includes('aguardando') ? 'amber' : releaseTone}>handoff</Badge>
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <MetricTile title="Pronto para producao" value={productionReadiness} tone={releaseTone} />
+                <MetricTile title="Pronto para publicar" value={publicationReadiness} tone={publicationReadiness.includes('aguardando') ? 'amber' : releaseTone} />
+              </div>
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {false && view === 'release' && (
+        <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[0.9fr_1.1fr]">
           <Card className="p-5">
             <h3 className="text-sm font-black text-[var(--dash-text)]">Checklist de release</h3>
             <div className="mt-4 space-y-3">
@@ -2892,22 +5513,116 @@ function ProjectIntelligenceDashboard({ data }) {
       )}
 
       {view === 'quality' && (
-        <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[0.75fr_1.25fr]">
-          <Card className="p-5">
-            <h3 className="text-sm font-black text-[var(--dash-text)]">Qualidade do conjunto</h3>
-            <div className="mt-4 grid gap-3">
-              {qualityCards.map((item) => <MetricTile key={item.label} title={item.label} value={item.value} tone={item.tone} />)}
+        <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[0.85fr_1.15fr]">
+          <div className="grid min-h-0 gap-3">
+            <Card className="p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-black text-[var(--dash-text)]">Status do modelo</h3>
+                  <p className="mt-1 text-xs text-[var(--dash-muted)]">Qualidade media por classe com trava de falso seguro.</p>
+                </div>
+                <Badge tone={qualityTone}>{qualityStatus}</Badge>
+              </div>
+              <div className="mt-4 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-3">
+                <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Motivo</p>
+                <p className="mt-1 text-sm font-black text-[var(--dash-text)]">{qualityReason}</p>
+              </div>
+              <div className="mt-3 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-3">
+                <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Proxima acao de qualidade</p>
+                <p className="mt-1 text-base font-black text-[var(--dash-text)]">{qualityNextAction}</p>
+              </div>
+            </Card>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <Card className="p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-black text-[var(--dash-text)]">Qualidade</h3>
+                  <Badge tone={deltaF1 == null ? 'slate' : deltaF1 >= 0 ? 'emerald' : 'amber'}>{deltaF1 == null ? 'sem delta' : deltaF1 >= 0 ? 'melhora' : 'queda'}</Badge>
+                </div>
+                <div className="mt-3 grid gap-2">
+                  <MetricTile title="Macro F1" value={pctMetric(currentF1)} tone={deltaF1 != null && deltaF1 < 0 ? 'amber' : 'emerald'} />
+                  <MetricTile title="Delta F1" value={qualityRiskCards[0].value} tone={qualityRiskCards[0].tone} />
+                  <MetricTile title="Safe precision" value={pctMetric(currentSafePrecision)} tone="blue" />
+                </div>
+              </Card>
+              <Card className="p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-black text-[var(--dash-text)]">Seguranca</h3>
+                  <Badge tone={currentFalseSafe ? 'red' : 'emerald'}>{currentFalseSafe ? 'risco' : 'sem falso seguro'}</Badge>
+                </div>
+                <div className="mt-3 grid gap-2">
+                  <MetricTile title="Falso seguro atual" value={fmt(currentFalseSafe)} tone={currentFalseSafe ? 'red' : 'emerald'} />
+                  <MetricTile title="Falso seguro anterior" value={fmt(previousFalseSafe)} tone={previousFalseSafe ? 'red' : 'emerald'} />
+                  <MetricTile title="Holdout/Safe recall" value={pctMetric(currentSafeRecall)} tone="blue" />
+                </div>
+              </Card>
             </div>
-          </Card>
-          <Card className="p-5">
-            <h3 className="text-sm font-black text-[var(--dash-text)]">Comparacao de modelos</h3>
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <MetricTile title="Atual" value={latestModel.modelVersion ?? '-'} tone="blue" />
-              <MetricTile title="Anterior" value={previousModel.modelVersion ?? '-'} tone="slate" />
-              <MetricTile title="F1 atual" value={latestModel.macroF1 != null ? pctMetric(latestModel.macroF1) : '-'} tone="emerald" />
-              <MetricTile title="F1 anterior" value={previousModel.macroF1 != null ? pctMetric(previousModel.macroF1) : '-'} tone="slate" />
+
+            <Card className="p-4">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-black text-[var(--dash-text)]">Ganho da rede</h3>
+                <Badge tone={networkGain ? 'violet' : 'slate'}>{networkGain ? `${compact(networkGain)} segmentos` : 'pending_instrumentation'}</Badge>
+              </div>
+              <p className="mt-1 text-xs text-[var(--dash-muted)]">Quando nao ha decomposicao, o ganho fica como consolidado do pacote de maturacao.</p>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                {gainBreakdown.map((item) => (
+                  <MetricTile key={item.label} title={item.label} value={item.value} tone={item.tone} />
+                ))}
+              </div>
+            </Card>
+          </div>
+
+          <div className="grid min-h-0 gap-3">
+            <Card className="flex min-h-0 flex-col p-5">
+              <div className="flex shrink-0 items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-black text-[var(--dash-text)]">Comparacao atual vs anterior</h3>
+                  <p className="mt-1 text-xs text-[var(--dash-muted)]">F1 mede qualidade media; falso seguro mede risco operacional.</p>
+                </div>
+                <Badge tone={qualityTone}>{deltaF1 == null ? 'pending_instrumentation' : `${deltaF1 >= 0 ? '+' : ''}${(deltaF1 * 100).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} p.p.`}</Badge>
+              </div>
+              <div className="mt-4 grid shrink-0 grid-cols-2 gap-2 lg:grid-cols-4">
+                <MetricTile title="Modelo atual" value={latestModel.modelVersion ?? mlPerformance.kpis?.activeModelShort ?? '-'} tone="blue" />
+                <MetricTile title="Modelo anterior" value={previousModel.modelVersion ?? '-'} tone="slate" />
+                <MetricTile title="F1 atual" value={pctMetric(currentF1)} tone={deltaF1 != null && deltaF1 < 0 ? 'amber' : 'emerald'} />
+                <MetricTile title="F1 anterior" value={previousF1 == null ? '-' : pctMetric(previousF1)} tone="slate" />
+              </div>
+              <div className="mt-4 min-h-0 flex-1">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={f1ComparisonData} margin={{ top: 12, right: 20, left: 0, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.08} />
+                    <XAxis dataKey="label" tick={chartText} />
+                    <YAxis tick={chartText} domain={[0, 100]} tickFormatter={(value) => `${value}%`} />
+                    <Tooltip formatter={(value) => [`${Number(value).toLocaleString('pt-BR', { maximumFractionDigits: 2 })}%`, 'Macro F1']} />
+                    <Bar dataKey="f1" radius={[6, 6, 0, 0]}>
+                      {f1ComparisonData.map((row) => (
+                        <Cell key={row.label} fill={row.label === 'Atual' ? (deltaF1 != null && deltaF1 < 0 ? '#f59e0b' : '#10b981') : '#64748b'} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <Card className="p-4">
+                <h3 className="text-sm font-black text-[var(--dash-text)]">Riscos compactos</h3>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  {qualityRiskCards.map((item) => (
+                    <MetricTile key={item.label} title={item.label} value={item.value} tone={item.tone} />
+                  ))}
+                </div>
+              </Card>
+              <Card className="p-4">
+                <h3 className="text-sm font-black text-[var(--dash-text)]">Freshness</h3>
+                <div className="mt-3 grid gap-2">
+                  <MetricTile title="Avaliacao" value={latestModel.runId ? `modelo #${latestModel.runId}` : 'pending_instrumentation'} tone={latestModel.runId ? 'blue' : 'slate'} />
+                  <MetricTile title="Timestamp" value={shortDateTime(latestModel.startedAt)} tone={latestModel.startedAt ? 'slate' : 'slate'} />
+                  <MetricTile title="Holdout" value="pending_instrumentation" tone="slate" />
+                </div>
+              </Card>
             </div>
-          </Card>
+          </div>
         </div>
       )}
     </div>
@@ -3612,6 +6327,8 @@ const atlasIconByType = {
   specialist_legacy: GitBranch,
   issue_memory: SearchCheck,
   microagent: BrainCircuit,
+  subcoordinator: Route,
+  symbolic_subpolicy: Workflow,
   composition_coordinator: Workflow,
   lifecycle_policy: Workflow,
   lifecycle_state: Activity,
@@ -3667,6 +6384,8 @@ const atlasPaletteForNode = (node) => {
   if (node.id?.includes('titles')) return atlasNodePalettes.titleSpecialist;
   if (node.type === 'specialist' || node.type === 'specialist_legacy') return atlasNodePalettes.specialist;
   if (node.id?.includes('select_cstring')) return atlasNodePalettes.microSelect;
+  if (node.id?.includes('requirement_effect_router')) return atlasNodePalettes.microagent;
+  if (node.id?.includes('effect_list')) return atlasNodePalettes.microagent;
   if (node.id?.includes('gender')) return atlasNodePalettes.microGender;
   if (node.id?.includes('spanish')) return atlasNodePalettes.microSpanish;
   if (node.type === 'composition_coordinator') return atlasNodePalettes.composer;
@@ -3687,6 +6406,9 @@ const atlasPositionById = {
   titles_specialist_legacy: { x: 51, y: 55 },
   culture_title_labels: { x: 51, y: 75 },
   issue_ledger: { x: 63, y: 55 },
+  requirement_effect_router_readonly: { x: 69, y: 42 },
+  effect_list_package: { x: 69, y: 55 },
+  artifact_activity_effect_policy: { x: 69, y: 68 },
   micro_short_label_style: { x: 76, y: 29 },
   micro_dynamic_ck3_expression: { x: 76, y: 42 },
   select_cstring_local_player_preterite_verb_rewrite: { x: 76, y: 55 },
@@ -3870,6 +6592,7 @@ const ptStatus = (value) => ({
   active: 'ativo',
   authoritative: 'autoritario',
   candidate: 'candidato',
+  dry_run: 'dry-run',
   experimental: 'experimental',
   experimental_watch: 'watch experimental',
   growing: 'em crescimento',
@@ -3902,7 +6625,25 @@ const ptType = (value) => ({
   registry: 'registro',
   specialist: 'especialista',
   specialist_legacy: 'especialista legado',
+  subcoordinator: 'subcoordenador',
+  subspecialist: 'subespecialista',
+  symbolic_guard: 'guarda simbolico',
+  symbolic_subpolicy: 'subpolitica simbolica',
+  governance_auditor: 'auditor de governanca',
+  governance_bridge: 'ponte de governanca',
 }[value] ?? String(value).replaceAll('_', ' '));
+
+const ptFamily = (value) => ({
+  coordinator: 'coordenacao',
+  guards: 'guardas',
+  lifecycle_policies: 'politicas lifecycle',
+  macro: 'modelo macro',
+  production_output: 'producao/output',
+  specialists: 'especialistas',
+  subagents: 'subagentes',
+  memory: 'memoria',
+  network: 'rede',
+}[value] ?? String(value ?? '').replaceAll('_', ' '));
 
 const ptRole = (value) => ({
   authoritative_hard_gate: 'Trava estrutural principal.',
@@ -3917,12 +6658,19 @@ const ptRole = (value) => ({
   problem_level_memory: 'Memoria dos problemas detectados.',
   residual_spanish_repair_specialist: 'Detecta e separa residuo espanhol real.',
   route_and_arbitrate: 'Roteia segmentos e arbitra evidencias.',
+  route_and_split: 'Roteia e divide casos por subpolitica.',
   semantic_triage: 'Organiza pendencias semanticas.',
   short_ui_label_specialist: 'Cuida de labels curtos de interface.',
   safe_output_writer: 'Escreve output apenas pelo fluxo protegido.',
   trusted_evidence_store: 'Guarda evidencias confiaveis e revisoes.',
   dynamic_expression_specialist: 'Analisa expressoes dinamicas do CK3.',
   gender_token_specialist: 'Valida genero, artigos e tokens relacionados.',
+  terminal_guard: 'Guard terminal somente leitura.',
+  guarded_context_checkpoint: 'Checkpoint contextual protegido.',
+  guarded_repair_checkpoint: 'Checkpoint de reparo protegido.',
+  guarded_release: 'Release protegido por politica.',
+  shadow_positive_boundary: 'Boundary positivo em shadow.',
+  negative_boundary: 'Boundary negativo de seguranca.',
 }[value] ?? value);
 
 const ptSentence = (value) => {
@@ -3931,6 +6679,26 @@ const ptSentence = (value) => {
   const translations = {
     'Routes segments and issues to macro, specialists, subagents and lifecycle gates. It organizes evidence rather than allowing each agent to close output alone.':
       'Roteia segmentos e problemas para o macro, especialistas, subagentes e gates de lifecycle. Organiza evidencias sem permitir que um agente feche output sozinho.',
+    'Read-only dry-run router for requirement/effect surfaces. It separates terminal guards from shadow splitters without apply or lifecycle authority.':
+      'Router dry-run somente leitura para superficies de requisito/efeito. Separa guards terminais de splitters shadow sem autoridade de apply ou lifecycle.',
+    'Learns Spanish second-person preterite literals in local-player Select_CString branches before PT-BR rewrite.':
+      'Aprende literais espanhois de preterito em segunda pessoa nos ramos Select_CString do jogador local antes da reescrita PT-BR.',
+    'Learns reflexive branch shifts such as second-person local-player phrase to third-person phrase.':
+      'Aprende mudancas de ramo reflexivo, como converter frase de segunda pessoa do jogador local para frase em terceira pessoa.',
+    'Learns local-player possessive pronoun shifts before PT-BR rewrite.':
+      'Aprende mudancas de pronome possessivo do jogador local antes da reescrita PT-BR.',
+    'Learns local-player Select_CString branch shifts before PT-BR rewrite.':
+      'Aprende mudancas de ramo Select_CString do jogador local antes da reescrita PT-BR.',
+    'full issue coverage is not the same as safe whole-segment closure':
+      'Cobertura total de problemas nao e o mesmo que fechamento seguro do segmento inteiro.',
+    'semantic-only candidates may hide file-lane context errors':
+      'Candidatos apenas semanticos podem esconder erros de contexto por arquivo/faixa.',
+    'keep composition auditor in shadow until more slices confirm precision':
+      'Manter o auditor de composicao em shadow ate mais fatias confirmarem precisao.',
+    'route PT-BR flower style repairs to a small lexical microagent':
+      'Roteiar reparos de estilo floral PT-BR para um microagente lexical pequeno.',
+    'route native breed/name preservation to a domain microagent':
+      'Roteiar preservacao de raca/nome nativo para um microagente de dominio.',
     'Catalog of macro, guards, specialists, microagents, symbolic subpolicies and lifecycle actors.':
       'Catalogo dos modelos macro, guardas, especialistas, microagentes, subpoliticas simbolicas e atores de lifecycle.',
     'Current promoted general classifier. It sees the broad package and remains active because newer candidates lowered operational safe recall.':
@@ -4126,7 +6894,34 @@ const ptSentence = (value) => {
     'use recheck queue before lifecycle closure':
       'Usar fila de rechecagem antes do fechamento lifecycle.',
   };
-  return translations[text] ?? text;
+  if (translations[text]) return translations[text];
+  return text
+    .replaceAll('Learns ', 'Aprende ')
+    .replaceAll('learns ', 'aprende ')
+    .replaceAll('second-person', 'segunda pessoa')
+    .replaceAll('third-person', 'terceira pessoa')
+    .replaceAll('reflexive branch shifts', 'mudancas de ramo reflexivo')
+    .replaceAll('branch shifts', 'mudancas de ramo')
+    .replaceAll('local-player phrase', 'frase do jogador local')
+    .replaceAll('third-person phrase', 'frase em terceira pessoa')
+    .replaceAll('before PT-BR rewrite', 'antes da reescrita PT-BR')
+    .replaceAll('read-only', 'somente leitura')
+    .replaceAll('dry-run', 'dry-run')
+    .replaceAll('shadow', 'shadow')
+    .replaceAll('terminal guards', 'guards terminais')
+    .replaceAll('terminal guard', 'guard terminal')
+    .replaceAll('splitters', 'splitters')
+    .replaceAll('splitter', 'splitter')
+    .replaceAll('without apply or lifecycle authority', 'sem autoridade de apply ou lifecycle')
+    .replaceAll('evidence', 'evidencia')
+    .replaceAll('candidates', 'candidatos')
+    .replaceAll('candidate', 'candidato')
+    .replaceAll('outputs', 'saidas')
+    .replaceAll('inputs', 'entradas')
+    .replaceAll('routing', 'roteamento')
+    .replaceAll('route', 'rotear')
+    .replaceAll('checkpoint', 'checkpoint')
+    .replaceAll('lifecycle', 'lifecycle');
 };
 
 const ptListItem = (value) => {
@@ -4148,6 +6943,12 @@ const ptListItem = (value) => {
     'candidate metrics': 'metricas do candidato',
     'checkpoint candidates': 'candidatos em checkpoint',
     'checkpoint allowlists': 'allowlists de checkpoint',
+    '9 terminal dry-run policies': '9 politicas terminais em dry-run',
+    '9 shadow splitters': '9 splitters shadow',
+    'auditable routing evidence': 'evidencia de roteamento auditavel',
+    'issue ledger': 'ledger de problemas',
+    'requirement/effect candidates': 'candidatos de requisito/efeito',
+    'dynamic ck3 expressions': 'expressoes dinamicas CK3',
     'closed auto-confirmed states': 'estados fechados por autoconfirmacao',
     'closed count': 'contagem fechada',
     'composite repair candidates': 'candidatos de reparo composto',
@@ -4192,7 +6993,6 @@ const ptListItem = (value) => {
     'human and issue-review bridge evidence': 'evidencia humana e ponte de revisao de problemas',
     'human locked': 'travado por humano',
     'human reviewed title evidence': 'evidencia de titulos revisada por humano',
-    'issue ledger': 'historico de problemas',
     'issue families': 'familias de problemas',
     'learned patterns': 'padroes aprendidos',
     'lifecycle closure evidence': 'evidencia de fechamento lifecycle',
@@ -4316,11 +7116,161 @@ const ATLAS_LAYOUT_STORAGE_KEY = 'ck3_ptbr_neural_atlas_layout_v1';
 const DASHBOARD_THEME_STORAGE_KEY = 'ck3_ptbr_dashboard_theme';
 const ATLAS_DEFAULT_NODE_SIZE = { w: 168, h: 54 };
 
+const compactNodeLabel = (node) => {
+  const label = node?.label ?? node?.id ?? '';
+  const aliases = {
+    'Shadow + Checkpoint Lifecycle': 'Shadow Lifecycle',
+    'Select_CString Local Player Pronoun': 'Select_CString Player',
+    'Select_CString Local Player Sentence': 'Select_CString Player',
+    'Select_CString Local Player Composer': 'Select_CString Player',
+    'Dynamic CK3 Expression Microagent': 'Dynamic CK3',
+    'Custom Localization Composer': 'Custom Loc Composer',
+    'Custom Localization Fragment Guard': 'Custom Loc Fragment',
+    'PT-BR Flower Lexicon Microagent': 'Flower Lexicon',
+    'Native Dog Type Preservation': 'Dog Type Guard',
+    'Gender Token Microagent': 'Gender Tokens',
+    'Spanish Residual Microagent': 'Spanish Residual',
+    'Short Label Style Microagent': 'Short Label Style',
+    'Semantic Review Router': 'Semantic Router',
+    'Autofix Unknown Router': 'Autofix Router',
+    'Coordinator Ensemble v1': 'Coordinator v1',
+    'Latest Macro Candidate v0038': 'Macro Candidate',
+    'Macro Risk Model v0038': 'Macro v0038',
+    'Titles Specialist Legacy': 'Titles Legacy',
+    'Religion Specialist': 'Religion Spec.',
+    'Culture Title Labels': 'Culture Titles',
+    'Issue Ledger': 'Issue Ledger',
+    'Requirement/Effect Router': 'Req/Effect Router',
+    'Effect-list Package': 'Effect-list',
+    'Artifact/Activity': 'Artifact/Activity',
+  };
+  if (aliases[label]) return aliases[label];
+  return label
+    .replace(/\bMicroagent\b/g, '')
+    .replace(/\bSpecialist Legacy\b/g, 'Legacy')
+    .replace(/\bSpecialist\b/g, 'Spec.')
+    .replace(/\bLocalization\b/g, 'Loc')
+    .replace(/\bExpression\b/g, 'Expr.')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
 const fallbackPosition = (node, index, siblingCount) => {
   const x = atlasFamilyColumns[node.family] ?? atlasFamilyColumns[node.type] ?? 50;
   const spread = Math.min(72, Math.max(28, siblingCount * 13));
   const start = 50 - spread / 2;
   return { x, y: Math.max(12, Math.min(90, start + index * 13)) };
+};
+
+const compactAgentLabel = (agent) => {
+  const key = agent?.agent_key ?? '';
+  const labels = {
+    requirement_effect_router_readonly: 'Req/Effect Router',
+    not_requirement_effect_global_router: 'Not-Req Router',
+    not_requirement_effect_culture_religion_router: 'Culture/Religion',
+    not_requirement_effect_culture_policy: 'Culture',
+    not_requirement_effect_culture_tradition_heritage_policy: 'Tradition/Heritage',
+    effect_list_multiline_policy: 'Effect-list',
+    effect_list_artifact_activity_policy: 'Artifact/Activity',
+    effect_list_gender_local_player_policy: 'Effect Gender/Player',
+    effect_list_trait_accolade_policy: 'Effect Trait/Accolade',
+    effect_list_script_value_policy: 'Effect ScriptValue',
+    effect_list_concept_policy: 'Effect Concept',
+    artifact_activity_gender_local_player_policy: 'Artifact Gender/Player',
+    artifact_activity_script_value_policy: 'Artifact ScriptValue',
+    artifact_item_effect_policy: 'Artifact Item',
+    artifact_item_scope_getter_policy: 'Artifact Scope',
+    acclaimed_knight_entity_unlock_final_policy: 'Acclaimed Knight Unlock',
+    select_cstring_player_target_direct_policy: 'Select_CString Player/Target',
+    select_cstring_possessive_policy: 'Select_CString Possessive',
+    select_cstring_es_helper_policy: 'Select_CString ES Helper',
+    local_player_requirement_policy: 'Local Player Req.',
+    es_oa_requirement_policy: 'ES_OA Req.',
+    script_value_requirement_policy: 'ScriptValue Req.',
+    concept_requirement_policy: 'Concept Req.',
+    name_nickname_requirement_guard: 'Name/Nickname Guard',
+  };
+  if (labels[key]) return labels[key];
+  return key
+    .replace(/^micro_/, '')
+    .replace(/_readonly$/, '')
+    .replace(/_policy$/, '')
+    .replace(/_microagent$/, '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+};
+
+const agentMatchesNode = (agent, node) => {
+  const id = node.id ?? '';
+  const key = agent.agent_key ?? '';
+  const parent = agent.parent_agent_key ?? '';
+  const group = agent.dashboard_group ?? '';
+  const type = agent.agent_type ?? '';
+  const scope = agent.scope_group ?? '';
+  const haystack = `${key} ${parent} ${group} ${type} ${scope}`.toLowerCase();
+
+  if (id === 'artifact_activity_effect_policy') {
+    return key === 'artifact_activity_effect_policy' || parent === 'artifact_activity_effect_policy';
+  }
+  if (id === 'effect_list_package') {
+    return key !== 'artifact_activity_effect_policy' && (
+      haystack.includes('effect_list') ||
+      key.startsWith('artifact_activity_') ||
+      key.startsWith('artifact_item_') ||
+      parent.startsWith('effect_list_') ||
+      parent.startsWith('artifact_item_')
+    );
+  }
+  if (id === 'requirement_effect_router_readonly') {
+    return key === 'requirement_effect_router_readonly' ||
+      parent === 'requirement_effect_router_readonly' ||
+      (scope === 'requirement_effect_router' && !haystack.includes('effect_list'));
+  }
+  if (id === 'agent_registry') return false;
+  if (id === 'deterministic_guards') return type.includes('guard') || group === 'Safety';
+  if (id === 'macro_risk_model_active' || id === 'macro_risk_model_latest') return group === 'Macro' || key.includes('macro');
+  if (id === 'coordinator_ensemble_v1') return group === 'Coordinator' || type.includes('coordinator') || key.includes('coordinator');
+  if (id === 'religion_specialist') return group === 'Religion' || haystack.includes('religion');
+  if (id === 'titles_specialist_legacy') return group === 'Titles' || haystack.includes('title') || haystack.includes('nickname');
+  if (id === 'culture_title_labels') return haystack.includes('culture') || key.includes('culture_title');
+  if (id === 'issue_ledger') return group === 'Issue Network' && !parent;
+  if (id === 'lifecycle_shadow_checkpoint') return group === 'Lifecycle' || haystack.includes('lifecycle') || haystack.includes('shadow');
+  if (id === 'micro_short_label_style') return haystack.includes('short_label');
+  if (id === 'micro_dynamic_ck3_expression') return haystack.includes('dynamic') || haystack.includes('script_value') || haystack.includes('concept');
+  if (id === 'micro_gender_token') return haystack.includes('gender') || haystack.includes('es_oa') || haystack.includes('es_el') || haystack.includes('es_del');
+  if (id === 'micro_spanish_residual') return haystack.includes('spanish') || haystack.includes('residual');
+  if (id === 'micro_autofix_unknown_router') return haystack.includes('autofix_unknown');
+  if (id === 'micro_semantic_review_router') return haystack.includes('semantic');
+  if (id === 'micro_long_text_composer') return haystack.includes('long_text') || haystack.includes('composition');
+  if (id.includes('custom_localization')) return haystack.includes('custom_localization');
+  if (id.includes('select_cstring')) return haystack.includes('select_cstring');
+  return false;
+};
+
+const summarizeNodeAgents = (agents, node) => {
+  const matched = agents.filter((agent) => agentMatchesNode(agent, node));
+  const byState = matched.reduce((acc, agent) => {
+    const state = agent.operational_state ?? 'unknown';
+    acc[state] = (acc[state] ?? 0) + 1;
+    return acc;
+  }, {});
+  const byType = matched.reduce((acc, agent) => {
+    const type = agent.agent_type ?? 'unknown';
+    acc[type] = (acc[type] ?? 0) + 1;
+    return acc;
+  }, {});
+  const operational = matched.filter((agent) => (
+    agent.status === 'active' && ['authoritative', 'operational', 'dry_run'].includes(agent.operational_state)
+  )).length;
+  const shadow = matched.filter((agent) => agent.operational_state === 'shadow').length;
+  return {
+    agents: matched,
+    total: matched.length,
+    operational,
+    shadow,
+    byState,
+    byType,
+  };
 };
 
 const normalizeNeuralAtlas = (source) => {
@@ -4341,6 +7291,7 @@ const normalizeNeuralAtlas = (source) => {
       ...node,
       id: node.id,
       label: node.label ?? node.id,
+      displayLabel: compactNodeLabel(node),
       type: node.type ?? 'node',
       family: node.family ?? 'network',
       status: node.status ?? 'active',
@@ -4388,16 +7339,364 @@ function NeuralArchitecture({ data }) {
   const dashboardSummary = agents.summary ?? {};
   const [networkSource, setNetworkSource] = useState(null);
   const [networkError, setNetworkError] = useState(null);
-  const atlas = useMemo(() => normalizeNeuralAtlas(networkSource ?? neuralAtlasBlueprint), [networkSource]);
   const sourceNetwork = networkSource ?? neuralAtlasBlueprint;
   const versionInfo = sourceNetwork.version_info ?? {};
-  const registryNodes = sourceNetwork.nodes ?? [];
+  const inventory = versionInfo.agent_inventory ?? {};
+  const classificationCounts = inventory.classification_counts ?? {};
+  const registrySummary = sourceNetwork.registrySummary ?? {};
+  const routerComponent = registrySummary.requirement_effect_router ?? {};
+  const effectListComponent = registrySummary.effect_list_package ?? {};
+  const notReqComponent = registrySummary.not_requirement_effect_package ?? {};
+  const registryAgents = registrySummary.registry_agents ?? [];
+  const artifactActivityComponent = registryAgents.find((agent) => agent.agent_key === 'artifact_activity_effect_policy') ?? null;
+  const enhancedNetwork = useMemo(() => {
+    const baseNodes = sourceNetwork.nodes ?? [];
+    const baseEdges = sourceNetwork.edges ?? [];
+    const nodes = [...baseNodes];
+    const edges = [...baseEdges];
+    if (routerComponent.registered && !nodes.some((node) => node.id === 'requirement_effect_router_readonly')) {
+      nodes.push(
+        {
+          id: 'requirement_effect_router_readonly',
+          label: 'Requirement/Effect Router',
+          type: 'subcoordinator',
+          family: 'subagents',
+          status: 'operational',
+          role: 'route_and_arbitrate',
+          description: 'Roteador read-only para superficies de requisito e efeito. Maturacao requirement/effect chegou a 10.159 segmentos com spec; somado ao not_requirement_effect, a cobertura chega a 11.407/11.725.',
+          inputs: ['issue ledger', 'requirement/effect candidates', 'dynamic CK3 expressions'],
+          outputs: ['terminal dry-run policies', 'shadow splitters', 'auditable routing evidence'],
+          metrics: {
+            operational_state: routerComponent.operational_state ?? 'dry_run',
+            requirement_effect_agents: routerComponent.requirement_effect_agents ?? 29,
+            spec_after_requirement_effect: registrySummary.spec_associated_after_requirement_effect_maturation ?? 10159,
+            spec_after_not_requirement_effect: registrySummary.spec_associated_after_not_requirement_effect ?? 11407,
+            segments_without_useful_spec: registrySummary.segments_without_useful_spec ?? 318,
+            terminal_policies: routerComponent.terminal_policies ?? 9,
+            splitters: routerComponent.splitters ?? 9,
+            effect_list_registered: effectListComponent.registered ? 1 : 0,
+            auto_apply_allowed: 0,
+            production_release_allowed: 0,
+          },
+          risks: ['dry-run only; must not be read as output authority', 'shadow splitters route context but do not close segments'],
+          next_steps: ['monitor terminal policy evidence', 'promote only after governed validation'],
+        },
+      );
+      edges.push(
+        {
+          source: 'issue_ledger',
+          target: 'requirement_effect_router_readonly',
+          label: 'requirement/effect backlog route',
+          kind: 'issue_route',
+          strength: 'medium',
+        },
+        {
+          source: 'requirement_effect_router_readonly',
+          target: 'lifecycle_shadow_checkpoint',
+          label: 'dry-run terminal guards and shadow splitters',
+          kind: 'read_only_checkpoint',
+          strength: 'medium',
+        },
+      );
+    }
+    if (effectListComponent.registered && !nodes.some((node) => node.id === 'effect_list_package')) {
+      nodes.push(
+        {
+          id: 'effect_list_package',
+          label: 'Effect-list Package',
+          type: 'subcoordinator',
+          family: 'subagents',
+          status: 'operational',
+          role: 'route_and_split',
+          description: 'Pacote read-only para effect-list: organiza specs, policies terminais e splitters sem apply ou lifecycle.',
+          inputs: ['Req/Effect Router', 'listas de efeitos', 'Issue Ledger'],
+          outputs: ['10 specs', '6 policies terminais', '4 splitters', '1090 terminais registrados'],
+          metrics: {
+            agents: effectListComponent.agents_count ?? 11,
+            specs: effectListComponent.specs ?? 10,
+            terminal_policies: effectListComponent.terminal_policies ?? 6,
+            splitters: effectListComponent.splitters ?? 4,
+            route_count: effectListComponent.route_count ?? 1654,
+            with_spec: effectListComponent.with_spec ?? 1272,
+            terminal_registered: effectListComponent.terminal_registered ?? 1090,
+            coverage_gain: effectListComponent.coverage_gain ?? 1654,
+            segments_without_useful_spec: effectListComponent.segments_without_useful_spec ?? 5941,
+          },
+          risks: ['ainda ha subrotas sem spec util', 'sem apply/lifecycle; apenas roteamento e evidencia'],
+          next_steps: ['instrumentar artifact/activity', 'instrumentar building modifier', 'promover specs apenas apos validacao governada'],
+        },
+      );
+      edges.push(
+        {
+          source: 'requirement_effect_router_readonly',
+          target: 'effect_list_package',
+          label: 'effect-list route',
+          kind: 'read_only_route',
+          strength: 'strong',
+        },
+        {
+          source: 'effect_list_package',
+          target: 'issue_ledger',
+          label: 'spec gaps and blockers',
+          kind: 'evidence_feedback',
+          strength: 'medium',
+        },
+        {
+          source: 'effect_list_package',
+          target: 'micro_dynamic_ck3_expression',
+          label: 'ScriptValue and concept specs',
+          kind: 'spec_route',
+          strength: 'medium',
+        },
+        {
+          source: 'effect_list_package',
+          target: 'select_cstring_local_player_preterite_verb_rewrite',
+          label: 'local-player effect guards',
+          kind: 'spec_route',
+          strength: 'low',
+        },
+      );
+    }
+    if (artifactActivityComponent && !nodes.some((node) => node.id === 'artifact_activity_effect_policy')) {
+      nodes.push(
+        {
+          id: 'artifact_activity_effect_policy',
+          label: 'Artifact/Activity',
+          type: 'subcoordinator',
+          family: 'subagents',
+          status: 'shadow',
+          role: 'route_and_split',
+          description: 'Subcoordenador shadow para efeitos de artefato e atividade. Registra o gargalo como arquitetura, mas ainda nao aplica nem fecha lifecycle.',
+          inputs: ['Req/Effect Router', 'artifact/activity effect candidates', 'effect-list catalog'],
+          outputs: ['rotas artifact/activity', 'reuso de policies effect-list', 'evidencia para novos specs'],
+          metrics: {
+            operational_state: artifactActivityComponent.operational_state ?? 'shadow',
+            review_total: 240,
+            reuse_cataloged_policies: 227,
+            auto_apply_allowed: 0,
+            lifecycle_allowed: 0,
+          },
+          risks: ['shadow: nao contar como operacional', 'ainda precisa medir cobertura pos-registro'],
+          next_steps: ['rodar diagnostico global pos-registro', 'criar specs terminais quando houver evidencia suficiente'],
+        },
+      );
+      edges.push(
+        {
+          source: 'requirement_effect_router_readonly',
+          target: 'artifact_activity_effect_policy',
+          label: 'artifact/activity effect route',
+          kind: 'shadow_route',
+          strength: 'medium',
+        },
+        {
+          source: 'artifact_activity_effect_policy',
+          target: 'effect_list_package',
+          label: 'reuse cataloged policies',
+          kind: 'catalog_reuse',
+          strength: 'medium',
+        },
+        {
+          source: 'artifact_activity_effect_policy',
+          target: 'issue_ledger',
+          label: 'coverage evidence',
+          kind: 'evidence_feedback',
+          strength: 'low',
+        },
+      );
+    }
+    if (nodes === baseNodes && edges === baseEdges) {
+      return sourceNetwork;
+    }
+    return {
+      ...sourceNetwork,
+      nodes,
+      edges,
+    };
+  }, [
+    sourceNetwork,
+    routerComponent.registered,
+    routerComponent.operational_state,
+    routerComponent.requirement_effect_agents,
+    routerComponent.terminal_policies,
+    routerComponent.splitters,
+    effectListComponent.registered,
+    effectListComponent.agents_count,
+    effectListComponent.specs,
+    effectListComponent.terminal_policies,
+    effectListComponent.splitters,
+    effectListComponent.route_count,
+    effectListComponent.with_spec,
+    effectListComponent.terminal_registered,
+    effectListComponent.coverage_gain,
+    effectListComponent.segments_without_useful_spec,
+    artifactActivityComponent,
+  ]);
+  const atlas = useMemo(() => normalizeNeuralAtlas(enhancedNetwork), [enhancedNetwork]);
+  const registryNodes = enhancedNetwork.nodes ?? [];
+  const currentSegmentState = sourceNetwork.currentSegmentState ?? {};
+  const numberOrNull = (value) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const graphNodeCount = registryNodes.length;
+  const registeredAgentCount = numberOrNull(registrySummary.registered_agents ?? inventory.registered_agents ?? dashboardSummary.registered_agents ?? dashboardSummary.agents_total);
+  const activeAgentCount = numberOrNull(registrySummary.active_agents ?? registrySummary.status_counts?.active);
+  const experimentalAgentCount = numberOrNull(registrySummary.experimental_agents ?? registrySummary.status_counts?.experimental);
+  const plannedAgentCount = numberOrNull(registrySummary.planned_agents ?? registrySummary.status_counts?.planned);
+  const operationalRegisteredCount =
+    numberOrNull(registrySummary.operational_agents) ?? numberOrNull(
+      Number(classificationCounts.authoritative_core ?? 0) +
+      Number(classificationCounts.operational_core ?? 0) +
+      Number(classificationCounts.operational_uninstrumented ?? 0)
+    ) ?? numberOrNull(dashboardSummary.agents_operational);
+  const activeSubspecialistCount = numberOrNull(registrySummary.active_subspecialists ?? registrySummary.active_by_type?.subspecialist);
+  const statusOperationalCounts = registrySummary.status_operational_state_counts ?? {};
+  const dashboardGroupCounts = registrySummary.dashboard_group_counts ?? {};
+  const activeDryRunCount = numberOrNull(statusOperationalCounts['active/dry_run']);
+  const experimentalDryRunCount = numberOrNull(statusOperationalCounts['experimental/dry_run']);
+  const shadowAgentCount = numberOrNull(registrySummary.shadow_agents) ??
+    numberOrNull(Number(statusOperationalCounts['active/shadow'] ?? 0) + Number(statusOperationalCounts['experimental/shadow'] ?? 0));
+  const dryRunAgentCount = numberOrNull(registrySummary.dry_run_agents) ??
+    numberOrNull(Number(activeDryRunCount ?? 0) + Number(experimentalDryRunCount ?? 0));
+  const requirementEffectAgentCount = numberOrNull(registrySummary.requirement_effect_agents ?? routerComponent.requirement_effect_agents);
+  const effectListAgentCount = numberOrNull(registrySummary.effect_list_agents ?? effectListComponent.agents_count);
+  const notRequirementEffectAgentCount = numberOrNull(registrySummary.not_requirement_effect_agents ?? notReqComponent.agents_count);
+  const withoutUsefulSpecCount = numberOrNull(registrySummary.segments_without_useful_spec ?? effectListComponent.segments_without_useful_spec);
+  const terminalGuardAgentCount = numberOrNull(registrySummary.terminal_guard_agents);
+  const splitterAgentCount = numberOrNull(registrySummary.splitter_agents);
+  const specAssociatedAfterNotReq = numberOrNull(registrySummary.spec_associated_after_not_requirement_effect);
+  const coverageGainSinceEffectList = numberOrNull(registrySummary.coverage_gain_since_effect_list);
+  const labRegisteredCount = numberOrNull(registrySummary.lab_useful_evidence) ??
+    numberOrNull(Number(classificationCounts.lab_useful_evidence ?? 0) + Number(classificationCounts.candidate_with_evidence ?? 0));
+  const plannedBacklogCount = numberOrNull(registrySummary.planned_backlog ?? classificationCounts.planned_backlog) ?? plannedAgentCount;
+  const issueNetworkCount = numberOrNull(dashboardGroupCounts['Issue Network']);
+  const operationalAtlasDelta = Math.max(0, Number(operationalRegisteredCount ?? 0) - graphNodeCount);
+  const macroCoordinatorCount = registryNodes.filter((node) => ['macro', 'coordinator'].includes(node.family)).length;
+  const guardsPolicyCount = registryNodes.filter((node) => ['guards', 'lifecycle_policies'].includes(node.family) || ['guard', 'lifecycle_policy', 'lifecycle_state'].includes(node.type)).length;
+  const specialistCount = registryNodes.filter((node) => node.family === 'specialists' || node.type?.startsWith?.('specialist')).length;
+  const labGraphCount = registryNodes.filter((node) => node.family === 'subagents' || node.type?.includes?.('microagent') || node.status === 'experimental').length;
+  const sourceOutputCount = registryNodes.filter((node) => ['production_output', 'memory'].includes(node.family) || ['production_gateway', 'memory'].includes(node.type)).length;
+  const atlasSegmentStateId = versionInfo.latest_segment_state_run?.id ?? null;
+  const networkSegmentStateId =
+    currentSegmentState.run_id ??
+    data.appState?.release?.latest_segment_state_run_id ??
+    data.summary?.latest_segment_state_run_id ??
+    null;
+  const networkUpdatedAt = sourceNetwork.generated_at ?? data.appState?.cache?.generated_at ?? null;
+  const atlasIsStale = atlasSegmentStateId && networkSegmentStateId && Number(atlasSegmentStateId) < Number(networkSegmentStateId);
+  const atlasUpdatedLabel = compactDateTime(networkUpdatedAt);
+  const registryDiagLabel = registrySummary.post_architecture_generated_at
+    ? compactDateTime(registrySummary.post_architecture_generated_at)
+    : registrySummary.diagnostic_generated_at
+      ? compactDateTime(registrySummary.diagnostic_generated_at)
+      : 'pending_instrumentation';
+  const networkSourceLine = `Atlas #${atlasSegmentStateId ?? 'pendente'} | Registry run #${networkSegmentStateId ?? 'pendente'} | Ledger #${registrySummary.post_architecture_summary?.ledger_run_id ?? '76'} | diag. ${registryDiagLabel}`;
+  const atlasMetricCards = [
+    {
+      title: 'Registrados',
+      value: registeredAgentCount == null ? 'pending_instrumentation' : fmt(registeredAgentCount),
+      tone: 'violet',
+      help: 'Total de agentes, subagentes, politicas e componentes catalogados no ml_agent_registry.',
+    },
+    {
+      title: 'Operacionais',
+      value: operationalRegisteredCount == null ? 'pending_instrumentation' : fmt(operationalRegisteredCount),
+      tone: 'emerald',
+      help: `Agentes ativos com autoridade operacional real. Shadow e dry-run ficam separados. False-safe operacional conhecido: ${fmt(registrySummary.operational_false_safe ?? versionInfo.current_macro_model?.false_safe_count ?? dashboardSummary.operational_false_safe ?? 0)}.`,
+    },
+    {
+      title: 'Shadow',
+      value: shadowAgentCount == null ? 'pending_instrumentation' : fmt(shadowAgentCount),
+      tone: 'violet',
+      help: 'Agentes shadow/lab/splitter: roteiam, separam filas e acumulam evidencia sem autoridade operacional direta.',
+    },
+    {
+      title: 'Dry-run',
+      value: dryRunAgentCount == null ? 'pending_instrumentation' : fmt(dryRunAgentCount),
+      tone: 'blue',
+      help: 'Agentes em ensaio controlado: produzem evidencia e checkpoints, mas ainda nao escrevem nem fecham com autoridade final.',
+    },
+  ];
+  const atlasComposition = [
+    ['Registry', registeredAgentCount],
+    ['Op.', operationalRegisteredCount],
+    ['Dry-run', dryRunAgentCount],
+    ['Shadow', shadowAgentCount],
+    ['Req/Effect', requirementEffectAgentCount],
+    ['Effect-list', effectListAgentCount],
+  ];
+  const routerBadgeText = routerComponent.registered
+    ? `Req/Effect: ${fmt(requirementEffectAgentCount ?? routerComponent.requirement_effect_agents ?? 0)} agentes`
+    : 'Req/Effect Router: pending_instrumentation';
+  const routerBadgeHelp = routerComponent.registered
+    ? `Read-only router. ${fmt(requirementEffectAgentCount ?? routerComponent.requirement_effect_agents ?? 0)} agentes requirement/effect; effect-list package ${effectListComponent.registered ? 'registrado' : 'pendente'}; sem apply/lifecycle. Terminais: ${fmt(routerComponent.terminal_policies ?? 0)}. Splitters: ${fmt(routerComponent.splitters ?? 0)}.`
+    : 'Componente ainda nao encontrado no ml_agent_registry.';
+  const effectListBadgeHelp = effectListComponent.registered
+    ? [
+        `Effect-list package: ${fmt(effectListAgentCount ?? effectListComponent.agents_count ?? 0)} componentes agregados.`,
+        `Specs: ${fmt(effectListComponent.specs ?? 0)}; terminais: ${fmt(effectListComponent.terminal_policies ?? 0)}; splitters: ${fmt(effectListComponent.splitters ?? 0)}.`,
+        `Cobertura: ${fmt(effectListComponent.coverage_before ?? 0)} -> ${fmt(effectListComponent.coverage_after ?? 0)} (+${fmt(effectListComponent.coverage_gain ?? 0)}).`,
+        `Rota effect-list: ${fmt(effectListComponent.route_count ?? 0)}; com spec: ${fmt(effectListComponent.with_spec ?? 0)}; terminais registrados: ${fmt(effectListComponent.terminal_registered ?? 0)}.`,
+      ].join(' ')
+    : 'Pacote effect-list ainda nao carregado no payload.';
+  const semSpecHelp = effectListComponent.top_blockers?.length
+    ? `Sem spec util: ${fmt(withoutUsefulSpecCount ?? 0)}. Proximos gargalos: ${effectListComponent.top_blockers.slice(0, 3).map((item) => `${ptFieldLabel(item.route)} ${fmt(item.segments)}`).join(', ')}.`
+    : `Sem spec util: ${fmt(withoutUsefulSpecCount ?? 0)}.`;
+  const remainingGaps = registrySummary.remaining_gaps ?? {};
+  const remainingGapsText = [
+    ['Domain Context', remainingGaps.domain_context_after_requirement_effect],
+    ['Blocked', remainingGaps.blocked_uncertain],
+    ['ScriptValue residual', remainingGaps.script_value_effect_residual_repair_or_preserved_sublane],
+    ['Accolade residual', remainingGaps.accolade_trait_residual_repair_or_preserved_sublane],
+    ['Residual culture/name', remainingGaps.residual_culture_or_name_policy],
+  ]
+    .filter(([, value]) => Number(value) > 0)
+    .map(([label, value]) => `${label} ${fmt(value)}`)
+    .join(', ');
+  const specCoverageTooltip = [
+    `Spec: ${fmt(specAssociatedAfterNotReq ?? 0)}/${fmt(registrySummary.post_architecture_summary?.pending_segments ?? 11725)}.`,
+    `Sem spec util: ${fmt(withoutUsefulSpecCount ?? 0)}.`,
+    `Ganho desde effect-list: +${fmt(coverageGainSinceEffectList ?? 0)}.`,
+    remainingGapsText ? `Restante: ${remainingGapsText}.` : null,
+  ].filter(Boolean).join(' ');
+  const notReqTooltip = notReqComponent.registered
+    ? [
+        `Not-Req Router: not_requirement_effect_global_router.`,
+        `Shadow splitter read-only.`,
+        `Universo: ${fmt(notReqComponent.universe ?? 0)}; reuso: ${fmt(notReqComponent.reuse_existing_policies ?? 0)}/${fmt(notReqComponent.review_total ?? 0)} na amostra.`,
+        `Subarvore validada: Not-Req Router -> Culture/Religion -> Culture -> Tradition/Heritage terminal.`,
+        `Unrouted preservado: ${fmt(notReqComponent.unrouted_or_preserved ?? 0)}.`,
+      ].join(' ')
+    : 'Not-Req Router ainda nao carregado no payload.';
+  const networkSummaryTooltip = [
+    `Mapa visual: ${fmt(graphNodeCount)} nos.`,
+    `Registry: ${registeredAgentCount == null ? 'pending_instrumentation' : fmt(registeredAgentCount)} agentes.`,
+    `Operacionais: ${operationalRegisteredCount == null ? 'pending_instrumentation' : fmt(operationalRegisteredCount)} pelo criterio active + authoritative/operational/dry_run.`,
+    `Dry-run: ${dryRunAgentCount == null ? 'pending_instrumentation' : fmt(dryRunAgentCount)}.`,
+    `Shadow: ${shadowAgentCount == null ? 'pending_instrumentation' : fmt(shadowAgentCount)}.`,
+    `Terminais: ${terminalGuardAgentCount == null ? 'pending_instrumentation' : fmt(terminalGuardAgentCount)}. Splitters: ${splitterAgentCount == null ? 'pending_instrumentation' : fmt(splitterAgentCount)}.`,
+    `Req/Effect: ${requirementEffectAgentCount == null ? 'pending_instrumentation' : fmt(requirementEffectAgentCount)} agentes.`,
+    `Not-Req: ${notRequirementEffectAgentCount == null ? 'pending_instrumentation' : fmt(notRequirementEffectAgentCount)} agentes.`,
+    `Effect-list: ${effectListAgentCount == null ? 'pending_instrumentation' : fmt(effectListAgentCount)} componentes.`,
+    specCoverageTooltip,
+    notReqTooltip,
+    networkSourceLine,
+  ].join('\n');
+  const atlasCompositionHelp = {
+    Registry: 'Total atual de agentes no ml_agent_registry.',
+    'Op.': "Operacionais = status active + operational_state authoritative/operational/dry_run. Shadow fica fora.",
+    'Dry-run': 'Agentes ativos em dry-run/read-only; contam como operacionais, mas nao aplicam output.',
+    Shadow: 'Agentes shadow/lab/splitter: roteiam e acumulam evidencia, sem autoridade operacional.',
+    'Req/Effect': routerBadgeHelp,
+    'Effect-list': effectListBadgeHelp,
+  };
   const atlasSummary = {
-    agents_total: registryNodes.length,
-    agents_operational: registryNodes.filter((node) => ['active', 'operational'].includes(node.status) || ['operational', 'authoritative'].includes(node.operational_state)).length,
-    experimental_subagents: registryNodes.filter((node) => node.type === 'subagent' || node.agent_type === 'subspecialist' || node.status === 'experimental').length,
-    operational_false_safe: versionInfo.current_macro_model?.false_safe_count ?? 0,
     ...dashboardSummary,
+    graph_nodes: graphNodeCount,
+    registered_agents: registeredAgentCount,
+    operational_registered: operationalRegisteredCount,
+    lab_registered: labRegisteredCount,
+    operational_false_safe: versionInfo.current_macro_model?.false_safe_count ?? dashboardSummary.operational_false_safe ?? 0,
   };
   const defaultPositions = useMemo(
     () => Object.fromEntries(atlas.nodes.map((node) => [node.id, { x: node.x, y: node.y }])),
@@ -4414,9 +7713,14 @@ function NeuralArchitecture({ data }) {
   const [dragging, setDragging] = useState(null);
   const [resizing, setResizing] = useState(null);
   const [layoutSaved, setLayoutSaved] = useState(false);
+  const nodeAgentClusters = useMemo(
+    () => Object.fromEntries(atlas.nodes.map((node) => [node.id, summarizeNodeAgents(registryAgents, node)])),
+    [atlas.versionKey, registryAgents]
+  );
 
   const effectiveSelectedId = atlas.nodes.some((node) => node.id === selectedId) ? selectedId : null;
   const selectedNode = atlas.nodes.find((node) => node.id === effectiveSelectedId) ?? null;
+  const selectedAgentCluster = selectedNode ? nodeAgentClusters[selectedNode.id] : null;
   const focusId = hoveredId ?? effectiveSelectedId;
 
   useEffect(() => {
@@ -4427,7 +7731,12 @@ function NeuralArchitecture({ data }) {
         if (!response.ok) throw new Error(`API ${response.status}`);
         const payload = await response.json();
         if (!alive) return;
-        setNetworkSource({ ...(payload.network ?? {}), sourcePath: payload.sourcePath });
+        setNetworkSource({
+          ...(payload.network ?? {}),
+          sourcePath: payload.sourcePath,
+          registrySummary: payload.registrySummary,
+          currentSegmentState: payload.currentSegmentState,
+        });
         setNetworkError(null);
       } catch (err) {
         if (!alive) return;
@@ -4526,6 +7835,37 @@ function NeuralArchitecture({ data }) {
     setResizing(null);
   };
 
+  const restoreFavoriteLayout = (event) => {
+    event.stopPropagation();
+    try {
+      const raw = window.localStorage.getItem(ATLAS_LAYOUT_STORAGE_KEY);
+      if (!raw) {
+        setPositions(defaultPositions);
+        setNodeSizes(defaultSizes);
+        setLayoutSaved(false);
+        return;
+      }
+      const saved = JSON.parse(raw);
+      const known = new Set(atlas.nodes.map((node) => node.id));
+      const savedPositions = Object.fromEntries(
+        Object.entries(saved.positions ?? {}).filter(([id]) => known.has(id))
+      );
+      const savedSizes = Object.fromEntries(
+        Object.entries(saved.sizes ?? {}).filter(([id]) => known.has(id))
+      );
+      setPositions({ ...defaultPositions, ...savedPositions });
+      setNodeSizes({ ...defaultSizes, ...savedSizes });
+      setLayoutSaved(true);
+    } catch {
+      setPositions(defaultPositions);
+      setNodeSizes(defaultSizes);
+      setLayoutSaved(false);
+    }
+    setSelectedId(null);
+    setDragging(null);
+    setResizing(null);
+  };
+
   const resetAtlasLayout = (event) => {
     event.stopPropagation();
     setPositions(defaultPositions);
@@ -4609,6 +7949,7 @@ function NeuralArchitecture({ data }) {
           box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--node-accent) 18%, transparent);
           transition: box-shadow 180ms ease, border-color 180ms ease, background 180ms ease, opacity 180ms ease;
           touch-action: none;
+          cursor: pointer;
         }
         .atlas-node:hover {
           box-shadow: 0 18px 60px var(--node-glow), inset 0 0 0 1px color-mix(in srgb, var(--node-accent) 38%, transparent);
@@ -4721,7 +8062,7 @@ function NeuralArchitecture({ data }) {
         <div className="relative atlas-stage h-full min-h-[520px] overflow-hidden p-3" ref={canvasRef} onPointerMove={dragNode} onPointerUp={stopDrag} onPointerCancel={stopDrag} onClick={() => setSelectedId(null)}>
             <div className="relative z-10 flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
               <div className="flex items-center gap-2">
-                <div className="atlas-title-card rounded-2xl border border-white/10 bg-black/15 px-3 py-2 backdrop-blur">
+                <div className="atlas-title-card rounded-2xl border border-white/10 bg-black/15 px-3 py-2 backdrop-blur" title={networkSummaryTooltip}>
                   <h2 className="text-lg font-black tracking-tight text-white lg:text-xl">
                     Network Tradução CKIII
                   </h2>
@@ -4734,15 +8075,17 @@ function NeuralArchitecture({ data }) {
                 <div className="atlas-toolbar flex rounded-2xl border border-white/10 bg-black/20 p-1 backdrop-blur">
                   <button
                     type="button"
-                    title="Voltar para o layout padrão"
-                    onClick={resetAtlasLayout}
+                    title="Home: voltar ao ultimo layout favorito salvo"
+                    aria-label="Home: voltar ao ultimo layout favorito salvo"
+                    onClick={restoreFavoriteLayout}
                     className="grid h-9 w-9 place-items-center rounded-xl text-slate-200 transition hover:bg-white/10 hover:text-white"
                   >
                     <Home size={16} />
                   </button>
                   <button
                     type="button"
-                    title={layoutSaved ? 'Layout favorito salvo' : 'Salvar layout favorito'}
+                    title={layoutSaved ? 'Favorito: layout atual ja esta salvo' : 'Favorito: salvar layout atual'}
+                    aria-label={layoutSaved ? 'Favorito: layout atual ja esta salvo' : 'Favorito: salvar layout atual'}
                     onClick={saveAtlasLayout}
                     className={cn(
                       'grid h-9 w-9 place-items-center rounded-xl transition hover:bg-white/10',
@@ -4752,12 +8095,57 @@ function NeuralArchitecture({ data }) {
                     <Star size={16} fill={layoutSaved ? 'currentColor' : 'none'} />
                   </button>
                 </div>
+                <div className="atlas-toolbar flex rounded-2xl border border-white/10 bg-black/20 p-1 backdrop-blur">
+                  <button
+                    type="button"
+                    title="Redefinir: voltar ao layout padrao do grafo"
+                    aria-label="Redefinir: voltar ao layout padrao do grafo"
+                    onClick={resetAtlasLayout}
+                    className="grid h-9 w-9 place-items-center rounded-xl text-slate-200 transition hover:bg-white/10 hover:text-white"
+                  >
+                    <RotateCcw size={16} />
+                  </button>
+                </div>
               </div>
-              <div className="atlas-metrics-panel grid w-full grid-cols-2 gap-2 rounded-2xl border border-white/10 bg-black/20 p-2 backdrop-blur sm:grid-cols-4 lg:w-auto lg:min-w-[430px]">
-                <MetricTile title="Agents" value={fmt(atlasSummary.agents_total)} tone="blue" />
-                <MetricTile title="Operational" value={fmt(atlasSummary.agents_operational)} tone="emerald" />
-                <MetricTile title="Lab Subagents" value={fmt(atlasSummary.experimental_subagents)} tone="amber" />
-                <MetricTile title="False Safe Op." value={fmt(atlasSummary.operational_false_safe ?? 0)} tone={(atlasSummary.operational_false_safe ?? 0) ? 'red' : 'emerald'} />
+              <div className="atlas-metrics-panel pointer-events-none grid w-full grid-cols-2 gap-1 rounded-2xl border border-white/10 bg-black/20 p-1.5 backdrop-blur sm:grid-cols-4 lg:w-auto lg:min-w-[620px]">
+                <div className="col-span-full flex flex-wrap justify-end gap-1.5 text-[0.64rem] font-black">
+                  <span className="rounded-full border border-white/10 bg-white/[0.05] px-2 py-0.5 text-slate-300" title="Nos renderizados neste mapa macro. O registry real fica agregado em clusters.">
+                    Mapa {fmt(graphNodeCount)}
+                  </span>
+                  <span className="rounded-full border border-white/10 bg-white/[0.05] px-2 py-0.5 text-slate-300" title="Data do atlas visual, nao do estado operacional atual.">
+                    Atlas {atlasUpdatedLabel}
+                  </span>
+                  <span className="rounded-full border border-white/10 bg-blue-500/10 px-2 py-0.5 text-blue-200" title={networkSourceLine}>
+                    Atlas #{atlasSegmentStateId ?? '-'}
+                  </span>
+                  <span className="rounded-full border border-white/10 bg-emerald-500/10 px-2 py-0.5 text-emerald-200" title="Ultimo segment-state operacional conhecido.">
+                    Estado #{networkSegmentStateId ?? '-'}
+                  </span>
+                  {atlasIsStale && (
+                    <span className="rounded-full border border-amber-300/20 bg-amber-400/10 px-2 py-0.5 text-amber-200" title="O mapa visual esta em uma run antiga; os cards de registry usam dados atuais quando disponiveis.">
+                      atlas antigo
+                    </span>
+                  )}
+                </div>
+                {atlasMetricCards.map((card) => (
+                  <div
+                    key={card.title}
+                    className="pointer-events-auto cursor-pointer rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] px-2 py-1.5"
+                    title={card.help}
+                    aria-label={`${card.title}: ${card.help}`}
+                  >
+                    <p className="text-[0.58rem] font-semibold uppercase tracking-wide text-[var(--dash-muted)]">{card.title}</p>
+                    <p className={cn(
+                      'mt-0.5 text-sm font-black leading-none',
+                      card.tone === 'emerald' ? 'text-emerald-400' :
+                        card.tone === 'red' ? 'text-red-400' :
+                          card.tone === 'blue' ? 'text-blue-400' :
+                            card.tone === 'amber' ? 'text-amber-400' :
+                              card.tone === 'violet' ? 'text-violet-400' :
+                                'text-[var(--dash-text)]'
+                    )}>{card.value}</p>
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -4802,11 +8190,20 @@ function NeuralArchitecture({ data }) {
                 const isFocused = focusId === node.id;
                 const opacity = isSelected || isFocused || isRelated ? 1 : hoveredId ? 0.45 : 0.86;
                 const palette = node.palette ?? atlasNodePalettes.macro;
+                const nodeTooltip = [
+                  node.label,
+                  `Tipo: ${ptType(node.type)}`,
+                  `Status: ${ptStatus(node.status)}`,
+                  node.rawRole ? `Papel: ${ptRole(node.rawRole)}` : null,
+                  node.description ? `Resumo: ${node.description}` : null,
+                ].filter(Boolean).join('\n');
+                const agentCluster = nodeAgentClusters[node.id] ?? { total: 0, operational: 0, shadow: 0 };
                 return (
                   <button
                     key={node.id}
                     type="button"
-                    title={`${node.label}\n${ptType(node.type)}`}
+                    title={nodeTooltip}
+                    aria-label={nodeTooltip}
                     onPointerDown={(event) => startDrag(event, node.id)}
                     onPointerEnter={() => setHoveredId(node.id)}
                     onPointerLeave={() => setHoveredId(null)}
@@ -4837,7 +8234,26 @@ function NeuralArchitecture({ data }) {
                         <Icon size={15} />
                       </div>
                       <div className="min-w-0">
-                        <h3 className="truncate text-[0.82rem] font-black leading-tight text-white">{node.label}</h3>
+                        <h3 className="line-clamp-2 text-[0.78rem] font-black leading-tight text-white">{node.displayLabel ?? node.label}</h3>
+                        {agentCluster.total > 0 && (
+                          <div
+                            className="mt-1 flex items-center gap-1 text-[0.55rem] font-black uppercase tracking-wide text-slate-300/90"
+                            title={`${agentCluster.total} neuronios ligados; ${agentCluster.operational} operacionais; ${agentCluster.shadow} shadow.`}
+                          >
+                            <span className="flex items-center gap-0.5">
+                              {['operational', 'shadow', 'lab'].map((kind, dotIndex) => (
+                                <span
+                                  key={kind}
+                                  className={cn(
+                                    'h-1.5 w-1.5 rounded-full',
+                                    dotIndex === 0 ? 'bg-emerald-300' : dotIndex === 1 ? 'bg-violet-300' : 'bg-sky-300'
+                                  )}
+                                />
+                              ))}
+                            </span>
+                            <span>{fmt(agentCluster.total)} neuronios</span>
+                          </div>
+                        )}
                       </div>
                     </div>
                     <span
@@ -4856,7 +8272,7 @@ function NeuralArchitecture({ data }) {
             <aside onClick={(event) => event.stopPropagation()} className="atlas-detail-scroll absolute bottom-5 right-5 top-5 z-20 w-[360px] overflow-y-auto rounded-3xl border border-white/10 bg-[#070b18]/95 p-6 shadow-[0_28px_90px_rgba(0,0,0,0.42)] backdrop-blur-xl">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-xs font-black uppercase tracking-wide text-cyan-200">{selectedNode.family}</p>
+                <p className="text-xs font-black uppercase tracking-wide text-cyan-200">{ptFamily(selectedNode.family)}</p>
                 <h3 className="mt-2 text-2xl font-black text-white">{selectedNode.label}</h3>
               </div>
               <Badge tone={selectedNode.tone}>{ptStatus(selectedNode.status)}</Badge>
@@ -4866,6 +8282,64 @@ function NeuralArchitecture({ data }) {
               <p className="text-xs font-black uppercase tracking-wide text-slate-400">Funcao</p>
               <p className="mt-2 text-sm leading-6 text-white">{selectedNode.role}</p>
             </div>
+            {selectedAgentCluster?.total > 0 && (
+              <div className="mt-4 rounded-2xl border border-violet-300/20 bg-violet-400/10 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-wide text-violet-100">Neuronios ligados</p>
+                    <p className="mt-1 text-xs leading-5 text-violet-100/80">
+                      Agentes reais do registry agregados neste no macro.
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-violet-200/20 bg-violet-300/15 px-2 py-1 text-xs font-black text-violet-100">
+                    {fmt(selectedAgentCluster.total)}
+                  </span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-1.5 text-[0.66rem] font-black">
+                  <span className="rounded-full border border-emerald-300/20 bg-emerald-400/10 px-2 py-1 text-emerald-100">
+                    operacionais {fmt(selectedAgentCluster.operational)}
+                  </span>
+                  <span className="rounded-full border border-violet-300/20 bg-violet-400/10 px-2 py-1 text-violet-100">
+                    shadow {fmt(selectedAgentCluster.shadow)}
+                  </span>
+                  {Object.entries(selectedAgentCluster.byType).slice(0, 3).map(([type, total]) => (
+                    <span key={type} className="rounded-full border border-white/10 bg-white/[0.055] px-2 py-1 text-slate-200">
+                      {ptType(type)} {fmt(total)}
+                    </span>
+                  ))}
+                </div>
+                <div className="mt-3 max-h-48 space-y-2 overflow-y-auto pr-1">
+                  {selectedAgentCluster.agents.slice(0, 12).map((agent) => (
+                    <div
+                      key={agent.agent_key}
+                      title={`${agent.agent_key}\n${agent.scope_description ?? ''}`}
+                      className="rounded-xl border border-white/10 bg-black/15 px-3 py-2"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-xs font-black leading-4 text-white">{compactAgentLabel(agent)}</p>
+                        <span className={cn(
+                          'shrink-0 rounded-full px-2 py-0.5 text-[0.58rem] font-black',
+                          agent.operational_state === 'shadow' ? 'bg-violet-400/10 text-violet-100' :
+                            agent.operational_state === 'dry_run' ? 'bg-sky-400/10 text-sky-100' :
+                              ['operational', 'authoritative'].includes(agent.operational_state) ? 'bg-emerald-400/10 text-emerald-100' :
+                                'bg-white/10 text-slate-200'
+                        )}>
+                          {ptStatus(agent.operational_state)}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-[0.68rem] leading-4 text-slate-300">
+                        {ptType(agent.agent_type)} · {ptRole(agent.decision_role)}
+                      </p>
+                    </div>
+                  ))}
+                  {selectedAgentCluster.total > 12 && (
+                    <p className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-bold text-slate-300">
+                      +{fmt(selectedAgentCluster.total - 12)} neuronios agregados neste no.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
             <div className="mt-4 grid gap-3">
               {(selectedNode.metrics ?? []).map((item) => (
                 <div
@@ -5039,16 +8513,26 @@ function App() {
   const [appState, setAppState] = useState(null);
   const [error, setError] = useState(null);
   const [dashboardView, setDashboardView] = useState(dashboardViewFromHash);
-  const [refreshingCache, setRefreshingCache] = useState(false);
   const needsFullDashboard = activeTab !== 'Production' && !(activeTab === 'Dashboard' && dashboardView === 'network');
+
+  const fetchAppStatePayload = async () => {
+    const response = await fetch(`${API_BASE}/app-state`);
+    if (!response.ok) throw new Error(`API ${response.status}`);
+    return response.json();
+  };
+
+  const refreshAppStateNow = async () => {
+    const payload = await fetchAppStatePayload();
+    setAppState(payload);
+    setError(null);
+    return payload;
+  };
 
   useEffect(() => {
     let alive = true;
     const loadAppState = async () => {
       try {
-        const response = await fetch(`${API_BASE}/app-state`);
-        if (!response.ok) throw new Error(`API ${response.status}`);
-        const payload = await response.json();
+        const payload = await fetchAppStatePayload();
         if (alive) {
           setAppState(payload);
           setError(null);
@@ -5128,21 +8612,6 @@ function App() {
     setDashboardView(nextView);
     window.history.replaceState(null, '', `#${encodeURIComponent(`Dashboard/${nextView}`)}`);
     window.dispatchEvent(new Event('hashchange'));
-  };
-
-  const refreshCache = async () => {
-    setRefreshingCache(true);
-    try {
-      const response = await fetch(`${API_BASE}/cache/refresh`, { method: 'POST' });
-      if (!response.ok) throw new Error(`API ${response.status}`);
-      const payload = await response.json();
-      setAppState(payload.app_state ?? null);
-      setError(null);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setRefreshingCache(false);
-    }
   };
 
   const ActiveScreen = screens[activeTab];
@@ -5230,15 +8699,6 @@ function App() {
                 </nav>
               )}
               <button
-                onClick={refreshCache}
-                disabled={refreshingCache}
-                className="grid h-10 w-10 place-items-center rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] text-[var(--dash-text)] transition hover:bg-blue-500/10 disabled:opacity-60"
-                title="Atualizar cache dos dados"
-                aria-label="Atualizar cache dos dados"
-              >
-                <RefreshCw size={18} className={refreshingCache ? 'animate-spin' : ''} />
-              </button>
-              <button
                 onClick={() => setIsDarkMode((current) => !current)}
                 className="grid h-10 w-10 place-items-center rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] text-[var(--dash-text)] transition hover:bg-blue-500/10"
                 title={isDarkMode ? 'Ativar tema claro' : 'Ativar tema escuro'}
@@ -5256,7 +8716,7 @@ function App() {
               </Card>
             )}
             {isWaitingForData && <Card className="p-6">Carregando dados reais do SQLite...</Card>}
-            {canRenderScreen && <ActiveScreen data={screenData} />}
+            {canRenderScreen && <ActiveScreen data={screenData} onRefreshAppState={refreshAppStateNow} />}
           </div>
         </main>
       </div>

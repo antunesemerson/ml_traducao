@@ -1,0 +1,63 @@
+{
+  "created_at": "2026-07-10T23:42:19Z",
+  "segment_state_run_id": 656,
+  "versions": [
+    {
+      "id": 1,
+      "version_number": 1,
+      "version_label": "Pacote estavel anterior",
+      "package_name": "spanish_old",
+      "package_role": "stable_baseline",
+      "parent_version_id": null,
+      "source_path": "source/spanish_old",
+      "package_hash": "465a38c4b125bca0fab4fbb9ebc779a0fac06d8b05565c915924cf8dd20aea5f",
+      "file_count": 1188,
+      "segment_count": 288100,
+      "measured_score_count": 221564,
+      "full_average_score": 0.7579193746908343,
+      "change_cohort_score": 0.562529,
+      "change_cohort_delta": null,
+      "changed_from_parent_count": 0,
+      "segment_state_run_id": 656,
+      "score_run_id": 336,
+      "score_rule_version": "ml_score_segments_v1",
+      "closed_count": 276024,
+      "pending_count": 12076,
+      "needs_output_apply_count": 0,
+      "status": "frozen",
+      "metadata_json": "{\"changed_vs_old\": 1055, \"comparison_role\": \"old\", \"needs_apply\": 0, \"new_score_run_id\": 338, \"notes\": \"Congelamento antes da atualizacao de english_source e spanish_source em 2026-07-10.\", \"old_score_run_id\": 336, \"package_ready_changes\": 941, \"promotions\": 0, \"regressions\": 0, \"segment_state_run_id\": 656, \"snapshot_schema\": \"package_versions_v1\"}",
+      "frozen_at": "2026-07-10T23:42:13Z"
+    },
+    {
+      "id": 2,
+      "version_number": 2,
+      "version_label": "Pacote validado atual",
+      "package_name": "output_spanish",
+      "package_role": "validated_output",
+      "parent_version_id": 1,
+      "source_path": "output/spanish",
+      "package_hash": "54730a034ee7edc1b18c14a25d0e24c27ef5e231bd816e877c73612e08ebff86",
+      "file_count": 1188,
+      "segment_count": 288100,
+      "measured_score_count": 221552,
+      "full_average_score": 0.7427846763513757,
+      "change_cohort_score": 0.847413,
+      "change_cohort_delta": 0.284883,
+      "changed_from_parent_count": 1055,
+      "segment_state_run_id": 656,
+      "score_run_id": 338,
+      "score_rule_version": "ml_score_segments_v1",
+      "closed_count": 276024,
+      "pending_count": 12076,
+      "needs_output_apply_count": 0,
+      "status": "frozen",
+      "metadata_json": "{\"changed_vs_old\": 1055, \"comparison_role\": \"output\", \"needs_apply\": 0, \"new_score_run_id\": 338, \"notes\": \"Congelamento antes da atualizacao de english_source e spanish_source em 2026-07-10.\", \"old_score_run_id\": 336, \"package_ready_changes\": 941, \"promotions\": 0, \"regressions\": 0, \"segment_state_run_id\": 656, \"snapshot_schema\": \"package_versions_v1\"}",
+      "frozen_at": "2026-07-10T23:42:14Z"
+    }
+  ],
+  "item_counts": {
+    "1": 288100,
+    "2": 288100
+  },
+  "version_change_count": 1055
+}

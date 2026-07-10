@@ -1,0 +1,366 @@
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sqlite3
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import db
+
+
+LEDGER_RUN_ID = 76
+SOURCE_DECISION = "needs_player_target_direct_policy"
+
+ALLOWED_DECISIONS = {
+    "player_target_direct_terminal_policy",
+    "player_target_direct_terminal_policy_with_actor_target_guard",
+    "player_target_direct_terminal_policy_with_local_player_guard",
+    "player_target_direct_terminal_policy_with_possessive_guard",
+    "player_target_direct_terminal_policy_with_es_helper_guard",
+    "needs_player_target_direct_actor_target_policy",
+    "needs_player_target_direct_local_player_policy",
+    "needs_player_target_direct_possessive_policy",
+    "needs_player_target_direct_es_helper_policy",
+    "needs_player_target_direct_custom_loc_policy",
+    "needs_player_target_direct_domain_context",
+    "needs_player_target_direct_event_context",
+    "needs_player_target_direct_residual_repair",
+    "needs_player_target_direct_dynamic_parser_escape",
+    "player_target_direct_blocked_uncertain",
+}
+
+SELECT_CSTRING_MARKERS: list[tuple[str, re.Pattern[str]]] = [
+    ("SelectCString", re.compile(r"Select_CString\s*\(", re.I)),
+    ("SelectCStringIsLocalPlayer", re.compile(r"Select_CString\s*\([^)]*IsLocalPlayer", re.I)),
+    ("SelectCStringShortUINameFallback", re.compile(r"Select_CString\s*\([^)]*GetShortUIName", re.I)),
+    ("SelectCStringVerbChoice", re.compile(r"Select_CString\s*\([^)]*'(?:conquistaras|amas|detestas|voce e)[^']*'\s*,\s*'[^']+'", re.I)),
+]
+
+PERSPECTIVE_MARKERS: list[tuple[str, re.Pattern[str]]] = [
+    ("SecondPersonPronoun", re.compile(r"\bvoce\b|\bvoc.\b", re.I)),
+    ("SecondPersonVerb", re.compile(r"\bconquistaras\b|\bamas\b|\bdetestas\b|\bvoce e\b", re.I)),
+    ("ThirdPersonNameFallback", re.compile(r"GetShortUINameNoTooltipNoFormat|GetShortUIName", re.I)),
+    ("DirectPlayerVsName", re.compile(r"Select_CString\s*\([^)]*'(?:voce|voc.)'[^)]*GetShortUIName", re.I)),
+]
+
+GUARD_MARKERS: list[tuple[str, re.Pattern[str]]] = [
+    ("LocalPlayerGuard", re.compile(r"IsLocalPlayer|LocalPlayer|GetPlayer", re.I)),
+    ("ActorTargetGuard", re.compile(r"CHARACTER\.|TARGET_|TARGET\.|ROOT\.|FROM\.|recipient|actor|target", re.I)),
+    ("PossessiveGuard", re.compile(r"\bseu\b|\bsua\b|\bseus\b|\bsuas\b|\bdele\b|\bdela\b|\bteu\b|\btua\b", re.I)),
+    ("ESHelperGuard", re.compile(r"ES_ElLa|ES_DelDela|ES_OA|ES_XA_EA|ES_XA|ES_EA|Custom\('ES_", re.I)),
+    ("DomainGuard", re.compile(r"Livonia|Lívonia|Dar al-Islam|Alá|gregos|francos|clero", re.I)),
+]
+
+SECONDARY_MARKERS: list[tuple[str, re.Pattern[str]]] = [
+    ("CustomLoc", re.compile(r"CustomLoc|Custom2?\((?!'ES_)", re.I)),
+    ("Domain", re.compile(r"culture|religion|faith|doctrine|tradition|dynasty|house|domain|Livonia|Lívonia|Dar al-Islam|Alá|clero|gregos|francos", re.I)),
+    ("Event", re.compile(r"event|\.desc|desc\.|option|toast|dialogue|story|scheme|interaction|memory|battle|activities/", re.I)),
+    ("ResidualVisible", re.compile(r"Ãƒ|Ã‚|Â¿|Â¡|â€™|â€œ|â€�|�|\bsufrió\b|\bpasará\b|\bthe\b|\byour\b|\byou\b|\btheir\b|\bcannot\b", re.I)),
+    ("DynamicToken", re.compile(r"Custom\(|Select_CString|Concept\(|ScriptValue|GetTrait|ROOT\.|FROM\.|SCOPE\.|TARGET\.|\[[^\]]+\]|\$[^$]+\$", re.I)),
+]
+
+
+def connect_readonly() -> sqlite3.Connection:
+    database_path = db.get_database_path(db.load_settings())
+    conn = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=60)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise SystemExit(f"Invalid JSONL at {path}:{line_number}: {exc}") from exc
+    return rows
+
+
+def source_rows(path: Path) -> list[dict[str, Any]]:
+    rows = [
+        row
+        for row in read_jsonl(path)
+        if row.get("record_type") == "sample_review"
+        and row.get("perspective_decision") == SOURCE_DECISION
+    ]
+    rows.sort(key=lambda row: (str(row.get("relative_path") or ""), str(row.get("source_key") or ""), int(row["segment_id"])))
+    seen: set[int] = set()
+    for row in rows:
+        segment_id = int(row["segment_id"])
+        if segment_id in seen:
+            raise SystemExit(f"duplicate source segment_id: {segment_id}")
+        seen.add(segment_id)
+    return rows
+
+
+def fetch_states(conn: sqlite3.Connection, run_id: int, segment_ids: list[int]) -> dict[int, dict[str, Any]]:
+    if not segment_ids:
+        return {}
+    placeholders = ",".join("?" for _ in segment_ids)
+    rows = conn.execute(
+        f"""
+        SELECT segment_id, final_state, state_group, is_closed, needs_output_apply,
+               confirmed_matches_output, needs_reopen
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND segment_id IN ({placeholders})
+        """,
+        (run_id, *segment_ids),
+    ).fetchall()
+    return {int(row["segment_id"]): dict(row) for row in rows}
+
+
+def normalize(text: str) -> str:
+    return (
+        text.replace("você", "voce")
+        .replace("Você", "Voce")
+        .replace("conquistarás", "conquistaras")
+        .replace("você é", "voce e")
+    )
+
+
+def markers(patterns: list[tuple[str, re.Pattern[str]]], blob: str) -> list[str]:
+    normalized = normalize(blob)
+    return [label for label, pattern in patterns if pattern.search(normalized)]
+
+
+def classify(
+    state: dict[str, Any] | None,
+    guard_markers: list[str],
+    secondary_markers: list[str],
+) -> tuple[str, str, str]:
+    guards = set(guard_markers)
+    secondary = set(secondary_markers)
+    if not state or state["state_group"] != "pending" or int(state["is_closed"] or 0) != 0:
+        return "player_target_direct_blocked_uncertain", "human_review_or_evidence_collection", "segment is not pending in selected state run"
+    if int(state["needs_output_apply"] or 0) != 0 or int(state["confirmed_matches_output"] or 0) != 1:
+        return "player_target_direct_blocked_uncertain", "state_guard", "state guard failed: needs_output_apply or confirmed_matches_output"
+    if "ResidualVisible" in secondary:
+        return "needs_player_target_direct_residual_repair", "residual_dependency_filtered_repair", "visible residual remains"
+    if "CustomLoc" in secondary:
+        return "needs_player_target_direct_custom_loc_policy", "select_cstring_custom_loc_policy", "non-ES CustomLoc remains"
+    if "ESHelperGuard" in guards:
+        return "player_target_direct_terminal_policy_with_es_helper_guard", "terminal_router_policy", "terminal direct player/target policy with ES helper guard"
+    if "PossessiveGuard" in guards:
+        return "player_target_direct_terminal_policy_with_possessive_guard", "terminal_router_policy", "terminal direct player/target policy with possessive guard"
+    if "ActorTargetGuard" in guards:
+        return "player_target_direct_terminal_policy_with_actor_target_guard", "terminal_router_policy", "terminal direct player/target policy with actor/target guard"
+    if "LocalPlayerGuard" in guards:
+        return "player_target_direct_terminal_policy_with_local_player_guard", "terminal_router_policy", "terminal direct player/target policy with local-player guard"
+    if "Domain" in secondary:
+        return "needs_player_target_direct_domain_context", "domain_context_composer", "domain context dominates the direct perspective case"
+    if "Event" in secondary:
+        return "needs_player_target_direct_event_context", "event_context_composer", "event context dominates the direct perspective case"
+    if "DynamicToken" in secondary:
+        return "needs_player_target_direct_dynamic_parser_escape", "ck3_dynamic_symbolic_parser", "dynamic parser escape remains"
+    return "player_target_direct_terminal_policy", "terminal_router_policy", "plain terminal direct player/target policy"
+
+
+def output_paths() -> tuple[Path, Path, Path]:
+    reports_dir = db.project_path(db.load_settings()["reports_dir"])
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    base = reports_dir / f"{stamp}_select_cstring_player_target_direct_policy_review"
+    spec = reports_dir / f"{stamp}_select_cstring_player_target_direct_policy_spec.json"
+    return base.with_suffix(".txt"), base.with_suffix(".jsonl"), spec
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Read-only Select_CString player/target direct terminal policy review.")
+    parser.add_argument("--perspective-jsonl", required=True, type=Path)
+    parser.add_argument("--segment-state-run-id", required=True, type=int)
+    args = parser.parse_args()
+
+    rows = source_rows(args.perspective_jsonl)
+    conn = connect_readonly()
+    states = fetch_states(conn, args.segment_state_run_id, [int(row["segment_id"]) for row in rows])
+
+    results: list[dict[str, Any]] = []
+    decision_counts: Counter[str] = Counter()
+    select_counts: Counter[str] = Counter()
+    perspective_counts: Counter[str] = Counter()
+    guard_counts: Counter[str] = Counter()
+    secondary_counts: Counter[str] = Counter()
+    pending_count = 0
+
+    for row in rows:
+        segment_id = int(row["segment_id"])
+        state = states.get(segment_id)
+        if state and state["state_group"] == "pending" and int(state["is_closed"] or 0) == 0:
+            pending_count += 1
+        blob = " ".join(str(row.get(key) or "") for key in ("relative_path", "source_key", "old_text", "confirmed_text", "output_text"))
+        select_markers = markers(SELECT_CSTRING_MARKERS, blob)
+        perspective_markers = markers(PERSPECTIVE_MARKERS, blob)
+        guard_markers = markers(GUARD_MARKERS, blob)
+        secondary_markers = markers(SECONDARY_MARKERS, blob)
+        decision, router_recommendation, rationale = classify(state, guard_markers, secondary_markers)
+        if decision not in ALLOWED_DECISIONS:
+            raise SystemExit(f"unknown decision {decision} for segment_id {segment_id}")
+        decision_counts[decision] += 1
+        select_counts.update(select_markers or ["NoSelectCStringMarker"])
+        perspective_counts.update(perspective_markers or ["NoPerspectiveMarker"])
+        guard_counts.update(guard_markers or ["NoGuardMarker"])
+        secondary_counts.update(secondary_markers or ["NoSecondaryMarker"])
+        results.append(
+            {
+                "record_type": "sample_review",
+                "segment_id": segment_id,
+                "relative_path": str(row.get("relative_path") or ""),
+                "source_key": str(row.get("source_key") or ""),
+                "families_open": list(row.get("families_open") or []),
+                "source_decision": SOURCE_DECISION,
+                "old_text": str(row.get("old_text") or ""),
+                "confirmed_text": str(row.get("confirmed_text") or ""),
+                "output_text": str(row.get("output_text") or ""),
+                "select_cstring_markers": select_markers,
+                "perspective_markers": perspective_markers,
+                "guard_markers": guard_markers,
+                "secondary_markers": secondary_markers,
+                "player_target_direct_decision": decision,
+                "router_recommendation": router_recommendation,
+                "requires_lifecycle_later": False,
+                "requires_apply_later": False,
+                "corrected_text": "",
+                "rationale": rationale,
+            }
+        )
+
+    terminal_count = sum(count for decision, count in decision_counts.items() if decision.startswith("player_target_direct_terminal_policy"))
+    is_terminal = terminal_count > len(results) / 2
+    next_prompt = "chat_exec_select_cstring_possessive_policy_review_prompt.md" if is_terminal else "chat_exec_select_cstring_es_helper_policy_review_prompt.md"
+    stop_rule = "terminal_branch_closed" if is_terminal else "branch_fragmented_return_to_sibling"
+
+    spec = {
+        "schema_version": 1,
+        "created_for": "terminal_read_only_policy_spec",
+        "parent_policy": "select_cstring_player_target_perspective_policy",
+        "policy_id": "select_cstring_player_target_direct_policy",
+        "segment_state_run_id": args.segment_state_run_id,
+        "ledger_run_id": LEDGER_RUN_ID,
+        "entry_conditions": [
+            "perspective_decision == needs_player_target_direct_policy",
+            "segment remains pending",
+            "needs_output_apply == 0",
+            "confirmed_matches_output == 1",
+        ],
+        "positive_markers": [
+            "Select_CString(...IsLocalPlayer...)",
+            "second-person player branch",
+            "third-person target/name fallback",
+        ],
+        "guard_markers": dict(guard_counts),
+        "router_priority": "after Select_CString player/target perspective, before generic dynamic parser",
+        "recommended_pipeline_stage": "gender_local_player_requirement_policy",
+        "fallback_stage": "parser_backed_dynamic_expression",
+        "outputs": [
+            "terminal router classification only",
+            "no lifecycle candidate",
+            "no apply candidate",
+        ],
+        "blocked_conditions": [
+            "state guard failed",
+            "visible residual",
+            "non-ES CustomLoc dominates",
+            "domain/event dominates",
+        ],
+        "promotion_gate": "read_only_component_only_no_apply_no_lifecycle",
+        "terminal_policy": is_terminal,
+        "stop_rule": stop_rule,
+        "player_target_direct_types": [{"decision": decision, "sampled": count} for decision, count in decision_counts.most_common()],
+    }
+
+    txt_path, jsonl_path, spec_path = output_paths()
+
+    with jsonl_path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps({
+            "record_type": "summary",
+            "source_decision": SOURCE_DECISION,
+            "total_reviewed": len(results),
+            "pending_count": pending_count,
+            "decision_counts": dict(decision_counts),
+            "select_cstring_marker_counts": dict(select_counts),
+            "perspective_marker_counts": dict(perspective_counts),
+            "guard_marker_counts": dict(guard_counts),
+            "secondary_marker_counts": dict(secondary_counts),
+            "ready_lifecycle_future": 0,
+            "apply_candidates_future": 0,
+            "terminal_policy": is_terminal,
+            "stop_rule": stop_rule,
+            "next_prompt": next_prompt,
+        }, ensure_ascii=False, sort_keys=True) + "\n")
+        for decision, count in decision_counts.most_common():
+            handle.write(json.dumps({"record_type": "decision_count", "player_target_direct_decision": decision, "segments": count}, ensure_ascii=False, sort_keys=True) + "\n")
+        for marker, count in select_counts.most_common():
+            handle.write(json.dumps({"record_type": "select_cstring_marker_count", "marker": marker, "segments": count}, ensure_ascii=False, sort_keys=True) + "\n")
+        for marker, count in perspective_counts.most_common():
+            handle.write(json.dumps({"record_type": "perspective_marker_count", "marker": marker, "segments": count}, ensure_ascii=False, sort_keys=True) + "\n")
+        for marker, count in guard_counts.most_common():
+            handle.write(json.dumps({"record_type": "guard_marker_count", "marker": marker, "segments": count}, ensure_ascii=False, sort_keys=True) + "\n")
+        for marker, count in secondary_counts.most_common():
+            handle.write(json.dumps({"record_type": "secondary_marker_count", "marker": marker, "segments": count}, ensure_ascii=False, sort_keys=True) + "\n")
+        for priority, (prompt, rationale) in enumerate([
+            (next_prompt, "terminal branch closed; return to larger sibling"),
+            ("chat_exec_select_cstring_es_helper_policy_review_prompt.md", "second sibling by sampled volume"),
+            ("chat_exec_requirement_tooltip_policy_review_prompt.md", "return to parent router if siblings saturate"),
+        ], 1):
+            handle.write(json.dumps({"record_type": "strategy", "priority": priority, "next_prompt": prompt, "rationale": rationale}, ensure_ascii=False, sort_keys=True) + "\n")
+        for result in results:
+            handle.write(json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n")
+
+    with spec_path.open("w", encoding="utf-8", newline="\n") as handle:
+        json.dump(spec, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+
+    with txt_path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write("Select_CString player/target direct terminal policy review\n\n")
+        handle.write(f"total_revisado: {len(results)}\n")
+        handle.write(f"pending_count: {pending_count}\n")
+        handle.write("ready_lifecycle_future: 0\n")
+        handle.write("apply_candidates_future: 0\n")
+        handle.write(f"terminal_policy: {is_terminal}\n")
+        handle.write(f"regra_de_parada: {stop_rule}\n")
+        handle.write(f"proximo_foco: {next_prompt}\n\n")
+        handle.write("player_target_direct_decision_counts:\n")
+        for decision, count in decision_counts.most_common():
+            handle.write(f"- {decision}: {count}\n")
+        handle.write("\nTop Select_CString markers:\n")
+        for marker, count in select_counts.most_common(15):
+            handle.write(f"- {marker}: {count}\n")
+        handle.write("\nTop perspective markers:\n")
+        for marker, count in perspective_counts.most_common(15):
+            handle.write(f"- {marker}: {count}\n")
+        handle.write("\nTop guard markers:\n")
+        for marker, count in guard_counts.most_common(15):
+            handle.write(f"- {marker}: {count}\n")
+        handle.write("\nTop secondary markers:\n")
+        for marker, count in secondary_counts.most_common(15):
+            handle.write(f"- {marker}: {count}\n")
+        handle.write("\nAnalise\n")
+        handle.write("- select_cstring_player_target_direct_policy deve virar componente read-only real.\n")
+        handle.write("- Esta policy e terminal para este micro-ramo; nao gera lifecycle/apply.\n")
+        handle.write("- A cadeia requirement_tooltip -> gender/local-player -> Select_CString -> player/target perspective -> direct policy fica confirmada como conhecimento do roteador.\n")
+
+    print(f"txt: {txt_path}")
+    print(f"jsonl: {jsonl_path}")
+    print(f"spec: {spec_path}")
+    print(f"total_reviewed: {len(results)}")
+    print(f"pending_count: {pending_count}")
+    print("ready_lifecycle_future: 0")
+    print("apply_candidates_future: 0")
+    print(f"terminal_policy: {is_terminal}")
+    print("decision_counts:")
+    for decision, count in decision_counts.most_common():
+        print(f"  {decision}: {count}")
+
+
+if __name__ == "__main__":
+    main()

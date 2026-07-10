@@ -1,0 +1,20 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import domain_policy_vote_candidate_medium_dynamic_light_post_apply_correction_learning_ingest as base
+
+
+base.RULE_VERSION = "domain_policy_vote_candidate_religion_faith_remaining_routes_post_apply_correction_learning_ingest_v1"
+base.DECISIONS_PATH = Path("reports/20260630_092216_687689_domain_policy_vote_candidate_religion_faith_remaining_routes_decisions.jsonl")
+base.APPLY_POST_VALIDATION_PATH = Path("reports/20260630_092253_542453_domain_policy_vote_candidate_medium_dynamic_light_protected_apply_apply_summary.json")
+base.QUEUE_SOURCE = "domain-policy-vote-candidate-religion-faith-remaining-routes-post-apply"
+base.ORIGIN = "human_confirmed_domain_policy_vote_candidate_religion_faith_remaining_routes_post_apply"
+base.MATCH_TYPE_CORRECTION = "domain_policy_vote_candidate_religion_faith_remaining_routes_post_apply_correction"
+base.REVIEWER = "user_human_review_domain_policy_vote_candidate_religion_faith_remaining_routes"
+base.FOCUS_GROUP = "domain_policy_vote_candidate_religion_faith_remaining_routes"
+base.SEGMENT_STATE_RUN_ID = 506
+
+
+if __name__ == "__main__":
+    base.main()

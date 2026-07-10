@@ -20,7 +20,7 @@ import db
 import local_quality_validator
 
 
-RULE_VERSION = "ml_train_risk_v7_title_compound_direction_guard"
+RULE_VERSION = "ml_train_risk_v9_orthographic_microrepairs"
 MODEL_KIND = "risk_action_classifier"
 DEFAULT_FEATURE_SET = "legacy_v1"
 STRUCTURAL_FEATURE_SET = "structural_v2"
@@ -70,8 +70,23 @@ SPANISH_CULTURAL_TITLE_ADJECTIVE_PATTERN = re.compile(
 TITLE_LOCALIZATION_PATHS = {"titles_l_spanish.yml", "titles_cultural_names_l_spanish.yml"}
 TITLE_KEY_PREFIXES = ("b_", "c_", "d_", "k_", "e_")
 TITLE_ALLOWED_LOWERCASE_CONNECTORS = {"a", "as", "da", "das", "de", "do", "dos", "e"}
-SAFE_FORMATTED_PT_WORDS = {"alto", "baixa", "baixo", "igual", "invertida", "lenta", "r\u00e1pida", "total"}
+SAFE_FORMATTED_PT_WORDS = {
+    "alto",
+    "baixa",
+    "baixo",
+    "igual",
+    "invertida",
+    "lenta",
+    "n\u00e3o",
+    "nao",
+    "r\u00e1pida",
+    "total",
+}
 SPANISH_FORMATTED_WORDS = {"baja", "bajo", "media", "medio", "muy"}
+BOLD_NO_TAG_PATTERN = re.compile(r"#bold\s+no#!", re.IGNORECASE)
+BOLD_NAO_TAG_PATTERN = re.compile(r"#bold\s+n(?:\u00e3|a)o#!", re.IGNORECASE)
+OCCIDENTAL_WORD_PATTERN = re.compile(r"\boccidental\b", re.IGNORECASE)
+OCIDENTAL_WORD_PATTERN = re.compile(r"\bocidental\b", re.IGNORECASE)
 KNOWN_TITLE_ADJECTIVE_UNSAFE_TEXT_BY_KEY = {
     ("titles_l_spanish.yml", "c_karabaigal_adj"): {"karabaigalio"},
     ("titles_l_spanish.yml", "c_constanta_adj"): {"constantiano"},
@@ -370,6 +385,68 @@ def formatted_words(value: str | None) -> set[str]:
     }
 
 
+def has_bold_no_to_nao_microrepair(row: dict[str, Any] | None) -> bool:
+    if row is None:
+        return False
+    candidate = row.get("candidate_text")
+    if not BOLD_NAO_TAG_PATTERN.search(candidate or ""):
+        return False
+    references = (
+        row.get("output_text"),
+        row.get("old_text"),
+        row.get("spanish_text"),
+        row.get("english_text"),
+    )
+    bold_no_reference = next((value for value in references if BOLD_NO_TAG_PATTERN.search(value or "")), None)
+    if not bold_no_reference:
+        return False
+    return token_set(candidate) == token_set(bold_no_reference)
+
+
+def has_occidental_to_ocidental_title_repair(row: dict[str, Any] | None) -> bool:
+    if row is None:
+        return False
+    relative_path = row.get("relative_path") or ""
+    source_key = row.get("source_key") or ""
+    if relative_path not in TITLE_LOCALIZATION_PATHS or not source_key.endswith("_adj"):
+        return False
+    candidate = row.get("candidate_text")
+    if not OCIDENTAL_WORD_PATTERN.search(candidate or ""):
+        return False
+    references = (
+        row.get("output_text"),
+        row.get("old_text"),
+        row.get("spanish_text"),
+        row.get("english_text"),
+    )
+    occidental_reference = next((value for value in references if OCCIDENTAL_WORD_PATTERN.search(value or "")), None)
+    if not occidental_reference:
+        return False
+    return token_set(candidate) == token_set(occidental_reference)
+
+
+def has_confirmed_title_adjective_lexical_repair(row: dict[str, Any] | None) -> bool:
+    if row is None:
+        return False
+    relative_path = row.get("relative_path") or ""
+    source_key = row.get("source_key") or ""
+    if relative_path not in TITLE_LOCALIZATION_PATHS or not source_key.endswith("_adj"):
+        return False
+    if row.get("confirmation_source") not in {
+        "title_landed_adjective_lexical_residue_repair_production",
+        "title_landed_adjective_lexical_residue_medium_repair_production",
+    }:
+        return False
+    if row.get("confirmation_label") not in {
+        "title_landed_adjective_lexical_residue_exact_v1",
+        "title_landed_adjective_lexical_residue_direction_suffix_v1",
+    }:
+        return False
+    candidate = (row.get("candidate_text") or "").strip()
+    old = (row.get("old_text") or "").strip()
+    return bool(candidate and old and candidate != old and token_set(candidate) == token_set(old))
+
+
 def has_title_adjective_capitalization_risk(relative_path: str, source_key: str, candidate: str | None) -> bool:
     if relative_path not in TITLE_LOCALIZATION_PATHS:
         return False
@@ -483,6 +560,12 @@ def language_features(row: dict[str, Any]) -> list[str]:
     ]
     if candidate_visible == english_visible == spanish_visible and group in {"names", "dynasties", "mottos"}:
         features.append("SAFE_SHARED_NAME_OR_MOTTO")
+    if has_bold_no_to_nao_microrepair(row):
+        features.append("SAFE_BOLD_NO_TO_NAO_MICROREPAIR")
+    if has_confirmed_title_adjective_lexical_repair(row):
+        features.append("SAFE_CONFIRMED_TITLE_ADJECTIVE_LEXICAL_REPAIR")
+    if has_occidental_to_ocidental_title_repair(row):
+        features.append("SAFE_OCCIDENTAL_TO_OCIDENTAL_TITLE_REPAIR")
     if formatted & SAFE_FORMATTED_PT_WORDS and not (formatted & SPANISH_FORMATTED_WORDS):
         features.append("SAFE_FORMATTED_PORTUGUESE_LITERAL")
     if candidate_visible == english_visible and candidate_visible != spanish_visible and group not in {"names", "dynasties"}:
@@ -927,6 +1010,15 @@ def threshold_predictions(
         language_blocked = False
         if source_row is not None:
             language_blocked = bool(set(language_features(source_row)) & LANGUAGE_BLOCKING_FEATURES)
+            if has_bold_no_to_nao_microrepair(source_row) and not candidate_differs_from_output(source_row):
+                predictions.append("auto_safe")
+                continue
+            if has_confirmed_title_adjective_lexical_repair(source_row) and not candidate_differs_from_output(source_row):
+                predictions.append("auto_safe")
+                continue
+            if has_occidental_to_ocidental_title_repair(source_row) and not candidate_differs_from_output(source_row):
+                predictions.append("auto_safe")
+                continue
         if (
             row[safe_index] >= safe_threshold
             and not candidate_differs_from_output(source_row)

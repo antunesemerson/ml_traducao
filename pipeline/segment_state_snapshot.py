@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,9 @@ from apply_safe_output_updates import escape_localization_value, protected_token
 
 
 RULE_VERSION = "segment_state_snapshot_v1"
+RUNTIME_TOKEN_ONLY_EQUAL_OUTPUT_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_runtime_token_only_equal_output_lifecycle"
+)
 
 HUMAN_LEVELS = {"human", "manual", "reviewed", "confirmed"}
 HUMAN_SOURCE_HINTS = {"human", "manual", "review", "codex", "gemini"}
@@ -22,6 +26,15 @@ HUMAN_REVIEW_ACTIONS = {"needs_human"}
 SAFE_ACTIONS = {"auto_safe"}
 CONTROLLED_TOKEN_SUBPOLICY_CLOSURE_ACTION = "close_reopen_boundary_token_subpolicy_controlled"
 CONTROLLED_TOKEN_SUBPOLICY_CONFIRMATION_SOURCE = "controlled_token_subpolicy_production"
+TOKEN_POLICY_MANUAL_EXCEPTION_EQUAL_OUTPUT_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_token_policy_manual_exception_equal_output_lifecycle"
+)
+TOKEN_POLICY_MANUAL_EXCEPTION_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_token_policy_manual_exception_equal_output_lifecycle"
+)
+TOKEN_POLICY_MANUAL_EXCEPTION_EQUAL_OUTPUT_LIFECYCLE_POLICY_NAME = (
+    "segment_token_policy_manual_exception_equal_output_lifecycle_bridge"
+)
 CONTROLLED_TOKEN_SUBPOLICY_CONFIRMATION_LABEL = "boundary_token_subpolicy_controlled_production"
 SAME_TOKEN_BOUNDARY_REPAIR_CLOSURE_ACTION = "close_reopen_same_token_boundary_repair_controlled"
 SAME_TOKEN_BOUNDARY_REPAIR_NOOP_CLOSURE_ACTION = "close_reopen_same_token_boundary_repair_noop"
@@ -73,6 +86,111 @@ TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_STATE = (
 )
 TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_CLOSURE_ACTION = (
     "close_reopen_trait_description_esta_personagem_lifecycle"
+)
+HUMAN_CONFIRMED_POST_APPLY_REPAIR_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_human_confirmed_post_apply_repair_lifecycle"
+)
+HUMAN_CONFIRMED_POST_APPLY_REPAIR_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_human_confirmed_post_apply_repair_lifecycle"
+)
+VALIDATED_RELEASE_PROMOTION_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_validated_release_promotion_lifecycle"
+)
+VALIDATED_RELEASE_PROMOTION_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_validated_release_promotion_lifecycle"
+)
+HUMAN_CONFIRMED_POST_APPLY_REPAIR_ALLOWED_LABELS = (
+    "correct",
+    "semantic_error",
+    "minor_fix",
+    "residual_spanish",
+    "structure_error",
+    "major_fix",
+    "narrative_plain_light_batch1_corrected",
+)
+HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_human_confirmed_package_close_lifecycle"
+)
+HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_human_confirmed_package_close_lifecycle"
+)
+HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_ALLOWED_LABELS = (
+    "codex_package_review",
+    "package_close",
+)
+HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_ALLOWED_SOURCES = (
+    "codex_manual",
+    "codex_manual+manual_mojibake_cleanup",
+    "codex_review",
+    "codex_review+manual_mojibake_cleanup",
+    "codex_review+manual_mojibake_cleanup+context_mojibake_cleanup",
+    "codex_review+manual_mojibake_cleanup+shadow_hygiene_cleanup",
+)
+HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_human_confirmed_repair_label_close_lifecycle"
+)
+HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_human_confirmed_repair_label_close_lifecycle"
+)
+HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_ALLOWED_LABEL_TOKENS = (
+    "strict_mojibake_fixed",
+    "token_policy_confirmed_text_fixed",
+)
+HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_ALLOWED_SOURCES = (
+    "codex_manual_closure+manual_mojibake_cleanup",
+    "codex_manual_rest_closure",
+    "codex_review",
+    "codex_review+manual_mojibake_cleanup",
+    "local_learning",
+    "visual_polish_manual",
+)
+HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_PLAIN_LIGHT_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_human_confirmed_misc_equal_output_plain_light_lifecycle"
+)
+HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_PLAIN_LIGHT_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_human_confirmed_misc_equal_output_plain_light_lifecycle"
+)
+HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_ES_SUFFIX_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_human_confirmed_misc_equal_output_es_suffix_lifecycle"
+)
+HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_ES_SUFFIX_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_human_confirmed_misc_equal_output_es_suffix_lifecycle"
+)
+HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_MULTILINE_SERIALIZATION_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_human_confirmed_misc_equal_output_multiline_serialization_lifecycle"
+)
+HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_MULTILINE_SERIALIZATION_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_human_confirmed_misc_equal_output_multiline_serialization_lifecycle"
+)
+HUMAN_CONFIRMED_UI_TOOLTIPS_RESIDUAL_EQUAL_OUTPUT_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_human_confirmed_ui_tooltips_residual_equal_output_lifecycle"
+)
+HUMAN_CONFIRMED_UI_TOOLTIPS_RESIDUAL_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_human_confirmed_ui_tooltips_residual_equal_output_lifecycle"
+)
+HUMAN_CONFIRMED_UI_TOOLTIPS_CONTEXT_SUBLOTE_EQUAL_OUTPUT_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_human_confirmed_ui_tooltips_context_sublote_equal_output_lifecycle"
+)
+HUMAN_CONFIRMED_UI_TOOLTIPS_CONTEXT_SUBLOTE_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_human_confirmed_ui_tooltips_context_sublote_equal_output_lifecycle"
+)
+AUTO_CONFIRMED_PLAIN_LIGHT_EQUAL_OUTPUT_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_plain_light_equal_output_lifecycle"
+)
+AUTO_CONFIRMED_PLAIN_LIGHT_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_auto_confirmed_plain_light_equal_output_lifecycle"
+)
+AUTO_CONFIRMED_FORMAT_TAG_TOKEN_POLICY_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_format_tag_token_policy_lifecycle"
+)
+AUTO_CONFIRMED_FORMAT_TAG_TOKEN_POLICY_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_auto_confirmed_format_tag_token_policy_lifecycle"
+)
+SEMANTIC_REVIEW_GENERAL_PLAIN_TEXT_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_semantic_review_general_plain_text_lifecycle"
+)
+SEMANTIC_REVIEW_GENERAL_PLAIN_TEXT_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_semantic_review_general_plain_text_lifecycle"
 )
 DIARCHY_EXTRAVAGANCE_DESCRIPTION_REVIEWED_JSONL = (
     "reports/20260619_120840_663296_diarchy_extravagance_description_microagent_reviewed_chat.jsonl"
@@ -136,6 +254,105 @@ AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_PLAIN_PROSE_LIFECYCLE_CLOSURE_ACTIO
 )
 AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_EVENT_CONTEXT_LIFECYCLE_CLOSURE_ACTION = (
     "close_reopen_autofix_unknown_plain_event_context_composer_event_context_lifecycle"
+)
+AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_REVIEWED_JSONL = (
+    "reports/20260619_181134_321950_autofix_semantic_companion_high_impact_review.jsonl"
+)
+AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_FALSE_REOPEN_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_semantic_companion_plain_sentence_false_reopen_lifecycle"
+)
+AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_semantic_companion_plain_sentence_false_reopen_lifecycle"
+)
+AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_semantic_composition_plain_prose_lifecycle"
+)
+AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_semantic_composition_plain_prose_lifecycle"
+)
+AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH2_REVIEWED_JSONL = (
+    "reports/20260619_200048_575790_autofix_semantic_companion_high_impact_review_batch2.jsonl"
+)
+AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH2_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_semantic_composition_plain_prose_batch2_lifecycle"
+)
+AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH2_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_semantic_composition_plain_prose_batch2_lifecycle"
+)
+AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_semantic_companion_plain_sentence_batch2_false_reopen_lifecycle"
+)
+AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_BATCH2_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_semantic_companion_plain_sentence_batch2_false_reopen_lifecycle"
+)
+AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH3_REVIEWED_JSONL = (
+    "reports/20260619_202833_440141_autofix_semantic_companion_high_impact_review_batch3.jsonl"
+)
+AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH3_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_semantic_composition_plain_prose_batch3_lifecycle"
+)
+AUTOFIX_SEMANTIC_COMPOSITION_EVENT_CONTEXT_BATCH3_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_semantic_composition_event_context_batch3_lifecycle"
+)
+AUTOFIX_SEMANTIC_COMPOSITION_BATCH3_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_semantic_composition_batch3_lifecycle"
+)
+AUTOFIX_SEMANTIC_CONTEXT_COMPOSER_BATCH4_REVIEWED_JSONL = (
+    "reports/20260619_210042_357103_autofix_semantic_context_composer_batch4_review.jsonl"
+)
+AUTOFIX_SEMANTIC_CONTEXT_PLAIN_PROSE_BATCH4_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_semantic_context_plain_prose_batch4_lifecycle"
+)
+AUTOFIX_SEMANTIC_CONTEXT_SHORT_EVENT_BATCH4_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_semantic_context_short_event_batch4_lifecycle"
+)
+AUTOFIX_SEMANTIC_CONTEXT_MEMORY_ACTIVITY_BATCH4_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_semantic_context_memory_activity_batch4_lifecycle"
+)
+AUTOFIX_SEMANTIC_CONTEXT_UI_TOOLTIP_BATCH4_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_semantic_context_ui_tooltip_batch4_lifecycle"
+)
+AUTOFIX_SEMANTIC_CONTEXT_BATCH4_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_semantic_context_batch4_lifecycle"
+)
+SEMANTIC_SHORT_LABEL_COMBO_REVIEWED_JSONL = (
+    "reports/20260620_022702_411646_semantic_short_label_combo_review.jsonl"
+)
+SEMANTIC_SHORT_LABEL_COMPANION_FALSE_REOPEN_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_semantic_short_label_companion_false_reopen_lifecycle"
+)
+SEMANTIC_SHORT_LABEL_COMPANION_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_semantic_short_label_companion_false_reopen_lifecycle"
+)
+DYNAMIC_GENDER_COMBO_REVIEWED_JSONL = (
+    "reports/20260620_131319_764758_dynamic_gender_combo_review.jsonl"
+)
+DYNAMIC_GENDER_SELECT_CSTRING_FALSE_REOPEN_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_dynamic_gender_select_cstring_false_reopen_lifecycle"
+)
+DYNAMIC_GENDER_CUSTOM_LOC_FALSE_REOPEN_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_dynamic_gender_custom_loc_false_reopen_lifecycle"
+)
+DYNAMIC_GENDER_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_dynamic_gender_false_reopen_lifecycle"
+)
+AUTOFIX_UNKNOWN_SINGLE_BATCH2_REVIEWED_JSONL = (
+    "reports/20260620_161053_214298_autofix_unknown_single_family_review_batch2.jsonl"
+)
+AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_unknown_single_batch2_false_reopen_lifecycle"
+)
+AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_unknown_single_batch2_false_reopen_lifecycle"
+)
+AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_REVIEWED_JSONL = (
+    "reports/20260619_193535_331809_autofix_semantic_trait_epithet_policy_review.jsonl"
+)
+AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_autofix_semantic_trait_epithet_style_lifecycle"
+)
+AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_autofix_semantic_trait_epithet_style_lifecycle"
 )
 GENDER_LONGFORM_BLOCKER_REPAIR_CONFIRMATION_SOURCE = "gender_longform_blocker_repair_production"
 GENDER_LONGFORM_BLOCKER_REPAIR_CONFIRMATION_LABEL = "gender_longform_blocker_repair:checkpoint_1"
@@ -246,6 +463,29 @@ SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_CONFIRMATION_LABEL = (
 )
 SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_STATE = (
     "closed_auto_confirmed_short_label_style_queue220_microrepair"
+)
+SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_REVIEWED_JSONL = (
+    "reports/20260619_160218_360957_short_label_style_current_high_impact_sublane_review.jsonl"
+)
+SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_BATCH2_REVIEWED_JSONL = (
+    "reports/20260619_163552_427911_short_label_style_current_high_impact_sublane_review_batch2.jsonl"
+)
+SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_BATCH3_REVIEWED_JSONL = (
+    "reports/20260619_171202_072876_short_label_style_current_high_impact_sublane_review_batch3.jsonl"
+)
+SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_REVIEWED_JSONLS = (
+    ("batch1", SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_REVIEWED_JSONL),
+    ("batch2", SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_BATCH2_REVIEWED_JSONL),
+    ("batch3", SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_BATCH3_REVIEWED_JSONL),
+)
+SHORT_LABEL_STYLE_CURRENT_SHORT_PHRASE_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_style_current_short_phrase_lifecycle"
+)
+SHORT_LABEL_STYLE_CURRENT_COMPACT_UI_LABEL_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_style_current_compact_ui_label_lifecycle"
+)
+SHORT_LABEL_STYLE_CURRENT_PLAIN_NOOP_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_short_label_style_current_plain_noop_lifecycle"
 )
 AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_LIFECYCLE_STATE = (
     "closed_auto_confirmed_autofix_unknown_ui_surface_queue221_lifecycle"
@@ -504,6 +744,18 @@ LIFECYCLE_CLOSURE_ACTIONS = {
     SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_LIFECYCLE_CLOSURE_ACTION,
     SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
     TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_CLOSURE_ACTION,
+    HUMAN_CONFIRMED_POST_APPLY_REPAIR_LIFECYCLE_CLOSURE_ACTION,
+    VALIDATED_RELEASE_PROMOTION_LIFECYCLE_CLOSURE_ACTION,
+    HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_CLOSURE_ACTION,
+    HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_LIFECYCLE_CLOSURE_ACTION,
+    HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_PLAIN_LIGHT_LIFECYCLE_CLOSURE_ACTION,
+    HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_ES_SUFFIX_LIFECYCLE_CLOSURE_ACTION,
+    HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_MULTILINE_SERIALIZATION_LIFECYCLE_CLOSURE_ACTION,
+    HUMAN_CONFIRMED_UI_TOOLTIPS_RESIDUAL_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+    HUMAN_CONFIRMED_UI_TOOLTIPS_CONTEXT_SUBLOTE_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+    AUTO_CONFIRMED_PLAIN_LIGHT_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+    AUTO_CONFIRMED_FORMAT_TAG_TOKEN_POLICY_LIFECYCLE_CLOSURE_ACTION,
+    SEMANTIC_REVIEW_GENERAL_PLAIN_TEXT_LIFECYCLE_CLOSURE_ACTION,
     DIARCHY_EXTRAVAGANCE_DESCRIPTION_READY_LIFECYCLE_CLOSURE_ACTION,
     DIARCHY_EXTRAVAGANCE_DESCRIPTION_STYLE_WATCH_LIFECYCLE_CLOSURE_ACTION,
     SHORT_LABEL_SEMANTIC_PAIR_QUOTE_FRAGMENT_LIFECYCLE_CLOSURE_ACTION,
@@ -525,6 +777,19 @@ ACTIVE_REOPEN_LIFECYCLE_POLICIES = {
     "guarded_static_token_only_reopen_closure",
     "actionable_pending_reviewed_false_reopen_closure",
     "short_label_guarded_lifecycle_bridge",
+    "human_confirmed_post_apply_repair_lifecycle_bridge",
+    "validated_release_promotion_lifecycle_bridge",
+    "validated_release_promotion_reviewed_lifecycle_bridge",
+    "validated_release_promotion_context_lifecycle_bridge",
+    "human_confirmed_package_close_lifecycle_bridge",
+    "human_confirmed_repair_label_close_lifecycle_bridge",
+    "human_confirmed_misc_equal_output_plain_light_lifecycle_bridge",
+    "human_confirmed_misc_equal_output_es_suffix_lifecycle_bridge",
+    "human_confirmed_misc_equal_output_multiline_serialization_lifecycle_bridge",
+    "human_confirmed_ui_tooltips_residual_equal_output_lifecycle_bridge",
+    "human_confirmed_ui_tooltips_context_sublote_equal_output_lifecycle_bridge",
+    "auto_confirmed_plain_light_equal_output_lifecycle_bridge",
+    "semantic_review_general_plain_text_reopen_lifecycle",
 }
 
 
@@ -554,6 +819,11 @@ def as_text(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+def has_human_confirmed_repair_label_token(value: Any) -> bool:
+    label = as_text(value)
+    return any(token in label for token in HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_ALLOWED_LABEL_TOKENS)
+
+
 def canonical_localization_text(value: Any) -> str:
     return escape_localization_value(as_text(value))
 
@@ -572,6 +842,25 @@ def sha1_text(value: Any) -> str | None:
 
 def protected_tokens_signature(value: Any) -> str:
     return json.dumps(sorted(protected_tokens(as_text(value)).items()), ensure_ascii=False)
+
+
+RUNTIME_DOLLAR_TOKEN_RE = re.compile(r"\$[^$\s]+\$")
+RUNTIME_BRACKET_TOKEN_RE = re.compile(r"\[[^\[\]'\"]+\]")
+CK3_FORMAT_TAG_RE = re.compile(r"#!|#[A-Za-z0-9_+\-.]+")
+RUNTIME_TOKEN_ONLY_REMAINDER_RE = re.compile(r"[\s:;,.()+\-*/\\|!]+")
+
+
+def is_runtime_token_only_text(value: Any) -> bool:
+    text = as_text(value).strip()
+    if not text:
+        return False
+    if "'" in text or '"' in text:
+        return False
+    remainder = RUNTIME_DOLLAR_TOKEN_RE.sub(" ", text)
+    remainder = RUNTIME_BRACKET_TOKEN_RE.sub(" ", remainder)
+    remainder = CK3_FORMAT_TAG_RE.sub(" ", remainder)
+    remainder = RUNTIME_TOKEN_ONLY_REMAINDER_RE.sub(" ", remainder)
+    return remainder.strip() == ""
 
 
 def register_sql_functions(conn) -> None:
@@ -4851,6 +5140,32 @@ def lifecycle_closure_allowed(row) -> bool:
             row["confirmation_source"] == SELECT_CSTRING_GOVERNED_BRIDGE_CONFIRMATION_SOURCE
             and as_text(row["confirmation_label"]).startswith(SELECT_CSTRING_GOVERNED_BRIDGE_CONFIRMATION_LABEL_PREFIX)
         )
+    if HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_CLOSURE_ACTION in allowed_actions:
+        return (
+            row["confirmation_level"] == "human_confirmed"
+            and row["confirmation_source"] in HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_ALLOWED_SOURCES
+            and row["confirmation_label"] in HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_ALLOWED_LABELS
+        )
+    if HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_LIFECYCLE_CLOSURE_ACTION in allowed_actions:
+        return (
+            row["confirmation_level"] == "human_confirmed"
+            and row["confirmation_source"] in HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_ALLOWED_SOURCES
+            and has_human_confirmed_repair_label_token(row["confirmation_label"])
+        )
+    if HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_PLAIN_LIGHT_LIFECYCLE_CLOSURE_ACTION in allowed_actions:
+        return row["confirmation_level"] == "human_confirmed"
+    if HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_ES_SUFFIX_LIFECYCLE_CLOSURE_ACTION in allowed_actions:
+        return row["confirmation_level"] == "human_confirmed"
+    if HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_MULTILINE_SERIALIZATION_LIFECYCLE_CLOSURE_ACTION in allowed_actions:
+        return row["confirmation_level"] == "human_confirmed"
+    if HUMAN_CONFIRMED_UI_TOOLTIPS_RESIDUAL_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION in allowed_actions:
+        return row["confirmation_level"] == "human_confirmed"
+    if HUMAN_CONFIRMED_UI_TOOLTIPS_CONTEXT_SUBLOTE_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION in allowed_actions:
+        return row["confirmation_level"] == "human_confirmed"
+    if AUTO_CONFIRMED_PLAIN_LIGHT_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION in allowed_actions:
+        return row["confirmation_level"] == "auto_confirmed"
+    if AUTO_CONFIRMED_FORMAT_TAG_TOKEN_POLICY_LIFECYCLE_CLOSURE_ACTION in allowed_actions:
+        return row["confirmation_level"] == "auto_confirmed"
     return True
 
 
@@ -4863,6 +5178,390 @@ def lifecycle_action_allowed(row, action: str) -> bool:
         if item.strip()
     }
     return action in actions
+
+
+def lifecycle_closure_state_and_reason(row) -> tuple[str, str] | None:
+    if not lifecycle_closure_allowed(row):
+        return None
+    lifecycle_actions = {
+        action.strip()
+        for action in as_text(row["lifecycle_policy_action"]).split(",")
+        if action.strip()
+    }
+    action_rules = (
+        (
+            CONTROLLED_TOKEN_SUBPOLICY_CLOSURE_ACTION,
+            "closed_auto_confirmed_controlled_token_subpolicy",
+            "controlled token subpolicy production reconciles this as a safe closure",
+        ),
+        (
+            SAME_TOKEN_BOUNDARY_REPAIR_CLOSURE_ACTION,
+            "closed_auto_confirmed_same_token_boundary_repair",
+            "same-token boundary repair production reconciles this as a safe closure",
+        ),
+        (
+            SAME_TOKEN_BOUNDARY_REPAIR_NOOP_CLOSURE_ACTION,
+            "closed_auto_confirmed_same_token_boundary_noop",
+            "same-token boundary no-op lifecycle observes already aligned trusted output",
+        ),
+        (
+            SELECT_CSTRING_GOVERNED_BRIDGE_CLOSURE_ACTION,
+            "closed_auto_confirmed_select_cstring_governed_bridge",
+            "Select_CString governed bridge production reconciles this as a safe closure",
+        ),
+        (
+            SELECT_CSTRING_SEGMENT_LIFECYCLE_BRIDGE_CLOSURE_ACTION,
+            "closed_auto_confirmed_select_cstring_segment_lifecycle_bridge",
+            "Select_CString segment-level lifecycle bridge observes mature shadow composition with current confirmation/output alignment",
+        ),
+        (
+            ACTIONABLE_FALSE_REOPEN_CLOSURE_ACTION,
+            "closed_auto_confirmed_actionable_false_reopen",
+            "reviewed actionable pending evidence marks this reopen as a false positive",
+        ),
+        (
+            ACTIONABLE_REVIEWED_REPAIR_CLOSURE_ACTION,
+            "closed_auto_confirmed_actionable_reviewed_repair",
+            "reviewed actionable repair production reconciles this as a safe closure",
+        ),
+        (
+            ACTIONABLE_BOOTSTRAP_REPAIR_CLOSURE_ACTION,
+            "closed_auto_confirmed_actionable_bootstrap_repair",
+            "reviewed missing-confirmation bootstrap repair reconciles this as a safe closure",
+        ),
+        (
+            SHORT_LABEL_GUARDED_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_short_label_guarded_lifecycle",
+            "short-label guarded lifecycle checkpoint marks this conservative reopen as safe",
+        ),
+        (
+            SHORT_LABEL_PURE_NO_TOKEN_SEMANTIC_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_short_label_pure_no_token_semantic_lifecycle",
+            "short-label pure no-token semantic lifecycle bridge observes full style and semantic issue coverage with current confirmation/output alignment",
+        ),
+        (
+            SHORT_LABEL_PURE_NO_TOKEN_SEGMENT_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_short_label_pure_no_token_segment_lifecycle_bridge",
+            "short-label pure no-token segment lifecycle bridge observes full issue coverage with current confirmation/output alignment",
+        ),
+        (
+            SHORT_LABEL_PURE_NO_TOKEN_DOMAIN_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_short_label_pure_no_token_domain_lifecycle",
+            "short-label pure no-token domain lifecycle bridge observes nominal no-token checkpoint evidence with current confirmation/output alignment",
+        ),
+        (
+            SHORT_LABEL_COMPACT_UI_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_short_label_compact_ui_false_reopen_lifecycle",
+            "short-label compact UI false-reopen lifecycle bridge observes full issue coverage with current confirmation/output alignment",
+        ),
+        (
+            SHORT_LABEL_COMPACT_UI_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_short_label_compact_ui_semantic_companion_lifecycle",
+            "short-label compact UI semantic companion lifecycle bridge observes paired style and companion issue coverage with current confirmation/output alignment",
+        ),
+        (
+            SHORT_LABEL_DYNAMIC_DELEGATE_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_short_label_dynamic_delegate_lifecycle",
+            "short-label dynamic delegate lifecycle bridge observes safe delegation evidence to the dynamic CK3 expression microagent with current confirmation/output alignment",
+        ),
+        (
+            SHORT_LABEL_SINGLE_ISSUE_SYSTEM_TOOLTIP_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_short_label_single_issue_system_tooltip_lifecycle",
+            "short-label single-issue system tooltip lifecycle bridge observes clean system tooltip evidence with current confirmation/output alignment",
+        ),
+        (
+            SHORT_LABEL_TOKENIZED_UI_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_short_label_tokenized_ui_false_reopen_lifecycle",
+            "short-label tokenized UI false-reopen lifecycle bridge observes tokenized UI evidence with current confirmation/output alignment",
+        ),
+        (
+            DYNAMIC_CK3_PATTERN_SHADOW_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_dynamic_ck3_pattern_shadow_lifecycle",
+            "dynamic CK3 pattern lifecycle bridge observes reviewed dynamic-rule tooltip evidence with current confirmation/output alignment",
+        ),
+        (
+            GENDER_LONGFORM_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_gender_longform_false_reopen_context",
+            "gender longform false-reopen lifecycle bridge observes routed context evidence with current confirmation/output alignment",
+        ),
+        (
+            SHORT_LABEL_SEMANTIC_TIER1_GUARDED_COMPOSITION_CLOSURE_ACTION,
+            "closed_auto_confirmed_short_label_semantic_tier1_guarded_composition",
+            "short-label + semantic Tier 1 guarded composition observes full issue coverage with current confirmation/output alignment",
+        ),
+        (
+            SEMANTIC_SHORT_LABEL_PAIR_GUARDED_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_semantic_short_label_pair_guarded_lifecycle",
+            "semantic + short-label pair guarded lifecycle bridge observes audited safe UI-label evidence with current confirmation/output alignment",
+        ),
+        (
+            SEMANTIC_SHORT_LABEL_BLOCKED_SURFACE_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_semantic_short_label_blocked_surface_lifecycle",
+            "semantic short-label blocked-surface lifecycle bridge observes strict short-label checkpoint evidence with current confirmation/output alignment",
+        ),
+        (
+            EVENT_DIALOGUE_OPTION_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_event_dialogue_option_lifecycle",
+            "event dialogue option lifecycle bridge observes audited event-option checkpoint evidence with current confirmation/output alignment",
+        ),
+        (
+            EVENT_DIALOGUE_OPTION_BOUNDARY_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_event_dialogue_option_boundary_lifecycle",
+            "event dialogue option boundary lifecycle bridge observes audited boundary checkpoint evidence with current confirmation/output alignment",
+        ),
+        (
+            EVENT_OUTCOME_SHORT_LABEL_BOUNDARY_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_event_outcome_short_label_boundary_lifecycle",
+            "event outcome short-label boundary lifecycle bridge observes audited boundary checkpoint evidence with current confirmation/output alignment",
+        ),
+        (
+            EVENT_CONTEXT_COMPOSER_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_event_context_composer_lifecycle",
+            "event context composer lifecycle bridge observes audited event-context checkpoint evidence with current confirmation/output alignment",
+        ),
+        (
+            EVENT_CONTEXT_SENTENCE_BOUNDARY_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_event_context_sentence_boundary_lifecycle",
+            "event context sentence boundary lifecycle bridge observes audited sentence-boundary checkpoint evidence with current confirmation/output alignment",
+        ),
+        (
+            EVENT_CONTEXT_COMPOSER_LIFECYCLE_BATCH_CLOSURE_ACTION,
+            "closed_auto_confirmed_event_context_composer_lifecycle_batch",
+            "event context composer lifecycle batch observes audited event-context checkpoint evidence with current confirmation/output alignment",
+        ),
+        (
+            SHORT_LABEL_STYLE_LIFECYCLE_BATCH_CLOSURE_ACTION,
+            "closed_auto_confirmed_short_label_style_lifecycle_batch",
+            "short-label style lifecycle batch observes audited short-label checkpoint evidence with current confirmation/output alignment",
+        ),
+        (
+            EVENT_SURFACE_ROUTER_LIFECYCLE_BATCH_CLOSURE_ACTION,
+            "closed_auto_confirmed_event_surface_router_lifecycle_batch",
+            "event surface router lifecycle batch observes audited event-surface checkpoint evidence with current confirmation/output alignment",
+        ),
+        (
+            REQUIREMENT_TOOLTIP_SURFACE_LIFECYCLE_BATCH_CLOSURE_ACTION,
+            "closed_auto_confirmed_requirement_tooltip_surface_lifecycle_batch",
+            "requirement tooltip surface lifecycle batch observes audited requirement-tooltip checkpoint evidence with current confirmation/output alignment",
+        ),
+        (
+            EVENT_CONTEXT_COMPOSER_LIFECYCLE_RUN36_CLOSURE_ACTION,
+            "closed_auto_confirmed_event_context_composer_lifecycle_run36",
+            "event context composer lifecycle run36 batch observes audited event-context checkpoint evidence with current confirmation/output alignment",
+        ),
+        (
+            SHORT_LABEL_STYLE_LIFECYCLE_RUN36_CLOSURE_ACTION,
+            "closed_auto_confirmed_short_label_style_lifecycle_run36",
+            "short-label style lifecycle run36 batch observes audited short-label checkpoint evidence with current confirmation/output alignment",
+        ),
+        (
+            EVENT_SURFACE_ROUTER_LIFECYCLE_RUN36_CLOSURE_ACTION,
+            "closed_auto_confirmed_event_surface_router_lifecycle_run36",
+            "event surface router lifecycle run36 batch observes audited event-surface checkpoint evidence with current confirmation/output alignment",
+        ),
+        (
+            REQUIREMENT_TOOLTIP_SURFACE_LIFECYCLE_RUN36_CLOSURE_ACTION,
+            "closed_auto_confirmed_requirement_tooltip_surface_lifecycle_run36",
+            "requirement tooltip surface lifecycle run36 batch observes audited requirement-tooltip checkpoint evidence with current confirmation/output alignment",
+        ),
+        (
+            AUTOFIX_UNKNOWN_EVENT_COMPOSITION_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_autofix_unknown_event_composition_lifecycle",
+            "autofix_unknown event composition lifecycle bridge observes mature event sentence composition evidence with current confirmation/output alignment",
+        ),
+        (
+            AUTOFIX_UNKNOWN_EVENT_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_autofix_unknown_event_semantic_companion_lifecycle",
+            "autofix_unknown event semantic companion lifecycle bridge observes composition-ready event evidence with only the generic semantic companion gate remaining",
+        ),
+        (
+            AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_BUILDING_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_autofix_unknown_semantic_companion_building_lifecycle",
+            "autofix_unknown semantic companion building lifecycle bridge observes guarded building description evidence with current confirmation/output alignment",
+        ),
+        (
+            AUTOFIX_UNKNOWN_SEMANTIC_COMPANION_RULE_EFFECT_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_autofix_unknown_semantic_companion_rule_effect_lifecycle",
+            "autofix_unknown semantic companion rule/effect lifecycle bridge observes guarded rule/effect/modifier evidence with current confirmation/output alignment",
+        ),
+        (
+            EVENT_SURFACE_SHORT_LABEL_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_event_surface_short_label_companion_lifecycle",
+            "companion bridge covers mirrored event-surface and short-label issues with current confirmation/output alignment",
+        ),
+        (
+            AUTOFIX_UNKNOWN_SURFACE_CHECKPOINT_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_autofix_unknown_surface_lifecycle",
+            "autofix_unknown surface checkpoint lifecycle observes positive safe-surface evidence as the only open ledger issue with current confirmation/output alignment",
+        ),
+        (
+            AUTOFIX_UNKNOWN_SURFACE_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_autofix_unknown_surface_lifecycle_bridge",
+            "autofix_unknown surface lifecycle bridge observes reviewed UI surface evidence with current confirmation/output alignment",
+        ),
+        (
+            AUTOFIX_UNKNOWN_SURFACE_SEMANTIC_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_autofix_unknown_surface_semantic_lifecycle",
+            "autofix_unknown surface + semantic lifecycle bridge observes full issue coverage with current confirmation/output alignment",
+        ),
+        (
+            AUTOFIX_UNKNOWN_DOMAIN_GUARDED_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_autofix_unknown_domain_guarded_lifecycle",
+            "autofix_unknown domain guarded lifecycle observes strict guarded-domain false-reopen evidence with current single-issue ledger alignment",
+        ),
+        (
+            AUTOFIX_UNKNOWN_DOMAIN_GUARDED_REVIEWED_LIFECYCLE_CLOSURE_ACTION,
+            "closed_auto_confirmed_autofix_unknown_domain_guarded_reviewed_lifecycle",
+            "autofix_unknown domain guarded reviewed lifecycle observes human-reviewed false-positive reopen evidence with current single-issue ledger alignment",
+        ),
+        (
+            TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_CLOSURE_ACTION,
+            TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_STATE,
+            "trait-description esta personagem lifecycle bridge observes current confirmation/output alignment",
+        ),
+        (
+            HUMAN_CONFIRMED_POST_APPLY_REPAIR_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_POST_APPLY_REPAIR_LIFECYCLE_STATE,
+            "locked human confirmation, current output, and protected-apply candidate are aligned",
+        ),
+        (
+            VALIDATED_RELEASE_PROMOTION_LIFECYCLE_CLOSURE_ACTION,
+            VALIDATED_RELEASE_PROMOTION_LIFECYCLE_STATE,
+            "validated release promotion has current output/confirmation alignment, intact tokens and no open ledger issues",
+        ),
+        (
+            HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_STATE,
+            "current output and human package confirmation are aligned with no open issues",
+        ),
+        (
+            HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_LIFECYCLE_STATE,
+            "current output and repaired human confirmation are aligned with no open issues",
+        ),
+        (
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_PLAIN_LIGHT_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_PLAIN_LIGHT_LIFECYCLE_STATE,
+            "current output and human confirmation are aligned with no open issues",
+        ),
+        (
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_ES_SUFFIX_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_ES_SUFFIX_LIFECYCLE_STATE,
+            "current output and human confirmation are aligned with no open issues",
+        ),
+        (
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_MULTILINE_SERIALIZATION_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_MULTILINE_SERIALIZATION_LIFECYCLE_STATE,
+            "current output and human confirmation are aligned after localization serialization with no open issues",
+        ),
+        (
+            HUMAN_CONFIRMED_UI_TOOLTIPS_RESIDUAL_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_UI_TOOLTIPS_RESIDUAL_EQUAL_OUTPUT_LIFECYCLE_STATE,
+            "current output and human confirmation are aligned with no open issues",
+        ),
+        (
+            HUMAN_CONFIRMED_UI_TOOLTIPS_CONTEXT_SUBLOTE_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_UI_TOOLTIPS_CONTEXT_SUBLOTE_EQUAL_OUTPUT_LIFECYCLE_STATE,
+            "current output and human confirmation are aligned with no open issues",
+        ),
+        (
+            AUTO_CONFIRMED_PLAIN_LIGHT_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+            AUTO_CONFIRMED_PLAIN_LIGHT_EQUAL_OUTPUT_LIFECYCLE_STATE,
+            "current output and auto confirmation are aligned with no open issues",
+        ),
+        (
+            AUTO_CONFIRMED_FORMAT_TAG_TOKEN_POLICY_LIFECYCLE_CLOSURE_ACTION,
+            AUTO_CONFIRMED_FORMAT_TAG_TOKEN_POLICY_LIFECYCLE_STATE,
+            "low-risk format-tag token policy decision has been applied and current output matches confirmation",
+        ),
+        (
+            SEMANTIC_REVIEW_GENERAL_PLAIN_TEXT_LIFECYCLE_CLOSURE_ACTION,
+            SEMANTIC_REVIEW_GENERAL_PLAIN_TEXT_LIFECYCLE_STATE,
+            "reviewed plain text has current output alignment, no tokens, no variables and no Spanish residue",
+        ),
+        (
+            DIARCHY_EXTRAVAGANCE_DESCRIPTION_READY_LIFECYCLE_CLOSURE_ACTION,
+            DIARCHY_EXTRAVAGANCE_DESCRIPTION_READY_LIFECYCLE_STATE,
+            "diarchy extravagance description lifecycle bridge observes current confirmation/output alignment",
+        ),
+        (
+            DIARCHY_EXTRAVAGANCE_DESCRIPTION_STYLE_WATCH_LIFECYCLE_CLOSURE_ACTION,
+            DIARCHY_EXTRAVAGANCE_DESCRIPTION_STYLE_WATCH_LIFECYCLE_STATE,
+            "diarchy extravagance style-watch lifecycle bridge observes current confirmation/output alignment",
+        ),
+        (
+            SHORT_LABEL_SEMANTIC_PAIR_QUOTE_FRAGMENT_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_SEMANTIC_PAIR_QUOTE_FRAGMENT_LIFECYCLE_STATE,
+            "short-label semantic pair quote-fragment lifecycle observes current confirmation/output alignment",
+        ),
+        (
+            SHORT_LABEL_SEMANTIC_PAIR_NOMINAL_LABEL_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_SEMANTIC_PAIR_NOMINAL_LABEL_LIFECYCLE_STATE,
+            "short-label semantic pair nominal-label lifecycle observes current confirmation/output alignment",
+        ),
+        (
+            SHORT_LABEL_SEMANTIC_PAIR_SHORT_PHRASE_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_SEMANTIC_PAIR_SHORT_PHRASE_LIFECYCLE_STATE,
+            "short-label semantic pair short-phrase lifecycle observes current confirmation/output alignment",
+        ),
+        (
+            SHORT_LABEL_SEMANTIC_PAIR_COMPACT_OPTION_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_SEMANTIC_PAIR_COMPACT_OPTION_LIFECYCLE_STATE,
+            "short-label semantic pair compact-option lifecycle observes current confirmation/output alignment",
+        ),
+        (
+            SHORT_LABEL_SEMANTIC_LOAD_TIPS_LIFECYCLE_CLOSURE_ACTION,
+            SHORT_LABEL_SEMANTIC_LOAD_TIPS_LIFECYCLE_STATE,
+            "short-label semantic load-tips lifecycle observes current confirmation/output alignment",
+        ),
+        (
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_LIFECYCLE_STATE,
+            "autofix_unknown plain event UI tooltip lifecycle observes current confirmation/output alignment",
+        ),
+        (
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_LIFECYCLE_STATE,
+            "autofix_unknown plain event plain prose lifecycle observes current confirmation/output alignment",
+        ),
+        (
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_LIFECYCLE_STATE,
+            "autofix_unknown plain event historical gloss lifecycle observes current confirmation/output alignment",
+        ),
+        (
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            "autofix_unknown plain event UI tooltip semantic companion lifecycle observes current confirmation/output alignment",
+        ),
+        (
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            "autofix_unknown plain event plain prose semantic companion lifecycle observes current confirmation/output alignment",
+        ),
+        (
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_SEMANTIC_COMPANION_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_SEMANTIC_COMPANION_LIFECYCLE_STATE,
+            "autofix_unknown plain event historical gloss semantic companion lifecycle observes current confirmation/output alignment",
+        ),
+        (
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_PLAIN_PROSE_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_PLAIN_PROSE_LIFECYCLE_STATE,
+            "autofix_unknown plain event context composer plain prose lifecycle observes current confirmation/output alignment",
+        ),
+        (
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_EVENT_CONTEXT_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_EVENT_CONTEXT_LIFECYCLE_STATE,
+            "autofix_unknown plain event context composer event context lifecycle observes current confirmation/output alignment",
+        ),
+    )
+    for action, final_state, reason in action_rules:
+        if action in lifecycle_actions:
+            return final_state, reason
+    return (
+        "closed_auto_confirmed_guarded_lifecycle",
+        "guarded lifecycle policy reconciles this as a safe closure",
+    )
 
 
 def classify(row) -> SegmentState:
@@ -4878,12 +5577,12 @@ def classify(row) -> SegmentState:
     confirmation_blank = has_confirmation and is_blank(row["confirmed_text"])
     confirmed_matches_output = False
     if has_confirmation:
-        confirmed_canonical = canonical_localization_text(row["confirmed_text"])
-        output_canonical = canonical_localization_text(row["portuguese_text"])
+        confirmed_serialized = canonical_localization_text(row["confirmed_text"])
+        output_serialized = canonical_localization_text(row["portuguese_text"])
         confirmed_matches_output = (
             confirmation_blank and output_blank
         ) or (
-            not confirmation_blank and row["portuguese_text"] is not None and confirmed_canonical == output_canonical
+            not confirmation_blank and row["portuguese_text"] is not None and confirmed_serialized == output_serialized
         )
 
     review_state = confirmation_review_state(row)
@@ -4925,6 +5624,8 @@ def classify(row) -> SegmentState:
             AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_SEMANTIC_COMPANION_LIFECYCLE_STATE,
             AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_PLAIN_PROSE_LIFECYCLE_STATE,
             AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_EVENT_CONTEXT_LIFECYCLE_STATE,
+            AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_FALSE_REOPEN_LIFECYCLE_STATE,
+            AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_LIFECYCLE_STATE,
             "closed_auto_confirmed_gender_longform_blocker_repair",
             "closed_auto_confirmed_gender_longform_blocker_noop",
             "closed_auto_confirmed_gender_longform_context_rewrite_review",
@@ -4943,12 +5644,16 @@ def classify(row) -> SegmentState:
             "closed_auto_confirmed_single_combat_signature_weapon_composer_batch1_repair",
             "closed_auto_confirmed_single_combat_signature_weapon_composer_batch2_0041_repair",
             DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REPAIR_STATE,
+            RUNTIME_TOKEN_ONLY_EQUAL_OUTPUT_LIFECYCLE_STATE,
             SINGLE_COMBAT_SIGNATURE_WEAPON_ALREADY_GOOD_LIFECYCLE_STATE,
             SEMANTIC_SHORT_LABEL_EVENT_CONTEXT_DOMAIN_LIFECYCLE_STATE,
             SEMANTIC_SHORT_LABEL_REQUIREMENT_TOOLTIP_DOMAIN_LIFECYCLE_STATE,
             SEMANTIC_SHORT_LABEL_REQUIREMENT_TOOLTIP_MICROREPAIR_STATE,
             SHORT_LABEL_STYLE_QUEUE220_STRICT_LIFECYCLE_STATE,
             SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_STATE,
+            SHORT_LABEL_STYLE_CURRENT_SHORT_PHRASE_LIFECYCLE_STATE,
+            SHORT_LABEL_STYLE_CURRENT_COMPACT_UI_LABEL_LIFECYCLE_STATE,
+            SHORT_LABEL_STYLE_CURRENT_PLAIN_NOOP_LIFECYCLE_STATE,
             SHORT_LABEL_SEMANTIC_PAIR_QUOTE_FRAGMENT_LIFECYCLE_STATE,
             SHORT_LABEL_SEMANTIC_PAIR_NOMINAL_LABEL_LIFECYCLE_STATE,
             SHORT_LABEL_SEMANTIC_PAIR_SHORT_PHRASE_LIFECYCLE_STATE,
@@ -5058,6 +5763,18 @@ def classify(row) -> SegmentState:
             is_closed=True,
             priority_score=0.0,
             reasons=reasons,
+        )
+
+    if (
+        has_output
+        and confirmed_matches_output
+        and danger != "blocked_structure"
+        and is_runtime_token_only_text(row["portuguese_text"])
+    ):
+        return closed_state(
+            RUNTIME_TOKEN_ONLY_EQUAL_OUTPUT_LIFECYCLE_STATE,
+            "output_present",
+            "runtime token-only output is confirmed/aligned; no visible translatable prose remains",
         )
 
     if has_confirmation and confirmed_matches_output:
@@ -5419,6 +6136,310 @@ def classify(row) -> SegmentState:
                 priority_score=0.0,
                 reasons=reasons,
             )
+        if (
+            lifecycle_action_allowed(row, HUMAN_CONFIRMED_POST_APPLY_REPAIR_LIFECYCLE_CLOSURE_ACTION)
+            and danger != "blocked_structure"
+        ):
+            reasons.extend(
+                [
+                    "auto-confirmed reopen has human-confirmed post-apply repair lifecycle bridge",
+                    "locked human confirmation, current output, and protected-apply candidate are aligned",
+                ]
+            )
+            return SegmentState(
+                final_state=HUMAN_CONFIRMED_POST_APPLY_REPAIR_LIFECYCLE_STATE,
+                state_group="closed",
+                output_state="output_present",
+                review_state=review_state,
+                apply_state="applied",
+                has_output=True,
+                source_blank=source_blank,
+                confirmed_matches_output=True,
+                needs_human=False,
+                needs_output_apply=False,
+                needs_reopen=False,
+                is_closed=True,
+                priority_score=0.0,
+                reasons=reasons,
+            )
+        if (
+            lifecycle_action_allowed(row, HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_CLOSURE_ACTION)
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            reasons.extend(
+                [
+                    "human-confirmed package close has dedicated lifecycle bridge",
+                    "current output and human package confirmation are aligned with no open issues",
+                ]
+            )
+            return SegmentState(
+                final_state=HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_STATE,
+                state_group="closed",
+                output_state="output_present",
+                review_state=review_state,
+                apply_state="applied",
+                has_output=True,
+                source_blank=source_blank,
+                confirmed_matches_output=True,
+                needs_human=False,
+                needs_output_apply=False,
+                needs_reopen=False,
+                is_closed=True,
+                priority_score=0.0,
+                reasons=reasons,
+            )
+        if (
+            lifecycle_action_allowed(row, HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_LIFECYCLE_CLOSURE_ACTION)
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            reasons.extend(
+                [
+                    "human-confirmed repair label has dedicated lifecycle bridge",
+                    "current output and repaired human confirmation are aligned with no open issues",
+                ]
+            )
+            return SegmentState(
+                final_state=HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_LIFECYCLE_STATE,
+                state_group="closed",
+                output_state="output_present",
+                review_state=review_state,
+                apply_state="applied",
+                has_output=True,
+                source_blank=source_blank,
+                confirmed_matches_output=True,
+                needs_human=False,
+                needs_output_apply=False,
+                needs_reopen=False,
+                is_closed=True,
+                priority_score=0.0,
+                reasons=reasons,
+            )
+        if (
+            lifecycle_action_allowed(row, HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_PLAIN_LIGHT_LIFECYCLE_CLOSURE_ACTION)
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            reasons.extend(
+                [
+                    "human-confirmed misc equal-output plain/light tranche has dedicated lifecycle bridge",
+                    "current output and human confirmation are aligned with no open issues",
+                ]
+            )
+            return SegmentState(
+                final_state=HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_PLAIN_LIGHT_LIFECYCLE_STATE,
+                state_group="closed",
+                output_state="output_present",
+                review_state=review_state,
+                apply_state="applied",
+                has_output=True,
+                source_blank=source_blank,
+                confirmed_matches_output=True,
+                needs_human=False,
+                needs_output_apply=False,
+                needs_reopen=False,
+                is_closed=True,
+                priority_score=0.0,
+                reasons=reasons,
+            )
+        if (
+            lifecycle_action_allowed(row, HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_ES_SUFFIX_LIFECYCLE_CLOSURE_ACTION)
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            reasons.extend(
+                [
+                    "human-confirmed misc equal-output ES suffix tranche has dedicated lifecycle bridge",
+                    "current output and human confirmation are aligned with no open issues",
+                ]
+            )
+            return SegmentState(
+                final_state=HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_ES_SUFFIX_LIFECYCLE_STATE,
+                state_group="closed",
+                output_state="output_present",
+                review_state=review_state,
+                apply_state="applied",
+                has_output=True,
+                source_blank=source_blank,
+                confirmed_matches_output=True,
+                needs_human=False,
+                needs_output_apply=False,
+                needs_reopen=False,
+                is_closed=True,
+                priority_score=0.0,
+                reasons=reasons,
+            )
+        if (
+            lifecycle_action_allowed(row, HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_MULTILINE_SERIALIZATION_LIFECYCLE_CLOSURE_ACTION)
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            reasons.extend(
+                [
+                    "human-confirmed misc equal-output multiline serialization tranche has dedicated lifecycle bridge",
+                    "current output and human confirmation are aligned after localization serialization with no open issues",
+                ]
+            )
+            return SegmentState(
+                final_state=HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_MULTILINE_SERIALIZATION_LIFECYCLE_STATE,
+                state_group="closed",
+                output_state="output_present",
+                review_state=review_state,
+                apply_state="applied",
+                has_output=True,
+                source_blank=source_blank,
+                confirmed_matches_output=True,
+                needs_human=False,
+                needs_output_apply=False,
+                needs_reopen=False,
+                is_closed=True,
+                priority_score=0.0,
+                reasons=reasons,
+            )
+        if (
+            lifecycle_action_allowed(row, HUMAN_CONFIRMED_UI_TOOLTIPS_RESIDUAL_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION)
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            reasons.extend(
+                [
+                    "human-confirmed UI tooltip residual equal-output tranche has dedicated lifecycle bridge",
+                    "current output and human confirmation are aligned with no open issues",
+                ]
+            )
+            return SegmentState(
+                final_state=HUMAN_CONFIRMED_UI_TOOLTIPS_RESIDUAL_EQUAL_OUTPUT_LIFECYCLE_STATE,
+                state_group="closed",
+                output_state="output_present",
+                review_state=review_state,
+                apply_state="applied",
+                has_output=True,
+                source_blank=source_blank,
+                confirmed_matches_output=True,
+                needs_human=False,
+                needs_output_apply=False,
+                needs_reopen=False,
+                is_closed=True,
+                priority_score=0.0,
+                reasons=reasons,
+            )
+        if (
+            lifecycle_action_allowed(row, HUMAN_CONFIRMED_UI_TOOLTIPS_CONTEXT_SUBLOTE_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION)
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            reasons.extend(
+                [
+                    "human-confirmed UI tooltip contextual sublote equal-output tranche has dedicated lifecycle bridge",
+                    "current output and human confirmation are aligned with no open issues",
+                ]
+            )
+            return SegmentState(
+                final_state=HUMAN_CONFIRMED_UI_TOOLTIPS_CONTEXT_SUBLOTE_EQUAL_OUTPUT_LIFECYCLE_STATE,
+                state_group="closed",
+                output_state="output_present",
+                review_state=review_state,
+                apply_state="applied",
+                has_output=True,
+                source_blank=source_blank,
+                confirmed_matches_output=True,
+                needs_human=False,
+                needs_output_apply=False,
+                needs_reopen=False,
+                is_closed=True,
+                priority_score=0.0,
+                reasons=reasons,
+            )
+        if (
+            lifecycle_action_allowed(row, AUTO_CONFIRMED_PLAIN_LIGHT_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION)
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            reasons.extend(
+                [
+                    "auto-confirmed plain/light equal-output tranche has dedicated lifecycle bridge",
+                    "current output and auto confirmation are aligned with no open issues",
+                ]
+            )
+            return SegmentState(
+                final_state=AUTO_CONFIRMED_PLAIN_LIGHT_EQUAL_OUTPUT_LIFECYCLE_STATE,
+                state_group="closed",
+                output_state="output_present",
+                review_state=review_state,
+                apply_state="applied",
+                has_output=True,
+                source_blank=source_blank,
+                confirmed_matches_output=True,
+                needs_human=False,
+                needs_output_apply=False,
+                needs_reopen=False,
+                is_closed=True,
+                priority_score=0.0,
+                reasons=reasons,
+            )
+        if (
+            lifecycle_action_allowed(row, AUTO_CONFIRMED_FORMAT_TAG_TOKEN_POLICY_LIFECYCLE_CLOSURE_ACTION)
+            and issue_count == 0
+            and high_issue_count == 0
+            and danger != "blocked_structure"
+        ):
+            reasons.extend(
+                [
+                    "auto-confirmed format-tag token policy has dedicated lifecycle bridge",
+                    "low-risk token-policy decision is approved, applied, and current output is aligned",
+                ]
+            )
+            return SegmentState(
+                final_state=AUTO_CONFIRMED_FORMAT_TAG_TOKEN_POLICY_LIFECYCLE_STATE,
+                state_group="closed",
+                output_state="output_present",
+                review_state=review_state,
+                apply_state="applied",
+                has_output=True,
+                source_blank=source_blank,
+                confirmed_matches_output=True,
+                needs_human=False,
+                needs_output_apply=False,
+                needs_reopen=False,
+                is_closed=True,
+                priority_score=0.0,
+                reasons=reasons,
+            )
+        if (
+            lifecycle_action_allowed(row, SEMANTIC_REVIEW_GENERAL_PLAIN_TEXT_LIFECYCLE_CLOSURE_ACTION)
+            and danger != "blocked_structure"
+        ):
+            reasons.extend(
+                [
+                    "auto-confirmed semantic review plain-text reopen has lifecycle bridge",
+                    "reviewed plain text has current output alignment, no tokens, no variables and no Spanish residue",
+                ]
+            )
+            return SegmentState(
+                final_state=SEMANTIC_REVIEW_GENERAL_PLAIN_TEXT_LIFECYCLE_STATE,
+                state_group="closed",
+                output_state="output_present",
+                review_state=review_state,
+                apply_state="applied",
+                has_output=True,
+                source_blank=source_blank,
+                confirmed_matches_output=True,
+                needs_human=False,
+                needs_output_apply=False,
+                needs_reopen=False,
+                is_closed=True,
+                priority_score=0.0,
+                reasons=reasons,
+            )
         if lifecycle_closure_allowed(row) and issue_count == 0 and high_issue_count == 0:
             lifecycle_actions = {
                 action.strip()
@@ -5620,8 +6641,11 @@ def classify(row) -> SegmentState:
                 closure_reason = "autofix_unknown domain guarded reviewed lifecycle observes human-reviewed false-positive reopen evidence with current single-issue ledger alignment"
                 closure_state = "closed_auto_confirmed_autofix_unknown_domain_guarded_reviewed_lifecycle"
             else:
-                closure_reason = "guarded lifecycle policy reconciles this as a safe closure"
-                closure_state = "closed_auto_confirmed_guarded_lifecycle"
+                resolved_closure = lifecycle_closure_state_and_reason(row)
+                closure_state, closure_reason = resolved_closure or (
+                    "closed_auto_confirmed_guarded_lifecycle",
+                    "guarded lifecycle policy reconciles this as a safe closure",
+                )
             reasons.extend(
                 [
                     "auto-confirmed output has governed lifecycle closure signal",
@@ -5864,8 +6888,11 @@ def classify(row) -> SegmentState:
                     closure_reason = "autofix_unknown domain guarded reviewed lifecycle observes human-reviewed false-positive reopen evidence with current single-issue ledger alignment"
                     closure_state = "closed_auto_confirmed_autofix_unknown_domain_guarded_reviewed_lifecycle"
                 else:
-                    closure_reason = "guarded lifecycle policy reconciles this as a safe closure"
-                    closure_state = "closed_auto_confirmed_guarded_lifecycle"
+                    resolved_closure = lifecycle_closure_state_and_reason(row)
+                    closure_state, closure_reason = resolved_closure or (
+                        "closed_auto_confirmed_guarded_lifecycle",
+                        "guarded lifecycle policy reconciles this as a safe closure",
+                    )
                 reasons.extend(
                     [
                         "auto-confirmed output has guarded lifecycle autofix signal",
@@ -5941,6 +6968,12 @@ def classify(row) -> SegmentState:
                     is_closed=True,
                     priority_score=0.0,
                     reasons=reasons,
+                )
+            if danger != "blocked_structure" and is_runtime_token_only_text(row["portuguese_text"]):
+                return closed_state(
+                    RUNTIME_TOKEN_ONLY_EQUAL_OUTPUT_LIFECYCLE_STATE,
+                    "output_present",
+                    "runtime token-only output is confirmed/aligned; no visible translatable prose remains",
                 )
             reasons.extend(["auto-confirmed output has autofix signal", "requires targeted repair review"])
             return SegmentState(
@@ -6695,6 +7728,44 @@ def iter_segments(
             FROM auto_confirmation_reopen_lifecycle_policy_items
             WHERE {lifecycle_filter}
               AND policy_allowed = 1
+            UNION ALL
+            SELECT
+                decision.segment_id,
+                '{auto_confirmed_format_tag_token_policy_lifecycle_action}' AS lifecycle_policy_action
+            FROM segment_token_policy_decisions decision
+            JOIN segment_token_policy_items policy_item
+              ON policy_item.id = decision.policy_item_id
+             AND policy_item.run_id = decision.policy_run_id
+            JOIN segment_confirmations confirmation
+              ON confirmation.segment_id = decision.segment_id
+            JOIN output_segments output
+              ON output.segment_id = decision.segment_id
+            JOIN previous_segment_state state
+              ON state.segment_id = decision.segment_id
+            LEFT JOIN issue_summary token_policy_issues
+              ON token_policy_issues.segment_id = decision.segment_id
+            WHERE decision.approved_for_apply = 1
+              AND decision.decision = 'accept_policy_candidate'
+              AND decision.policy_bucket = 'policy_candidate_format_tag'
+              AND decision.risk_level = 'low'
+              AND policy_item.policy_bucket = decision.policy_bucket
+              AND policy_item.risk_level = decision.risk_level
+              AND confirmation.confirmation_level = 'auto_confirmed'
+              AND COALESCE(confirmation.locked, 0) = 0
+              AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+              AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+              AND sha256_text(confirmation.confirmed_text) = decision.confirmed_text_hash
+              AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+              AND COALESCE(token_policy_issues.issue_count, 0) = 0
+              AND COALESCE(token_policy_issues.high_issue_count, 0) = 0
+              AND COALESCE(state.review_state, '') = 'auto_confirmed'
+              AND COALESCE(state.confirmed_matches_output, 0) = 1
+              AND COALESCE(state.needs_output_apply, 0) = 0
+              AND (
+                    COALESCE(state.final_state, '') = 'reopen_auto_confirmed_autofix'
+                 OR COALESCE(state.final_state, '') = '{auto_confirmed_format_tag_token_policy_lifecycle_state}'
+              )
             UNION ALL
             SELECT
                 item.segment_id,
@@ -8108,6 +9179,12 @@ def iter_segments(
         ORDER BY s.relative_path, s.source_line_number, s.id
     """.format(
         lifecycle_filter=lifecycle_filter,
+        auto_confirmed_format_tag_token_policy_lifecycle_action=(
+            AUTO_CONFIRMED_FORMAT_TAG_TOKEN_POLICY_LIFECYCLE_CLOSURE_ACTION
+        ),
+        auto_confirmed_format_tag_token_policy_lifecycle_state=(
+            AUTO_CONFIRMED_FORMAT_TAG_TOKEN_POLICY_LIFECYCLE_STATE
+        ),
         controlled_token_subpolicy_action=CONTROLLED_TOKEN_SUBPOLICY_CLOSURE_ACTION,
         same_token_boundary_repair_action=SAME_TOKEN_BOUNDARY_REPAIR_CLOSURE_ACTION,
         same_token_boundary_noop_action=SAME_TOKEN_BOUNDARY_REPAIR_NOOP_CLOSURE_ACTION,
@@ -8221,6 +9298,728 @@ def insert_items(conn, rows: list[tuple[Any, ...]]) -> None:
         """,
         rows,
     )
+
+
+def reconcile_confirmed_output_apply_state(conn, run_id: int) -> None:
+    reason = json.dumps(
+        [
+            "confirmed text exists but current output differs after CK3/YAML serialization",
+            "material snapshot requires output apply before lifecycle closure",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = 'pending_apply_confirmed',
+            state_group = 'pending',
+            output_state = CASE
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM output_segments output
+                    WHERE output.segment_id = segment_state_items.segment_id
+                      AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+                )
+                    THEN 'confirmation_mismatch'
+                ELSE 'output_missing'
+            END,
+            apply_state = 'needs_apply',
+            review_state = CASE
+                WHEN (
+                    SELECT COALESCE(confirmation.locked, 0)
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                ) = 1
+                    THEN 'human_locked'
+                WHEN LOWER(COALESCE((
+                    SELECT confirmation.confirmation_level
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                ), '')) IN ('human', 'manual', 'reviewed', 'confirmed', 'human_confirmed')
+                    THEN 'human_confirmed'
+                WHEN LOWER(COALESCE((
+                    SELECT confirmation.confirmation_source
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                ), '')) LIKE '%human%'
+                  OR LOWER(COALESCE((
+                    SELECT confirmation.confirmation_source
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                  ), '')) LIKE '%manual%'
+                  OR LOWER(COALESCE((
+                    SELECT confirmation.confirmation_source
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                  ), '')) LIKE '%review%'
+                  OR LOWER(COALESCE((
+                    SELECT confirmation.confirmation_source
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                  ), '')) LIKE '%codex%'
+                  OR LOWER(COALESCE((
+                    SELECT confirmation.confirmation_source
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                  ), '')) LIKE '%gemini%'
+                    THEN 'human_confirmed'
+                ELSE 'auto_confirmed'
+            END,
+            confirmation_level = (
+                SELECT confirmation.confirmation_level
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            confirmation_label = (
+                SELECT confirmation.confirmation_label
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            locked = (
+                SELECT COALESCE(confirmation.locked, 0)
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            has_output = CASE
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM output_segments output
+                    WHERE output.segment_id = segment_state_items.segment_id
+                      AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+                )
+                    THEN 1
+                ELSE 0
+            END,
+            confirmed_matches_output = 0,
+            needs_human = 0,
+            needs_output_apply = 1,
+            needs_reopen = 0,
+            is_closed = 0,
+            priority_score = 100.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND EXISTS (
+              SELECT 1
+              FROM segment_confirmations confirmation
+              LEFT JOIN output_segments output
+                ON output.segment_id = confirmation.segment_id
+              WHERE confirmation.segment_id = segment_state_items.segment_id
+                AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+                AND (
+                    output.segment_id IS NULL
+                    OR canonical_l10n(confirmation.confirmed_text) != canonical_l10n(output.portuguese_text)
+                )
+          )
+        """,
+        (reason, run_id),
+    )
+
+
+def reconcile_materially_aligned_confirmed_output_state(conn, run_id: int) -> None:
+    reason = json.dumps(
+        [
+            "confirmed text and current output are aligned after CK3/YAML serialization",
+            "material output does not require output apply before lifecycle routing",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = CASE
+                WHEN final_state = 'pending_apply_confirmed' THEN 'reopen_auto_confirmed_autofix'
+                ELSE final_state
+            END,
+            state_group = CASE
+                WHEN final_state = 'pending_apply_confirmed' THEN 'pending'
+                ELSE state_group
+            END,
+            output_state = 'output_present',
+            apply_state = CASE
+                WHEN final_state = 'pending_apply_confirmed' OR apply_state = 'needs_apply' THEN 'needs_review'
+                ELSE apply_state
+            END,
+            review_state = CASE
+                WHEN (
+                    SELECT COALESCE(confirmation.locked, 0)
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                ) = 1
+                    THEN 'human_locked'
+                WHEN LOWER(COALESCE((
+                    SELECT confirmation.confirmation_level
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                ), '')) IN ('human', 'manual', 'reviewed', 'confirmed', 'human_confirmed')
+                    THEN 'human_confirmed'
+                WHEN LOWER(COALESCE((
+                    SELECT confirmation.confirmation_source
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                ), '')) LIKE '%human%'
+                  OR LOWER(COALESCE((
+                    SELECT confirmation.confirmation_source
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                  ), '')) LIKE '%manual%'
+                  OR LOWER(COALESCE((
+                    SELECT confirmation.confirmation_source
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                  ), '')) LIKE '%review%'
+                  OR LOWER(COALESCE((
+                    SELECT confirmation.confirmation_source
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                  ), '')) LIKE '%codex%'
+                  OR LOWER(COALESCE((
+                    SELECT confirmation.confirmation_source
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                  ), '')) LIKE '%gemini%'
+                    THEN 'human_confirmed'
+                ELSE 'auto_confirmed'
+            END,
+            confirmation_level = (
+                SELECT confirmation.confirmation_level
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            confirmation_label = (
+                SELECT confirmation.confirmation_label
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            locked = (
+                SELECT COALESCE(confirmation.locked, 0)
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            has_output = 1,
+            confirmed_matches_output = 1,
+            needs_output_apply = 0,
+            needs_reopen = CASE
+                WHEN final_state = 'pending_apply_confirmed' THEN 1
+                ELSE needs_reopen
+            END,
+            is_closed = CASE
+                WHEN final_state = 'pending_apply_confirmed' THEN 0
+                ELSE is_closed
+            END,
+            priority_score = CASE
+                WHEN final_state = 'pending_apply_confirmed' THEN 80.0
+                ELSE priority_score
+            END,
+            reasons_json = CASE
+                WHEN final_state = 'pending_apply_confirmed' OR needs_output_apply != 0 OR confirmed_matches_output != 1 THEN ?
+                ELSE reasons_json
+            END
+        WHERE run_id = ?
+          AND EXISTS (
+              SELECT 1
+              FROM segment_confirmations confirmation
+              JOIN output_segments output
+                ON output.segment_id = confirmation.segment_id
+              WHERE confirmation.segment_id = segment_state_items.segment_id
+                AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+                AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+                AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+          )
+          AND (
+              final_state = 'pending_apply_confirmed'
+              OR COALESCE(needs_output_apply, 0) != 0
+              OR COALESCE(confirmed_matches_output, 0) != 1
+              OR COALESCE(confirmation_level, '') != COALESCE((
+                  SELECT confirmation.confirmation_level
+                  FROM segment_confirmations confirmation
+                  WHERE confirmation.segment_id = segment_state_items.segment_id
+              ), '')
+              OR COALESCE(confirmation_label, '') != COALESCE((
+                  SELECT confirmation.confirmation_label
+                  FROM segment_confirmations confirmation
+                  WHERE confirmation.segment_id = segment_state_items.segment_id
+              ), '')
+              OR COALESCE(locked, 0) != COALESCE((
+                  SELECT confirmation.locked
+                  FROM segment_confirmations confirmation
+                  WHERE confirmation.segment_id = segment_state_items.segment_id
+              ), 0)
+              OR COALESCE(review_state, '') != CASE
+                  WHEN (
+                      SELECT COALESCE(confirmation.locked, 0)
+                      FROM segment_confirmations confirmation
+                      WHERE confirmation.segment_id = segment_state_items.segment_id
+                  ) = 1
+                      THEN 'human_locked'
+                  WHEN LOWER(COALESCE((
+                      SELECT confirmation.confirmation_level
+                      FROM segment_confirmations confirmation
+                      WHERE confirmation.segment_id = segment_state_items.segment_id
+                  ), '')) IN ('human', 'manual', 'reviewed', 'confirmed', 'human_confirmed')
+                      THEN 'human_confirmed'
+                  WHEN LOWER(COALESCE((
+                      SELECT confirmation.confirmation_source
+                      FROM segment_confirmations confirmation
+                      WHERE confirmation.segment_id = segment_state_items.segment_id
+                  ), '')) LIKE '%human%'
+                    OR LOWER(COALESCE((
+                      SELECT confirmation.confirmation_source
+                      FROM segment_confirmations confirmation
+                      WHERE confirmation.segment_id = segment_state_items.segment_id
+                    ), '')) LIKE '%manual%'
+                    OR LOWER(COALESCE((
+                      SELECT confirmation.confirmation_source
+                      FROM segment_confirmations confirmation
+                      WHERE confirmation.segment_id = segment_state_items.segment_id
+                    ), '')) LIKE '%review%'
+                    OR LOWER(COALESCE((
+                      SELECT confirmation.confirmation_source
+                      FROM segment_confirmations confirmation
+                      WHERE confirmation.segment_id = segment_state_items.segment_id
+                    ), '')) LIKE '%codex%'
+                    OR LOWER(COALESCE((
+                      SELECT confirmation.confirmation_source
+                      FROM segment_confirmations confirmation
+                      WHERE confirmation.segment_id = segment_state_items.segment_id
+                    ), '')) LIKE '%gemini%'
+                      THEN 'human_confirmed'
+                  ELSE 'auto_confirmed'
+              END
+          )
+        """,
+        (reason, run_id),
+    )
+
+
+def reconcile_known_equal_output_confirmation_closure_state(conn, run_id: int) -> None:
+    closures = (
+        (
+            SHORT_LABEL_BOLD_NO_REPAIR_CONFIRMATION_SOURCE,
+            SHORT_LABEL_BOLD_NO_REPAIR_CONFIRMATION_LABEL,
+            "closed_auto_confirmed_short_label_bold_no_repair",
+            "short-label bold No repair confirmation matches current output after canonical reconciliation",
+        ),
+        (
+            IN_GAME_FEEDBACK_MICROFIX_CONFIRMATION_SOURCE,
+            IN_GAME_FEEDBACK_MICROFIX_CONFIRMATION_LABEL,
+            "closed_auto_confirmed_in_game_feedback_microfix",
+            "in-game feedback microfix confirmation matches current output after canonical reconciliation",
+        ),
+        (
+            TITLE_LANDED_ADJECTIVE_LEXICAL_RESIDUE_CONFIRMATION_SOURCE,
+            TITLE_LANDED_ADJECTIVE_LEXICAL_RESIDUE_CONFIRMATION_LABEL,
+            "closed_auto_confirmed_title_landed_adjective_lexical_residue_repair",
+            "landed-title adjective lexical residue confirmation matches current output after canonical reconciliation",
+        ),
+        (
+            TITLE_LANDED_ADJECTIVE_LEXICAL_RESIDUE_MEDIUM_CONFIRMATION_SOURCE,
+            TITLE_LANDED_ADJECTIVE_LEXICAL_RESIDUE_MEDIUM_CONFIRMATION_LABEL,
+            "closed_auto_confirmed_title_landed_adjective_lexical_residue_direction_suffix_repair",
+            "landed-title adjective direction/suffix lexical residue confirmation matches current output after canonical reconciliation",
+        ),
+    )
+    for confirmation_source, confirmation_label, final_state, closure_reason in closures:
+        reasons = json.dumps(
+            [
+                "confirmed text and current output are aligned after CK3/YAML serialization",
+                "known post-release or feedback confirmation is allowed to close a false reopen",
+                closure_reason,
+            ],
+            ensure_ascii=False,
+        )
+        conn.execute(
+            """
+            UPDATE segment_state_items
+            SET
+                final_state = ?,
+                state_group = 'closed',
+                output_state = 'output_present',
+                apply_state = 'applied',
+                confirmation_level = (
+                    SELECT confirmation.confirmation_level
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                ),
+                confirmation_label = (
+                    SELECT confirmation.confirmation_label
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                ),
+                locked = (
+                    SELECT COALESCE(confirmation.locked, 0)
+                    FROM segment_confirmations confirmation
+                    WHERE confirmation.segment_id = segment_state_items.segment_id
+                ),
+                has_output = 1,
+                confirmed_matches_output = 1,
+                needs_human = 0,
+                needs_output_apply = 0,
+                needs_reopen = 0,
+                is_closed = 1,
+                priority_score = 0.0,
+                reasons_json = ?
+            WHERE run_id = ?
+              AND state_group = 'pending'
+              AND final_state = 'reopen_auto_confirmed_autofix'
+              AND COALESCE(needs_output_apply, 0) = 0
+              AND COALESCE(confirmed_matches_output, 0) = 1
+              AND EXISTS (
+                  SELECT 1
+                  FROM segment_confirmations confirmation
+                  JOIN output_segments output
+                    ON output.segment_id = confirmation.segment_id
+                  JOIN source_segments source
+                    ON source.id = confirmation.segment_id
+                  WHERE confirmation.segment_id = segment_state_items.segment_id
+                    AND confirmation.confirmation_source = ?
+                    AND confirmation.confirmation_label = ?
+                    AND COALESCE(source.is_active, 0) = 1
+                    AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+                    AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+                    AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+              )
+            """,
+            (final_state, reasons, run_id, confirmation_source, confirmation_label),
+        )
+
+
+def reconcile_runtime_token_only_equal_output_state(conn, run_id: int) -> None:
+    rows = conn.execute(
+        """
+        SELECT
+            item.id AS item_id,
+            output.portuguese_text
+        FROM segment_state_items item
+        JOIN source_segments source
+          ON source.id = item.segment_id
+        JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = item.segment_id
+        JOIN output_segments output
+          ON output.segment_id = item.segment_id
+        WHERE item.run_id = ?
+          AND item.state_group = 'pending'
+          AND COALESCE(item.confirmed_matches_output, 0) = 1
+          AND COALESCE(item.needs_output_apply, 0) = 0
+          AND COALESCE(source.is_active, 0) = 1
+          AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+          AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+          AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+        """,
+        (run_id,),
+    ).fetchall()
+    updates: list[tuple[Any, ...]] = []
+    for row in rows:
+        if not is_runtime_token_only_text(row["portuguese_text"]):
+            continue
+        reasons = json.dumps(
+            [
+                "confirmed text and current output are aligned after CK3/YAML serialization",
+                "runtime token-only output is confirmed/aligned; no visible translatable prose remains",
+                "post-reconcile runtime token-only closure",
+            ],
+            ensure_ascii=False,
+        )
+        updates.append((reasons, row["item_id"]))
+    if not updates:
+        return
+    conn.executemany(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = ?,
+            state_group = 'closed',
+            output_state = 'output_present',
+            apply_state = 'applied',
+            has_output = 1,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE id = ?
+        """,
+        [
+            (
+                RUNTIME_TOKEN_ONLY_EQUAL_OUTPUT_LIFECYCLE_STATE,
+                reasons,
+                item_id,
+            )
+            for reasons, item_id in updates
+        ],
+    )
+
+
+def reconcile_auto_confirmed_format_tag_token_policy_lifecycle_state(conn, run_id: int) -> None:
+    action = AUTO_CONFIRMED_FORMAT_TAG_TOKEN_POLICY_LIFECYCLE_CLOSURE_ACTION
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(TRIM(lifecycle_policy_action), '') = '' THEN ?
+                WHEN INSTR(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1
+        WHERE run_id = ?
+          AND final_state = 'reopen_auto_confirmed_autofix'
+          AND state_group = 'pending'
+          AND review_state = 'auto_confirmed'
+          AND COALESCE(locked, 0) = 0
+          AND COALESCE(confirmed_matches_output, 0) = 1
+          AND COALESCE(needs_output_apply, 0) = 0
+          AND EXISTS (
+              SELECT 1
+              FROM segment_token_policy_decisions decision
+              JOIN segment_token_policy_items policy_item
+                ON policy_item.id = decision.policy_item_id
+               AND policy_item.run_id = decision.policy_run_id
+              JOIN segment_confirmations confirmation
+                ON confirmation.segment_id = decision.segment_id
+              JOIN output_segments output
+                ON output.segment_id = decision.segment_id
+              LEFT JOIN (
+                  SELECT
+                      segment_id,
+                      COUNT(*) AS issue_count,
+                      SUM(CASE WHEN lower(severity) IN ('high', 'error', 'critical') THEN 1 ELSE 0 END) AS high_issue_count
+                  FROM issues
+                  GROUP BY segment_id
+              ) issue_summary ON issue_summary.segment_id = decision.segment_id
+              WHERE decision.segment_id = segment_state_items.segment_id
+                AND decision.approved_for_apply = 1
+                AND decision.decision = 'accept_policy_candidate'
+                AND decision.policy_bucket = 'policy_candidate_format_tag'
+                AND decision.risk_level = 'low'
+                AND policy_item.policy_bucket = decision.policy_bucket
+                AND policy_item.risk_level = decision.risk_level
+                AND confirmation.confirmation_level = 'auto_confirmed'
+                AND COALESCE(confirmation.locked, 0) = 0
+                AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+                AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+                AND sha256_text(confirmation.confirmed_text) = decision.confirmed_text_hash
+                AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+                AND protected_tokens_signature(confirmation.confirmed_text) = protected_tokens_signature(output.portuguese_text)
+                AND COALESCE(issue_summary.issue_count, 0) = 0
+                AND COALESCE(issue_summary.high_issue_count, 0) = 0
+          )
+        """,
+        (action, action, action, run_id),
+    )
+
+
+def reconcile_active_lifecycle_policy_actions(
+    conn, run_id: int, lifecycle_policy_run_ids: list[int]
+) -> None:
+    if not lifecycle_policy_run_ids:
+        return
+    placeholders = ",".join("?" for _ in lifecycle_policy_run_ids)
+    rows = conn.execute(
+        f"""
+        SELECT
+            item.segment_id,
+            GROUP_CONCAT(DISTINCT item.policy_action) AS policy_actions
+        FROM auto_confirmation_reopen_lifecycle_policy_items item
+        WHERE item.run_id IN ({placeholders})
+          AND item.policy_allowed = 1
+          AND COALESCE(TRIM(item.policy_action), '') <> ''
+        GROUP BY item.segment_id
+        """,
+        tuple(lifecycle_policy_run_ids),
+    ).fetchall()
+    for row in rows:
+        actions = [
+            action.strip()
+            for action in as_text(row["policy_actions"]).split(",")
+            if action.strip()
+        ]
+        for action in actions:
+            conn.execute(
+                """
+                UPDATE segment_state_items
+                SET
+                    lifecycle_policy_action = CASE
+                        WHEN COALESCE(TRIM(lifecycle_policy_action), '') = '' THEN ?
+                        WHEN INSTR(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                            THEN lifecycle_policy_action || ',' || ?
+                        ELSE lifecycle_policy_action
+                    END,
+                    lifecycle_policy_allowed = 1
+                WHERE run_id = ?
+                  AND segment_id = ?
+                """,
+                (action, action, action, run_id, int(row["segment_id"])),
+            )
+
+
+def reconcile_aligned_lifecycle_closure_state(conn, run_id: int) -> None:
+    rows = conn.execute(
+        """
+        SELECT
+            item.id AS item_id,
+            item.lifecycle_policy_action,
+            item.lifecycle_policy_allowed,
+            confirmation.confirmation_level,
+            confirmation.confirmation_source,
+            confirmation.confirmation_label
+        FROM segment_state_items item
+        JOIN source_segments source
+          ON source.id = item.segment_id
+        JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = item.segment_id
+        JOIN output_segments output
+          ON output.segment_id = item.segment_id
+        WHERE item.run_id = ?
+          AND item.final_state = 'reopen_auto_confirmed_autofix'
+          AND item.state_group = 'pending'
+          AND COALESCE(item.confirmed_matches_output, 0) = 1
+          AND COALESCE(item.needs_output_apply, 0) = 0
+          AND COALESCE(item.lifecycle_policy_allowed, 0) = 1
+          AND COALESCE(source.is_active, 0) = 1
+          AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+          AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+          AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+        """,
+        (run_id,),
+    ).fetchall()
+    updates: list[tuple[Any, ...]] = []
+    for row in rows:
+        closure = lifecycle_closure_state_and_reason(row)
+        if not closure:
+            continue
+        final_state, closure_reason = closure
+        reasons = json.dumps(
+            [
+                "confirmed text and current output are aligned after CK3/YAML serialization",
+                "material output does not require output apply before lifecycle routing",
+                "post-reconcile lifecycle closure consumed allowed lifecycle policy",
+                closure_reason,
+            ],
+            ensure_ascii=False,
+        )
+        updates.append((final_state, reasons, row["item_id"]))
+    if not updates:
+        return
+    conn.executemany(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = ?,
+            state_group = 'closed',
+            output_state = 'output_present',
+            apply_state = 'applied',
+            has_output = 1,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE id = ?
+        """,
+        updates,
+    )
+
+
+def reconcile_stable_baseline_preserved_state(conn, run_id: int) -> int | None:
+    baseline = conn.execute(
+        """
+        SELECT id
+        FROM segment_state_runs
+        WHERE finished_at IS NOT NULL
+          AND id < ?
+          AND total_segments > 1000
+          AND CAST(closed_count AS REAL) / NULLIF(total_segments, 0) >= 0.90
+          AND COALESCE(output_apply_pending_count, 0) <= 5
+        ORDER BY finished_at DESC, id DESC
+        LIMIT 1
+        """,
+        (run_id,),
+    ).fetchone()
+    if not baseline:
+        return None
+    baseline_run_id = int(baseline["id"])
+    rows = conn.execute(
+        """
+        SELECT
+            current.id AS item_id,
+            baseline.final_state AS baseline_final_state,
+            baseline.review_state AS baseline_review_state
+        FROM segment_state_items current
+        JOIN segment_state_items baseline
+          ON baseline.segment_id = current.segment_id
+         AND baseline.run_id = ?
+        JOIN source_segments source
+          ON source.id = current.segment_id
+        JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = current.segment_id
+        JOIN output_segments output
+          ON output.segment_id = current.segment_id
+        WHERE current.run_id = ?
+          AND current.final_state = 'reopen_auto_confirmed_autofix'
+          AND current.state_group = 'pending'
+          AND current.confirmed_matches_output = 1
+          AND current.needs_output_apply = 0
+          AND baseline.is_closed = 1
+          AND baseline.confirmed_matches_output = 1
+          AND baseline.needs_output_apply = 0
+          AND COALESCE(source.is_active, 0) = 1
+          AND COALESCE(source.has_old, 0) = 1
+          AND COALESCE(TRIM(source.old_text), '') <> ''
+          AND COALESCE(TRIM(output.portuguese_text), '') <> ''
+          AND COALESCE(TRIM(confirmation.confirmed_text), '') <> ''
+          AND canonical_l10n(output.portuguese_text) = canonical_l10n(source.old_text)
+          AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+        """,
+        (baseline_run_id, run_id),
+    ).fetchall()
+    updates: list[tuple[Any, ...]] = []
+    for row in rows:
+        baseline_final_state = as_text(row["baseline_final_state"])
+        baseline_review_state = as_text(row["baseline_review_state"])
+        final_state = (
+            "closed_stable_baseline_human_locked_preserved"
+            if baseline_final_state == "closed_human_locked" or baseline_review_state == "human_locked"
+            else "closed_stable_baseline_preserved"
+        )
+        reasons = json.dumps(
+            [
+                f"stable baseline run {baseline_run_id} had this segment closed as {baseline_final_state}",
+                "current output equals stable old text and current confirmation after CK3/YAML serialization",
+                "new lower-confidence score cannot reopen unchanged stable output without a material source/output mismatch",
+            ],
+            ensure_ascii=False,
+        )
+        updates.append((final_state, reasons, row["item_id"]))
+    if not updates:
+        return baseline_run_id
+    conn.executemany(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = ?,
+            state_group = 'closed',
+            output_state = 'output_present',
+            apply_state = 'applied',
+            has_output = 1,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE id = ?
+        """,
+        updates,
+    )
+    return baseline_run_id
 
 
 def prepare_short_label_single_issue_residual_queue225_repair(conn) -> None:
@@ -8401,6 +10200,1411 @@ def prepare_dynamic_acclaimed_knight_requirement_style_watch_lifecycle(conn) -> 
     )
 
 
+def prepare_short_label_style_current_lifecycle_bridge(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_style_current_lifecycle_review")
+    conn.execute("DROP TABLE IF EXISTS temp_short_label_style_current_lifecycle_bridge")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_style_current_lifecycle_review (
+            segment_id INTEGER PRIMARY KEY,
+            review_batch TEXT NOT NULL,
+            review_jsonl TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            target_state TEXT NOT NULL,
+            ledger_run_id INTEGER NOT NULL,
+            review_segment_state_run_id INTEGER NOT NULL
+        )
+        """
+    )
+
+    target_by_decision = {
+        "lifecycle_ready_short_phrase": SHORT_LABEL_STYLE_CURRENT_SHORT_PHRASE_LIFECYCLE_STATE,
+        "lifecycle_ready_compact_ui_label": SHORT_LABEL_STYLE_CURRENT_COMPACT_UI_LABEL_LIFECYCLE_STATE,
+        "lifecycle_ready_plain_noop": SHORT_LABEL_STYLE_CURRENT_PLAIN_NOOP_LIFECYCLE_STATE,
+    }
+    rows = []
+    for review_batch, review_jsonl in SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_REVIEWED_JSONLS:
+        review_path = db.project_path(review_jsonl)
+        if not review_path.exists():
+            continue
+        for line in review_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            decision = item.get("decision")
+            if item.get("lifecycle_candidate") is not True or decision not in target_by_decision:
+                continue
+            if item.get("requires_apply_later") is True:
+                continue
+            if item.get("tokens_preserved") is not True:
+                continue
+            if int(item.get("ledger_run_id") or 0) != 76:
+                continue
+            review_state_run_id = int(item.get("segment_state_run_id") or 0)
+            if review_batch == "batch1" and review_state_run_id != 373:
+                continue
+            if review_batch == "batch2" and review_state_run_id != 377:
+                continue
+            if review_batch == "batch3" and review_state_run_id != 380:
+                continue
+            rows.append(
+                (
+                    int(item["segment_id"]),
+                    review_batch,
+                    review_jsonl,
+                    decision,
+                    target_by_decision[decision],
+                    int(item["ledger_run_id"]),
+                    review_state_run_id,
+                )
+            )
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO temp_short_label_style_current_lifecycle_review (
+            segment_id,
+            review_batch,
+            review_jsonl,
+            decision,
+            target_state,
+            ledger_run_id,
+            review_segment_state_run_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_short_label_style_current_lifecycle_bridge AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY id DESC
+            LIMIT 1
+        ),
+        high_issues AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS high_out_of_scope_count
+            FROM ml_issue_ledger_items
+            WHERE run_id = 76
+              AND status = 'open'
+              AND lower(issue_severity) IN ('high', 'error', 'critical')
+              AND issue_family != 'short_label_style_microagent'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.review_batch,
+            review.review_jsonl,
+            review.decision,
+            review.target_state,
+            review.ledger_run_id,
+            review.review_segment_state_run_id,
+            previous.run_id AS live_segment_state_run_id,
+            CASE
+                WHEN previous.segment_id IS NULL THEN 'blocked'
+                WHEN previous.state_group != 'pending' THEN 'blocked'
+                WHEN previous.needs_output_apply != 0 THEN 'blocked'
+                WHEN previous.confirmed_matches_output != 1 THEN 'blocked'
+                WHEN previous.needs_reopen != 0
+                 AND previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'blocked'
+                WHEN COALESCE(high_issues.high_out_of_scope_count, 0) > 0 THEN 'blocked'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN previous.segment_id IS NULL THEN 'missing_live_state'
+                WHEN previous.state_group != 'pending' THEN 'not_pending_or_already_closed'
+                WHEN previous.needs_output_apply != 0 THEN 'needs_output_apply'
+                WHEN previous.confirmed_matches_output != 1 THEN 'confirmation_output_mismatch'
+                WHEN previous.needs_reopen != 0
+                 AND previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'needs_reopen_not_governed_false_reopen'
+                WHEN COALESCE(high_issues.high_out_of_scope_count, 0) > 0 THEN 'high_issue_out_of_scope'
+                ELSE ''
+            END AS block_reason
+        FROM temp_short_label_style_current_lifecycle_review review
+        JOIN previous_run
+        LEFT JOIN segment_state_items previous
+          ON previous.segment_id = review.segment_id
+         AND previous.run_id = previous_run.id
+        LEFT JOIN high_issues
+          ON high_issues.segment_id = review.segment_id
+        """
+    )
+
+
+def prepare_autofix_semantic_companion_false_reopen_lifecycle(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_semantic_companion_false_reopen_review")
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_semantic_companion_false_reopen_bridge")
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_semantic_composition_plain_prose_bridge")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_semantic_companion_false_reopen_review (
+            segment_id INTEGER PRIMARY KEY,
+            review_jsonl TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            target_state TEXT NOT NULL,
+            requires_apply_later INTEGER NOT NULL
+        )
+        """
+    )
+    review_path = db.project_path(AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_REVIEWED_JSONL)
+    if review_path.exists():
+        rows = []
+        for line in review_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            decision = item.get("decision", "")
+            rows.append(
+                (
+                    int(item["segment_id"]),
+                    AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_REVIEWED_JSONL,
+                    decision,
+                    (
+                        AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_FALSE_REOPEN_LIFECYCLE_STATE
+                        if decision == "companion_ready_autofix_semantic_plain_sentence"
+                        else AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_LIFECYCLE_STATE
+                        if decision == "composition_ready_plain_prose"
+                        else ""
+                    ),
+                    1 if item.get("requires_apply_later") is True else 0,
+                )
+            )
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO temp_autofix_semantic_companion_false_reopen_review (
+                segment_id,
+                review_jsonl,
+                decision,
+                target_state,
+                requires_apply_later
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_semantic_companion_false_reopen_bridge AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent' THEN 1 ELSE 0 END) AS autofix_unknown_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router' THEN 1 ELSE 0 END) AS semantic_review_count,
+                SUM(CASE WHEN issue_family NOT IN ('autofix_unknown_microagent', 'semantic_review_router') THEN 1 ELSE 0 END) AS other_issue_count,
+                SUM(
+                    CASE
+                        WHEN issue_family NOT IN ('autofix_unknown_microagent', 'semantic_review_router')
+                         AND lower(issue_severity) IN ('high', 'error', 'critical')
+                        THEN 1 ELSE 0
+                    END
+                ) AS high_out_of_scope_count
+            FROM ml_issue_ledger_items
+            WHERE run_id = 76
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.review_jsonl,
+            review.decision,
+            review.target_state,
+            previous_run.id AS live_segment_state_run_id,
+            CASE
+                WHEN review.decision != 'companion_ready_autofix_semantic_plain_sentence' THEN 'preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked'
+                WHEN previous.segment_id IS NULL THEN 'blocked'
+                WHEN previous.state_group != 'pending' THEN 'blocked'
+                WHEN previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'blocked'
+                WHEN previous.needs_reopen != 1 THEN 'blocked'
+                WHEN previous.needs_output_apply != 0 THEN 'blocked'
+                WHEN previous.confirmed_matches_output != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.autofix_unknown_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.semantic_review_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'blocked'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN review.decision != 'companion_ready_autofix_semantic_plain_sentence' THEN 'decision_outside_allowlist'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN previous.segment_id IS NULL THEN 'missing_live_state'
+                WHEN previous.state_group != 'pending' THEN 'not_pending_or_already_closed'
+                WHEN previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'not_governed_false_reopen_state'
+                WHEN previous.needs_reopen != 1 THEN 'not_marked_false_reopen'
+                WHEN previous.needs_output_apply != 0 THEN 'needs_output_apply'
+                WHEN previous.confirmed_matches_output != 1 THEN 'confirmation_output_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'ledger_issue_count_not_exact_pair'
+                WHEN COALESCE(ledger_summary.autofix_unknown_count, 0) != 1 THEN 'missing_autofix_unknown_issue'
+                WHEN COALESCE(ledger_summary.semantic_review_count, 0) != 1 THEN 'missing_semantic_review_issue'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'other_open_issue_present'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'high_issue_out_of_scope'
+                ELSE ''
+            END AS block_reason,
+            previous.final_state AS baseline_final_state,
+            previous.needs_reopen AS baseline_needs_reopen
+        FROM temp_autofix_semantic_companion_false_reopen_review review
+        JOIN previous_run
+        LEFT JOIN segment_state_items previous
+          ON previous.segment_id = review.segment_id
+         AND previous.run_id = previous_run.id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        """
+    )
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_semantic_composition_plain_prose_bridge AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent' THEN 1 ELSE 0 END) AS autofix_unknown_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router' THEN 1 ELSE 0 END) AS semantic_review_count,
+                SUM(CASE WHEN issue_family NOT IN ('autofix_unknown_microagent', 'semantic_review_router') THEN 1 ELSE 0 END) AS other_issue_count,
+                SUM(
+                    CASE
+                        WHEN issue_family NOT IN ('autofix_unknown_microagent', 'semantic_review_router')
+                         AND lower(issue_severity) IN ('high', 'error', 'critical')
+                        THEN 1 ELSE 0
+                    END
+                ) AS high_out_of_scope_count
+            FROM ml_issue_ledger_items
+            WHERE run_id = 76
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.review_jsonl,
+            review.decision,
+            review.target_state,
+            previous_run.id AS live_segment_state_run_id,
+            CASE
+                WHEN review.decision != 'composition_ready_plain_prose' THEN 'preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked'
+                WHEN previous.segment_id IS NULL THEN 'blocked'
+                WHEN previous.state_group != 'pending' THEN 'blocked'
+                WHEN previous.needs_reopen != 0
+                 AND previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'blocked'
+                WHEN previous.needs_output_apply != 0 THEN 'blocked'
+                WHEN previous.confirmed_matches_output != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.autofix_unknown_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.semantic_review_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'blocked'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN review.decision != 'composition_ready_plain_prose' THEN 'decision_outside_allowlist'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN previous.segment_id IS NULL THEN 'missing_live_state'
+                WHEN previous.state_group != 'pending' THEN 'not_pending_or_already_closed'
+                WHEN previous.needs_reopen != 0
+                 AND previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'needs_reopen_not_governed_false_reopen'
+                WHEN previous.needs_output_apply != 0 THEN 'needs_output_apply'
+                WHEN previous.confirmed_matches_output != 1 THEN 'confirmation_output_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'ledger_issue_count_not_exact_pair'
+                WHEN COALESCE(ledger_summary.autofix_unknown_count, 0) != 1 THEN 'missing_autofix_unknown_issue'
+                WHEN COALESCE(ledger_summary.semantic_review_count, 0) != 1 THEN 'missing_semantic_review_issue'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'other_open_issue_present'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'high_issue_out_of_scope'
+                ELSE ''
+            END AS block_reason,
+            previous.final_state AS baseline_final_state,
+            previous.needs_reopen AS baseline_needs_reopen
+        FROM temp_autofix_semantic_companion_false_reopen_review review
+        JOIN previous_run
+        LEFT JOIN segment_state_items previous
+          ON previous.segment_id = review.segment_id
+         AND previous.run_id = previous_run.id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        """
+    )
+
+
+def prepare_autofix_semantic_trait_epithet_style_lifecycle(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_semantic_trait_epithet_style_review")
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_semantic_trait_epithet_style_bridge")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_semantic_trait_epithet_style_review (
+            segment_id INTEGER PRIMARY KEY,
+            review_jsonl TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            target_state TEXT NOT NULL,
+            requires_apply_later INTEGER NOT NULL
+        )
+        """
+    )
+    review_path = db.project_path(AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_REVIEWED_JSONL)
+    if review_path.exists():
+        rows = []
+        for line in review_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            decision = item.get("trait_epithet_decision", "")
+            rows.append(
+                (
+                    int(item["segment_id"]),
+                    AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_REVIEWED_JSONL,
+                    decision,
+                    (
+                        AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_LIFECYCLE_STATE
+                        if decision == "trait_epithet_style_watch_lifecycle"
+                        else ""
+                    ),
+                    1 if item.get("requires_apply_later") is True else 0,
+                )
+            )
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO temp_autofix_semantic_trait_epithet_style_review (
+                segment_id,
+                review_jsonl,
+                decision,
+                target_state,
+                requires_apply_later
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_semantic_trait_epithet_style_bridge AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent' THEN 1 ELSE 0 END) AS autofix_unknown_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router' THEN 1 ELSE 0 END) AS semantic_review_count,
+                SUM(CASE WHEN issue_family NOT IN ('autofix_unknown_microagent', 'semantic_review_router') THEN 1 ELSE 0 END) AS other_issue_count,
+                SUM(
+                    CASE
+                        WHEN issue_family NOT IN ('autofix_unknown_microagent', 'semantic_review_router')
+                         AND lower(issue_severity) IN ('high', 'error', 'critical')
+                        THEN 1 ELSE 0
+                    END
+                ) AS high_out_of_scope_count
+            FROM ml_issue_ledger_items
+            WHERE run_id = 76
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.review_jsonl,
+            review.decision,
+            review.target_state,
+            previous_run.id AS live_segment_state_run_id,
+            CASE
+                WHEN review.decision != 'trait_epithet_style_watch_lifecycle' THEN 'preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked'
+                WHEN previous.segment_id IS NULL THEN 'blocked'
+                WHEN previous.state_group != 'pending' THEN 'blocked'
+                WHEN previous.needs_reopen != 0
+                 AND previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'blocked'
+                WHEN previous.needs_output_apply != 0 THEN 'blocked'
+                WHEN previous.confirmed_matches_output != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.autofix_unknown_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.semantic_review_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'blocked'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN review.decision != 'trait_epithet_style_watch_lifecycle' THEN 'decision_outside_allowlist'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN previous.segment_id IS NULL THEN 'missing_live_state'
+                WHEN previous.state_group != 'pending' THEN 'not_pending_or_already_closed'
+                WHEN previous.needs_reopen != 0
+                 AND previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'needs_reopen_not_governed_false_reopen'
+                WHEN previous.needs_output_apply != 0 THEN 'needs_output_apply'
+                WHEN previous.confirmed_matches_output != 1 THEN 'confirmation_output_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'ledger_issue_count_not_exact_pair'
+                WHEN COALESCE(ledger_summary.autofix_unknown_count, 0) != 1 THEN 'missing_autofix_unknown_issue'
+                WHEN COALESCE(ledger_summary.semantic_review_count, 0) != 1 THEN 'missing_semantic_review_issue'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'other_open_issue_present'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'high_issue_out_of_scope'
+                ELSE ''
+            END AS block_reason,
+            previous.final_state AS baseline_final_state,
+            previous.needs_reopen AS baseline_needs_reopen
+        FROM temp_autofix_semantic_trait_epithet_style_review review
+        JOIN previous_run
+        LEFT JOIN segment_state_items previous
+          ON previous.segment_id = review.segment_id
+         AND previous.run_id = previous_run.id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        """
+    )
+
+
+def prepare_autofix_semantic_composition_plain_prose_batch2_lifecycle(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_semantic_composition_plain_prose_batch2_review")
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_semantic_composition_plain_prose_batch2_bridge")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_semantic_composition_plain_prose_batch2_review (
+            segment_id INTEGER PRIMARY KEY,
+            review_jsonl TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            target_state TEXT NOT NULL,
+            requires_apply_later INTEGER NOT NULL
+        )
+        """
+    )
+    review_path = db.project_path(AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH2_REVIEWED_JSONL)
+    if review_path.exists():
+        rows = []
+        for line in review_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            decision = item.get("decision", "")
+            rows.append(
+                (
+                    int(item["segment_id"]),
+                    AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH2_REVIEWED_JSONL,
+                    decision,
+                    (
+                        AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH2_LIFECYCLE_STATE
+                        if decision == "composition_ready_plain_prose"
+                        else ""
+                    ),
+                    1 if item.get("requires_apply_later") is True else 0,
+                )
+            )
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO temp_autofix_semantic_composition_plain_prose_batch2_review (
+                segment_id,
+                review_jsonl,
+                decision,
+                target_state,
+                requires_apply_later
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_semantic_composition_plain_prose_batch2_bridge AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent' THEN 1 ELSE 0 END) AS autofix_unknown_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router' THEN 1 ELSE 0 END) AS semantic_review_count,
+                SUM(CASE WHEN issue_family NOT IN ('autofix_unknown_microagent', 'semantic_review_router') THEN 1 ELSE 0 END) AS other_issue_count,
+                SUM(
+                    CASE
+                        WHEN issue_family NOT IN ('autofix_unknown_microagent', 'semantic_review_router')
+                         AND lower(issue_severity) IN ('high', 'error', 'critical')
+                        THEN 1 ELSE 0
+                    END
+                ) AS high_out_of_scope_count
+            FROM ml_issue_ledger_items
+            WHERE run_id = 76
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.review_jsonl,
+            review.decision,
+            review.target_state,
+            previous_run.id AS live_segment_state_run_id,
+            CASE
+                WHEN review.decision != 'composition_ready_plain_prose' THEN 'preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked'
+                WHEN previous.segment_id IS NULL THEN 'blocked'
+                WHEN previous.state_group != 'pending' THEN 'blocked'
+                WHEN previous.needs_reopen != 0
+                 AND previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'blocked'
+                WHEN previous.needs_output_apply != 0 THEN 'blocked'
+                WHEN previous.confirmed_matches_output != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.autofix_unknown_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.semantic_review_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'blocked'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN review.decision != 'composition_ready_plain_prose' THEN 'decision_outside_allowlist'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN previous.segment_id IS NULL THEN 'missing_live_state'
+                WHEN previous.state_group != 'pending' THEN 'not_pending_or_already_closed'
+                WHEN previous.needs_reopen != 0
+                 AND previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'needs_reopen_not_governed_false_reopen'
+                WHEN previous.needs_output_apply != 0 THEN 'needs_output_apply'
+                WHEN previous.confirmed_matches_output != 1 THEN 'confirmation_output_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'ledger_issue_count_not_exact_pair'
+                WHEN COALESCE(ledger_summary.autofix_unknown_count, 0) != 1 THEN 'missing_autofix_unknown_issue'
+                WHEN COALESCE(ledger_summary.semantic_review_count, 0) != 1 THEN 'missing_semantic_review_issue'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'other_open_issue_present'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'high_issue_out_of_scope'
+                ELSE ''
+            END AS block_reason,
+            previous.final_state AS baseline_final_state,
+            previous.needs_reopen AS baseline_needs_reopen
+        FROM temp_autofix_semantic_composition_plain_prose_batch2_review review
+        JOIN previous_run
+        LEFT JOIN segment_state_items previous
+          ON previous.segment_id = review.segment_id
+         AND previous.run_id = previous_run.id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        """
+    )
+
+
+def prepare_autofix_semantic_companion_plain_sentence_batch2_lifecycle(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_semantic_companion_plain_sentence_batch2_review")
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_semantic_companion_plain_sentence_batch2_bridge")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_semantic_companion_plain_sentence_batch2_review (
+            segment_id INTEGER PRIMARY KEY,
+            review_jsonl TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            target_state TEXT NOT NULL,
+            requires_apply_later INTEGER NOT NULL
+        )
+        """
+    )
+    review_path = db.project_path(AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH2_REVIEWED_JSONL)
+    if review_path.exists():
+        rows = []
+        for line in review_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            decision = item.get("decision", "")
+            rows.append(
+                (
+                    int(item["segment_id"]),
+                    AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH2_REVIEWED_JSONL,
+                    decision,
+                    (
+                        AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE
+                        if decision == "companion_ready_autofix_semantic_plain_sentence"
+                        else ""
+                    ),
+                    1 if item.get("requires_apply_later") is True else 0,
+                )
+            )
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO temp_autofix_semantic_companion_plain_sentence_batch2_review (
+                segment_id,
+                review_jsonl,
+                decision,
+                target_state,
+                requires_apply_later
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_semantic_companion_plain_sentence_batch2_bridge AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent' THEN 1 ELSE 0 END) AS autofix_unknown_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router' THEN 1 ELSE 0 END) AS semantic_review_count,
+                SUM(CASE WHEN issue_family NOT IN ('autofix_unknown_microagent', 'semantic_review_router') THEN 1 ELSE 0 END) AS other_issue_count,
+                SUM(
+                    CASE
+                        WHEN issue_family NOT IN ('autofix_unknown_microagent', 'semantic_review_router')
+                         AND lower(issue_severity) IN ('high', 'error', 'critical')
+                        THEN 1 ELSE 0
+                    END
+                ) AS high_out_of_scope_count
+            FROM ml_issue_ledger_items
+            WHERE run_id = 76
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.review_jsonl,
+            review.decision,
+            review.target_state,
+            previous_run.id AS live_segment_state_run_id,
+            CASE
+                WHEN review.decision != 'companion_ready_autofix_semantic_plain_sentence' THEN 'preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked'
+                WHEN previous.segment_id IS NULL THEN 'blocked'
+                WHEN previous.state_group != 'pending' THEN 'blocked'
+                WHEN previous.needs_reopen != 0
+                 AND previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'blocked'
+                WHEN previous.needs_output_apply != 0 THEN 'blocked'
+                WHEN previous.confirmed_matches_output != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.autofix_unknown_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.semantic_review_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'blocked'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN review.decision != 'companion_ready_autofix_semantic_plain_sentence' THEN 'decision_outside_allowlist'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN previous.segment_id IS NULL THEN 'missing_live_state'
+                WHEN previous.state_group != 'pending' THEN 'not_pending_or_already_closed'
+                WHEN previous.needs_reopen != 0
+                 AND previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'needs_reopen_not_governed_false_reopen'
+                WHEN previous.needs_output_apply != 0 THEN 'needs_output_apply'
+                WHEN previous.confirmed_matches_output != 1 THEN 'confirmation_output_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'ledger_issue_count_not_exact_pair'
+                WHEN COALESCE(ledger_summary.autofix_unknown_count, 0) != 1 THEN 'missing_autofix_unknown_issue'
+                WHEN COALESCE(ledger_summary.semantic_review_count, 0) != 1 THEN 'missing_semantic_review_issue'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'other_open_issue_present'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'high_issue_out_of_scope'
+                ELSE ''
+            END AS block_reason,
+            previous.final_state AS baseline_final_state,
+            previous.needs_reopen AS baseline_needs_reopen
+        FROM temp_autofix_semantic_companion_plain_sentence_batch2_review review
+        JOIN previous_run
+        LEFT JOIN segment_state_items previous
+          ON previous.segment_id = review.segment_id
+         AND previous.run_id = previous_run.id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        """
+    )
+
+
+def prepare_autofix_semantic_composition_batch3_lifecycle(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_semantic_composition_batch3_review")
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_semantic_composition_batch3_bridge")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_semantic_composition_batch3_review (
+            segment_id INTEGER PRIMARY KEY,
+            review_jsonl TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            target_state TEXT NOT NULL,
+            requires_apply_later INTEGER NOT NULL
+        )
+        """
+    )
+    review_path = db.project_path(AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH3_REVIEWED_JSONL)
+    if review_path.exists():
+        rows = []
+        for line in review_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            decision = item.get("decision", "")
+            rows.append(
+                (
+                    int(item["segment_id"]),
+                    AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH3_REVIEWED_JSONL,
+                    decision,
+                    (
+                        AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH3_LIFECYCLE_STATE
+                        if decision == "composition_ready_plain_prose"
+                        else AUTOFIX_SEMANTIC_COMPOSITION_EVENT_CONTEXT_BATCH3_LIFECYCLE_STATE
+                        if decision == "composition_ready_event_context"
+                        else ""
+                    ),
+                    1 if item.get("requires_apply_later") is True else 0,
+                )
+            )
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO temp_autofix_semantic_composition_batch3_review (
+                segment_id,
+                review_jsonl,
+                decision,
+                target_state,
+                requires_apply_later
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_semantic_composition_batch3_bridge AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent' THEN 1 ELSE 0 END) AS autofix_unknown_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router' THEN 1 ELSE 0 END) AS semantic_review_count,
+                SUM(CASE WHEN issue_family NOT IN ('autofix_unknown_microagent', 'semantic_review_router') THEN 1 ELSE 0 END) AS other_issue_count,
+                SUM(
+                    CASE
+                        WHEN issue_family NOT IN ('autofix_unknown_microagent', 'semantic_review_router')
+                         AND lower(issue_severity) IN ('high', 'error', 'critical')
+                        THEN 1 ELSE 0
+                    END
+                ) AS high_out_of_scope_count
+            FROM ml_issue_ledger_items
+            WHERE run_id = 76
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.review_jsonl,
+            review.decision,
+            review.target_state,
+            previous_run.id AS live_segment_state_run_id,
+            CASE
+                WHEN review.decision NOT IN ('composition_ready_plain_prose', 'composition_ready_event_context') THEN 'preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked'
+                WHEN previous.segment_id IS NULL THEN 'blocked'
+                WHEN previous.state_group != 'pending' THEN 'blocked'
+                WHEN previous.needs_reopen != 0
+                 AND previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'blocked'
+                WHEN previous.needs_output_apply != 0 THEN 'blocked'
+                WHEN previous.confirmed_matches_output != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.autofix_unknown_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.semantic_review_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'blocked'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN review.decision NOT IN ('composition_ready_plain_prose', 'composition_ready_event_context') THEN 'decision_outside_allowlist'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN previous.segment_id IS NULL THEN 'missing_live_state'
+                WHEN previous.state_group != 'pending' THEN 'not_pending_or_already_closed'
+                WHEN previous.needs_reopen != 0
+                 AND previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'needs_reopen_not_governed_false_reopen'
+                WHEN previous.needs_output_apply != 0 THEN 'needs_output_apply'
+                WHEN previous.confirmed_matches_output != 1 THEN 'confirmation_output_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'ledger_issue_count_not_exact_pair'
+                WHEN COALESCE(ledger_summary.autofix_unknown_count, 0) != 1 THEN 'missing_autofix_unknown_issue'
+                WHEN COALESCE(ledger_summary.semantic_review_count, 0) != 1 THEN 'missing_semantic_review_issue'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'other_open_issue_present'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'high_issue_out_of_scope'
+                ELSE ''
+            END AS block_reason,
+            previous.final_state AS baseline_final_state,
+            previous.needs_reopen AS baseline_needs_reopen
+        FROM temp_autofix_semantic_composition_batch3_review review
+        JOIN previous_run
+        LEFT JOIN segment_state_items previous
+          ON previous.segment_id = review.segment_id
+         AND previous.run_id = previous_run.id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        """
+    )
+
+
+def prepare_autofix_semantic_context_batch4_lifecycle(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_semantic_context_batch4_review")
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_semantic_context_batch4_bridge")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_semantic_context_batch4_review (
+            segment_id INTEGER PRIMARY KEY,
+            review_jsonl TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            target_state TEXT NOT NULL,
+            requires_apply_later INTEGER NOT NULL
+        )
+        """
+    )
+    review_path = db.project_path(AUTOFIX_SEMANTIC_CONTEXT_COMPOSER_BATCH4_REVIEWED_JSONL)
+    if review_path.exists():
+        rows = []
+        for line in review_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            decision = item.get("context_decision", "")
+            rows.append(
+                (
+                    int(item["segment_id"]),
+                    AUTOFIX_SEMANTIC_CONTEXT_COMPOSER_BATCH4_REVIEWED_JSONL,
+                    decision,
+                    (
+                        AUTOFIX_SEMANTIC_CONTEXT_PLAIN_PROSE_BATCH4_LIFECYCLE_STATE
+                        if decision == "context_ready_plain_prose"
+                        else AUTOFIX_SEMANTIC_CONTEXT_SHORT_EVENT_BATCH4_LIFECYCLE_STATE
+                        if decision == "context_ready_short_event_context"
+                        else AUTOFIX_SEMANTIC_CONTEXT_MEMORY_ACTIVITY_BATCH4_LIFECYCLE_STATE
+                        if decision == "context_ready_memory_or_activity"
+                        else AUTOFIX_SEMANTIC_CONTEXT_UI_TOOLTIP_BATCH4_LIFECYCLE_STATE
+                        if decision == "context_ready_ui_tooltip"
+                        else ""
+                    ),
+                    1 if item.get("requires_apply_later") is True else 0,
+                )
+            )
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO temp_autofix_semantic_context_batch4_review (
+                segment_id,
+                review_jsonl,
+                decision,
+                target_state,
+                requires_apply_later
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_semantic_context_batch4_bridge AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent' THEN 1 ELSE 0 END) AS autofix_unknown_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router' THEN 1 ELSE 0 END) AS semantic_review_count,
+                SUM(CASE WHEN issue_family NOT IN ('autofix_unknown_microagent', 'semantic_review_router') THEN 1 ELSE 0 END) AS other_issue_count,
+                SUM(
+                    CASE
+                        WHEN issue_family NOT IN ('autofix_unknown_microagent', 'semantic_review_router')
+                         AND lower(issue_severity) IN ('high', 'error', 'critical')
+                        THEN 1 ELSE 0
+                    END
+                ) AS high_out_of_scope_count
+            FROM ml_issue_ledger_items
+            WHERE run_id = 76
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.review_jsonl,
+            review.decision,
+            review.target_state,
+            previous_run.id AS live_segment_state_run_id,
+            CASE
+                WHEN review.decision NOT IN (
+                    'context_ready_plain_prose',
+                    'context_ready_short_event_context',
+                    'context_ready_memory_or_activity',
+                    'context_ready_ui_tooltip'
+                ) THEN 'preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked'
+                WHEN previous.segment_id IS NULL THEN 'blocked'
+                WHEN previous.state_group != 'pending' THEN 'blocked'
+                WHEN previous.needs_reopen != 0
+                 AND previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'blocked'
+                WHEN previous.needs_output_apply != 0 THEN 'blocked'
+                WHEN previous.confirmed_matches_output != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.autofix_unknown_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.semantic_review_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'blocked'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN review.decision NOT IN (
+                    'context_ready_plain_prose',
+                    'context_ready_short_event_context',
+                    'context_ready_memory_or_activity',
+                    'context_ready_ui_tooltip'
+                ) THEN 'decision_outside_allowlist'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN previous.segment_id IS NULL THEN 'missing_live_state'
+                WHEN previous.state_group != 'pending' THEN 'not_pending_or_already_closed'
+                WHEN previous.needs_reopen != 0
+                 AND previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'needs_reopen_not_governed_false_reopen'
+                WHEN previous.needs_output_apply != 0 THEN 'needs_output_apply'
+                WHEN previous.confirmed_matches_output != 1 THEN 'confirmation_output_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'ledger_issue_count_not_exact_pair'
+                WHEN COALESCE(ledger_summary.autofix_unknown_count, 0) != 1 THEN 'missing_autofix_unknown_issue'
+                WHEN COALESCE(ledger_summary.semantic_review_count, 0) != 1 THEN 'missing_semantic_review_issue'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'other_open_issue_present'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'high_issue_out_of_scope'
+                ELSE ''
+            END AS block_reason,
+            previous.final_state AS baseline_final_state,
+            previous.needs_reopen AS baseline_needs_reopen
+        FROM temp_autofix_semantic_context_batch4_review review
+        JOIN previous_run
+        LEFT JOIN segment_state_items previous
+          ON previous.segment_id = review.segment_id
+         AND previous.run_id = previous_run.id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        """
+    )
+
+
+def prepare_semantic_short_label_companion_false_reopen_lifecycle(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_semantic_short_label_companion_review")
+    conn.execute("DROP TABLE IF EXISTS temp_semantic_short_label_companion_bridge")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_semantic_short_label_companion_review (
+            segment_id INTEGER PRIMARY KEY,
+            review_jsonl TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            target_state TEXT NOT NULL,
+            requires_apply_later INTEGER NOT NULL
+        )
+        """
+    )
+    review_path = db.project_path(SEMANTIC_SHORT_LABEL_COMBO_REVIEWED_JSONL)
+    if review_path.exists():
+        rows = []
+        for line in review_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            decision = item.get("decision", "")
+            rows.append(
+                (
+                    int(item["segment_id"]),
+                    SEMANTIC_SHORT_LABEL_COMBO_REVIEWED_JSONL,
+                    decision,
+                    (
+                        SEMANTIC_SHORT_LABEL_COMPANION_FALSE_REOPEN_LIFECYCLE_STATE
+                        if decision == "semantic_short_label_companion_ready_false_reopen"
+                        else ""
+                    ),
+                    1 if item.get("requires_apply_later") is True else 0,
+                )
+            )
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO temp_semantic_short_label_companion_review (
+                segment_id,
+                review_jsonl,
+                decision,
+                target_state,
+                requires_apply_later
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_semantic_short_label_companion_bridge AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'semantic_review_router' THEN 1 ELSE 0 END) AS semantic_review_count,
+                SUM(CASE WHEN issue_family = 'short_label_style_microagent' THEN 1 ELSE 0 END) AS short_label_count,
+                SUM(CASE WHEN issue_family NOT IN ('semantic_review_router', 'short_label_style_microagent') THEN 1 ELSE 0 END) AS other_issue_count,
+                SUM(
+                    CASE
+                        WHEN issue_family NOT IN ('semantic_review_router', 'short_label_style_microagent')
+                         AND lower(issue_severity) IN ('high', 'error', 'critical')
+                        THEN 1 ELSE 0
+                    END
+                ) AS high_out_of_scope_count
+            FROM ml_issue_ledger_items
+            WHERE run_id = 76
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.review_jsonl,
+            review.decision,
+            review.target_state,
+            previous_run.id AS live_segment_state_run_id,
+            CASE
+                WHEN review.decision != 'semantic_short_label_companion_ready_false_reopen' THEN 'preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked'
+                WHEN previous.segment_id IS NULL THEN 'blocked'
+                WHEN previous.state_group != 'pending' THEN 'blocked'
+                WHEN previous.needs_output_apply != 0 THEN 'blocked'
+                WHEN previous.confirmed_matches_output != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.semantic_review_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.short_label_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'blocked'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN review.decision != 'semantic_short_label_companion_ready_false_reopen' THEN 'decision_outside_allowlist'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN previous.segment_id IS NULL THEN 'missing_live_state'
+                WHEN previous.state_group != 'pending' THEN 'not_pending_or_already_closed'
+                WHEN previous.needs_output_apply != 0 THEN 'needs_output_apply'
+                WHEN previous.confirmed_matches_output != 1 THEN 'confirmation_output_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 2 THEN 'ledger_issue_count_not_exact_pair'
+                WHEN COALESCE(ledger_summary.semantic_review_count, 0) != 1 THEN 'missing_semantic_review_issue'
+                WHEN COALESCE(ledger_summary.short_label_count, 0) != 1 THEN 'missing_short_label_issue'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'other_open_issue_present'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'high_issue_out_of_scope'
+                ELSE ''
+            END AS block_reason,
+            previous.final_state AS baseline_final_state,
+            previous.needs_reopen AS baseline_needs_reopen
+        FROM temp_semantic_short_label_companion_review review
+        JOIN previous_run
+        LEFT JOIN segment_state_items previous
+          ON previous.segment_id = review.segment_id
+         AND previous.run_id = previous_run.id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        """
+    )
+
+
+def prepare_dynamic_gender_ready_false_reopen_lifecycle(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_dynamic_gender_ready_false_reopen_review")
+    conn.execute("DROP TABLE IF EXISTS temp_dynamic_gender_ready_false_reopen_bridge")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_dynamic_gender_ready_false_reopen_review (
+            segment_id INTEGER PRIMARY KEY,
+            review_jsonl TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            target_state TEXT NOT NULL,
+            requires_apply_later INTEGER NOT NULL,
+            tokens_present INTEGER NOT NULL
+        )
+        """
+    )
+    review_path = db.project_path(DYNAMIC_GENDER_COMBO_REVIEWED_JSONL)
+    allowed_targets = {
+        "dynamic_gender_ready_select_cstring_false_reopen": DYNAMIC_GENDER_SELECT_CSTRING_FALSE_REOPEN_LIFECYCLE_STATE,
+        "dynamic_gender_ready_custom_loc_false_reopen": DYNAMIC_GENDER_CUSTOM_LOC_FALSE_REOPEN_LIFECYCLE_STATE,
+    }
+    if review_path.exists():
+        rows = []
+        for line in review_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            decision = item.get("dynamic_gender_decision") or item.get("decision", "")
+            tokens = item.get("tokens_seen") or []
+            rows.append(
+                (
+                    int(item["segment_id"]),
+                    DYNAMIC_GENDER_COMBO_REVIEWED_JSONL,
+                    decision,
+                    allowed_targets.get(decision, ""),
+                    1 if item.get("requires_apply_later") is True else 0,
+                    1 if isinstance(tokens, list) and tokens else 0,
+                )
+            )
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO temp_dynamic_gender_ready_false_reopen_review (
+                segment_id,
+                review_jsonl,
+                decision,
+                target_state,
+                requires_apply_later,
+                tokens_present
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_dynamic_gender_ready_false_reopen_bridge AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'dynamic_ck3_expression_microagent' THEN 1 ELSE 0 END) AS dynamic_count,
+                SUM(CASE WHEN issue_family = 'gender_token_microagent' THEN 1 ELSE 0 END) AS gender_count,
+                SUM(CASE WHEN issue_family NOT IN ('dynamic_ck3_expression_microagent', 'gender_token_microagent') THEN 1 ELSE 0 END) AS other_issue_count,
+                SUM(
+                    CASE
+                        WHEN issue_family NOT IN ('dynamic_ck3_expression_microagent', 'gender_token_microagent')
+                         AND lower(issue_severity) IN ('high', 'error', 'critical')
+                        THEN 1 ELSE 0
+                    END
+                ) AS high_out_of_scope_count
+            FROM ml_issue_ledger_items
+            WHERE run_id = 76
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.review_jsonl,
+            review.decision,
+            review.target_state,
+            previous_run.id AS live_segment_state_run_id,
+            CASE
+                WHEN review.decision NOT IN (
+                    'dynamic_gender_ready_select_cstring_false_reopen',
+                    'dynamic_gender_ready_custom_loc_false_reopen'
+                ) THEN 'preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked'
+                WHEN review.tokens_present != 1 THEN 'blocked'
+                WHEN previous.segment_id IS NULL THEN 'blocked'
+                WHEN previous.state_group != 'pending' THEN 'blocked'
+                WHEN previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'blocked'
+                WHEN previous.needs_reopen != 1 THEN 'blocked'
+                WHEN previous.needs_output_apply != 0 THEN 'blocked'
+                WHEN previous.confirmed_matches_output != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.dynamic_count, 0) < 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.gender_count, 0) < 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'blocked'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN review.decision NOT IN (
+                    'dynamic_gender_ready_select_cstring_false_reopen',
+                    'dynamic_gender_ready_custom_loc_false_reopen'
+                ) THEN 'decision_outside_allowlist'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN review.tokens_present != 1 THEN 'tokens_not_recorded'
+                WHEN previous.segment_id IS NULL THEN 'missing_live_state'
+                WHEN previous.state_group != 'pending' THEN 'not_pending_or_already_closed'
+                WHEN previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'baseline_not_reopen_auto_confirmed_autofix'
+                WHEN previous.needs_reopen != 1 THEN 'baseline_needs_reopen_not_1'
+                WHEN previous.needs_output_apply != 0 THEN 'needs_output_apply'
+                WHEN previous.confirmed_matches_output != 1 THEN 'confirmation_output_mismatch'
+                WHEN COALESCE(ledger_summary.dynamic_count, 0) < 1 THEN 'missing_dynamic_ck3_expression_issue'
+                WHEN COALESCE(ledger_summary.gender_count, 0) < 1 THEN 'missing_gender_token_issue'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'high_issue_out_of_scope'
+                ELSE ''
+            END AS block_reason,
+            previous.final_state AS baseline_final_state,
+            previous.needs_reopen AS baseline_needs_reopen,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.other_issue_count, 0) AS other_issue_count
+        FROM temp_dynamic_gender_ready_false_reopen_review review
+        JOIN previous_run
+        LEFT JOIN segment_state_items previous
+          ON previous.segment_id = review.segment_id
+         AND previous.run_id = previous_run.id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        """
+    )
+
+
+def prepare_autofix_unknown_single_batch2_ready_lifecycle(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_unknown_single_batch2_ready_lifecycle_review")
+    conn.execute("DROP TABLE IF EXISTS temp_autofix_unknown_single_batch2_ready_lifecycle")
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_unknown_single_batch2_ready_lifecycle_review (
+            segment_id INTEGER PRIMARY KEY,
+            review_jsonl TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            target_state TEXT NOT NULL,
+            target_action TEXT NOT NULL,
+            requires_apply_later INTEGER NOT NULL
+        )
+        """
+    )
+    review_path = db.project_path(AUTOFIX_UNKNOWN_SINGLE_BATCH2_REVIEWED_JSONL)
+    if review_path.exists():
+        rows = []
+        for line in review_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            decision = item.get("single_autofix_decision") or item.get("decision", "")
+            rows.append(
+                (
+                    int(item["segment_id"]),
+                    AUTOFIX_UNKNOWN_SINGLE_BATCH2_REVIEWED_JSONL,
+                    decision,
+                    AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE
+                    if decision == "single_autofix_ready_false_reopen"
+                    else "",
+                    AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION
+                    if decision == "single_autofix_ready_false_reopen"
+                    else "",
+                    1 if item.get("requires_apply_later") is True else 0,
+                )
+            )
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO temp_autofix_unknown_single_batch2_ready_lifecycle_review (
+                segment_id,
+                review_jsonl,
+                decision,
+                target_state,
+                target_action,
+                requires_apply_later
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+    conn.execute(
+        """
+        CREATE TEMP TABLE temp_autofix_unknown_single_batch2_ready_lifecycle AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY id DESC
+            LIMIT 1
+        ),
+        ledger_summary AS (
+            SELECT
+                segment_id,
+                COUNT(*) AS open_issue_count,
+                SUM(CASE WHEN issue_family = 'autofix_unknown_microagent' THEN 1 ELSE 0 END) AS autofix_unknown_count,
+                SUM(CASE WHEN issue_family != 'autofix_unknown_microagent' THEN 1 ELSE 0 END) AS other_issue_count,
+                SUM(
+                    CASE
+                        WHEN issue_family != 'autofix_unknown_microagent'
+                         AND lower(issue_severity) IN ('high', 'error', 'critical')
+                        THEN 1 ELSE 0
+                    END
+                ) AS high_out_of_scope_count
+            FROM ml_issue_ledger_items
+            WHERE run_id = 76
+              AND status = 'open'
+            GROUP BY segment_id
+        )
+        SELECT
+            review.segment_id,
+            review.review_jsonl,
+            review.decision,
+            review.target_state,
+            review.target_action,
+            previous_run.id AS live_segment_state_run_id,
+            CASE
+                WHEN review.decision != 'single_autofix_ready_false_reopen' THEN 'preserved'
+                WHEN review.requires_apply_later != 0 THEN 'blocked'
+                WHEN previous.segment_id IS NULL THEN 'blocked'
+                WHEN previous.state_group != 'pending' THEN 'blocked'
+                WHEN previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'blocked'
+                WHEN previous.needs_reopen != 1 THEN 'blocked'
+                WHEN previous.needs_output_apply != 0 THEN 'blocked'
+                WHEN previous.confirmed_matches_output != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.autofix_unknown_count, 0) != 1 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'blocked'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'blocked'
+                ELSE 'closed'
+            END AS bridge_result,
+            CASE
+                WHEN review.decision != 'single_autofix_ready_false_reopen' THEN 'decision_outside_allowlist'
+                WHEN review.requires_apply_later != 0 THEN 'requires_apply_later'
+                WHEN previous.segment_id IS NULL THEN 'missing_live_state'
+                WHEN previous.state_group != 'pending' THEN 'not_pending_or_already_closed'
+                WHEN previous.final_state != 'reopen_auto_confirmed_autofix' THEN 'baseline_not_reopen_auto_confirmed_autofix'
+                WHEN previous.needs_reopen != 1 THEN 'baseline_needs_reopen_not_1'
+                WHEN previous.needs_output_apply != 0 THEN 'needs_output_apply'
+                WHEN previous.confirmed_matches_output != 1 THEN 'confirmation_output_mismatch'
+                WHEN COALESCE(ledger_summary.open_issue_count, 0) != 1 THEN 'open_issue_count_not_1'
+                WHEN COALESCE(ledger_summary.autofix_unknown_count, 0) != 1 THEN 'missing_autofix_unknown_issue'
+                WHEN COALESCE(ledger_summary.other_issue_count, 0) != 0 THEN 'extra_open_issue_family'
+                WHEN COALESCE(ledger_summary.high_out_of_scope_count, 0) != 0 THEN 'high_issue_out_of_scope'
+                ELSE ''
+            END AS block_reason,
+            previous.final_state AS baseline_final_state,
+            previous.needs_reopen AS baseline_needs_reopen,
+            COALESCE(ledger_summary.open_issue_count, 0) AS open_issue_count,
+            COALESCE(ledger_summary.other_issue_count, 0) AS other_issue_count
+        FROM temp_autofix_unknown_single_batch2_ready_lifecycle_review review
+        JOIN previous_run
+        LEFT JOIN segment_state_items previous
+          ON previous.segment_id = review.segment_id
+         AND previous.run_id = previous_run.id
+        LEFT JOIN ledger_summary
+          ON ledger_summary.segment_id = review.segment_id
+        """
+    )
+
+
 def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: int, created_at: str) -> None:
     conn.execute("DROP TABLE IF EXISTS temp_single_combat_signature_weapon_batch1_repair")
     conn.execute(
@@ -8559,6 +11763,16 @@ def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: in
     prepare_short_label_single_issue_residual_queue225_repair(conn)
     prepare_gender_es_oa_final_vowel_trim_dryrun3_repair(conn)
     prepare_dynamic_acclaimed_knight_requirement_style_watch_lifecycle(conn)
+    prepare_short_label_style_current_lifecycle_bridge(conn)
+    prepare_autofix_semantic_companion_false_reopen_lifecycle(conn)
+    prepare_autofix_semantic_trait_epithet_style_lifecycle(conn)
+    prepare_autofix_semantic_composition_plain_prose_batch2_lifecycle(conn)
+    prepare_autofix_semantic_companion_plain_sentence_batch2_lifecycle(conn)
+    prepare_autofix_semantic_composition_batch3_lifecycle(conn)
+    prepare_autofix_semantic_context_batch4_lifecycle(conn)
+    prepare_semantic_short_label_companion_false_reopen_lifecycle(conn)
+    prepare_dynamic_gender_ready_false_reopen_lifecycle(conn)
+    prepare_autofix_unknown_single_batch2_ready_lifecycle(conn)
     building_closure_reason = json.dumps(
         [
             "auto-confirmed output has governed lifecycle closure signal",
@@ -8741,6 +11955,76 @@ def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: in
         ],
         ensure_ascii=False,
     )
+    short_label_style_current_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output has reviewed short-label style current lifecycle evidence",
+            "review JSONL candidates from ledger 76 and state runs 373/377/380 govern pending false-reopen closure without output or confirmation writes",
+        ],
+        ensure_ascii=False,
+    )
+    autofix_semantic_companion_false_reopen_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output has reviewed autofix + semantic companion false-reopen lifecycle evidence",
+            "review JSONL companion_ready_autofix_semantic_plain_sentence candidates from ledger 76 govern exact autofix_unknown + semantic_review false-reopen closure without output or confirmation writes",
+        ],
+        ensure_ascii=False,
+    )
+    autofix_semantic_composition_plain_prose_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output has reviewed autofix + semantic composition plain prose lifecycle evidence",
+            "review JSONL composition_ready_plain_prose candidates from ledger 76 govern exact autofix_unknown + semantic_review composition closure without output or confirmation writes",
+        ],
+        ensure_ascii=False,
+    )
+    autofix_semantic_trait_epithet_style_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output has reviewed autofix + semantic trait/epithet style lifecycle evidence",
+            "review JSONL trait_epithet_style_watch_lifecycle candidates from ledger 76 govern exact autofix_unknown + semantic_review style closure without output or confirmation writes",
+        ],
+        ensure_ascii=False,
+    )
+    autofix_semantic_composition_plain_prose_batch2_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output has reviewed autofix + semantic composition plain prose batch 2 lifecycle evidence",
+            "batch 2 review JSONL composition_ready_plain_prose candidates from ledger 76 govern exact autofix_unknown + semantic_review composition closure without output or confirmation writes",
+        ],
+        ensure_ascii=False,
+    )
+    autofix_semantic_companion_plain_sentence_batch2_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output has reviewed autofix + semantic companion plain sentence batch 2 false-reopen lifecycle evidence",
+            "batch 2 review JSONL companion_ready_autofix_semantic_plain_sentence candidates from ledger 76 govern exact autofix_unknown + semantic_review false-reopen closure without output or confirmation writes",
+        ],
+        ensure_ascii=False,
+    )
+    autofix_semantic_composition_batch3_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output has reviewed autofix + semantic composition batch 3 lifecycle evidence",
+            "batch 3 review JSONL composition_ready_plain_prose/event_context candidates from ledger 76 govern exact autofix_unknown + semantic_review composition closure without output or confirmation writes",
+        ],
+        ensure_ascii=False,
+    )
+    autofix_semantic_context_batch4_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output has reviewed autofix + semantic context batch 4 lifecycle evidence",
+            "context composer batch 4 JSONL context_ready_* candidates from ledger 76 govern exact autofix_unknown + semantic_review context closure without output or confirmation writes",
+        ],
+        ensure_ascii=False,
+    )
+    semantic_short_label_companion_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output has reviewed semantic + short-label companion false-reopen lifecycle evidence",
+            "semantic short-label combo JSONL companion_ready_false_reopen candidates from ledger 76 govern exact semantic_review + short_label_style closure without output or confirmation writes",
+        ],
+        ensure_ascii=False,
+    )
+    dynamic_gender_false_reopen_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output has reviewed dynamic + gender false-reopen lifecycle evidence",
+            "dynamic gender combo JSONL ready false-reopen candidates from ledger 76 preserve CK3/gender tokens and pass pending reopen, confirmation/output and no high out-of-scope guards without output or confirmation writes",
+        ],
+        ensure_ascii=False,
+    )
     conn.execute(
         """
         INSERT INTO segment_state_items (
@@ -8828,6 +12112,12 @@ def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: in
                     THEN 'closed_auto_confirmed_dynamic_acclaimed_knight_requirement_repair'
                 WHEN dynamic_acclaimed_style_watch.segment_id IS NOT NULL
                     THEN 'closed_auto_confirmed_dynamic_acclaimed_knight_requirement_style_watch_lifecycle'
+                WHEN autofix_semantic_companion_false_reopen_bridge.bridge_result = 'closed'
+                    THEN autofix_semantic_companion_false_reopen_bridge.target_state
+                WHEN autofix_semantic_composition_plain_prose_bridge.bridge_result = 'closed'
+                    THEN autofix_semantic_composition_plain_prose_bridge.target_state
+                WHEN short_label_style_current_bridge.bridge_result = 'closed'
+                    THEN short_label_style_current_bridge.target_state
                 WHEN rule_effect_bridge.segment_id IS NOT NULL
                     THEN 'closed_auto_confirmed_autofix_unknown_semantic_companion_rule_effect_lifecycle'
                 WHEN building_bridge.segment_id IS NOT NULL
@@ -8859,6 +12149,9 @@ def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: in
                   OR single_combat_batch2_0041.segment_id IS NOT NULL
                   OR dynamic_acclaimed_repair.segment_id IS NOT NULL
                   OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR autofix_semantic_companion_false_reopen_bridge.bridge_result = 'closed'
+                  OR autofix_semantic_composition_plain_prose_bridge.bridge_result = 'closed'
+                  OR short_label_style_current_bridge.bridge_result = 'closed'
                   OR rule_effect_bridge.segment_id IS NOT NULL
                   OR building_bridge.segment_id IS NOT NULL
                     THEN 'closed'
@@ -8891,6 +12184,9 @@ def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: in
                   OR single_combat_batch2_0041.segment_id IS NOT NULL
                   OR dynamic_acclaimed_repair.segment_id IS NOT NULL
                   OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR autofix_semantic_companion_false_reopen_bridge.bridge_result = 'closed'
+                  OR autofix_semantic_composition_plain_prose_bridge.bridge_result = 'closed'
+                  OR short_label_style_current_bridge.bridge_result = 'closed'
                   OR rule_effect_bridge.segment_id IS NOT NULL
                   OR building_bridge.segment_id IS NOT NULL
                     THEN 'applied'
@@ -8994,6 +12290,9 @@ def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: in
                   OR single_combat_batch2_0041.segment_id IS NOT NULL
                   OR dynamic_acclaimed_repair.segment_id IS NOT NULL
                   OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR autofix_semantic_companion_false_reopen_bridge.bridge_result = 'closed'
+                  OR autofix_semantic_composition_plain_prose_bridge.bridge_result = 'closed'
+                  OR short_label_style_current_bridge.bridge_result = 'closed'
                     THEN 'auto_confirmed'
                 ELSE previous.confirmation_level
             END AS confirmation_level,
@@ -9050,6 +12349,9 @@ def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: in
                   OR single_combat_batch2_0041.segment_id IS NOT NULL
                   OR dynamic_acclaimed_repair.segment_id IS NOT NULL
                   OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR autofix_semantic_companion_false_reopen_bridge.bridge_result = 'closed'
+                  OR autofix_semantic_composition_plain_prose_bridge.bridge_result = 'closed'
+                  OR short_label_style_current_bridge.bridge_result = 'closed'
                     THEN 0
                 ELSE previous.locked
             END AS locked,
@@ -9080,6 +12382,9 @@ def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: in
                   OR single_combat_batch2_0041.segment_id IS NOT NULL
                   OR dynamic_acclaimed_repair.segment_id IS NOT NULL
                   OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR autofix_semantic_companion_false_reopen_bridge.bridge_result = 'closed'
+                  OR autofix_semantic_composition_plain_prose_bridge.bridge_result = 'closed'
+                  OR short_label_style_current_bridge.bridge_result = 'closed'
                     THEN 1
                 ELSE previous.confirmed_matches_output
             END AS confirmed_matches_output,
@@ -9108,6 +12413,9 @@ def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: in
                   OR single_combat_batch2_0041.segment_id IS NOT NULL
                   OR dynamic_acclaimed_repair.segment_id IS NOT NULL
                   OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR autofix_semantic_companion_false_reopen_bridge.bridge_result = 'closed'
+                  OR autofix_semantic_composition_plain_prose_bridge.bridge_result = 'closed'
+                  OR short_label_style_current_bridge.bridge_result = 'closed'
                   OR rule_effect_bridge.segment_id IS NOT NULL
                   OR building_bridge.segment_id IS NOT NULL
                     THEN 0
@@ -9138,6 +12446,9 @@ def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: in
                   OR single_combat_batch2_0041.segment_id IS NOT NULL
                   OR dynamic_acclaimed_repair.segment_id IS NOT NULL
                   OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR autofix_semantic_companion_false_reopen_bridge.bridge_result = 'closed'
+                  OR autofix_semantic_composition_plain_prose_bridge.bridge_result = 'closed'
+                  OR short_label_style_current_bridge.bridge_result = 'closed'
                   OR rule_effect_bridge.segment_id IS NOT NULL
                   OR building_bridge.segment_id IS NOT NULL
                     THEN 0
@@ -9168,6 +12479,9 @@ def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: in
                   OR single_combat_batch2_0041.segment_id IS NOT NULL
                   OR dynamic_acclaimed_repair.segment_id IS NOT NULL
                   OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR autofix_semantic_companion_false_reopen_bridge.bridge_result = 'closed'
+                  OR autofix_semantic_composition_plain_prose_bridge.bridge_result = 'closed'
+                  OR short_label_style_current_bridge.bridge_result = 'closed'
                   OR rule_effect_bridge.segment_id IS NOT NULL
                   OR building_bridge.segment_id IS NOT NULL
                     THEN 0
@@ -9198,6 +12512,9 @@ def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: in
                   OR single_combat_batch2_0041.segment_id IS NOT NULL
                   OR dynamic_acclaimed_repair.segment_id IS NOT NULL
                   OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR autofix_semantic_companion_false_reopen_bridge.bridge_result = 'closed'
+                  OR autofix_semantic_composition_plain_prose_bridge.bridge_result = 'closed'
+                  OR short_label_style_current_bridge.bridge_result = 'closed'
                   OR rule_effect_bridge.segment_id IS NOT NULL
                   OR building_bridge.segment_id IS NOT NULL
                     THEN 1
@@ -9225,6 +12542,9 @@ def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: in
                   OR single_combat_batch2_0041.segment_id IS NOT NULL
                   OR dynamic_acclaimed_repair.segment_id IS NOT NULL
                   OR dynamic_acclaimed_style_watch.segment_id IS NOT NULL
+                  OR autofix_semantic_companion_false_reopen_bridge.bridge_result = 'closed'
+                  OR autofix_semantic_composition_plain_prose_bridge.bridge_result = 'closed'
+                  OR short_label_style_current_bridge.bridge_result = 'closed'
                   OR rule_effect_bridge.segment_id IS NOT NULL
                   OR building_bridge.segment_id IS NOT NULL
                     THEN 0.0
@@ -9255,6 +12575,9 @@ def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: in
                 WHEN single_combat_batch2_0041.segment_id IS NOT NULL THEN ?
                 WHEN dynamic_acclaimed_repair.segment_id IS NOT NULL THEN ?
                 WHEN dynamic_acclaimed_style_watch.segment_id IS NOT NULL THEN ?
+                WHEN autofix_semantic_companion_false_reopen_bridge.bridge_result = 'closed' THEN ?
+                WHEN autofix_semantic_composition_plain_prose_bridge.bridge_result = 'closed' THEN ?
+                WHEN short_label_style_current_bridge.bridge_result = 'closed' THEN ?
                 WHEN rule_effect_bridge.segment_id IS NOT NULL THEN ?
                 WHEN building_bridge.segment_id IS NOT NULL THEN ?
                 ELSE previous.reasons_json
@@ -9324,6 +12647,12 @@ def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: in
          AND COALESCE(dynamic_acclaimed_repair.locked, 0) = 0
         LEFT JOIN temp_dynamic_acclaimed_knight_requirement_style_watch_lifecycle dynamic_acclaimed_style_watch
           ON dynamic_acclaimed_style_watch.segment_id = previous.segment_id
+        LEFT JOIN temp_autofix_semantic_companion_false_reopen_bridge autofix_semantic_companion_false_reopen_bridge
+          ON autofix_semantic_companion_false_reopen_bridge.segment_id = previous.segment_id
+        LEFT JOIN temp_autofix_semantic_composition_plain_prose_bridge autofix_semantic_composition_plain_prose_bridge
+          ON autofix_semantic_composition_plain_prose_bridge.segment_id = previous.segment_id
+        LEFT JOIN temp_short_label_style_current_lifecycle_bridge short_label_style_current_bridge
+          ON short_label_style_current_bridge.segment_id = previous.segment_id
         """,
         (
             run_id,
@@ -9402,9 +12731,1397 @@ def insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id: in
             single_combat_signature_weapon_batch2_0041_reason,
             dynamic_acclaimed_knight_requirement_repair_reason,
             dynamic_acclaimed_knight_requirement_style_watch_lifecycle_reason,
+            autofix_semantic_companion_false_reopen_lifecycle_reason,
+            autofix_semantic_composition_plain_prose_lifecycle_reason,
+            short_label_style_current_lifecycle_reason,
             rule_effect_closure_reason,
             building_closure_reason,
             created_at,
+        ),
+    )
+    reconcile_materially_aligned_confirmed_output_state(conn, run_id)
+    reconcile_runtime_token_only_equal_output_state(conn, run_id)
+    reconcile_known_equal_output_confirmation_closure_state(conn, run_id)
+
+    guarded_formatting_lifecycle_reason = json.dumps(
+        [
+            "guarded mechanical formatting policy already matches current output",
+            "active lifecycle policy item closes safe guarded formatting reopen with output, token and issue guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = 'closed_auto_confirmed_guarded_lifecycle',
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN 'close_reopen_guarded_formatting'
+                WHEN instr(',' || lifecycle_policy_action || ',', ',close_reopen_guarded_formatting,') = 0
+                    THEN lifecycle_policy_action || ',close_reopen_guarded_formatting'
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND state_group = 'pending'
+          AND final_state = 'reopen_auto_confirmed_autofix'
+          AND COALESCE(needs_output_apply, 0) = 0
+          AND COALESCE(confirmed_matches_output, 0) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM auto_confirmation_reopen_lifecycle_policy_items item
+              JOIN auto_confirmation_reopen_lifecycle_policy_runs policy_run
+                ON policy_run.id = item.run_id
+              JOIN output_segments output
+                ON output.segment_id = item.segment_id
+              JOIN segment_confirmations confirmation
+                ON confirmation.segment_id = item.segment_id
+              WHERE item.segment_id = segment_state_items.segment_id
+                AND policy_run.policy_name = 'guarded_mechanical_formatting_reopen_closure'
+                AND policy_run.policy_status = 'active'
+                AND policy_run.finished_at IS NOT NULL
+                AND item.policy_allowed = 1
+                AND item.policy_action = 'close_reopen_guarded_formatting'
+                AND item.token_status = 'ok'
+                AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+                AND COALESCE(item.issue_count, 0) = 0
+                AND COALESCE(item.high_issue_count, 0) = 0
+          )
+        """,
+        (
+            guarded_formatting_lifecycle_reason,
+            run_id,
+        ),
+    )
+    controlled_token_subpolicy_lifecycle_reason = json.dumps(
+        [
+            "controlled boundary-token subpolicy item already matches current output",
+            "backfilled lifecycle policy item closes boundary-token controlled reopen with output, token and issue guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = 'closed_auto_confirmed_controlled_token_subpolicy',
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND state_group = 'pending'
+          AND final_state = 'reopen_auto_confirmed_autofix'
+          AND COALESCE(needs_output_apply, 0) = 0
+          AND COALESCE(confirmed_matches_output, 0) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM auto_confirmation_reopen_lifecycle_policy_items item
+              JOIN auto_confirmation_reopen_lifecycle_policy_runs policy_run
+                ON policy_run.id = item.run_id
+              JOIN output_segments output
+                ON output.segment_id = item.segment_id
+              JOIN segment_confirmations confirmation
+                ON confirmation.segment_id = item.segment_id
+              WHERE item.segment_id = segment_state_items.segment_id
+                AND policy_run.policy_name = 'policy_item_absent_boundary_same_token_backfill'
+                AND policy_run.policy_status IN ('active', 'released')
+                AND policy_run.finished_at IS NOT NULL
+                AND item.policy_allowed = 1
+                AND item.policy_action = ?
+                AND item.token_status = 'ok'
+                AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+                AND COALESCE(item.issue_count, 0) = 0
+                AND COALESCE(item.high_issue_count, 0) = 0
+          )
+        """,
+        (
+            CONTROLLED_TOKEN_SUBPOLICY_CLOSURE_ACTION,
+            CONTROLLED_TOKEN_SUBPOLICY_CLOSURE_ACTION,
+            CONTROLLED_TOKEN_SUBPOLICY_CLOSURE_ACTION,
+            controlled_token_subpolicy_lifecycle_reason,
+            run_id,
+            CONTROLLED_TOKEN_SUBPOLICY_CLOSURE_ACTION,
+        ),
+    )
+    same_token_boundary_repair_lifecycle_reason = json.dumps(
+        [
+            "same-token boundary repair policy item already matches current output",
+            "backfilled lifecycle policy item closes same-token boundary repair reopen with output, token and issue guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = 'closed_auto_confirmed_same_token_boundary_repair',
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND state_group = 'pending'
+          AND final_state = 'reopen_auto_confirmed_autofix'
+          AND COALESCE(needs_output_apply, 0) = 0
+          AND COALESCE(confirmed_matches_output, 0) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM auto_confirmation_reopen_lifecycle_policy_items item
+              JOIN auto_confirmation_reopen_lifecycle_policy_runs policy_run
+                ON policy_run.id = item.run_id
+              JOIN output_segments output
+                ON output.segment_id = item.segment_id
+              JOIN segment_confirmations confirmation
+                ON confirmation.segment_id = item.segment_id
+              WHERE item.segment_id = segment_state_items.segment_id
+                AND policy_run.policy_name = 'policy_item_absent_boundary_same_token_backfill'
+                AND policy_run.policy_status IN ('active', 'released')
+                AND policy_run.finished_at IS NOT NULL
+                AND item.policy_allowed = 1
+                AND item.policy_action = ?
+                AND item.token_status = 'ok'
+                AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+                AND COALESCE(item.issue_count, 0) = 0
+                AND COALESCE(item.high_issue_count, 0) = 0
+          )
+        """,
+        (
+            SAME_TOKEN_BOUNDARY_REPAIR_CLOSURE_ACTION,
+            SAME_TOKEN_BOUNDARY_REPAIR_CLOSURE_ACTION,
+            SAME_TOKEN_BOUNDARY_REPAIR_CLOSURE_ACTION,
+            same_token_boundary_repair_lifecycle_reason,
+            run_id,
+            SAME_TOKEN_BOUNDARY_REPAIR_CLOSURE_ACTION,
+        ),
+    )
+
+    token_policy_manual_exception_lifecycle_reason = json.dumps(
+        [
+            "manual token-policy exception was approved and already materialized in output",
+            "active lifecycle policy closes equal-output reopen with confirmation, token, issue and decision guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = ?,
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND state_group = 'pending'
+          AND final_state = 'reopen_auto_confirmed_autofix'
+          AND COALESCE(needs_output_apply, 0) = 0
+          AND COALESCE(confirmed_matches_output, 0) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM auto_confirmation_reopen_lifecycle_policy_items item
+              JOIN auto_confirmation_reopen_lifecycle_policy_runs policy_run
+                ON policy_run.id = item.run_id
+              JOIN output_segments output
+                ON output.segment_id = item.segment_id
+              JOIN segment_confirmations confirmation
+                ON confirmation.segment_id = item.segment_id
+              JOIN segment_token_policy_decisions decision
+                ON decision.segment_id = item.segment_id
+               AND decision.approved_for_apply = 1
+               AND decision.decision = 'keep_manual_exception_only'
+              WHERE item.segment_id = segment_state_items.segment_id
+                AND policy_run.policy_name = ?
+                AND policy_run.policy_status IN ('active', 'released')
+                AND policy_run.finished_at IS NOT NULL
+                AND item.policy_allowed = 1
+                AND item.policy_action = ?
+                AND item.token_status = 'ok'
+                AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+                AND COALESCE(item.issue_count, 0) = 0
+                AND COALESCE(item.high_issue_count, 0) = 0
+          )
+        """,
+        (
+            TOKEN_POLICY_MANUAL_EXCEPTION_EQUAL_OUTPUT_LIFECYCLE_STATE,
+            TOKEN_POLICY_MANUAL_EXCEPTION_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+            TOKEN_POLICY_MANUAL_EXCEPTION_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+            TOKEN_POLICY_MANUAL_EXCEPTION_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+            token_policy_manual_exception_lifecycle_reason,
+            run_id,
+            TOKEN_POLICY_MANUAL_EXCEPTION_EQUAL_OUTPUT_LIFECYCLE_POLICY_NAME,
+            TOKEN_POLICY_MANUAL_EXCEPTION_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+        ),
+    )
+
+    human_confirmed_post_apply_repair_lifecycle_reason = json.dumps(
+        [
+            "human-confirmed protected apply already materialized in output",
+            "active lifecycle policy released the pending reopen after output, confirmation, token and issue guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = ?,
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'human_confirmed',
+            confirmation_label = confirmation_label,
+            locked = 1,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND state_group = 'pending'
+          AND final_state = 'reopen_auto_confirmed_autofix'
+          AND COALESCE(needs_output_apply, 0) = 0
+          AND COALESCE(confirmed_matches_output, 0) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM auto_confirmation_reopen_lifecycle_policy_items item
+              JOIN auto_confirmation_reopen_lifecycle_policy_runs policy_run
+                ON policy_run.id = item.run_id
+              JOIN output_segments output
+                ON output.segment_id = item.segment_id
+              JOIN segment_confirmations confirmation
+                ON confirmation.segment_id = item.segment_id
+               AND confirmation.confirmed_text = output.portuguese_text
+              WHERE item.segment_id = segment_state_items.segment_id
+                AND policy_run.policy_name = 'human_confirmed_post_apply_repair_lifecycle_bridge'
+                AND policy_run.policy_status = 'active'
+                AND policy_run.finished_at IS NOT NULL
+                AND item.policy_allowed = 1
+                AND item.policy_action = ?
+                AND item.output_match_kind = 'output_confirmation_candidate_exact_match'
+                AND item.token_status = 'ok'
+                AND confirmation.confirmation_level = 'human_confirmed'
+                AND confirmation.confirmation_source IN (
+                    'codex_release_readiness_human_review',
+                    'local_learning',
+                    'post_apply_human_correction'
+                )
+                AND confirmation.confirmation_label = item.confirmation_label
+                AND (
+                    item.confirmation_label IN (
+                        'correct',
+                        'semantic_error',
+                        'minor_fix',
+                        'residual_spanish',
+                        'structure_error',
+                        'major_fix',
+                        'narrative_plain_light_batch1_corrected'
+                    )
+                    OR item.confirmation_label GLOB 'narrative_plain_light_batch*_corrected'
+                    OR item.confirmation_label GLOB 'ui_tooltips_packet*_corrected'
+                )
+                AND COALESCE(item.issue_count, 0) = 0
+                AND COALESCE(item.high_issue_count, 0) = 0
+                AND COALESCE(confirmation.locked, 0) = 1
+          )
+        """,
+        (
+            HUMAN_CONFIRMED_POST_APPLY_REPAIR_LIFECYCLE_STATE,
+            HUMAN_CONFIRMED_POST_APPLY_REPAIR_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_POST_APPLY_REPAIR_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_POST_APPLY_REPAIR_LIFECYCLE_CLOSURE_ACTION,
+            human_confirmed_post_apply_repair_lifecycle_reason,
+            run_id,
+            HUMAN_CONFIRMED_POST_APPLY_REPAIR_LIFECYCLE_CLOSURE_ACTION,
+        ),
+    )
+    human_confirmed_package_close_lifecycle_reason = json.dumps(
+        [
+            "human-confirmed package close already matches current output",
+            "active lifecycle policy released phase-1 package close after output, confirmation and issue guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = ?,
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'human_confirmed',
+            confirmation_label = (
+                SELECT confirmation.confirmation_label
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            locked = (
+                SELECT COALESCE(confirmation.locked, 0)
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND state_group = 'pending'
+          AND final_state = 'reopen_auto_confirmed_autofix'
+          AND COALESCE(needs_output_apply, 0) = 0
+          AND COALESCE(confirmed_matches_output, 0) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM auto_confirmation_reopen_lifecycle_policy_items item
+              JOIN auto_confirmation_reopen_lifecycle_policy_runs policy_run
+                ON policy_run.id = item.run_id
+              JOIN output_segments output
+                ON output.segment_id = item.segment_id
+              JOIN segment_confirmations confirmation
+                ON confirmation.segment_id = item.segment_id
+              WHERE item.segment_id = segment_state_items.segment_id
+                AND policy_run.policy_name = 'human_confirmed_package_close_lifecycle_bridge'
+                AND policy_run.policy_status = 'active'
+                AND policy_run.finished_at IS NOT NULL
+                AND item.policy_allowed = 1
+                AND item.policy_action = ?
+                AND item.token_status = 'ok'
+                AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+                AND confirmation.confirmation_level = 'human_confirmed'
+                AND confirmation.confirmation_source IN (
+                    'codex_manual',
+                    'codex_manual+manual_mojibake_cleanup',
+                    'codex_review',
+                    'codex_review+manual_mojibake_cleanup',
+                    'codex_review+manual_mojibake_cleanup+context_mojibake_cleanup',
+                    'codex_review+manual_mojibake_cleanup+shadow_hygiene_cleanup'
+                )
+                AND confirmation.confirmation_label IN ('codex_package_review', 'package_close')
+                AND COALESCE(item.issue_count, 0) = 0
+                AND COALESCE(item.high_issue_count, 0) = 0
+          )
+        """,
+        (
+            HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_STATE,
+            HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_CLOSURE_ACTION,
+            human_confirmed_package_close_lifecycle_reason,
+            run_id,
+            HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_CLOSURE_ACTION,
+        ),
+    )
+    human_confirmed_repair_label_close_lifecycle_reason = json.dumps(
+        [
+            "human-confirmed repair label already matches current output",
+            "active lifecycle policy released phase-2 repair label after output, confirmation and issue guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = ?,
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'human_confirmed',
+            confirmation_label = (
+                SELECT confirmation.confirmation_label
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            locked = (
+                SELECT COALESCE(confirmation.locked, 0)
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND state_group = 'pending'
+          AND final_state = 'reopen_auto_confirmed_autofix'
+          AND COALESCE(needs_output_apply, 0) = 0
+          AND COALESCE(confirmed_matches_output, 0) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM auto_confirmation_reopen_lifecycle_policy_items item
+              JOIN auto_confirmation_reopen_lifecycle_policy_runs policy_run
+                ON policy_run.id = item.run_id
+              JOIN output_segments output
+                ON output.segment_id = item.segment_id
+              JOIN segment_confirmations confirmation
+                ON confirmation.segment_id = item.segment_id
+              WHERE item.segment_id = segment_state_items.segment_id
+                AND policy_run.policy_name = 'human_confirmed_repair_label_close_lifecycle_bridge'
+                AND policy_run.policy_status = 'active'
+                AND policy_run.finished_at IS NOT NULL
+                AND item.policy_allowed = 1
+                AND item.policy_action = ?
+                AND item.token_status = 'ok'
+                AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+                AND confirmation.confirmation_level = 'human_confirmed'
+                AND confirmation.confirmation_source IN (
+                    'codex_manual_closure+manual_mojibake_cleanup',
+                    'codex_manual_rest_closure',
+                    'codex_review',
+                    'codex_review+manual_mojibake_cleanup',
+                    'local_learning',
+                    'visual_polish_manual'
+                )
+                AND (
+                    confirmation.confirmation_label LIKE '%strict_mojibake_fixed%'
+                    OR confirmation.confirmation_label LIKE '%token_policy_confirmed_text_fixed%'
+                )
+                AND COALESCE(item.issue_count, 0) = 0
+                AND COALESCE(item.high_issue_count, 0) = 0
+          )
+        """,
+        (
+            HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_LIFECYCLE_STATE,
+            HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_LIFECYCLE_CLOSURE_ACTION,
+            human_confirmed_repair_label_close_lifecycle_reason,
+            run_id,
+            HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_LIFECYCLE_CLOSURE_ACTION,
+        ),
+    )
+    human_confirmed_misc_equal_output_plain_light_lifecycle_reason = json.dumps(
+        [
+            "human-confirmed misc equal-output plain/light tranche already matches current output",
+            "active lifecycle policy released phase-3 plain/light after output, confirmation and issue guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = ?,
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'human_confirmed',
+            confirmation_label = (
+                SELECT confirmation.confirmation_label
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            locked = (
+                SELECT COALESCE(confirmation.locked, 0)
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND state_group = 'pending'
+          AND final_state = 'reopen_auto_confirmed_autofix'
+          AND COALESCE(needs_output_apply, 0) = 0
+          AND COALESCE(confirmed_matches_output, 0) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM auto_confirmation_reopen_lifecycle_policy_items item
+              JOIN auto_confirmation_reopen_lifecycle_policy_runs policy_run
+                ON policy_run.id = item.run_id
+              JOIN output_segments output
+                ON output.segment_id = item.segment_id
+              JOIN segment_confirmations confirmation
+                ON confirmation.segment_id = item.segment_id
+              WHERE item.segment_id = segment_state_items.segment_id
+                AND policy_run.policy_name = 'human_confirmed_misc_equal_output_plain_light_lifecycle_bridge'
+                AND policy_run.policy_status = 'active'
+                AND policy_run.finished_at IS NOT NULL
+                AND item.policy_allowed = 1
+                AND item.policy_action = ?
+                AND item.token_status = 'ok'
+                AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+                AND confirmation.confirmation_level = 'human_confirmed'
+                AND COALESCE(item.issue_count, 0) = 0
+                AND COALESCE(item.high_issue_count, 0) = 0
+          )
+        """,
+        (
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_PLAIN_LIGHT_LIFECYCLE_STATE,
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_PLAIN_LIGHT_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_PLAIN_LIGHT_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_PLAIN_LIGHT_LIFECYCLE_CLOSURE_ACTION,
+            human_confirmed_misc_equal_output_plain_light_lifecycle_reason,
+            run_id,
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_PLAIN_LIGHT_LIFECYCLE_CLOSURE_ACTION,
+        ),
+    )
+    human_confirmed_misc_equal_output_es_suffix_lifecycle_reason = json.dumps(
+        [
+            "human-confirmed misc equal-output ES suffix tranche already matches current output",
+            "active lifecycle policy released phase-3 ES suffix after parser, output, confirmation and issue guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = ?,
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'human_confirmed',
+            confirmation_label = (
+                SELECT confirmation.confirmation_label
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            locked = (
+                SELECT COALESCE(confirmation.locked, 0)
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND state_group = 'pending'
+          AND final_state = 'reopen_auto_confirmed_autofix'
+          AND COALESCE(needs_output_apply, 0) = 0
+          AND COALESCE(confirmed_matches_output, 0) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM auto_confirmation_reopen_lifecycle_policy_items item
+              JOIN auto_confirmation_reopen_lifecycle_policy_runs policy_run
+                ON policy_run.id = item.run_id
+              JOIN output_segments output
+                ON output.segment_id = item.segment_id
+              JOIN segment_confirmations confirmation
+                ON confirmation.segment_id = item.segment_id
+              WHERE item.segment_id = segment_state_items.segment_id
+                AND policy_run.policy_name = 'human_confirmed_misc_equal_output_es_suffix_lifecycle_bridge'
+                AND policy_run.policy_status = 'active'
+                AND policy_run.finished_at IS NOT NULL
+                AND item.policy_allowed = 1
+                AND item.policy_action = ?
+                AND item.token_status = 'ok'
+                AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+                AND confirmation.confirmation_level = 'human_confirmed'
+                AND COALESCE(item.issue_count, 0) = 0
+                AND COALESCE(item.high_issue_count, 0) = 0
+          )
+        """,
+        (
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_ES_SUFFIX_LIFECYCLE_STATE,
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_ES_SUFFIX_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_ES_SUFFIX_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_ES_SUFFIX_LIFECYCLE_CLOSURE_ACTION,
+            human_confirmed_misc_equal_output_es_suffix_lifecycle_reason,
+            run_id,
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_ES_SUFFIX_LIFECYCLE_CLOSURE_ACTION,
+        ),
+    )
+    human_confirmed_misc_equal_output_multiline_serialization_lifecycle_reason = json.dumps(
+        [
+            "human-confirmed misc equal-output multiline serialization tranche already matches current output",
+            "active lifecycle policy released phase-3 multiline serialization after output, confirmation and issue guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = ?,
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'human_confirmed',
+            confirmation_label = (
+                SELECT confirmation.confirmation_label
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            locked = (
+                SELECT COALESCE(confirmation.locked, 0)
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND state_group = 'pending'
+          AND final_state = 'reopen_auto_confirmed_autofix'
+          AND COALESCE(needs_output_apply, 0) = 0
+          AND COALESCE(confirmed_matches_output, 0) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM auto_confirmation_reopen_lifecycle_policy_items item
+              JOIN auto_confirmation_reopen_lifecycle_policy_runs policy_run
+                ON policy_run.id = item.run_id
+              JOIN output_segments output
+                ON output.segment_id = item.segment_id
+              JOIN segment_confirmations confirmation
+                ON confirmation.segment_id = item.segment_id
+              WHERE item.segment_id = segment_state_items.segment_id
+                AND policy_run.policy_name = 'human_confirmed_misc_equal_output_multiline_serialization_lifecycle_bridge'
+                AND policy_run.policy_status IN ('active', 'released')
+                AND policy_run.finished_at IS NOT NULL
+                AND item.policy_allowed = 1
+                AND item.policy_action = ?
+                AND item.token_status = 'ok'
+                AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+                AND confirmation.confirmation_level = 'human_confirmed'
+                AND COALESCE(item.issue_count, 0) = 0
+                AND COALESCE(item.high_issue_count, 0) = 0
+          )
+        """,
+        (
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_MULTILINE_SERIALIZATION_LIFECYCLE_STATE,
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_MULTILINE_SERIALIZATION_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_MULTILINE_SERIALIZATION_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_MULTILINE_SERIALIZATION_LIFECYCLE_CLOSURE_ACTION,
+            human_confirmed_misc_equal_output_multiline_serialization_lifecycle_reason,
+            run_id,
+            HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_MULTILINE_SERIALIZATION_LIFECYCLE_CLOSURE_ACTION,
+        ),
+    )
+    human_confirmed_ui_tooltips_residual_equal_output_lifecycle_reason = json.dumps(
+        [
+            "human-confirmed UI tooltip residual equal-output tranche already matches current output",
+            "active lifecycle policy released after protected apply, confirmation and issue guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = ?,
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'human_confirmed',
+            confirmation_label = (
+                SELECT confirmation.confirmation_label
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            locked = (
+                SELECT COALESCE(confirmation.locked, 0)
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND state_group = 'pending'
+          AND final_state = 'reopen_auto_confirmed_autofix'
+          AND COALESCE(needs_output_apply, 0) = 0
+          AND COALESCE(confirmed_matches_output, 0) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM auto_confirmation_reopen_lifecycle_policy_items item
+              JOIN auto_confirmation_reopen_lifecycle_policy_runs policy_run
+                ON policy_run.id = item.run_id
+              JOIN output_segments output
+                ON output.segment_id = item.segment_id
+              JOIN segment_confirmations confirmation
+                ON confirmation.segment_id = item.segment_id
+              WHERE item.segment_id = segment_state_items.segment_id
+                AND policy_run.policy_name = 'human_confirmed_ui_tooltips_residual_equal_output_lifecycle_bridge'
+                AND policy_run.policy_status IN ('active', 'released')
+                AND policy_run.finished_at IS NOT NULL
+                AND item.policy_allowed = 1
+                AND item.policy_action = ?
+                AND item.token_status = 'ok'
+                AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+                AND confirmation.confirmation_level = 'human_confirmed'
+                AND COALESCE(confirmation.locked, 0) = 1
+                AND COALESCE(item.issue_count, 0) = 0
+                AND COALESCE(item.high_issue_count, 0) = 0
+          )
+        """,
+        (
+            HUMAN_CONFIRMED_UI_TOOLTIPS_RESIDUAL_EQUAL_OUTPUT_LIFECYCLE_STATE,
+            HUMAN_CONFIRMED_UI_TOOLTIPS_RESIDUAL_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_UI_TOOLTIPS_RESIDUAL_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_UI_TOOLTIPS_RESIDUAL_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+            human_confirmed_ui_tooltips_residual_equal_output_lifecycle_reason,
+            run_id,
+            HUMAN_CONFIRMED_UI_TOOLTIPS_RESIDUAL_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+        ),
+    )
+    human_confirmed_ui_tooltips_context_sublote_equal_output_lifecycle_reason = json.dumps(
+        [
+            "human-confirmed UI tooltip contextual sublote equal-output tranche already matches current output",
+            "active lifecycle policy released after protected apply, confirmation and issue guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = ?,
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'human_confirmed',
+            confirmation_label = (
+                SELECT confirmation.confirmation_label
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            locked = (
+                SELECT COALESCE(confirmation.locked, 0)
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND state_group = 'pending'
+          AND final_state = 'reopen_auto_confirmed_autofix'
+          AND COALESCE(needs_output_apply, 0) = 0
+          AND COALESCE(confirmed_matches_output, 0) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM auto_confirmation_reopen_lifecycle_policy_items item
+              JOIN auto_confirmation_reopen_lifecycle_policy_runs policy_run
+                ON policy_run.id = item.run_id
+              JOIN output_segments output
+                ON output.segment_id = item.segment_id
+              JOIN segment_confirmations confirmation
+                ON confirmation.segment_id = item.segment_id
+              WHERE item.segment_id = segment_state_items.segment_id
+                AND policy_run.policy_name = 'human_confirmed_ui_tooltips_context_sublote_equal_output_lifecycle_bridge'
+                AND policy_run.policy_status IN ('active', 'released')
+                AND policy_run.finished_at IS NOT NULL
+                AND item.policy_allowed = 1
+                AND item.policy_action = ?
+                AND item.token_status = 'ok'
+                AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+                AND confirmation.confirmation_level = 'human_confirmed'
+                AND COALESCE(confirmation.locked, 0) = 1
+                AND COALESCE(item.issue_count, 0) = 0
+                AND COALESCE(item.high_issue_count, 0) = 0
+          )
+        """,
+        (
+            HUMAN_CONFIRMED_UI_TOOLTIPS_CONTEXT_SUBLOTE_EQUAL_OUTPUT_LIFECYCLE_STATE,
+            HUMAN_CONFIRMED_UI_TOOLTIPS_CONTEXT_SUBLOTE_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_UI_TOOLTIPS_CONTEXT_SUBLOTE_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+            HUMAN_CONFIRMED_UI_TOOLTIPS_CONTEXT_SUBLOTE_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+            human_confirmed_ui_tooltips_context_sublote_equal_output_lifecycle_reason,
+            run_id,
+            HUMAN_CONFIRMED_UI_TOOLTIPS_CONTEXT_SUBLOTE_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+        ),
+    )
+    auto_confirmed_plain_light_equal_output_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed plain/light equal-output tranche already matches current output",
+            "active lifecycle policy released phase-4 plain/light after output, confirmation and issue guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = ?,
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'auto_confirmed',
+            confirmation_label = (
+                SELECT confirmation.confirmation_label
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            locked = (
+                SELECT COALESCE(confirmation.locked, 0)
+                FROM segment_confirmations confirmation
+                WHERE confirmation.segment_id = segment_state_items.segment_id
+            ),
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND state_group = 'pending'
+          AND final_state = 'reopen_auto_confirmed_autofix'
+          AND COALESCE(needs_output_apply, 0) = 0
+          AND COALESCE(confirmed_matches_output, 0) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM auto_confirmation_reopen_lifecycle_policy_items item
+              JOIN auto_confirmation_reopen_lifecycle_policy_runs policy_run
+                ON policy_run.id = item.run_id
+              JOIN output_segments output
+                ON output.segment_id = item.segment_id
+              JOIN segment_confirmations confirmation
+                ON confirmation.segment_id = item.segment_id
+              WHERE item.segment_id = segment_state_items.segment_id
+                AND policy_run.policy_name = 'auto_confirmed_plain_light_equal_output_lifecycle_bridge'
+                AND policy_run.policy_status IN ('active', 'released')
+                AND policy_run.finished_at IS NOT NULL
+                AND item.policy_allowed = 1
+                AND item.policy_action = ?
+                AND item.token_status = 'ok'
+                AND canonical_l10n(confirmation.confirmed_text) = canonical_l10n(output.portuguese_text)
+                AND confirmation.confirmation_level = 'auto_confirmed'
+                AND COALESCE(item.issue_count, 0) = 0
+                AND COALESCE(item.high_issue_count, 0) = 0
+          )
+        """,
+        (
+            AUTO_CONFIRMED_PLAIN_LIGHT_EQUAL_OUTPUT_LIFECYCLE_STATE,
+            AUTO_CONFIRMED_PLAIN_LIGHT_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+            AUTO_CONFIRMED_PLAIN_LIGHT_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+            AUTO_CONFIRMED_PLAIN_LIGHT_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+            auto_confirmed_plain_light_equal_output_lifecycle_reason,
+            run_id,
+            AUTO_CONFIRMED_PLAIN_LIGHT_EQUAL_OUTPUT_LIFECYCLE_CLOSURE_ACTION,
+        ),
+    )
+    semantic_review_general_plain_text_lifecycle_reason = json.dumps(
+        [
+            "reviewed semantic plain-text false reopen has no output work",
+            "active lifecycle policy released only plain text with current output alignment and no token/dynamic/spanish-residue guards",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = ?,
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'auto_confirmed',
+            locked = 0,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND state_group = 'pending'
+          AND final_state = 'reopen_auto_confirmed_autofix'
+          AND COALESCE(needs_output_apply, 0) = 0
+          AND COALESCE(confirmed_matches_output, 0) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM auto_confirmation_reopen_lifecycle_policy_items item
+              JOIN auto_confirmation_reopen_lifecycle_policy_runs policy_run
+                ON policy_run.id = item.run_id
+              JOIN output_segments output
+                ON output.segment_id = item.segment_id
+              JOIN source_segments source
+                ON source.id = item.segment_id
+              WHERE item.segment_id = segment_state_items.segment_id
+                AND policy_run.policy_name = 'semantic_review_general_plain_text_reopen_lifecycle'
+                AND policy_run.policy_status = 'active'
+                AND policy_run.finished_at IS NOT NULL
+                AND item.policy_allowed = 1
+                AND item.policy_action = ?
+                AND item.output_match_kind = 'output_matches_source_old_plain_text'
+                AND item.token_status = 'plain_text_no_tokens'
+                AND output.portuguese_text = source.old_text
+          )
+        """,
+        (
+            SEMANTIC_REVIEW_GENERAL_PLAIN_TEXT_LIFECYCLE_STATE,
+            SEMANTIC_REVIEW_GENERAL_PLAIN_TEXT_LIFECYCLE_CLOSURE_ACTION,
+            SEMANTIC_REVIEW_GENERAL_PLAIN_TEXT_LIFECYCLE_CLOSURE_ACTION,
+            SEMANTIC_REVIEW_GENERAL_PLAIN_TEXT_LIFECYCLE_CLOSURE_ACTION,
+            semantic_review_general_plain_text_lifecycle_reason,
+            run_id,
+            SEMANTIC_REVIEW_GENERAL_PLAIN_TEXT_LIFECYCLE_CLOSURE_ACTION,
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = (
+                SELECT bridge.target_state
+                FROM temp_autofix_semantic_trait_epithet_style_bridge bridge
+                WHERE bridge.segment_id = segment_state_items.segment_id
+            ),
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'auto_confirmed',
+            locked = 0,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND segment_id IN (
+              SELECT segment_id
+              FROM temp_autofix_semantic_trait_epithet_style_bridge
+              WHERE bridge_result = 'closed'
+          )
+        """,
+        (
+            AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_LIFECYCLE_CLOSURE_ACTION,
+            autofix_semantic_trait_epithet_style_lifecycle_reason,
+            run_id,
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = (
+                SELECT bridge.target_state
+                FROM temp_autofix_semantic_composition_plain_prose_batch2_bridge bridge
+                WHERE bridge.segment_id = segment_state_items.segment_id
+            ),
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'auto_confirmed',
+            locked = 0,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND segment_id IN (
+              SELECT segment_id
+              FROM temp_autofix_semantic_composition_plain_prose_batch2_bridge
+              WHERE bridge_result = 'closed'
+          )
+        """,
+        (
+            AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH2_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH2_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH2_LIFECYCLE_CLOSURE_ACTION,
+            autofix_semantic_composition_plain_prose_batch2_lifecycle_reason,
+            run_id,
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = (
+                SELECT bridge.target_state
+                FROM temp_autofix_semantic_companion_plain_sentence_batch2_bridge bridge
+                WHERE bridge.segment_id = segment_state_items.segment_id
+            ),
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'auto_confirmed',
+            locked = 0,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND segment_id IN (
+              SELECT segment_id
+              FROM temp_autofix_semantic_companion_plain_sentence_batch2_bridge
+              WHERE bridge_result = 'closed'
+          )
+        """,
+        (
+            AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_BATCH2_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_BATCH2_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_BATCH2_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            autofix_semantic_companion_plain_sentence_batch2_lifecycle_reason,
+            run_id,
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = (
+                SELECT bridge.target_state
+                FROM temp_autofix_semantic_composition_batch3_bridge bridge
+                WHERE bridge.segment_id = segment_state_items.segment_id
+            ),
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'auto_confirmed',
+            locked = 0,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND segment_id IN (
+              SELECT segment_id
+              FROM temp_autofix_semantic_composition_batch3_bridge
+              WHERE bridge_result = 'closed'
+          )
+        """,
+        (
+            AUTOFIX_SEMANTIC_COMPOSITION_BATCH3_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_SEMANTIC_COMPOSITION_BATCH3_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_SEMANTIC_COMPOSITION_BATCH3_LIFECYCLE_CLOSURE_ACTION,
+            autofix_semantic_composition_batch3_lifecycle_reason,
+            run_id,
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = (
+                SELECT bridge.target_state
+                FROM temp_autofix_semantic_context_batch4_bridge bridge
+                WHERE bridge.segment_id = segment_state_items.segment_id
+            ),
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'auto_confirmed',
+            locked = 0,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND segment_id IN (
+              SELECT segment_id
+              FROM temp_autofix_semantic_context_batch4_bridge
+              WHERE bridge_result = 'closed'
+          )
+        """,
+        (
+            AUTOFIX_SEMANTIC_CONTEXT_BATCH4_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_SEMANTIC_CONTEXT_BATCH4_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_SEMANTIC_CONTEXT_BATCH4_LIFECYCLE_CLOSURE_ACTION,
+            autofix_semantic_context_batch4_lifecycle_reason,
+            run_id,
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = (
+                SELECT bridge.target_state
+                FROM temp_semantic_short_label_companion_bridge bridge
+                WHERE bridge.segment_id = segment_state_items.segment_id
+            ),
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'auto_confirmed',
+            locked = 0,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND segment_id IN (
+              SELECT segment_id
+              FROM temp_semantic_short_label_companion_bridge
+              WHERE bridge_result = 'closed'
+          )
+        """,
+        (
+            SEMANTIC_SHORT_LABEL_COMPANION_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            SEMANTIC_SHORT_LABEL_COMPANION_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            SEMANTIC_SHORT_LABEL_COMPANION_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            semantic_short_label_companion_lifecycle_reason,
+            run_id,
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = (
+                SELECT bridge.target_state
+                FROM temp_dynamic_gender_ready_false_reopen_bridge bridge
+                WHERE bridge.segment_id = segment_state_items.segment_id
+            ),
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'auto_confirmed',
+            locked = 0,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND segment_id IN (
+              SELECT segment_id
+              FROM temp_dynamic_gender_ready_false_reopen_bridge
+              WHERE bridge_result = 'closed'
+          )
+        """,
+        (
+            DYNAMIC_GENDER_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            DYNAMIC_GENDER_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            DYNAMIC_GENDER_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            dynamic_gender_false_reopen_lifecycle_reason,
+            run_id,
+        ),
+    )
+    autofix_unknown_single_batch2_false_reopen_lifecycle_reason = json.dumps(
+        [
+            "auto-confirmed output passed autofix_unknown single-family batch2 false-reopen lifecycle bridge",
+            "batch2 review JSONL ready false-reopen candidates survived current pending reopen, exact autofix_unknown ledger family, confirmation/output and no output apply guards without output or confirmation writes",
+        ],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+        UPDATE segment_state_items
+        SET
+            final_state = ?,
+            state_group = 'closed',
+            apply_state = 'applied',
+            lifecycle_policy_action = CASE
+                WHEN COALESCE(lifecycle_policy_action, '') = '' THEN ?
+                WHEN instr(',' || lifecycle_policy_action || ',', ',' || ? || ',') = 0
+                    THEN lifecycle_policy_action || ',' || ?
+                ELSE lifecycle_policy_action
+            END,
+            lifecycle_policy_allowed = 1,
+            confirmation_level = 'auto_confirmed',
+            locked = 0,
+            confirmed_matches_output = 1,
+            needs_human = 0,
+            needs_output_apply = 0,
+            needs_reopen = 0,
+            is_closed = 1,
+            priority_score = 0.0,
+            reasons_json = ?
+        WHERE run_id = ?
+          AND segment_id IN (
+              SELECT segment_id
+              FROM temp_autofix_unknown_single_batch2_ready_lifecycle
+              WHERE bridge_result = 'closed'
+          )
+        """,
+        (
+            AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE,
+            AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+            autofix_unknown_single_batch2_false_reopen_lifecycle_reason,
+            run_id,
         ),
     )
     autofix_unknown_plain_event_queue226_lifecycle_reason = json.dumps(
@@ -15550,6 +20267,777 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
         ORDER BY count DESC, dynamic_issue_kind
         """
     ).fetchall()
+    short_label_style_current_bridge_summary = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked,
+            MAX(ledger_run_id) AS ledger_run_id,
+            MAX(review_segment_state_run_id) AS review_segment_state_run_id,
+            MAX(live_segment_state_run_id) AS live_segment_state_run_id
+        FROM temp_short_label_style_current_lifecycle_bridge
+        """
+    ).fetchone()
+    short_label_style_current_closed_by_decision = conn.execute(
+        """
+        SELECT decision, COUNT(*) AS count
+        FROM temp_short_label_style_current_lifecycle_bridge
+        WHERE bridge_result = 'closed'
+        GROUP BY decision
+        ORDER BY decision
+        """
+    ).fetchall()
+    short_label_style_current_blocked_by_reason = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM temp_short_label_style_current_lifecycle_bridge
+        WHERE bridge_result != 'closed'
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    short_label_style_current_batch2_summary = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked,
+            MAX(ledger_run_id) AS ledger_run_id,
+            MAX(review_segment_state_run_id) AS review_segment_state_run_id,
+            MAX(live_segment_state_run_id) AS live_segment_state_run_id
+        FROM temp_short_label_style_current_lifecycle_bridge
+        WHERE review_batch = 'batch2'
+        """
+    ).fetchone()
+    short_label_style_current_batch2_blocked_by_reason = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM temp_short_label_style_current_lifecycle_bridge
+        WHERE review_batch = 'batch2'
+          AND bridge_result != 'closed'
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    short_label_style_current_batch3_summary = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result != 'closed' THEN 1 ELSE 0 END) AS blocked,
+            MAX(ledger_run_id) AS ledger_run_id,
+            MAX(review_segment_state_run_id) AS review_segment_state_run_id,
+            MAX(live_segment_state_run_id) AS live_segment_state_run_id
+        FROM temp_short_label_style_current_lifecycle_bridge
+        WHERE review_batch = 'batch3'
+        """
+    ).fetchone()
+    short_label_style_current_batch3_blocked_by_reason = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM temp_short_label_style_current_lifecycle_bridge
+        WHERE review_batch = 'batch3'
+          AND bridge_result != 'closed'
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    short_label_style_current_current_summary = conn.execute(
+        """
+        SELECT COUNT(*) AS closed
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND final_state IN (?, ?, ?)
+        """,
+        (
+            run_id,
+            SHORT_LABEL_STYLE_CURRENT_SHORT_PHRASE_LIFECYCLE_STATE,
+            SHORT_LABEL_STYLE_CURRENT_COMPACT_UI_LABEL_LIFECYCLE_STATE,
+            SHORT_LABEL_STYLE_CURRENT_PLAIN_NOOP_LIFECYCLE_STATE,
+        ),
+    ).fetchone()
+    short_label_style_current_current_by_state = conn.execute(
+        """
+        SELECT final_state, COUNT(*) AS count
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND final_state IN (?, ?, ?)
+        GROUP BY final_state
+        ORDER BY final_state
+        """,
+        (
+            run_id,
+            SHORT_LABEL_STYLE_CURRENT_SHORT_PHRASE_LIFECYCLE_STATE,
+            SHORT_LABEL_STYLE_CURRENT_COMPACT_UI_LABEL_LIFECYCLE_STATE,
+            SHORT_LABEL_STYLE_CURRENT_PLAIN_NOOP_LIFECYCLE_STATE,
+        ),
+    ).fetchall()
+    short_label_style_current_batch2_current_summary = conn.execute(
+        """
+        SELECT
+            COUNT(review.segment_id) AS candidates,
+            SUM(CASE WHEN item.final_state = review.target_state THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN item.final_state != review.target_state OR item.segment_id IS NULL THEN 1 ELSE 0 END) AS not_closed
+        FROM temp_short_label_style_current_lifecycle_review review
+        LEFT JOIN segment_state_items item
+          ON item.run_id = ?
+         AND item.segment_id = review.segment_id
+        WHERE review.review_batch = 'batch2'
+        """,
+        (run_id,),
+    ).fetchone()
+    short_label_style_current_batch2_current_by_decision = conn.execute(
+        """
+        SELECT review.decision, COUNT(*) AS count
+        FROM temp_short_label_style_current_lifecycle_review review
+        JOIN segment_state_items item
+          ON item.run_id = ?
+         AND item.segment_id = review.segment_id
+         AND item.final_state = review.target_state
+        WHERE review.review_batch = 'batch2'
+        GROUP BY review.decision
+        ORDER BY review.decision
+        """,
+        (run_id,),
+    ).fetchall()
+    short_label_style_current_batch3_current_summary = conn.execute(
+        """
+        SELECT
+            COUNT(review.segment_id) AS candidates,
+            SUM(CASE WHEN item.final_state = review.target_state THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN item.final_state != review.target_state OR item.segment_id IS NULL THEN 1 ELSE 0 END) AS not_closed
+        FROM temp_short_label_style_current_lifecycle_review review
+        LEFT JOIN segment_state_items item
+          ON item.run_id = ?
+         AND item.segment_id = review.segment_id
+        WHERE review.review_batch = 'batch3'
+        """,
+        (run_id,),
+    ).fetchone()
+    short_label_style_current_batch3_current_by_decision = conn.execute(
+        """
+        SELECT review.decision, COUNT(*) AS count
+        FROM temp_short_label_style_current_lifecycle_review review
+        JOIN segment_state_items item
+          ON item.run_id = ?
+         AND item.segment_id = review.segment_id
+         AND item.final_state = review.target_state
+        WHERE review.review_batch = 'batch3'
+        GROUP BY review.decision
+        ORDER BY review.decision
+        """,
+        (run_id,),
+    ).fetchall()
+    autofix_semantic_companion_bridge_summary = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result = 'blocked' THEN 1 ELSE 0 END) AS blocked,
+            SUM(CASE WHEN baseline_needs_reopen = 1
+                      AND baseline_final_state = 'reopen_auto_confirmed_autofix'
+                     THEN 1 ELSE 0 END) AS governed_false_reopen_candidates,
+            MAX(live_segment_state_run_id) AS live_segment_state_run_id
+        FROM temp_autofix_semantic_companion_false_reopen_bridge
+        WHERE decision = 'companion_ready_autofix_semantic_plain_sentence'
+        """
+    ).fetchone()
+    autofix_semantic_companion_blocked_by_reason = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM temp_autofix_semantic_companion_false_reopen_bridge
+        WHERE decision = 'companion_ready_autofix_semantic_plain_sentence'
+          AND bridge_result != 'closed'
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    autofix_semantic_companion_preserved_by_decision = conn.execute(
+        """
+        SELECT decision, COUNT(*) AS count
+        FROM temp_autofix_semantic_companion_false_reopen_bridge
+        WHERE decision != 'companion_ready_autofix_semantic_plain_sentence'
+        GROUP BY decision
+        ORDER BY count DESC, decision
+        """
+    ).fetchall()
+    autofix_semantic_companion_current_closed = conn.execute(
+        """
+        SELECT COUNT(*) AS closed
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND final_state = ?
+        """,
+        (run_id, AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_FALSE_REOPEN_LIFECYCLE_STATE),
+    ).fetchone()
+    autofix_semantic_composition_bridge_summary = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result = 'blocked' THEN 1 ELSE 0 END) AS blocked,
+            MAX(live_segment_state_run_id) AS live_segment_state_run_id
+        FROM temp_autofix_semantic_composition_plain_prose_bridge
+        WHERE decision = 'composition_ready_plain_prose'
+        """
+    ).fetchone()
+    autofix_semantic_composition_baseline_split = conn.execute(
+        """
+        SELECT
+            COALESCE(baseline_final_state, 'missing') AS baseline_final_state,
+            COALESCE(CAST(baseline_needs_reopen AS TEXT), 'missing') AS baseline_needs_reopen,
+            COUNT(*) AS count
+        FROM temp_autofix_semantic_composition_plain_prose_bridge
+        WHERE decision = 'composition_ready_plain_prose'
+        GROUP BY COALESCE(baseline_final_state, 'missing'), COALESCE(CAST(baseline_needs_reopen AS TEXT), 'missing')
+        ORDER BY count DESC, baseline_final_state, baseline_needs_reopen
+        """
+    ).fetchall()
+    autofix_semantic_composition_blocked_by_reason = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM temp_autofix_semantic_composition_plain_prose_bridge
+        WHERE decision = 'composition_ready_plain_prose'
+          AND bridge_result != 'closed'
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    autofix_semantic_composition_preserved_by_decision = conn.execute(
+        """
+        SELECT decision, COUNT(*) AS count
+        FROM temp_autofix_semantic_composition_plain_prose_bridge
+        WHERE decision != 'composition_ready_plain_prose'
+        GROUP BY decision
+        ORDER BY count DESC, decision
+        """
+    ).fetchall()
+    autofix_semantic_composition_current_closed = conn.execute(
+        """
+        SELECT COUNT(*) AS closed
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND final_state = ?
+        """,
+        (run_id, AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_LIFECYCLE_STATE),
+    ).fetchone()
+    autofix_semantic_trait_epithet_style_bridge_summary = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result = 'blocked' THEN 1 ELSE 0 END) AS blocked,
+            MAX(live_segment_state_run_id) AS live_segment_state_run_id
+        FROM temp_autofix_semantic_trait_epithet_style_bridge
+        WHERE decision = 'trait_epithet_style_watch_lifecycle'
+        """
+    ).fetchone()
+    autofix_semantic_trait_epithet_style_baseline_split = conn.execute(
+        """
+        SELECT
+            COALESCE(baseline_final_state, 'missing') AS baseline_final_state,
+            COALESCE(CAST(baseline_needs_reopen AS TEXT), 'missing') AS baseline_needs_reopen,
+            COUNT(*) AS count
+        FROM temp_autofix_semantic_trait_epithet_style_bridge
+        WHERE decision = 'trait_epithet_style_watch_lifecycle'
+        GROUP BY COALESCE(baseline_final_state, 'missing'), COALESCE(CAST(baseline_needs_reopen AS TEXT), 'missing')
+        ORDER BY count DESC, baseline_final_state, baseline_needs_reopen
+        """
+    ).fetchall()
+    autofix_semantic_trait_epithet_style_blocked_by_reason = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM temp_autofix_semantic_trait_epithet_style_bridge
+        WHERE decision = 'trait_epithet_style_watch_lifecycle'
+          AND bridge_result != 'closed'
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    autofix_semantic_trait_epithet_style_preserved_by_decision = conn.execute(
+        """
+        SELECT decision, COUNT(*) AS count
+        FROM temp_autofix_semantic_trait_epithet_style_bridge
+        WHERE decision != 'trait_epithet_style_watch_lifecycle'
+        GROUP BY decision
+        ORDER BY count DESC, decision
+        """
+    ).fetchall()
+    autofix_semantic_trait_epithet_style_current_closed = conn.execute(
+        """
+        SELECT COUNT(*) AS closed
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND final_state = ?
+        """,
+        (run_id, AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_LIFECYCLE_STATE),
+    ).fetchone()
+    autofix_semantic_composition_batch2_bridge_summary = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result = 'blocked' THEN 1 ELSE 0 END) AS blocked,
+            MAX(live_segment_state_run_id) AS live_segment_state_run_id
+        FROM temp_autofix_semantic_composition_plain_prose_batch2_bridge
+        WHERE decision = 'composition_ready_plain_prose'
+        """
+    ).fetchone()
+    autofix_semantic_composition_batch2_baseline_split = conn.execute(
+        """
+        SELECT
+            COALESCE(baseline_final_state, 'missing') AS baseline_final_state,
+            COALESCE(CAST(baseline_needs_reopen AS TEXT), 'missing') AS baseline_needs_reopen,
+            COUNT(*) AS count
+        FROM temp_autofix_semantic_composition_plain_prose_batch2_bridge
+        WHERE decision = 'composition_ready_plain_prose'
+        GROUP BY COALESCE(baseline_final_state, 'missing'), COALESCE(CAST(baseline_needs_reopen AS TEXT), 'missing')
+        ORDER BY count DESC, baseline_final_state, baseline_needs_reopen
+        """
+    ).fetchall()
+    autofix_semantic_composition_batch2_blocked_by_reason = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM temp_autofix_semantic_composition_plain_prose_batch2_bridge
+        WHERE decision = 'composition_ready_plain_prose'
+          AND bridge_result != 'closed'
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    autofix_semantic_composition_batch2_preserved_by_decision = conn.execute(
+        """
+        SELECT decision, COUNT(*) AS count
+        FROM temp_autofix_semantic_composition_plain_prose_batch2_bridge
+        WHERE decision != 'composition_ready_plain_prose'
+        GROUP BY decision
+        ORDER BY count DESC, decision
+        """
+    ).fetchall()
+    autofix_semantic_composition_batch2_current_closed = conn.execute(
+        """
+        SELECT COUNT(*) AS closed
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND final_state = ?
+        """,
+        (run_id, AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH2_LIFECYCLE_STATE),
+    ).fetchone()
+    autofix_semantic_companion_batch2_bridge_summary = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result = 'blocked' THEN 1 ELSE 0 END) AS blocked,
+            MAX(live_segment_state_run_id) AS live_segment_state_run_id
+        FROM temp_autofix_semantic_companion_plain_sentence_batch2_bridge
+        WHERE decision = 'companion_ready_autofix_semantic_plain_sentence'
+        """
+    ).fetchone()
+    autofix_semantic_companion_batch2_baseline_split = conn.execute(
+        """
+        SELECT
+            COALESCE(baseline_final_state, 'missing') AS baseline_final_state,
+            COALESCE(CAST(baseline_needs_reopen AS TEXT), 'missing') AS baseline_needs_reopen,
+            COUNT(*) AS count
+        FROM temp_autofix_semantic_companion_plain_sentence_batch2_bridge
+        WHERE decision = 'companion_ready_autofix_semantic_plain_sentence'
+        GROUP BY COALESCE(baseline_final_state, 'missing'), COALESCE(CAST(baseline_needs_reopen AS TEXT), 'missing')
+        ORDER BY count DESC, baseline_final_state, baseline_needs_reopen
+        """
+    ).fetchall()
+    autofix_semantic_companion_batch2_blocked_by_reason = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM temp_autofix_semantic_companion_plain_sentence_batch2_bridge
+        WHERE decision = 'companion_ready_autofix_semantic_plain_sentence'
+          AND bridge_result != 'closed'
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    autofix_semantic_companion_batch2_preserved_by_decision = conn.execute(
+        """
+        SELECT decision, COUNT(*) AS count
+        FROM temp_autofix_semantic_companion_plain_sentence_batch2_bridge
+        WHERE decision != 'companion_ready_autofix_semantic_plain_sentence'
+        GROUP BY decision
+        ORDER BY count DESC, decision
+        """
+    ).fetchall()
+    autofix_semantic_companion_batch2_current_closed = conn.execute(
+        """
+        SELECT COUNT(*) AS closed
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND final_state = ?
+        """,
+        (run_id, AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE),
+    ).fetchone()
+    autofix_semantic_composition_batch3_bridge_summary = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result = 'blocked' THEN 1 ELSE 0 END) AS blocked,
+            MAX(live_segment_state_run_id) AS live_segment_state_run_id
+        FROM temp_autofix_semantic_composition_batch3_bridge
+        WHERE decision IN ('composition_ready_plain_prose', 'composition_ready_event_context')
+        """
+    ).fetchone()
+    autofix_semantic_composition_batch3_by_decision = conn.execute(
+        """
+        SELECT decision, target_state, bridge_result, COUNT(*) AS count
+        FROM temp_autofix_semantic_composition_batch3_bridge
+        WHERE decision IN ('composition_ready_plain_prose', 'composition_ready_event_context')
+        GROUP BY decision, target_state, bridge_result
+        ORDER BY decision, target_state, bridge_result
+        """
+    ).fetchall()
+    autofix_semantic_composition_batch3_baseline_split = conn.execute(
+        """
+        SELECT
+            COALESCE(baseline_final_state, 'missing') AS baseline_final_state,
+            COALESCE(CAST(baseline_needs_reopen AS TEXT), 'missing') AS baseline_needs_reopen,
+            COUNT(*) AS count
+        FROM temp_autofix_semantic_composition_batch3_bridge
+        WHERE decision IN ('composition_ready_plain_prose', 'composition_ready_event_context')
+        GROUP BY COALESCE(baseline_final_state, 'missing'), COALESCE(CAST(baseline_needs_reopen AS TEXT), 'missing')
+        ORDER BY count DESC, baseline_final_state, baseline_needs_reopen
+        """
+    ).fetchall()
+    autofix_semantic_composition_batch3_blocked_by_reason = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM temp_autofix_semantic_composition_batch3_bridge
+        WHERE decision IN ('composition_ready_plain_prose', 'composition_ready_event_context')
+          AND bridge_result != 'closed'
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    autofix_semantic_composition_batch3_preserved_by_decision = conn.execute(
+        """
+        SELECT decision, COUNT(*) AS count
+        FROM temp_autofix_semantic_composition_batch3_bridge
+        WHERE decision NOT IN ('composition_ready_plain_prose', 'composition_ready_event_context')
+        GROUP BY decision
+        ORDER BY count DESC, decision
+        """
+    ).fetchall()
+    autofix_semantic_composition_batch3_current_closed_plain = conn.execute(
+        """
+        SELECT COUNT(*) AS closed
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND final_state = ?
+        """,
+        (run_id, AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH3_LIFECYCLE_STATE),
+    ).fetchone()
+    autofix_semantic_composition_batch3_current_closed_event = conn.execute(
+        """
+        SELECT COUNT(*) AS closed
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND final_state = ?
+        """,
+        (run_id, AUTOFIX_SEMANTIC_COMPOSITION_EVENT_CONTEXT_BATCH3_LIFECYCLE_STATE),
+    ).fetchone()
+    autofix_semantic_context_batch4_bridge_summary = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result = 'blocked' THEN 1 ELSE 0 END) AS blocked,
+            MAX(live_segment_state_run_id) AS live_segment_state_run_id
+        FROM temp_autofix_semantic_context_batch4_bridge
+        WHERE decision IN (
+            'context_ready_plain_prose',
+            'context_ready_short_event_context',
+            'context_ready_memory_or_activity',
+            'context_ready_ui_tooltip'
+        )
+        """
+    ).fetchone()
+    autofix_semantic_context_batch4_by_decision = conn.execute(
+        """
+        SELECT decision, target_state, bridge_result, COUNT(*) AS count
+        FROM temp_autofix_semantic_context_batch4_bridge
+        WHERE decision IN (
+            'context_ready_plain_prose',
+            'context_ready_short_event_context',
+            'context_ready_memory_or_activity',
+            'context_ready_ui_tooltip'
+        )
+        GROUP BY decision, target_state, bridge_result
+        ORDER BY decision, target_state, bridge_result
+        """
+    ).fetchall()
+    autofix_semantic_context_batch4_baseline_split = conn.execute(
+        """
+        SELECT
+            COALESCE(baseline_final_state, 'missing') AS baseline_final_state,
+            COALESCE(CAST(baseline_needs_reopen AS TEXT), 'missing') AS baseline_needs_reopen,
+            COUNT(*) AS count
+        FROM temp_autofix_semantic_context_batch4_bridge
+        WHERE decision IN (
+            'context_ready_plain_prose',
+            'context_ready_short_event_context',
+            'context_ready_memory_or_activity',
+            'context_ready_ui_tooltip'
+        )
+        GROUP BY COALESCE(baseline_final_state, 'missing'), COALESCE(CAST(baseline_needs_reopen AS TEXT), 'missing')
+        ORDER BY count DESC, baseline_final_state, baseline_needs_reopen
+        """
+    ).fetchall()
+    autofix_semantic_context_batch4_blocked_by_reason = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM temp_autofix_semantic_context_batch4_bridge
+        WHERE decision IN (
+            'context_ready_plain_prose',
+            'context_ready_short_event_context',
+            'context_ready_memory_or_activity',
+            'context_ready_ui_tooltip'
+        )
+          AND bridge_result != 'closed'
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    autofix_semantic_context_batch4_preserved_by_decision = conn.execute(
+        """
+        SELECT decision, COUNT(*) AS count
+        FROM temp_autofix_semantic_context_batch4_bridge
+        WHERE decision NOT IN (
+            'context_ready_plain_prose',
+            'context_ready_short_event_context',
+            'context_ready_memory_or_activity',
+            'context_ready_ui_tooltip'
+        )
+        GROUP BY decision
+        ORDER BY count DESC, decision
+        """
+    ).fetchall()
+    autofix_semantic_context_batch4_current_closed_plain = conn.execute(
+        """
+        SELECT COUNT(*) AS closed
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND final_state = ?
+        """,
+        (run_id, AUTOFIX_SEMANTIC_CONTEXT_PLAIN_PROSE_BATCH4_LIFECYCLE_STATE),
+    ).fetchone()
+    autofix_semantic_context_batch4_current_closed_short_event = conn.execute(
+        """
+        SELECT COUNT(*) AS closed
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND final_state = ?
+        """,
+        (run_id, AUTOFIX_SEMANTIC_CONTEXT_SHORT_EVENT_BATCH4_LIFECYCLE_STATE),
+    ).fetchone()
+    autofix_semantic_context_batch4_current_closed_memory_activity = conn.execute(
+        """
+        SELECT COUNT(*) AS closed
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND final_state = ?
+        """,
+        (run_id, AUTOFIX_SEMANTIC_CONTEXT_MEMORY_ACTIVITY_BATCH4_LIFECYCLE_STATE),
+    ).fetchone()
+    autofix_semantic_context_batch4_current_closed_ui_tooltip = conn.execute(
+        """
+        SELECT COUNT(*) AS closed
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND final_state = ?
+        """,
+        (run_id, AUTOFIX_SEMANTIC_CONTEXT_UI_TOOLTIP_BATCH4_LIFECYCLE_STATE),
+    ).fetchone()
+    semantic_short_label_companion_bridge_summary = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result = 'blocked' THEN 1 ELSE 0 END) AS blocked,
+            MAX(live_segment_state_run_id) AS live_segment_state_run_id
+        FROM temp_semantic_short_label_companion_bridge
+        WHERE decision = 'semantic_short_label_companion_ready_false_reopen'
+        """
+    ).fetchone()
+    semantic_short_label_companion_by_decision = conn.execute(
+        """
+        SELECT decision, target_state, bridge_result, COUNT(*) AS count
+        FROM temp_semantic_short_label_companion_bridge
+        WHERE decision = 'semantic_short_label_companion_ready_false_reopen'
+        GROUP BY decision, target_state, bridge_result
+        ORDER BY decision, target_state, bridge_result
+        """
+    ).fetchall()
+    semantic_short_label_companion_baseline_split = conn.execute(
+        """
+        SELECT
+            COALESCE(baseline_final_state, 'missing') AS baseline_final_state,
+            COALESCE(CAST(baseline_needs_reopen AS TEXT), 'missing') AS baseline_needs_reopen,
+            COUNT(*) AS count
+        FROM temp_semantic_short_label_companion_bridge
+        WHERE decision = 'semantic_short_label_companion_ready_false_reopen'
+        GROUP BY COALESCE(baseline_final_state, 'missing'), COALESCE(CAST(baseline_needs_reopen AS TEXT), 'missing')
+        ORDER BY count DESC, baseline_final_state, baseline_needs_reopen
+        """
+    ).fetchall()
+    semantic_short_label_companion_blocked_by_reason = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM temp_semantic_short_label_companion_bridge
+        WHERE decision = 'semantic_short_label_companion_ready_false_reopen'
+          AND bridge_result != 'closed'
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    semantic_short_label_companion_preserved_by_decision = conn.execute(
+        """
+        SELECT decision, COUNT(*) AS count
+        FROM temp_semantic_short_label_companion_bridge
+        WHERE decision != 'semantic_short_label_companion_ready_false_reopen'
+        GROUP BY decision
+        ORDER BY count DESC, decision
+        """
+    ).fetchall()
+    semantic_short_label_companion_current_closed = conn.execute(
+        """
+        SELECT COUNT(*) AS closed
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND final_state = ?
+        """,
+        (run_id, SEMANTIC_SHORT_LABEL_COMPANION_FALSE_REOPEN_LIFECYCLE_STATE),
+    ).fetchone()
+    dynamic_gender_bridge_summary = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result = 'blocked' THEN 1 ELSE 0 END) AS blocked,
+            MAX(live_segment_state_run_id) AS live_segment_state_run_id
+        FROM temp_dynamic_gender_ready_false_reopen_bridge
+        WHERE decision IN (
+            'dynamic_gender_ready_select_cstring_false_reopen',
+            'dynamic_gender_ready_custom_loc_false_reopen'
+        )
+        """
+    ).fetchone()
+    dynamic_gender_by_decision = conn.execute(
+        """
+        SELECT decision, target_state, bridge_result, COUNT(*) AS count
+        FROM temp_dynamic_gender_ready_false_reopen_bridge
+        WHERE decision IN (
+            'dynamic_gender_ready_select_cstring_false_reopen',
+            'dynamic_gender_ready_custom_loc_false_reopen'
+        )
+        GROUP BY decision, target_state, bridge_result
+        ORDER BY decision, target_state, bridge_result
+        """
+    ).fetchall()
+    dynamic_gender_baseline_split = conn.execute(
+        """
+        SELECT
+            COALESCE(baseline_final_state, 'missing') AS baseline_final_state,
+            COALESCE(CAST(baseline_needs_reopen AS TEXT), 'missing') AS baseline_needs_reopen,
+            COUNT(*) AS count
+        FROM temp_dynamic_gender_ready_false_reopen_bridge
+        WHERE decision IN (
+            'dynamic_gender_ready_select_cstring_false_reopen',
+            'dynamic_gender_ready_custom_loc_false_reopen'
+        )
+        GROUP BY COALESCE(baseline_final_state, 'missing'), COALESCE(CAST(baseline_needs_reopen AS TEXT), 'missing')
+        ORDER BY count DESC, baseline_final_state, baseline_needs_reopen
+        """
+    ).fetchall()
+    dynamic_gender_blocked_by_reason = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM temp_dynamic_gender_ready_false_reopen_bridge
+        WHERE decision IN (
+            'dynamic_gender_ready_select_cstring_false_reopen',
+            'dynamic_gender_ready_custom_loc_false_reopen'
+        )
+          AND bridge_result != 'closed'
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    dynamic_gender_preserved_by_decision = conn.execute(
+        """
+        SELECT decision, COUNT(*) AS count
+        FROM temp_dynamic_gender_ready_false_reopen_bridge
+        WHERE decision NOT IN (
+            'dynamic_gender_ready_select_cstring_false_reopen',
+            'dynamic_gender_ready_custom_loc_false_reopen'
+        )
+        GROUP BY decision
+        ORDER BY count DESC, decision
+        """
+    ).fetchall()
+    dynamic_gender_current_closed_by_state = conn.execute(
+        """
+        SELECT final_state, COUNT(*) AS closed
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND final_state IN (?, ?)
+        GROUP BY final_state
+        ORDER BY final_state
+        """,
+        (
+            run_id,
+            DYNAMIC_GENDER_SELECT_CSTRING_FALSE_REOPEN_LIFECYCLE_STATE,
+            DYNAMIC_GENDER_CUSTOM_LOC_FALSE_REOPEN_LIFECYCLE_STATE,
+        ),
+    ).fetchall()
+    autofix_unknown_single_batch2_bridge_summary = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS candidates,
+            SUM(CASE WHEN bridge_result = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN bridge_result = 'blocked' THEN 1 ELSE 0 END) AS blocked,
+            MAX(live_segment_state_run_id) AS live_segment_state_run_id
+        FROM temp_autofix_unknown_single_batch2_ready_lifecycle
+        WHERE decision = 'single_autofix_ready_false_reopen'
+        """
+    ).fetchone()
+    autofix_unknown_single_batch2_blocked_by_reason = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(block_reason, ''), 'none') AS block_reason, COUNT(*) AS count
+        FROM temp_autofix_unknown_single_batch2_ready_lifecycle
+        WHERE decision = 'single_autofix_ready_false_reopen'
+          AND bridge_result != 'closed'
+        GROUP BY COALESCE(NULLIF(block_reason, ''), 'none')
+        ORDER BY count DESC, block_reason
+        """
+    ).fetchall()
+    autofix_unknown_single_batch2_preserved_by_decision = conn.execute(
+        """
+        SELECT decision, COUNT(*) AS count
+        FROM temp_autofix_unknown_single_batch2_ready_lifecycle
+        WHERE decision != 'single_autofix_ready_false_reopen'
+        GROUP BY decision
+        ORDER BY count DESC, decision
+        """
+    ).fetchall()
+    autofix_unknown_single_batch2_current_closed_by_state = conn.execute(
+        """
+        SELECT final_state, COUNT(*) AS closed
+        FROM segment_state_items
+        WHERE run_id = ?
+          AND final_state = ?
+        GROUP BY final_state
+        ORDER BY final_state
+        """,
+        (run_id, AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE),
+    ).fetchall()
     lines = [
         "Segment State Snapshot",
         f"Rule version: {RULE_VERSION}",
@@ -15568,6 +21056,8 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
         f"- Fechados por ponte governada Select_CString: {counters['final_state'].get('closed_auto_confirmed_select_cstring_governed_bridge', 0):,}",
         f"- Fechados por ponte segment-level Select_CString: {counters['final_state'].get('closed_auto_confirmed_select_cstring_segment_lifecycle_bridge', 0):,}",
         f"- Fechados por ponte short-label pure no-token: {counters['final_state'].get('closed_auto_confirmed_short_label_pure_no_token_segment_lifecycle_bridge', 0):,}",
+        f"- Fechados por ponte dynamic + gender false-reopen: {counters['final_state'].get(DYNAMIC_GENDER_SELECT_CSTRING_FALSE_REOPEN_LIFECYCLE_STATE, 0) + counters['final_state'].get(DYNAMIC_GENDER_CUSTOM_LOC_FALSE_REOPEN_LIFECYCLE_STATE, 0):,}",
+        f"- Fechados por ponte autofix_unknown single-family batch2 false-reopen: {counters['final_state'].get(AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE, 0):,}",
         f"- Fechados por ponte short-label pure no-token domain: {counters['final_state'].get('closed_auto_confirmed_short_label_pure_no_token_domain_lifecycle', 0):,}",
         f"- Fechados por ponte short-label compact UI false-reopen: {counters['final_state'].get('closed_auto_confirmed_short_label_compact_ui_false_reopen_lifecycle', 0):,}",
         f"- Fechados por ponte short-label compact UI semantic companion: {counters['final_state'].get('closed_auto_confirmed_short_label_compact_ui_semantic_companion_lifecycle', 0):,}",
@@ -15616,6 +21106,16 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
         f"- Fechados por microreparo parentesco/posse: {counters['final_state'].get('closed_auto_confirmed_relation_possessive_boundary_microrepair', 0):,}",
         f"- Fechados por compositor semantico de parentesco: {counters['final_state'].get('closed_auto_confirmed_relation_semantic_composer_reviewed_repair', 0):,}",
         f"- Dynamic acclaimed knight requirement style-watch lifecycle closed: {counters['final_state'].get(DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_STYLE_WATCH_LIFECYCLE_STATE, 0):,}",
+        f"- Short label style current lifecycle closed: "
+        f"{counters['final_state'].get(SHORT_LABEL_STYLE_CURRENT_SHORT_PHRASE_LIFECYCLE_STATE, 0) + counters['final_state'].get(SHORT_LABEL_STYLE_CURRENT_COMPACT_UI_LABEL_LIFECYCLE_STATE, 0) + counters['final_state'].get(SHORT_LABEL_STYLE_CURRENT_PLAIN_NOOP_LIFECYCLE_STATE, 0):,}",
+        f"- Autofix semantic companion plain-sentence false-reopen lifecycle closed: {counters['final_state'].get(AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_FALSE_REOPEN_LIFECYCLE_STATE, 0):,}",
+        f"- Autofix semantic composition plain-prose lifecycle closed: {counters['final_state'].get(AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_LIFECYCLE_STATE, 0):,}",
+        f"- Autofix semantic composition plain-prose batch2 lifecycle closed: {counters['final_state'].get(AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH2_LIFECYCLE_STATE, 0):,}",
+        f"- Autofix semantic companion plain-sentence batch2 false-reopen lifecycle closed: {counters['final_state'].get(AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE, 0):,}",
+        f"- Autofix semantic composition batch3 lifecycle closed: {counters['final_state'].get(AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH3_LIFECYCLE_STATE, 0) + counters['final_state'].get(AUTOFIX_SEMANTIC_COMPOSITION_EVENT_CONTEXT_BATCH3_LIFECYCLE_STATE, 0):,}",
+        f"- Autofix semantic context batch4 lifecycle closed: {counters['final_state'].get(AUTOFIX_SEMANTIC_CONTEXT_PLAIN_PROSE_BATCH4_LIFECYCLE_STATE, 0) + counters['final_state'].get(AUTOFIX_SEMANTIC_CONTEXT_SHORT_EVENT_BATCH4_LIFECYCLE_STATE, 0) + counters['final_state'].get(AUTOFIX_SEMANTIC_CONTEXT_MEMORY_ACTIVITY_BATCH4_LIFECYCLE_STATE, 0) + counters['final_state'].get(AUTOFIX_SEMANTIC_CONTEXT_UI_TOOLTIP_BATCH4_LIFECYCLE_STATE, 0):,}",
+        f"- Semantic short-label companion false-reopen lifecycle closed: {counters['final_state'].get(SEMANTIC_SHORT_LABEL_COMPANION_FALSE_REOPEN_LIFECYCLE_STATE, 0):,}",
+        f"- Autofix semantic trait/epithet style lifecycle closed: {counters['final_state'].get(AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_LIFECYCLE_STATE, 0):,}",
         f"- Single combat signature weapon already-good lifecycle closed: {len(single_combat_already_good_closed):,}",
         f"- Single combat signature weapon already-good blocked/preserved: {len(single_combat_already_good_blocked):,}",
         f"- Semantic short-label domain-context event closed: {semantic_domain_closed_by_queue.get(219, 0):,}",
@@ -15643,6 +21143,486 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
     lines.extend(format_counter("Por estado de output", counters["output_state"], total))
     lines.extend(format_counter("Por estado de revisão", counters["review_state"], total))
     lines.extend(format_counter("Por estado de aplicação", counters["apply_state"], total))
+
+    if short_label_style_current_bridge_summary:
+        lines.extend(
+            [
+                "",
+                "Short label style current lifecycle bridge:",
+                f"- review_jsonl: {SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_REVIEWED_JSONL}",
+                f"- review_jsonl_batch2: {SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_BATCH2_REVIEWED_JSONL}",
+                f"- review_jsonl_batch3: {SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_BATCH3_REVIEWED_JSONL}",
+                f"- candidates_cumulative: {int(short_label_style_current_bridge_summary['candidates'] or 0):,}",
+                f"- closed_cumulative: {int(short_label_style_current_bridge_summary['closed'] or 0):,}",
+                f"- blocked_cumulative: {int(short_label_style_current_bridge_summary['blocked'] or 0):,}",
+                f"- batch2_candidates: {int(short_label_style_current_batch2_summary['candidates'] or 0):,}",
+                f"- batch2_closed: {int(short_label_style_current_batch2_summary['closed'] or 0):,}",
+                f"- batch2_blocked: {int(short_label_style_current_batch2_summary['blocked'] or 0):,}",
+                f"- batch3_candidates: {int(short_label_style_current_batch3_summary['candidates'] or 0):,}",
+                f"- batch3_closed: {int(short_label_style_current_batch3_summary['closed'] or 0):,}",
+                f"- batch3_blocked: {int(short_label_style_current_batch3_summary['blocked'] or 0):,}",
+                f"- current_closed_cumulative: {int(short_label_style_current_current_summary['closed'] or 0):,}",
+                f"- current_batch2_candidates: {int(short_label_style_current_batch2_current_summary['candidates'] or 0):,}",
+                f"- current_batch2_closed: {int(short_label_style_current_batch2_current_summary['closed'] or 0):,}",
+                f"- current_batch2_not_closed: {int(short_label_style_current_batch2_current_summary['not_closed'] or 0):,}",
+                f"- current_batch3_candidates: {int(short_label_style_current_batch3_current_summary['candidates'] or 0):,}",
+                f"- current_batch3_closed: {int(short_label_style_current_batch3_current_summary['closed'] or 0):,}",
+                f"- current_batch3_not_closed: {int(short_label_style_current_batch3_current_summary['not_closed'] or 0):,}",
+                f"- ledger_run_id: {short_label_style_current_bridge_summary['ledger_run_id']}",
+                f"- review_segment_state_run_id: {short_label_style_current_bridge_summary['review_segment_state_run_id']}",
+                f"- live_segment_state_run_id: {short_label_style_current_bridge_summary['live_segment_state_run_id']}",
+                "- status: shadow_lifecycle_bridge",
+                "- current_closed_by_state:",
+            ]
+        )
+        if short_label_style_current_current_by_state:
+            for row in short_label_style_current_current_by_state:
+                lines.append(f"  - {row['final_state']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- current_batch2_closed_by_decision:")
+        if short_label_style_current_batch2_current_by_decision:
+            for row in short_label_style_current_batch2_current_by_decision:
+                lines.append(f"  - {row['decision']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- current_batch3_closed_by_decision:")
+        if short_label_style_current_batch3_current_by_decision:
+            for row in short_label_style_current_batch3_current_by_decision:
+                lines.append(f"  - {row['decision']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.extend(
+            [
+                "- closed_by_decision:",
+            ]
+        )
+        if short_label_style_current_closed_by_decision:
+            for row in short_label_style_current_closed_by_decision:
+                lines.append(f"  - {row['decision']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- blocked_by_reason:")
+        if short_label_style_current_blocked_by_reason:
+            for row in short_label_style_current_blocked_by_reason:
+                lines.append(f"  - {row['block_reason']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- batch2_blocked_by_reason:")
+        if short_label_style_current_batch2_blocked_by_reason:
+            for row in short_label_style_current_batch2_blocked_by_reason:
+                lines.append(f"  - {row['block_reason']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- batch3_blocked_by_reason:")
+        if short_label_style_current_batch3_blocked_by_reason:
+            for row in short_label_style_current_batch3_blocked_by_reason:
+                lines.append(f"  - {row['block_reason']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+
+    if autofix_semantic_companion_bridge_summary:
+        lines.extend(
+            [
+                "",
+                "Autofix semantic companion false-reopen lifecycle bridge:",
+                f"- review_jsonl: {AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_REVIEWED_JSONL}",
+                "- allowlist_decision: companion_ready_autofix_semantic_plain_sentence",
+                f"- target_state: {AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_FALSE_REOPEN_LIFECYCLE_STATE}",
+                f"- candidates: {int(autofix_semantic_companion_bridge_summary['candidates'] or 0):,}",
+                f"- closed: {int(autofix_semantic_companion_bridge_summary['closed'] or 0):,}",
+                f"- blocked: {int(autofix_semantic_companion_bridge_summary['blocked'] or 0):,}",
+                f"- governed_false_reopen_candidates: {int(autofix_semantic_companion_bridge_summary['governed_false_reopen_candidates'] or 0):,}",
+                f"- current_closed: {int(autofix_semantic_companion_current_closed['closed'] or 0):,}",
+                f"- live_segment_state_run_id: {autofix_semantic_companion_bridge_summary['live_segment_state_run_id']}",
+                "- status: shadow_lifecycle_false_reopen_bridge",
+                "- blocked_by_reason:",
+            ]
+        )
+        if autofix_semantic_companion_blocked_by_reason:
+            for row in autofix_semantic_companion_blocked_by_reason:
+                lines.append(f"  - {row['block_reason']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- preserved_by_decision_outside_allowlist:")
+        if autofix_semantic_companion_preserved_by_decision:
+            for row in autofix_semantic_companion_preserved_by_decision:
+                lines.append(f"  - {row['decision']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+
+    if autofix_semantic_composition_bridge_summary:
+        lines.extend(
+            [
+                "",
+                "Autofix semantic composition plain-prose lifecycle bridge:",
+                f"- review_jsonl: {AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_REVIEWED_JSONL}",
+                "- allowlist_decision: composition_ready_plain_prose",
+                f"- target_state: {AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_LIFECYCLE_STATE}",
+                f"- candidates: {int(autofix_semantic_composition_bridge_summary['candidates'] or 0):,}",
+                f"- closed: {int(autofix_semantic_composition_bridge_summary['closed'] or 0):,}",
+                f"- blocked: {int(autofix_semantic_composition_bridge_summary['blocked'] or 0):,}",
+                f"- current_closed: {int(autofix_semantic_composition_current_closed['closed'] or 0):,}",
+                f"- live_segment_state_run_id: {autofix_semantic_composition_bridge_summary['live_segment_state_run_id']}",
+                "- status: shadow_lifecycle_composition_bridge",
+                "- baseline_split:",
+            ]
+        )
+        if autofix_semantic_composition_baseline_split:
+            for row in autofix_semantic_composition_baseline_split:
+                lines.append(
+                    f"  - final_state={row['baseline_final_state']} | needs_reopen={row['baseline_needs_reopen']}: {int(row['count'] or 0):,}"
+                )
+        else:
+            lines.append("  - none: 0")
+        lines.append("- blocked_by_reason:")
+        if autofix_semantic_composition_blocked_by_reason:
+            for row in autofix_semantic_composition_blocked_by_reason:
+                lines.append(f"  - {row['block_reason']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- preserved_by_decision_outside_allowlist:")
+        if autofix_semantic_composition_preserved_by_decision:
+            for row in autofix_semantic_composition_preserved_by_decision:
+                lines.append(f"  - {row['decision']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+
+    if autofix_semantic_trait_epithet_style_bridge_summary:
+        lines.extend(
+            [
+                "",
+                "Autofix semantic trait/epithet style lifecycle bridge:",
+                f"- review_jsonl: {AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_REVIEWED_JSONL}",
+                "- allowlist_decision: trait_epithet_style_watch_lifecycle",
+                f"- target_state: {AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_LIFECYCLE_STATE}",
+                f"- candidates: {int(autofix_semantic_trait_epithet_style_bridge_summary['candidates'] or 0):,}",
+                f"- closed: {int(autofix_semantic_trait_epithet_style_bridge_summary['closed'] or 0):,}",
+                f"- blocked: {int(autofix_semantic_trait_epithet_style_bridge_summary['blocked'] or 0):,}",
+                f"- current_closed: {int(autofix_semantic_trait_epithet_style_current_closed['closed'] or 0):,}",
+                f"- live_segment_state_run_id: {autofix_semantic_trait_epithet_style_bridge_summary['live_segment_state_run_id']}",
+                "- status: shadow_lifecycle_style_bridge",
+                "- baseline_split:",
+            ]
+        )
+        if autofix_semantic_trait_epithet_style_baseline_split:
+            for row in autofix_semantic_trait_epithet_style_baseline_split:
+                lines.append(
+                    f"  - final_state={row['baseline_final_state']} | needs_reopen={row['baseline_needs_reopen']}: {int(row['count'] or 0):,}"
+                )
+        else:
+            lines.append("  - none: 0")
+        lines.append("- blocked_by_reason:")
+        if autofix_semantic_trait_epithet_style_blocked_by_reason:
+            for row in autofix_semantic_trait_epithet_style_blocked_by_reason:
+                lines.append(f"  - {row['block_reason']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- preserved_by_decision_outside_allowlist:")
+        if autofix_semantic_trait_epithet_style_preserved_by_decision:
+            for row in autofix_semantic_trait_epithet_style_preserved_by_decision:
+                lines.append(f"  - {row['decision']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+
+    if autofix_semantic_composition_batch2_bridge_summary:
+        lines.extend(
+            [
+                "",
+                "Autofix semantic composition plain-prose batch2 lifecycle bridge:",
+                f"- review_jsonl: {AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH2_REVIEWED_JSONL}",
+                "- allowlist_decision: composition_ready_plain_prose",
+                f"- target_state: {AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH2_LIFECYCLE_STATE}",
+                f"- candidates: {int(autofix_semantic_composition_batch2_bridge_summary['candidates'] or 0):,}",
+                f"- closed: {int(autofix_semantic_composition_batch2_bridge_summary['closed'] or 0):,}",
+                f"- blocked: {int(autofix_semantic_composition_batch2_bridge_summary['blocked'] or 0):,}",
+                f"- current_closed: {int(autofix_semantic_composition_batch2_current_closed['closed'] or 0):,}",
+                f"- live_segment_state_run_id: {autofix_semantic_composition_batch2_bridge_summary['live_segment_state_run_id']}",
+                "- status: shadow_lifecycle_composition_bridge_batch2",
+                "- baseline_split:",
+            ]
+        )
+        if autofix_semantic_composition_batch2_baseline_split:
+            for row in autofix_semantic_composition_batch2_baseline_split:
+                lines.append(
+                    f"  - final_state={row['baseline_final_state']} | needs_reopen={row['baseline_needs_reopen']}: {int(row['count'] or 0):,}"
+                )
+        else:
+            lines.append("  - none: 0")
+        lines.append("- blocked_by_reason:")
+        if autofix_semantic_composition_batch2_blocked_by_reason:
+            for row in autofix_semantic_composition_batch2_blocked_by_reason:
+                lines.append(f"  - {row['block_reason']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- preserved_by_decision_outside_allowlist:")
+        if autofix_semantic_composition_batch2_preserved_by_decision:
+            for row in autofix_semantic_composition_batch2_preserved_by_decision:
+                lines.append(f"  - {row['decision']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+
+    if autofix_semantic_companion_batch2_bridge_summary:
+        lines.extend(
+            [
+                "",
+                "Autofix semantic companion plain-sentence batch2 false-reopen lifecycle bridge:",
+                f"- review_jsonl: {AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH2_REVIEWED_JSONL}",
+                "- allowlist_decision: companion_ready_autofix_semantic_plain_sentence",
+                f"- target_state: {AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE}",
+                f"- candidates: {int(autofix_semantic_companion_batch2_bridge_summary['candidates'] or 0):,}",
+                f"- closed: {int(autofix_semantic_companion_batch2_bridge_summary['closed'] or 0):,}",
+                f"- blocked: {int(autofix_semantic_companion_batch2_bridge_summary['blocked'] or 0):,}",
+                f"- current_closed: {int(autofix_semantic_companion_batch2_current_closed['closed'] or 0):,}",
+                f"- live_segment_state_run_id: {autofix_semantic_companion_batch2_bridge_summary['live_segment_state_run_id']}",
+                "- status: shadow_lifecycle_false_reopen_bridge_batch2",
+                "- baseline_split:",
+            ]
+        )
+        if autofix_semantic_companion_batch2_baseline_split:
+            for row in autofix_semantic_companion_batch2_baseline_split:
+                lines.append(
+                    f"  - final_state={row['baseline_final_state']} | needs_reopen={row['baseline_needs_reopen']}: {int(row['count'] or 0):,}"
+                )
+        else:
+            lines.append("  - none: 0")
+        lines.append("- blocked_by_reason:")
+        if autofix_semantic_companion_batch2_blocked_by_reason:
+            for row in autofix_semantic_companion_batch2_blocked_by_reason:
+                lines.append(f"  - {row['block_reason']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- preserved_by_decision_outside_allowlist:")
+        if autofix_semantic_companion_batch2_preserved_by_decision:
+            for row in autofix_semantic_companion_batch2_preserved_by_decision:
+                lines.append(f"  - {row['decision']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+
+    if autofix_semantic_composition_batch3_bridge_summary:
+        lines.extend(
+            [
+                "",
+                "Autofix semantic composition batch3 lifecycle bridge:",
+                f"- review_jsonl: {AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH3_REVIEWED_JSONL}",
+                "- allowlist_decisions: composition_ready_plain_prose, composition_ready_event_context",
+                f"- target_state_plain_prose: {AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH3_LIFECYCLE_STATE}",
+                f"- target_state_event_context: {AUTOFIX_SEMANTIC_COMPOSITION_EVENT_CONTEXT_BATCH3_LIFECYCLE_STATE}",
+                f"- candidates: {int(autofix_semantic_composition_batch3_bridge_summary['candidates'] or 0):,}",
+                f"- closed: {int(autofix_semantic_composition_batch3_bridge_summary['closed'] or 0):,}",
+                f"- blocked: {int(autofix_semantic_composition_batch3_bridge_summary['blocked'] or 0):,}",
+                f"- current_closed_plain_prose: {int(autofix_semantic_composition_batch3_current_closed_plain['closed'] or 0):,}",
+                f"- current_closed_event_context: {int(autofix_semantic_composition_batch3_current_closed_event['closed'] or 0):,}",
+                f"- live_segment_state_run_id: {autofix_semantic_composition_batch3_bridge_summary['live_segment_state_run_id']}",
+                "- status: shadow_lifecycle_composition_bridge_batch3",
+                "- split_by_decision_and_state:",
+            ]
+        )
+        if autofix_semantic_composition_batch3_by_decision:
+            for row in autofix_semantic_composition_batch3_by_decision:
+                lines.append(
+                    f"  - {row['decision']} -> {row['target_state']} | {row['bridge_result']}: {int(row['count'] or 0):,}"
+                )
+        else:
+            lines.append("  - none: 0")
+        lines.append("- baseline_split:")
+        if autofix_semantic_composition_batch3_baseline_split:
+            for row in autofix_semantic_composition_batch3_baseline_split:
+                lines.append(
+                    f"  - final_state={row['baseline_final_state']} | needs_reopen={row['baseline_needs_reopen']}: {int(row['count'] or 0):,}"
+                )
+        else:
+            lines.append("  - none: 0")
+        lines.append("- blocked_by_reason:")
+        if autofix_semantic_composition_batch3_blocked_by_reason:
+            for row in autofix_semantic_composition_batch3_blocked_by_reason:
+                lines.append(f"  - {row['block_reason']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- preserved_by_decision_outside_allowlist:")
+        if autofix_semantic_composition_batch3_preserved_by_decision:
+            for row in autofix_semantic_composition_batch3_preserved_by_decision:
+                lines.append(f"  - {row['decision']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+
+    if autofix_semantic_context_batch4_bridge_summary:
+        lines.extend(
+            [
+                "",
+                "Autofix semantic context batch4 lifecycle bridge:",
+                f"- review_jsonl: {AUTOFIX_SEMANTIC_CONTEXT_COMPOSER_BATCH4_REVIEWED_JSONL}",
+                "- allowlist_decisions: context_ready_plain_prose, context_ready_short_event_context, context_ready_memory_or_activity, context_ready_ui_tooltip",
+                f"- target_state_plain_prose: {AUTOFIX_SEMANTIC_CONTEXT_PLAIN_PROSE_BATCH4_LIFECYCLE_STATE}",
+                f"- target_state_short_event_context: {AUTOFIX_SEMANTIC_CONTEXT_SHORT_EVENT_BATCH4_LIFECYCLE_STATE}",
+                f"- target_state_memory_or_activity: {AUTOFIX_SEMANTIC_CONTEXT_MEMORY_ACTIVITY_BATCH4_LIFECYCLE_STATE}",
+                f"- target_state_ui_tooltip: {AUTOFIX_SEMANTIC_CONTEXT_UI_TOOLTIP_BATCH4_LIFECYCLE_STATE}",
+                f"- candidates: {int(autofix_semantic_context_batch4_bridge_summary['candidates'] or 0):,}",
+                f"- closed: {int(autofix_semantic_context_batch4_bridge_summary['closed'] or 0):,}",
+                f"- blocked: {int(autofix_semantic_context_batch4_bridge_summary['blocked'] or 0):,}",
+                f"- current_closed_plain_prose: {int(autofix_semantic_context_batch4_current_closed_plain['closed'] or 0):,}",
+                f"- current_closed_short_event_context: {int(autofix_semantic_context_batch4_current_closed_short_event['closed'] or 0):,}",
+                f"- current_closed_memory_or_activity: {int(autofix_semantic_context_batch4_current_closed_memory_activity['closed'] or 0):,}",
+                f"- current_closed_ui_tooltip: {int(autofix_semantic_context_batch4_current_closed_ui_tooltip['closed'] or 0):,}",
+                f"- live_segment_state_run_id: {autofix_semantic_context_batch4_bridge_summary['live_segment_state_run_id']}",
+                "- status: shadow_lifecycle_context_bridge_batch4",
+                "- split_by_decision_and_state:",
+            ]
+        )
+        if autofix_semantic_context_batch4_by_decision:
+            for row in autofix_semantic_context_batch4_by_decision:
+                lines.append(
+                    f"  - {row['decision']} -> {row['target_state']} | {row['bridge_result']}: {int(row['count'] or 0):,}"
+                )
+        else:
+            lines.append("  - none: 0")
+        lines.append("- baseline_split:")
+        if autofix_semantic_context_batch4_baseline_split:
+            for row in autofix_semantic_context_batch4_baseline_split:
+                lines.append(
+                    f"  - final_state={row['baseline_final_state']} | needs_reopen={row['baseline_needs_reopen']}: {int(row['count'] or 0):,}"
+                )
+        else:
+            lines.append("  - none: 0")
+        lines.append("- blocked_by_reason:")
+        if autofix_semantic_context_batch4_blocked_by_reason:
+            for row in autofix_semantic_context_batch4_blocked_by_reason:
+                lines.append(f"  - {row['block_reason']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- preserved_by_decision_outside_allowlist:")
+        if autofix_semantic_context_batch4_preserved_by_decision:
+            for row in autofix_semantic_context_batch4_preserved_by_decision:
+                lines.append(f"  - {row['decision']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+
+    if semantic_short_label_companion_bridge_summary:
+        lines.extend(
+            [
+                "",
+                "Semantic short-label companion false-reopen lifecycle bridge:",
+                f"- review_jsonl: {SEMANTIC_SHORT_LABEL_COMBO_REVIEWED_JSONL}",
+                "- allowlist_decisions: semantic_short_label_companion_ready_false_reopen",
+                f"- target_state: {SEMANTIC_SHORT_LABEL_COMPANION_FALSE_REOPEN_LIFECYCLE_STATE}",
+                f"- candidates: {int(semantic_short_label_companion_bridge_summary['candidates'] or 0):,}",
+                f"- closed: {int(semantic_short_label_companion_bridge_summary['closed'] or 0):,}",
+                f"- blocked: {int(semantic_short_label_companion_bridge_summary['blocked'] or 0):,}",
+                f"- current_closed: {int(semantic_short_label_companion_current_closed['closed'] or 0):,}",
+                f"- live_segment_state_run_id: {semantic_short_label_companion_bridge_summary['live_segment_state_run_id']}",
+                "- status: shadow_lifecycle_companion_bridge",
+                "- split_by_decision_and_state:",
+            ]
+        )
+        if semantic_short_label_companion_by_decision:
+            for row in semantic_short_label_companion_by_decision:
+                lines.append(
+                    f"  - {row['decision']} -> {row['target_state']} | {row['bridge_result']}: {int(row['count'] or 0):,}"
+                )
+        else:
+            lines.append("  - none: 0")
+        lines.append("- baseline_split:")
+        if semantic_short_label_companion_baseline_split:
+            for row in semantic_short_label_companion_baseline_split:
+                lines.append(
+                    f"  - final_state={row['baseline_final_state']} | needs_reopen={row['baseline_needs_reopen']}: {int(row['count'] or 0):,}"
+                )
+        else:
+            lines.append("  - none: 0")
+        lines.append("- blocked_by_reason:")
+        if semantic_short_label_companion_blocked_by_reason:
+            for row in semantic_short_label_companion_blocked_by_reason:
+                lines.append(f"  - {row['block_reason']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- preserved_by_decision_outside_allowlist:")
+        if semantic_short_label_companion_preserved_by_decision:
+            for row in semantic_short_label_companion_preserved_by_decision:
+                lines.append(f"  - {row['decision']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+
+    if dynamic_gender_bridge_summary:
+        lines.extend(
+            [
+                "",
+                "Dynamic gender ready false-reopen lifecycle bridge:",
+                f"- source_review_jsonl: {DYNAMIC_GENDER_COMBO_REVIEWED_JSONL}",
+                "- allowlist_decisions: dynamic_gender_ready_select_cstring_false_reopen, dynamic_gender_ready_custom_loc_false_reopen",
+                f"- base_segment_state_run_id: {dynamic_gender_bridge_summary['live_segment_state_run_id']}",
+                f"- candidates: {int(dynamic_gender_bridge_summary['candidates'] or 0):,}",
+                f"- closed: {int(dynamic_gender_bridge_summary['closed'] or 0):,}",
+                f"- blocked: {int(dynamic_gender_bridge_summary['blocked'] or 0):,}",
+                "- status: guarded_lifecycle_bridge",
+                "- split_by_decision_and_state:",
+            ]
+        )
+        if dynamic_gender_by_decision:
+            for row in dynamic_gender_by_decision:
+                lines.append(
+                    f"  - {row['decision']} -> {row['target_state']} | {row['bridge_result']}: {int(row['count'] or 0):,}"
+                )
+        else:
+            lines.append("  - none: 0")
+        lines.append("- current_closed_by_state:")
+        if dynamic_gender_current_closed_by_state:
+            for row in dynamic_gender_current_closed_by_state:
+                lines.append(f"  - {row['final_state']}: {int(row['closed'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- baseline_split:")
+        if dynamic_gender_baseline_split:
+            for row in dynamic_gender_baseline_split:
+                lines.append(
+                    f"  - final_state={row['baseline_final_state']} | needs_reopen={row['baseline_needs_reopen']}: {int(row['count'] or 0):,}"
+                )
+        else:
+            lines.append("  - none: 0")
+        lines.append("- blocked_by_reason:")
+        if dynamic_gender_blocked_by_reason:
+            for row in dynamic_gender_blocked_by_reason:
+                lines.append(f"  - {row['block_reason']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- preserved_non_allowlist_counts:")
+        if dynamic_gender_preserved_by_decision:
+            for row in dynamic_gender_preserved_by_decision:
+                lines.append(f"  - {row['decision']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+
+    if autofix_unknown_single_batch2_bridge_summary:
+        lines.extend(
+            [
+                "",
+                "Autofix unknown single-family batch2 ready lifecycle bridge:",
+                f"- source_review_jsonl: {AUTOFIX_UNKNOWN_SINGLE_BATCH2_REVIEWED_JSONL}",
+                f"- base_segment_state_run_id: {autofix_unknown_single_batch2_bridge_summary['live_segment_state_run_id']}",
+                f"- candidates: {int(autofix_unknown_single_batch2_bridge_summary['candidates'] or 0):,}",
+                f"- closed: {int(autofix_unknown_single_batch2_bridge_summary['closed'] or 0):,}",
+                f"- blocked: {int(autofix_unknown_single_batch2_bridge_summary['blocked'] or 0):,}",
+                "- allowlist_decisions: single_autofix_ready_false_reopen",
+                f"- target_state: {AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE}",
+                "- current_closed_by_state:",
+            ]
+        )
+        if autofix_unknown_single_batch2_current_closed_by_state:
+            for row in autofix_unknown_single_batch2_current_closed_by_state:
+                lines.append(f"  - {row['final_state']}: {int(row['closed'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- blocked_by_reason:")
+        if autofix_unknown_single_batch2_blocked_by_reason:
+            for row in autofix_unknown_single_batch2_blocked_by_reason:
+                lines.append(f"  - {row['block_reason']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
+        lines.append("- preserved_non_allowlist_counts:")
+        if autofix_unknown_single_batch2_preserved_by_decision:
+            for row in autofix_unknown_single_batch2_preserved_by_decision:
+                lines.append(f"  - {row['decision']}: {int(row['count'] or 0):,}")
+        else:
+            lines.append("  - none: 0")
 
     if select_cstring_segment_bridge_row:
         bridge_candidates = int(select_cstring_segment_bridge_row["candidates"] or 0)
@@ -16924,6 +22904,7 @@ def main(limit: int | None = None) -> int:
         prepare_gender_es_oa_final_vowel_trim_dryrun3_repair(conn)
         prepare_short_label_semantic_pair_lifecycle(conn)
         prepare_short_label_semantic_load_tips_lifecycle(conn)
+        prepare_autofix_unknown_single_batch2_ready_lifecycle(conn)
         autofix_unknown_semantic_companion_building_segments = {
             int(row["segment_id"])
             for row in conn.execute(
@@ -17120,6 +23101,16 @@ def main(limit: int | None = None) -> int:
                 "SELECT segment_id FROM temp_gender_es_oa_final_vowel_trim_dryrun3_repair"
             )
         }
+        autofix_unknown_single_batch2_ready_lifecycle_segments = {
+            int(row["segment_id"])
+            for row in conn.execute(
+                """
+                SELECT segment_id
+                FROM temp_autofix_unknown_single_batch2_ready_lifecycle
+                WHERE bridge_result = 'closed'
+                """
+            )
+        }
         run_id = insert_run(
             conn,
             active_score_run_id=active_score_run_id,
@@ -17157,10 +23148,10 @@ def main(limit: int | None = None) -> int:
             or short_label_semantic_load_tips_lifecycle_segments
             or short_label_single_issue_residual_queue225_repair_segments
             or gender_es_oa_final_vowel_trim_dryrun3_repair_segments
+            or autofix_unknown_single_batch2_ready_lifecycle_segments
         ):
             insert_autofix_unknown_semantic_companion_building_snapshot(conn, run_id, created_at)
             conn.commit()
-            counters = counters_from_run(conn, run_id)
         else:
             for row in iter_segments(
                 conn,
@@ -17235,6 +23226,16 @@ def main(limit: int | None = None) -> int:
                 insert_items(conn, batch)
                 conn.commit()
 
+        reconcile_materially_aligned_confirmed_output_state(conn, run_id)
+        reconcile_runtime_token_only_equal_output_state(conn, run_id)
+        reconcile_known_equal_output_confirmation_closure_state(conn, run_id)
+        reconcile_auto_confirmed_format_tag_token_policy_lifecycle_state(conn, run_id)
+        reconcile_active_lifecycle_policy_actions(conn, run_id, reopen_lifecycle_policy_run_ids)
+        reconcile_aligned_lifecycle_closure_state(conn, run_id)
+        reconcile_stable_baseline_preserved_state(conn, run_id)
+        reconcile_confirmed_output_apply_state(conn, run_id)
+        conn.commit()
+        counters = counters_from_run(conn, run_id)
         finished_at = db.utc_now()
         update_run_summary(conn, run_id, finished_at, counters)
         conn.commit()
