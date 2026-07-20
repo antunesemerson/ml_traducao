@@ -57,7 +57,7 @@ EVALUATION_DECISION_LATEST_FILE = ROOT / "memory" / "evaluation_decision_latest.
 RELEASE_DIFF_REVIEW_CACHE_FILE = ROOT / "memory" / "release_diff_review_cache.json"
 QUALITY_PROMOTION_PROVIDERS_DIR = ROOT / "pipeline" / "quality_promotion_providers"
 RELEASE_DIFF_REVIEW_SCHEMA_VERSION = 5
-DASHBOARD_CACHE_SCHEMA_VERSION = 7
+DASHBOARD_CACHE_SCHEMA_VERSION = 9
 PRODUCTION_FULL_SQLITE_BACKUP_ENABLED = False
 PRODUCTION_RUN_LOCK = threading.Lock()
 DIAGNOSTIC_RUN_LOCK = threading.Lock()
@@ -6432,7 +6432,10 @@ def _db_mtime(db_path: Path) -> str:
         return ""
 
 
-def _latest_ledger_run_id(con: sqlite3.Connection) -> int:
+def _latest_ledger_run_id(
+    con: sqlite3.Connection,
+    segment_state_run_id: int | None = None,
+) -> int:
     if not _table_exists(con, "ml_issue_ledger_runs"):
         return 0
     row = _one(
@@ -6441,9 +6444,11 @@ def _latest_ledger_run_id(con: sqlite3.Connection) -> int:
         SELECT id
         FROM ml_issue_ledger_runs
         WHERE finished_at IS NOT NULL
+          AND (? IS NULL OR segment_state_run_id = ?)
         ORDER BY finished_at DESC, id DESC
         LIMIT 1
         """,
+        (segment_state_run_id, segment_state_run_id),
     )
     return _int(row.get("id"))
 
@@ -6625,7 +6630,7 @@ def _production_run_progress(run: dict[str, Any], stages: list[dict[str, Any]]) 
 
 
 def _pending_by_family_payload(con: sqlite3.Connection, segment_state_run_id: int | None) -> list[dict[str, Any]]:
-    ledger_run_id = _latest_ledger_run_id(con)
+    ledger_run_id = _latest_ledger_run_id(con, segment_state_run_id)
     if not segment_state_run_id or not ledger_run_id:
         return []
     if not (_table_exists(con, "segment_state_items") and _table_exists(con, "ml_issue_ledger_items")):
@@ -6864,6 +6869,157 @@ def _quality_pattern_discovery_payload(con: sqlite3.Connection) -> dict[str, Any
         **run,
         "families": families,
     }
+
+
+def _quality_provider_proposals_payload(con: sqlite3.Connection) -> dict[str, Any]:
+    required_tables = {
+        "ml_quality_provider_proposal_runs",
+        "ml_quality_provider_proposals",
+        "ml_quality_provider_proposal_cases",
+    }
+    if not all(_table_exists(con, table_name) for table_name in required_tables):
+        return {"instrumented": False, "proposals": []}
+    run = _one(
+        con,
+        """
+        SELECT id AS run_id, run_key, rule_version, quality_epoch_id,
+               discovery_run_id, score_run_id, actionable_family_count,
+               proposal_count, positive_case_count, negative_case_count,
+               boundary_case_count, status, summary_json, finished_at, updated_at
+        FROM ml_quality_provider_proposal_runs
+        WHERE status = 'completed'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+    )
+    run_id = _int(run.get("run_id"))
+    if not run_id:
+        return {"instrumented": True, "proposals": []}
+    run.pop("summary_json", None)
+    proposals = _all(
+        con,
+        """
+        SELECT proposal.id, proposal.proposal_key, proposal.provider_id,
+               proposal.evidence_type, proposal.label, proposal.issue_type,
+               proposal.token_context, proposal.status, proposal.priority,
+               proposal.confidence, proposal.family_count, proposal.segment_count,
+               proposal.manifest_draft_json, proposal.contract_json,
+               SUM(CASE WHEN item.case_kind = 'positive' THEN 1 ELSE 0 END) AS positive_case_count,
+               SUM(CASE WHEN item.case_kind = 'negative' THEN 1 ELSE 0 END) AS negative_case_count,
+               SUM(CASE WHEN item.case_kind = 'boundary' THEN 1 ELSE 0 END) AS boundary_case_count
+        FROM ml_quality_provider_proposals proposal
+        LEFT JOIN ml_quality_provider_proposal_cases item ON item.proposal_id = proposal.id
+        WHERE proposal.run_id = ?
+        GROUP BY proposal.id
+        ORDER BY proposal.priority DESC, proposal.id
+        LIMIT 80
+        """,
+        (run_id,),
+    )
+    for proposal in proposals:
+        proposal_id = _int(proposal.get("id"))
+        try:
+            manifest = json.loads(proposal.get("manifest_draft_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            manifest = {}
+        proposal["manifest_draft"] = manifest if isinstance(manifest, dict) else {}
+        proposal.pop("manifest_draft_json", None)
+        try:
+            contract = json.loads(proposal.get("contract_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            contract = {}
+        proposal["contract"] = contract if isinstance(contract, dict) else {}
+        proposal.pop("contract_json", None)
+        cases = _all(
+            con,
+            """
+            SELECT case_kind, segment_id, relative_path, source_key,
+                   input_text, expected_behavior, assertions_json
+            FROM ml_quality_provider_proposal_cases
+            WHERE proposal_id = ?
+            ORDER BY CASE case_kind
+                       WHEN 'positive' THEN 0
+                       WHEN 'boundary' THEN 1
+                       ELSE 2
+                     END,
+                     id
+            LIMIT 6
+            """,
+            (proposal_id,),
+        )
+        for item in cases:
+            try:
+                assertions = json.loads(item.get("assertions_json") or "[]")
+            except (TypeError, json.JSONDecodeError):
+                assertions = []
+            item["assertions"] = assertions if isinstance(assertions, list) else []
+            item.pop("assertions_json", None)
+        proposal["sample_cases"] = cases
+    return {
+        "instrumented": True,
+        **run,
+        "draft_count": sum(
+            1 for item in proposals if item.get("status") == "draft_review_required"
+        ),
+        "proposals": proposals,
+    }
+
+
+def _quality_closed_observation_audit_payload(con: sqlite3.Connection) -> dict[str, Any]:
+    required_tables = {
+        "ml_quality_closed_observation_audit_runs",
+        "ml_quality_closed_observation_audit_items",
+    }
+    if not all(_table_exists(con, table_name) for table_name in required_tables):
+        return {"instrumented": False, "review_samples": []}
+    run = _one(
+        con,
+        """
+        SELECT id AS run_id, run_key, rule_version, discovery_run_id,
+               quality_epoch_id, score_run_id, segment_state_run_id,
+               observation_count, closed_observation_count,
+               sampled_family_count, sampled_segment_count, sampled_item_count, accepted_count,
+               baseline_watch_count, review_required_count, inconsistent_count,
+               duplicate_count, orphan_count, invalid_sample_count,
+               status, summary_json, finished_at, updated_at
+        FROM ml_quality_closed_observation_audit_runs
+        WHERE status = 'completed'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+    )
+    run_id = _int(run.get("run_id"))
+    if not run_id:
+        return {"instrumented": True, "review_samples": []}
+    run.pop("summary_json", None)
+    samples = _all(
+        con,
+        """
+        SELECT family_id, segment_id, relative_path, source_key, evidence_kind,
+               issue_type, token_context, file_family, text_relation, score,
+               state_group, final_state, locked, confirmed_matches_output,
+               needs_output_apply, confirmation_level, confirmation_source,
+               confirmation_label, closure_class, review_reason, evidence_json
+        FROM ml_quality_closed_observation_audit_items
+        WHERE run_id = ?
+          AND closure_class IN ('review_required', 'inconsistent_closure')
+        ORDER BY CASE closure_class
+                   WHEN 'inconsistent_closure' THEN 0
+                   ELSE 1
+                 END,
+                 score IS NULL, score, family_id, segment_id
+        LIMIT 40
+        """,
+        (run_id,),
+    )
+    for sample in samples:
+        try:
+            evidence = json.loads(sample.get("evidence_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            evidence = {}
+        sample["evidence"] = evidence if isinstance(evidence, dict) else {}
+        sample.pop("evidence_json", None)
+    return {"instrumented": True, **run, "review_samples": samples}
 
 
 def _load_quality_promotion_provider_manifests(
@@ -7408,8 +7564,39 @@ def _pending_taxonomy_summary_payload(
 
 
 def _pending_actionability_payload(con: sqlite3.Connection, segment_state_run_id: int | None) -> dict[str, Any]:
-    ledger_run_id = _latest_ledger_run_id(con)
+    ledger_run_id = _latest_ledger_run_id(con, segment_state_run_id)
+    current_state = (
+        _one(
+            con,
+            """
+            SELECT pending_count, output_apply_pending_count
+            FROM segment_state_runs
+            WHERE id = ? AND finished_at IS NOT NULL
+            """,
+            (segment_state_run_id,),
+        )
+        if segment_state_run_id and _table_exists(con, "segment_state_runs")
+        else {}
+    )
+    if (
+        segment_state_run_id
+        and _int(current_state.get("pending_count")) == 0
+        and _int(current_state.get("output_apply_pending_count")) == 0
+    ):
+        return {
+            "status": "not_applicable",
+            "ledger_run_id": ledger_run_id,
+            "segment_state_run_id": segment_state_run_id,
+            "instrumented_pending": 0,
+            "needs_context": 0,
+            "needs_domain": 0,
+            "needs_new_microagent": 0,
+            "text_repair": 0,
+            "high_uncertainty": 0,
+            "other_watch": 0,
+        }
     empty = {
+        "status": "pending_instrumentation",
         "ledger_run_id": ledger_run_id,
         "instrumented_pending": 0,
         "needs_context": "pending_instrumentation",
@@ -7501,6 +7688,7 @@ def _pending_actionability_payload(con: sqlite3.Connection, segment_state_run_id
     if _int(row.get("instrumented_pending")) == 0:
         return empty
     return {
+        "status": "instrumented",
         "ledger_run_id": ledger_run_id,
         "instrumented_pending": _int(row.get("instrumented_pending")),
         "needs_context": _int(row.get("needs_context")),
@@ -7549,6 +7737,13 @@ def _pending_next_focus_payload(
             "status": "amadurecer microagente/politica",
             "count": _int(top.get("value")),
         }
+    if actionability.get("status") == "not_applicable":
+        return {
+            "label": "quality_debt_clear",
+            "reason": "snapshot atual sem pendencias ou apply aguardando acao",
+            "status": "nenhuma acao operacional",
+            "count": 0,
+        }
     instrumented = actionability.get("instrumented_pending")
     return {
         "label": "pending_instrumentation",
@@ -7574,6 +7769,8 @@ def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
         diff_review = _release_diff_review_payload(con, segment_state["run_id"])
         _apply_pairwise_calibration_gate(safety_status, diff_review)
         quality_pattern_discovery = _quality_pattern_discovery_payload(con)
+        quality_provider_proposals = _quality_provider_proposals_payload(con)
+        quality_closed_observation_audit = _quality_closed_observation_audit_payload(con)
         quality_epoch = (
             _one(
                 con,
@@ -7702,8 +7899,10 @@ def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
                 "operational_closure": operational_closure,
                 "quality_debt": quality_debt,
                 "promotion_provider_health": promotion_provider_health,
+                "provider_proposals": quality_provider_proposals,
+                "closed_observation_audit": quality_closed_observation_audit,
                 "latest_segment_state_run_id": segment_state["run_id"],
-                "latest_ledger_run_id": _latest_ledger_run_id(con),
+                "latest_ledger_run_id": _latest_ledger_run_id(con, segment_state["run_id"]),
                 "quality_epoch": quality_epoch,
                 "segment_state_finished_at": segment_state["finished_at"],
                 "segment_state_trend": segment_trend,
@@ -8162,6 +8361,64 @@ def _resumable_diagnostic_score_run_id(
     return _int(row["id"]) or None if row else None
 
 
+def _resumable_diagnostic_segment_state_run_id(
+    db_path: Path,
+    epoch_payload: dict[str, Any],
+) -> int | None:
+    """Find a complete, compatible state snapshot not yet attached to this epoch."""
+    epoch_id = _int(epoch_payload.get("epoch_id"))
+    if not epoch_id:
+        return None
+    con: sqlite3.Connection | None = None
+    try:
+        con = sqlite3.connect(db_path)
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            """
+            SELECT state.id
+            FROM quality_epochs AS epoch
+            JOIN segment_state_runs AS state
+              ON state.finished_at IS NOT NULL
+             AND state.total_segments > 1000
+             AND state.total_segments = COALESCE(state.closed_count, 0) + COALESCE(state.pending_count, 0)
+             AND state.id > COALESCE(epoch.segment_state_run_id, 0)
+             AND state.candidate_score_run_id = epoch.output_score_run_id
+             AND (
+                   state.policy_run_id = epoch.policy_run_id
+                   OR (state.policy_run_id IS NULL AND epoch.policy_run_id IS NULL)
+             )
+             AND (epoch.scored_at IS NULL OR state.started_at >= epoch.scored_at)
+            LEFT JOIN segment_state_runs AS attached
+              ON attached.id = epoch.segment_state_run_id
+            WHERE epoch.id = ?
+              AND (attached.rule_version IS NULL OR state.rule_version = attached.rule_version)
+              AND EXISTS (
+                  SELECT 1
+                  FROM segment_state_items AS item
+                  WHERE item.run_id = state.id
+                  LIMIT 1
+              )
+            ORDER BY state.finished_at DESC, state.id DESC
+            LIMIT 1
+            """,
+            (epoch_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        if con is not None:
+            con.close()
+    return (_int(row["id"]) or None) if row else None
+
+
+def _diagnostic_stage_timeout(stage_id: str) -> int:
+    if stage_id.startswith("score_package_"):
+        return 7200
+    if stage_id == "segment_state":
+        return 1800
+    return 900
+
+
 def _run_diagnostic_segment_state(db_path: Path) -> dict[str, Any]:
     started_at = _now_iso()
     diagnostic_status = _new_diagnostic_status()
@@ -8210,7 +8467,7 @@ def _run_diagnostic_segment_state(db_path: Path) -> dict[str, Any]:
             diagnostic_status,
             stage_id,
             command,
-            timeout=900,
+            timeout=_diagnostic_stage_timeout(stage_id),
         )
         stdout_lines = (process.stdout or "").splitlines()
         stderr_lines = (process.stderr or "").splitlines()
@@ -8307,17 +8564,56 @@ def _run_diagnostic_segment_state(db_path: Path) -> dict[str, Any]:
         remaining_commands = (scoring_commands if needs_scoring else []) + analysis_commands
         for stage_id, command in remaining_commands:
             _diagnostic_start_stage(diagnostic_status, stage_id)
-            process = _run_diagnostic_command(
-                diagnostic_status,
-                stage_id,
-                command,
-                timeout=7200 if stage_id.startswith("score_package_") else 900,
-            )
+            resumed_segment_state_run_id = 0
+            segment_state_recovery = ""
+            if stage_id == "segment_state":
+                resumed_segment_state_run_id = (
+                    _resumable_diagnostic_segment_state_run_id(db_path, epoch_payload) or 0
+                )
+            if resumed_segment_state_run_id:
+                segment_state_recovery = "compatible_committed_snapshot"
+                process = subprocess.CompletedProcess(
+                    command,
+                    0,
+                    (
+                        "[diagnostic] Reusing committed segment-state run "
+                        f"{resumed_segment_state_run_id}; auxiliary report state is ignored.\n"
+                    ),
+                    "",
+                )
+            else:
+                process = _run_diagnostic_command(
+                    diagnostic_status,
+                    stage_id,
+                    command,
+                    timeout=_diagnostic_stage_timeout(stage_id),
+                )
             stdout_lines = (process.stdout or "").splitlines()
             stderr_lines = (process.stderr or "").splitlines()
             stage_exit_code = process.returncode
+            if stage_id == "segment_state" and stage_exit_code == 124:
+                recovered_run_id = (
+                    _resumable_diagnostic_segment_state_run_id(db_path, epoch_payload) or 0
+                )
+                if recovered_run_id:
+                    resumed_segment_state_run_id = recovered_run_id
+                    segment_state_recovery = "critical_snapshot_committed_before_timeout"
+                    stage_exit_code = 0
+                    stdout_lines.append(
+                        "[diagnostic] Segment-state core committed as run "
+                        f"{recovered_run_id} before timeout; auxiliary work does not invalidate it."
+                    )
+                    stderr_lines = [
+                        line
+                        for line in stderr_lines
+                        if not line.startswith("Command timed out after ")
+                    ]
             if stage_id == "segment_state" and stage_exit_code == 0:
                 epoch_id = _int(epoch_payload.get("epoch_id"))
+                if not resumed_segment_state_run_id:
+                    resumed_segment_state_run_id = (
+                        _resumable_diagnostic_segment_state_run_id(db_path, epoch_payload) or 0
+                    )
                 attach_command = [
                     sys.executable,
                     "pipeline/quality_epoch.py",
@@ -8327,6 +8623,10 @@ def _run_diagnostic_segment_state(db_path: Path) -> dict[str, Any]:
                 ]
                 if epoch_id:
                     attach_command.extend(["--epoch-id", str(epoch_id)])
+                if resumed_segment_state_run_id:
+                    attach_command.extend(
+                        ["--segment-state-run-id", str(resumed_segment_state_run_id)]
+                    )
                 attach_process = subprocess.run(
                     attach_command,
                     cwd=str(ROOT),
@@ -8338,6 +8638,17 @@ def _run_diagnostic_segment_state(db_path: Path) -> dict[str, Any]:
                 stderr_lines.extend((attach_process.stderr or "").splitlines())
                 if attach_process.returncode != 0:
                     stage_exit_code = attach_process.returncode
+                else:
+                    for line in reversed((attach_process.stdout or "").splitlines()):
+                        if not line.startswith("[quality_epoch] "):
+                            continue
+                        try:
+                            attach_payload = json.loads(line.split("[quality_epoch] ", 1)[1])
+                        except json.JSONDecodeError:
+                            attach_payload = {}
+                        if attach_payload:
+                            epoch_payload = {**epoch_payload, **attach_payload}
+                        break
             if stage_id == "quality_epoch_noop_close" and stage_exit_code == 0:
                 for line in reversed(stdout_lines):
                     if not line.startswith("[quality_epoch] "):
@@ -8354,6 +8665,8 @@ def _run_diagnostic_segment_state(db_path: Path) -> dict[str, Any]:
                     "stage_id": stage_id,
                     "command": command,
                     "exit_code": stage_exit_code,
+                    "resumed_segment_state_run_id": resumed_segment_state_run_id or None,
+                    "segment_state_recovery": segment_state_recovery or None,
                     "stdout_tail": stdout_lines[-12:],
                     "stderr_tail": stderr_lines[-12:],
                 }
@@ -8488,7 +8801,7 @@ def _publication_lifecycle_apply_readiness(
         con.execute("PRAGMA query_only = ON")
         try:
             selected_state_run_id = _int(state_run_id) or _int(_latest_segment_state_summary(con).get("run_id"))
-            ledger_run_id = _latest_ledger_run_id(con)
+            ledger_run_id = _latest_ledger_run_id(con, selected_state_run_id)
             if not selected_state_run_id or not ledger_run_id:
                 return {
                     "available": False,

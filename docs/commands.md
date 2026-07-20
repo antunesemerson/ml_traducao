@@ -237,6 +237,49 @@ Treine novamente apenas quando houver volume relevante de novos exemplos ou uma 
 
 ## Progresso E Dashboard
 
+Simular propostas de provedores para a descoberta mais recente, sem persistir:
+
+```powershell
+python pipeline\quality_provider_proposal_generator.py
+```
+
+Persistir somente os rascunhos, contratos e testes de fronteira no SQLite:
+
+```powershell
+python pipeline\quality_provider_proposal_generator.py --apply
+```
+
+Esse comando nunca escreve confirmacoes, scores ou arquivos em `output/`.
+
+Atualizar o `segment-state` autoritativo sem gerar o relatorio auxiliar pesado:
+
+```powershell
+python pipeline\main.py segment-state
+```
+
+O snapshot concluido no SQLite define o sucesso. Para gerar o relatorio somente quando
+ele for necessario, sem recalcular o snapshot:
+
+```powershell
+python pipeline\segment_state_snapshot.py --report-run-id 743
+```
+
+Tambem e possivel pedir o relatorio depois do commit em uma nova execucao:
+
+```powershell
+python pipeline\main.py segment-state --segment-state-report
+```
+
+Planejar a retencao conservadora dos detalhes historicos, sem excluir nada:
+
+```powershell
+python pipeline\sqlite_history_retention.py
+```
+
+O plano protege automaticamente epochs, versoes materializadas, runs referenciadas,
+runs inacabadas e os snapshots recentes. A aplicacao exige o token `PRUNE-...` gerado
+para o estado exato do banco; consulte `docs/sqlite_history_retention.md`.
+
 Gerar relatório consolidado de progresso:
 
 ```powershell
@@ -276,3 +319,17 @@ python pipeline\main.py micro-review-queue
 - `reports/`, `logs/`, `memory/`, `source/`, `output/` e `prompts/` são ignorados no Git.
 - Não altere `output/spanish` durante experimentos de ML.
 - Falso seguro zero é mais importante que cobertura alta nesta fase.
+### Auditar observações de qualidade fechadas
+
+Auditoria estratificada e somente de metadados sobre as famílias marcadas como
+`closed_observation`. O comando não reabre lifecycle e não escreve confirmações,
+scores ou output:
+
+```powershell
+python pipeline\quality_closed_observation_audit.py --apply
+```
+
+O diagnóstico contínuo executa esta etapa logo após a descoberta de padrões. Os
+totais distinguem famílias amostradas, segmentos únicos e vínculos
+segmento–família para evitar dupla contagem quando um segmento aparece em mais de
+uma família.

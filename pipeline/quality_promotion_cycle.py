@@ -151,6 +151,29 @@ def run_diagnostic() -> dict[str, Any]:
             "--apply",
         ],
     )
+    proposal_command = [
+        sys.executable,
+        str(db.PROJECT_ROOT / "pipeline" / "quality_provider_proposal_generator.py"),
+        "--apply",
+    ]
+    discovery_run_id = int((discovery.get("payload") or {}).get("run_id") or 0)
+    audit_command = [
+        sys.executable,
+        str(db.PROJECT_ROOT / "pipeline" / "quality_closed_observation_audit.py"),
+        "--apply",
+    ]
+    if discovery_run_id:
+        audit_command.extend(("--discovery-run-id", str(discovery_run_id)))
+    closed_observation_audit = _run_command(
+        "quality_closed_observation_audit",
+        audit_command,
+    )
+    if discovery_run_id:
+        proposal_command.extend(("--discovery-run-id", str(discovery_run_id)))
+    provider_proposals = _run_command(
+        "quality_provider_proposals",
+        proposal_command,
+    )
     provider_results: list[dict[str, Any]] = []
     total_evidence = 0
     total_ready = 0
@@ -268,6 +291,8 @@ def run_diagnostic() -> dict[str, Any]:
         "confirmation_write_count": 0,
         "output_write_count": 0,
         "pattern_discovery": discovery,
+        "closed_observation_audit": closed_observation_audit,
+        "provider_proposals": provider_proposals,
         "providers": provider_results,
         "calibration_consumption": calibration_consumption,
         "calibration_policy": calibration_policy,

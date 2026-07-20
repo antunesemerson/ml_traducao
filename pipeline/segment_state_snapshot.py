@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import re
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -14599,6 +14600,84 @@ def update_run_summary(conn, run_id: int, finished_at: str, counters: dict[str, 
     )
 
 
+def update_run_operational_metadata(
+    conn,
+    run_id: int,
+    *,
+    phase_timings_seconds: dict[str, float],
+    report_status: str,
+    report_error: str | None = None,
+) -> None:
+    row = conn.execute(
+        "SELECT notes_json FROM segment_state_runs WHERE id = ?",
+        (run_id,),
+    ).fetchone()
+    notes: dict[str, Any] = {}
+    if row and row["notes_json"]:
+        try:
+            loaded = json.loads(row["notes_json"])
+            if isinstance(loaded, dict):
+                notes = loaded
+        except (TypeError, json.JSONDecodeError):
+            notes = {}
+    notes["phase_timings_seconds"] = {
+        key: round(float(value), 3)
+        for key, value in sorted(phase_timings_seconds.items())
+    }
+    notes["auxiliary_report"] = {
+        "status": report_status,
+        "error": report_error or None,
+        "critical_state_is_authoritative": True,
+    }
+    conn.execute(
+        "UPDATE segment_state_runs SET notes_json = ? WHERE id = ?",
+        (json.dumps(notes, ensure_ascii=False, sort_keys=True), run_id),
+    )
+
+
+def build_auxiliary_report(
+    conn,
+    run_id: int,
+    counters: dict[str, Counter],
+    settings: dict,
+    started_at: str,
+    finished_at: str,
+    *,
+    enabled: bool,
+) -> tuple[list[str], dict[str, Any]]:
+    summary_lines = [
+        "Segment-state snapshot committed",
+        f"Run: {run_id}",
+        f"Total: {sum(counters['state_group'].values())}",
+        f"Closed: {counters['state_group'].get('closed', 0)}",
+        f"Pending: {sum(counters['state_group'].values()) - counters['state_group'].get('closed', 0)}",
+    ]
+    if not enabled:
+        return (
+            [*summary_lines, "Auxiliary report: skipped (database state is authoritative)"],
+            {"status": "skipped", "elapsed_seconds": 0.0, "error": None},
+        )
+
+    report_started = time.perf_counter()
+    try:
+        lines = build_report(conn, run_id, counters, settings, started_at, finished_at)
+    except Exception as exc:  # Reports are explicitly non-critical.
+        elapsed = round(time.perf_counter() - report_started, 3)
+        error = f"{type(exc).__name__}: {exc}"
+        return (
+            [*summary_lines, f"Auxiliary report: failed without invalidating snapshot ({error})"],
+            {"status": "failed", "elapsed_seconds": elapsed, "error": error},
+        )
+    return (
+        lines,
+        {
+            "status": "generated",
+            "elapsed_seconds": round(time.perf_counter() - report_started, 3),
+            "error": None,
+        },
+    )
+
+
 def top_rows(conn, run_id: int, where_sql: str, limit: int = 12) -> list[dict[str, Any]]:
     rows = conn.execute(
         f"""
@@ -22903,9 +22982,12 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
     return lines
 
 
-def main(limit: int | None = None) -> int:
+def main(limit: int | None = None, *, generate_report: bool = False) -> int:
     settings = db.load_settings()
     started_at = db.utc_now()
+    critical_started = time.perf_counter()
+    phase_timings: dict[str, float] = {}
+    telemetry_errors: list[str] = []
     with db.connect(settings) as conn:
         db.ensure_database(conn)
         ensure_short_label_bridge_tables(conn)
@@ -23167,7 +23249,9 @@ def main(limit: int | None = None) -> int:
             started_at=started_at,
         )
         conn.commit()
+        phase_timings["prepare"] = time.perf_counter() - critical_started
 
+        materialize_started = time.perf_counter()
         counters: dict[str, Counter] = defaultdict(Counter)
         batch: list[tuple[Any, ...]] = []
         created_at = started_at
@@ -23271,7 +23355,9 @@ def main(limit: int | None = None) -> int:
             if batch:
                 insert_items(conn, batch)
                 conn.commit()
+        phase_timings["materialize"] = time.perf_counter() - materialize_started
 
+        reconcile_started = time.perf_counter()
         reconcile_materially_aligned_confirmed_output_state(conn, run_id)
         reconcile_runtime_token_only_equal_output_state(conn, run_id)
         reconcile_known_equal_output_confirmation_closure_state(conn, run_id)
@@ -23281,12 +23367,123 @@ def main(limit: int | None = None) -> int:
         reconcile_stable_baseline_preserved_state(conn, run_id)
         reconcile_confirmed_output_apply_state(conn, run_id)
         conn.commit()
+        phase_timings["reconcile"] = time.perf_counter() - reconcile_started
+
+        summarize_started = time.perf_counter()
         counters = counters_from_run(conn, run_id)
         finished_at = db.utc_now()
         update_run_summary(conn, run_id, finished_at, counters)
+        phase_timings["summarize"] = time.perf_counter() - summarize_started
+        phase_timings["critical_total"] = time.perf_counter() - critical_started
         conn.commit()
-        lines = build_report(conn, run_id, counters, settings, started_at, finished_at)
+        try:
+            update_run_operational_metadata(
+                conn,
+                run_id,
+                phase_timings_seconds=phase_timings,
+                report_status="pending" if generate_report else "skipped",
+            )
+            conn.commit()
+        except Exception as exc:  # Telemetry must not invalidate the committed snapshot.
+            conn.rollback()
+            telemetry_errors.append(f"{type(exc).__name__}: {exc}")
+        lines, report = build_auxiliary_report(
+            conn,
+            run_id,
+            counters,
+            settings,
+            started_at,
+            finished_at,
+            enabled=generate_report,
+        )
+        phase_timings["report"] = float(report["elapsed_seconds"])
+        try:
+            update_run_operational_metadata(
+                conn,
+                run_id,
+                phase_timings_seconds=phase_timings,
+                report_status=str(report["status"]),
+                report_error=report.get("error"),
+            )
+            conn.commit()
+        except Exception as exc:  # Telemetry must not invalidate the committed snapshot.
+            conn.rollback()
+            telemetry_errors.append(f"{type(exc).__name__}: {exc}")
 
+    for line in lines:
+        print(line)
+    print(
+        "[segment_state] "
+        + json.dumps(
+            {
+                "run_id": run_id,
+                "status": "completed",
+                "critical_state_committed": True,
+                "report_status": report["status"],
+                "telemetry_status": "failed" if telemetry_errors else "persisted",
+                "telemetry_errors": telemetry_errors,
+                "phase_timings_seconds": {
+                    key: round(value, 3) for key, value in phase_timings.items()
+                },
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return run_id
+
+
+def render_existing_report(run_id: int) -> int:
+    settings = db.load_settings()
+    with db.connect(settings) as conn:
+        db.ensure_database(conn)
+        row = conn.execute(
+            """
+            SELECT id, started_at, finished_at
+            FROM segment_state_runs
+            WHERE id = ? AND finished_at IS NOT NULL
+            """,
+            (run_id,),
+        ).fetchone()
+        if not row:
+            raise RuntimeError(f"Segment-state run {run_id} does not exist or is not finished.")
+        counters = counters_from_run(conn, run_id)
+        lines, report = build_auxiliary_report(
+            conn,
+            run_id,
+            counters,
+            settings,
+            str(row["started_at"]),
+            str(row["finished_at"]),
+            enabled=True,
+        )
+        notes_row = conn.execute(
+            "SELECT notes_json FROM segment_state_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        phase_timings: dict[str, float] = {}
+        if notes_row and notes_row["notes_json"]:
+            try:
+                notes = json.loads(notes_row["notes_json"])
+                phase_timings = dict(notes.get("phase_timings_seconds") or {})
+            except (TypeError, json.JSONDecodeError):
+                phase_timings = {}
+        phase_timings["report"] = float(report["elapsed_seconds"])
+        try:
+            update_run_operational_metadata(
+                conn,
+                run_id,
+                phase_timings_seconds=phase_timings,
+                report_status=str(report["status"]),
+                report_error=report.get("error"),
+            )
+            conn.commit()
+        except Exception as exc:  # Report metadata is auxiliary too.
+            conn.rollback()
+            lines.append(
+                "Auxiliary report telemetry: failed without changing snapshot "
+                f"({type(exc).__name__}: {exc})"
+            )
     for line in lines:
         print(line)
     return run_id
@@ -23295,5 +23492,19 @@ def main(limit: int | None = None) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build a final lifecycle state snapshot for active segments.")
     parser.add_argument("--limit", type=int, default=None, help="Optional debug limit.")
+    parser.add_argument(
+        "--with-report",
+        action="store_true",
+        help="Generate the expensive auxiliary report after the database snapshot is committed.",
+    )
+    parser.add_argument(
+        "--report-run-id",
+        type=int,
+        default=None,
+        help="Generate only the auxiliary report for an existing completed run.",
+    )
     args = parser.parse_args()
-    main(limit=args.limit)
+    if args.report_run_id is not None:
+        render_existing_report(args.report_run_id)
+    else:
+        main(limit=args.limit, generate_report=args.with_report)

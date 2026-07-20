@@ -3845,6 +3845,9 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const patternDiscovery = postRelease.quality_pattern_discovery ?? {};
   const patternFamilies = Array.isArray(patternDiscovery.families) ? patternDiscovery.families : [];
   const actionablePatternCount = Number(patternDiscovery.actionable_family_count ?? 0);
+  const providerProposals = release.provider_proposals ?? {};
+  const proposalRows = Array.isArray(providerProposals.proposals) ? providerProposals.proposals : [];
+  const proposalDraftCount = Number(providerProposals.draft_count ?? proposalRows.length);
   const providerRows = Array.isArray(providerHealth.providers) ? providerHealth.providers : [];
   const providerStatusLabels = {
     clean: 'sem candidatos',
@@ -4093,6 +4096,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     { id: 'promotions', label: 'Promocoes', count: diffSummary.promotions_vs_old ?? promotionSegments.length, tone: promotionSegments.length ? 'emerald' : 'slate' },
     { id: 'regressions', label: 'Score bruto', count: rawScoreRegressionCount, tone: effectiveScoreRegressionCount || unresolvedRawScoreRegressionCount ? 'red' : rawScoreRegressionCount ? 'blue' : 'slate' },
     { id: 'discovery', label: 'Descobertas', count: actionablePatternCount, tone: actionablePatternCount ? 'amber' : patternFamilies.length ? 'blue' : 'slate' },
+    { id: 'proposals', label: 'Propostas', count: proposalDraftCount, tone: proposalDraftCount ? 'amber' : providerProposals.instrumented ? 'emerald' : 'slate' },
     { id: 'providers', label: 'Provedores', count: providerRows.length, tone: providerHealth.status === 'healthy' ? 'emerald' : providerHealth.instrumented ? 'amber' : 'slate' },
     { id: 'calibration', label: 'Calibracao', count: calibrationReview.pending_count ?? calibrationReviewSegments.filter((item) => item.review_status === 'pending').length, tone: calibrationPolicyDecision === 'skip' || calibrationReview.consumption_status === 'consumed' ? 'emerald' : calibrationPolicyDecision === 'sample' ? 'blue' : Number(calibrationReview.pending_count ?? 0) ? 'amber' : calibrationReviewSegments.length ? 'blue' : 'slate' },
     { id: 'unhandled', label: 'Pendentes', count: diffSummary.unhandled_by_network ?? unhandledSegments.length, tone: unhandledSegments.length ? 'amber' : 'slate' },
@@ -5062,6 +5066,8 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                           ? 'Auditoria do score bruto'
                       : postReleaseView === 'discovery'
                           ? 'Familias de qualidade descobertas'
+                      : postReleaseView === 'proposals'
+                          ? 'Propostas assistidas de provedor'
                       : postReleaseView === 'providers'
                           ? 'Cobertura e produtividade dos provedores'
                       : postReleaseView === 'calibration'
@@ -5091,6 +5097,8 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                           ? `${compact(rawScoreRegressionCount)} variacoes brutas auditaveis; ${compact(effectiveScoreRegressionCount)} regressões efetivas no pacote; ${compact(reviewedRawScoreRegressionCount)} ja revisadas/calibradas; ${compact(unresolvedRawScoreRegressionCount)} ainda sem resolucao.`
                       : postReleaseView === 'discovery'
                           ? `Mineracao do pacote inteiro na epoch #${patternDiscovery.quality_epoch_id ?? '-'}. ${compact(patternDiscovery.evidence_segment_count ?? 0)} segmentos com evidencia; ${compact(patternDiscovery.ignored_score_only_count ?? 0)} casos de score baixo permaneceram apenas informativos.`
+                      : postReleaseView === 'proposals'
+                          ? `Rascunhos desabilitados gerados a partir da descoberta #${providerProposals.discovery_run_id ?? '-'}. Cada proposta exige implementacao deterministica, shadow integral, invariantes e testes de fronteira antes de virar provedor.`
                       : postReleaseView === 'providers'
                           ? `Funil persistido no SQLite para a epoch #${providerHealth.quality_epoch_id ?? '-'}. Casos inspecionados viram evidência somente quando passam pelos filtros determinísticos e pelo gate pareado.`
                       : postReleaseView === 'calibration'
@@ -5123,6 +5131,8 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                         : `fila #${calibrationReview.run_id ?? '-'} - ${compact(calibrationReview.pending_count ?? 0)} pendentes`
                     : postReleaseView === 'discovery'
                       ? `fila #${patternDiscovery.run_id ?? '-'} - ${compact(patternDiscovery.family_count ?? 0)} familias`
+                    : postReleaseView === 'proposals'
+                      ? `geracao #${providerProposals.run_id ?? '-'} - ${compact(proposalDraftCount)} rascunhos`
                     : postReleaseView === 'providers'
                       ? `${compact(providerHealth.executed_provider_count ?? 0)}/${compact(providerHealth.provider_count ?? 0)} executados - score #${providerHealth.score_run_id ?? '-'}`
                     : diffReview.old_score_run_id
@@ -5145,6 +5155,15 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                   <Badge tone="blue">Recorrentes {compact(patternDiscovery.recurring_family_count ?? 0)}</Badge>
                   <Badge tone="emerald">Cobertas {compact(patternDiscovery.covered_family_count ?? 0)}</Badge>
                   <Badge tone="slate">Em observacao {compact(Number(patternDiscovery.family_count ?? 0) - Number(patternDiscovery.actionable_family_count ?? 0) - Number(patternDiscovery.covered_family_count ?? 0))}</Badge>
+                </div>
+              ) : null}
+              {postReleaseView === 'proposals' ? (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <Badge tone={proposalDraftCount ? 'amber' : 'emerald'}>Rascunhos {compact(proposalDraftCount)}</Badge>
+                  <Badge tone="blue">Positivos {compact(providerProposals.positive_case_count ?? 0)}</Badge>
+                  <Badge tone="slate">Negativos {compact(providerProposals.negative_case_count ?? 0)}</Badge>
+                  <Badge tone="emerald">Fronteira {compact(providerProposals.boundary_case_count ?? 0)}</Badge>
+                  <Badge tone="slate">Escrita no output 0</Badge>
                 </div>
               ) : null}
               {postReleaseView === 'providers' ? (
@@ -5263,6 +5282,50 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                         </tr>
                       )) : (
                         <tr><td colSpan={10} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">{postReleaseView === 'package' ? 'Nenhuma diferenca entre old e output medida.' : 'Nenhuma promocao contra o old medida.'}</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                ) : postReleaseView === 'proposals' ? (
+                  <table className="w-full min-w-[1180px] text-center text-xs">
+                    <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                      <tr>
+                        <th className="px-2 py-2">Prioridade</th>
+                        <th className="px-2 py-2 text-left">Proposta</th>
+                        <th className="px-2 py-2">Contexto</th>
+                        <th className="px-2 py-2">Familias</th>
+                        <th className="px-2 py-2">Segmentos</th>
+                        <th className="px-2 py-2">Casos</th>
+                        <th className="px-2 py-2">Estado</th>
+                        <th className="px-2 py-2 text-left">Contrato</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {proposalRows.length ? proposalRows.map((item) => {
+                        const selector = item.contract?.selector ?? {};
+                        const files = Array.isArray(selector.file_families) ? selector.file_families : [];
+                        const sample = Array.isArray(item.sample_cases) ? item.sample_cases[0] : null;
+                        const totalCases = Number(item.positive_case_count ?? 0)
+                          + Number(item.negative_case_count ?? 0)
+                          + Number(item.boundary_case_count ?? 0);
+                        return (
+                          <tr key={`proposal-${item.proposal_key}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
+                            <td className="px-2 py-2"><Badge tone={Number(item.priority ?? 0) >= 75 ? 'red' : Number(item.priority ?? 0) >= 60 ? 'amber' : 'blue'}>{Number(item.priority ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</Badge></td>
+                            <td className="max-w-[280px] px-2 py-2 text-left" title={sample ? `${sample.relative_path} :: ${sample.source_key}\n${sample.input_text}` : item.evidence_type}>
+                              <p className="font-black">{item.label ?? String(item.issue_type ?? '').replaceAll('_', ' ')}</p>
+                              <p className="truncate text-[10px] text-[var(--dash-muted)]">{item.provider_id} - desabilitado</p>
+                            </td>
+                            <td className="px-2 py-2">{String(item.token_context ?? '-').replaceAll('_', ' ')}</td>
+                            <td className="px-2 py-2" title={files.join(', ')}>{compact(item.family_count ?? 0)}</td>
+                            <td className="px-2 py-2 font-black">{compact(item.segment_count ?? 0)}</td>
+                            <td className="px-2 py-2" title={`${compact(item.positive_case_count ?? 0)} positivos; ${compact(item.negative_case_count ?? 0)} negativos; ${compact(item.boundary_case_count ?? 0)} de fronteira`}>{compact(totalCases)}</td>
+                            <td className="px-2 py-2"><Badge tone="amber">revisao obrigatoria</Badge></td>
+                            <td className="max-w-[300px] px-2 py-2 text-left" title={item.evidence_type}>
+                              deterministico, idempotente, tokens preservados e gate pairwise
+                            </td>
+                          </tr>
+                        );
+                      }) : (
+                        <tr><td colSpan={8} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">Nenhuma familia acionavel sem cobertura; nenhuma proposta foi criada nesta epoch.</td></tr>
                       )}
                     </tbody>
                   </table>
@@ -6151,13 +6214,15 @@ function ProjectIntelligenceDashboard({ data }) {
     : 'Fallback por pacote/path quando familia ainda nao esta instrumentada.';
   const pendingActionability = release.pending_actionability ?? {};
   const pendingNextFocus = release.pending_next_focus ?? {};
-  const watchValue = (key) => pendingActionability[key] ?? 'pending_instrumentation';
+  const pendingNotApplicable = pendingActionability.status === 'not_applicable';
+  const watchValue = (key) => pendingNotApplicable ? 'n/a' : (pendingActionability[key] ?? 'pending_instrumentation');
+  const watchTone = (key, tone) => pendingNotApplicable || watchValue(key) === 'pending_instrumentation' ? 'slate' : tone;
   const pendingWatchCards = [
-    { label: 'Precisa contexto', value: watchValue('needs_context'), tone: watchValue('needs_context') === 'pending_instrumentation' ? 'slate' : 'blue' },
-    { label: 'Precisa dominio', value: watchValue('needs_domain'), tone: watchValue('needs_domain') === 'pending_instrumentation' ? 'slate' : 'violet' },
-    { label: 'Novo microagente', value: watchValue('needs_new_microagent'), tone: watchValue('needs_new_microagent') === 'pending_instrumentation' ? 'slate' : 'violet' },
-    { label: 'Reparo textual', value: watchValue('text_repair'), tone: watchValue('text_repair') === 'pending_instrumentation' ? 'slate' : 'amber' },
-    { label: 'Alta incerteza', value: watchValue('high_uncertainty'), tone: watchValue('high_uncertainty') === 'pending_instrumentation' ? 'slate' : 'red' },
+    { label: 'Precisa contexto', value: watchValue('needs_context'), tone: watchTone('needs_context', 'blue') },
+    { label: 'Precisa dominio', value: watchValue('needs_domain'), tone: watchTone('needs_domain', 'violet') },
+    { label: 'Novo microagente', value: watchValue('needs_new_microagent'), tone: watchTone('needs_new_microagent', 'violet') },
+    { label: 'Reparo textual', value: watchValue('text_repair'), tone: watchTone('text_repair', 'amber') },
+    { label: 'Alta incerteza', value: watchValue('high_uncertainty'), tone: watchTone('high_uncertainty', 'red') },
   ];
   const largestPendingVolume = pendingPrimaryData[0] ?? {};
   const readyActionCount = Number(release.needs_apply ?? 0)

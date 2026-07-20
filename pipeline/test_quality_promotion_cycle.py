@@ -131,6 +131,10 @@ class QualityPromotionCycleTests(unittest.TestCase):
 
         self.assertIn("pairwise_calibration_policy", labels)
         self.assertEqual(labels[0], "quality_pattern_discovery")
+        self.assertEqual(labels[1], "quality_closed_observation_audit")
+        self.assertEqual(labels[2], "quality_provider_proposals")
+        self.assertIn("closed_observation_audit", payload)
+        self.assertIn("provider_proposals", payload)
         self.assertNotIn("pairwise_calibration_review", labels)
         self.assertTrue(payload["calibration_review"]["payload"]["skipped"])
         self.assertEqual(payload["calibration_review"]["payload"]["policy_decision"], "skip")

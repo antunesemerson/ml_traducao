@@ -489,6 +489,11 @@ def main() -> None:
         help="During auto-validate, maximum candidates inspected per source.",
     )
     parser.add_argument(
+        "--segment-state-report",
+        action="store_true",
+        help="During segment-state, generate the optional report after committing the authoritative database snapshot.",
+    )
+    parser.add_argument(
         "--auto-min-score",
         type=float,
         default=None,
@@ -3442,7 +3447,10 @@ def main() -> None:
             tee_stderr = Tee(sys.stderr, buffer)
             try:
                 with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
-                    segment_state_snapshot.main(limit=args.auto_limit)
+                    segment_state_snapshot.main(
+                        limit=args.auto_limit,
+                        generate_report=args.segment_state_report,
+                    )
             except Exception:
                 traceback.print_exc(file=buffer)
                 output = buffer.getvalue()

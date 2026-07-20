@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import sys
 import unittest
@@ -84,6 +85,107 @@ class DiagnosticStatusTest(unittest.TestCase):
         self.assertGreater(stage["elapsed_seconds"], 0)
         self.assertGreater(stage["progress_pct"], 1)
         self.assertGreater(persisted["progress_pct"], 1)
+
+    def test_compatible_finished_segment_state_can_resume_failed_diagnostic(self) -> None:
+        db_path = Path(self.temp_dir.name) / "resume.sqlite"
+        with sqlite3.connect(db_path) as con:
+            con.executescript(
+                """
+                CREATE TABLE quality_epochs (
+                    id INTEGER PRIMARY KEY,
+                    output_score_run_id INTEGER,
+                    policy_run_id INTEGER,
+                    segment_state_run_id INTEGER,
+                    scored_at TEXT
+                );
+                CREATE TABLE segment_state_runs (
+                    id INTEGER PRIMARY KEY,
+                    rule_version TEXT,
+                    candidate_score_run_id INTEGER,
+                    policy_run_id INTEGER,
+                    total_segments INTEGER,
+                    closed_count INTEGER,
+                    pending_count INTEGER,
+                    started_at TEXT,
+                    finished_at TEXT
+                );
+                CREATE TABLE segment_state_items (
+                    id INTEGER PRIMARY KEY,
+                    run_id INTEGER NOT NULL
+                );
+                INSERT INTO segment_state_runs VALUES (
+                    10, 'segment_state_snapshot_v1', 100, 20,
+                    288100, 288100, 0,
+                    '2026-07-20T10:00:00Z', '2026-07-20T10:05:00Z'
+                );
+                INSERT INTO segment_state_runs VALUES (
+                    11, 'segment_state_snapshot_v1', 101, 21,
+                    288100, 288100, 0,
+                    '2026-07-20T11:00:00Z', '2026-07-20T11:05:00Z'
+                );
+                INSERT INTO segment_state_items VALUES (1, 11);
+                INSERT INTO quality_epochs VALUES (
+                    3, 101, 21, 10, '2026-07-20T11:00:00Z'
+                );
+                """
+            )
+        con.close()
+
+        run_id = backend._resumable_diagnostic_segment_state_run_id(
+            db_path,
+            {"epoch_id": 3},
+        )
+
+        self.assertEqual(run_id, 11)
+
+    def test_attached_segment_state_is_not_resumed_again(self) -> None:
+        db_path = Path(self.temp_dir.name) / "attached.sqlite"
+        with sqlite3.connect(db_path) as con:
+            con.executescript(
+                """
+                CREATE TABLE quality_epochs (
+                    id INTEGER PRIMARY KEY,
+                    output_score_run_id INTEGER,
+                    policy_run_id INTEGER,
+                    segment_state_run_id INTEGER,
+                    scored_at TEXT
+                );
+                CREATE TABLE segment_state_runs (
+                    id INTEGER PRIMARY KEY,
+                    rule_version TEXT,
+                    candidate_score_run_id INTEGER,
+                    policy_run_id INTEGER,
+                    total_segments INTEGER,
+                    closed_count INTEGER,
+                    pending_count INTEGER,
+                    started_at TEXT,
+                    finished_at TEXT
+                );
+                CREATE TABLE segment_state_items (id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL);
+                INSERT INTO segment_state_runs VALUES (
+                    11, 'segment_state_snapshot_v1', 101, 21,
+                    288100, 288100, 0,
+                    '2026-07-20T11:00:00Z', '2026-07-20T11:05:00Z'
+                );
+                INSERT INTO segment_state_items VALUES (1, 11);
+                INSERT INTO quality_epochs VALUES (
+                    3, 101, 21, 11, '2026-07-20T11:00:00Z'
+                );
+                """
+            )
+        con.close()
+
+        self.assertIsNone(
+            backend._resumable_diagnostic_segment_state_run_id(
+                db_path,
+                {"epoch_id": 3},
+            )
+        )
+
+    def test_segment_state_has_dedicated_critical_timeout(self) -> None:
+        self.assertEqual(backend._diagnostic_stage_timeout("segment_state"), 1800)
+        self.assertEqual(backend._diagnostic_stage_timeout("score_package_output"), 7200)
+        self.assertEqual(backend._diagnostic_stage_timeout("quality_epoch_open"), 900)
 
 
 if __name__ == "__main__":
