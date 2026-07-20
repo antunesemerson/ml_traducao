@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "provider_id": "token_punctuation_boundary",
+  "label": "Espaco entre token e pontuacao",
+  "enabled": true,
+  "priority": 100,
+  "evidence_type": "deterministic_token_punctuation_boundary_repair",
+  "discovery": {
+    "issue_types": [
+      "space_before_punctuation",
+      "missing_space_after_token",
+      "missing_space_before_token"
+    ]
+  },
+  "shadow_script": "pipeline/quality_token_punctuation_boundary_shadow.py",
+  "shadow_args": [],
+  "evidence_script": "pipeline/quality_token_punctuation_pairwise_evidence.py",
+  "evidence_args": []
+}

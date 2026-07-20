@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "provider_id": "gender_token_prefix",
+  "label": "Prefixo duplicado antes de token de genero",
+  "enabled": true,
+  "priority": 200,
+  "evidence_type": "deterministic_gender_token_extra_prefix_repair",
+  "discovery": {
+    "issue_types": ["gender_token_extra_prefix"]
+  },
+  "shadow_script": "pipeline/quality_gender_token_prefix_shadow.py",
+  "shadow_args": [],
+  "evidence_script": "pipeline/quality_gender_token_prefix_pairwise_evidence.py",
+  "evidence_args": []
+}

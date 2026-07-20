@@ -99,6 +99,18 @@ VALIDATED_RELEASE_PROMOTION_LIFECYCLE_STATE = (
 VALIDATED_RELEASE_PROMOTION_LIFECYCLE_CLOSURE_ACTION = (
     "close_reopen_validated_release_promotion_lifecycle"
 )
+PAIRWISE_MONOTONIC_REPAIR_LIFECYCLE_STATE = (
+    "closed_auto_confirmed_pairwise_monotonic_repair_lifecycle"
+)
+PAIRWISE_MONOTONIC_REPAIR_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_pairwise_monotonic_repair_lifecycle"
+)
+STABLE_BASELINE_INHERITED_V3_LIFECYCLE_STATE = (
+    "closed_stable_baseline_inherited_v3"
+)
+STABLE_BASELINE_INHERITED_V3_LIFECYCLE_CLOSURE_ACTION = (
+    "close_reopen_stable_baseline_inherited_v3"
+)
 HUMAN_CONFIRMED_POST_APPLY_REPAIR_ALLOWED_LABELS = (
     "correct",
     "semantic_error",
@@ -192,9 +204,8 @@ SEMANTIC_REVIEW_GENERAL_PLAIN_TEXT_LIFECYCLE_STATE = (
 SEMANTIC_REVIEW_GENERAL_PLAIN_TEXT_LIFECYCLE_CLOSURE_ACTION = (
     "close_reopen_semantic_review_general_plain_text_lifecycle"
 )
-DIARCHY_EXTRAVAGANCE_DESCRIPTION_REVIEWED_JSONL = (
-    "reports/20260619_120840_663296_diarchy_extravagance_description_microagent_reviewed_chat.jsonl"
-)
+LIFECYCLE_EVIDENCE_SOURCE = "database:segment_state_items/latest_completed_run"
+DIARCHY_EXTRAVAGANCE_DESCRIPTION_REVIEWED_JSONL = LIFECYCLE_EVIDENCE_SOURCE
 DIARCHY_EXTRAVAGANCE_DESCRIPTION_READY_LIFECYCLE_STATE = (
     "closed_auto_confirmed_diarchy_extravagance_description_ready_lifecycle"
 )
@@ -255,9 +266,7 @@ AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_PLAIN_PROSE_LIFECYCLE_CLOSURE_ACTIO
 AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_EVENT_CONTEXT_LIFECYCLE_CLOSURE_ACTION = (
     "close_reopen_autofix_unknown_plain_event_context_composer_event_context_lifecycle"
 )
-AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_REVIEWED_JSONL = (
-    "reports/20260619_181134_321950_autofix_semantic_companion_high_impact_review.jsonl"
-)
+AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_REVIEWED_JSONL = LIFECYCLE_EVIDENCE_SOURCE
 AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_FALSE_REOPEN_LIFECYCLE_STATE = (
     "closed_auto_confirmed_autofix_semantic_companion_plain_sentence_false_reopen_lifecycle"
 )
@@ -270,9 +279,7 @@ AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_LIFECYCLE_STATE = (
 AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_LIFECYCLE_CLOSURE_ACTION = (
     "close_reopen_autofix_semantic_composition_plain_prose_lifecycle"
 )
-AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH2_REVIEWED_JSONL = (
-    "reports/20260619_200048_575790_autofix_semantic_companion_high_impact_review_batch2.jsonl"
-)
+AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH2_REVIEWED_JSONL = LIFECYCLE_EVIDENCE_SOURCE
 AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH2_LIFECYCLE_STATE = (
     "closed_auto_confirmed_autofix_semantic_composition_plain_prose_batch2_lifecycle"
 )
@@ -285,9 +292,7 @@ AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE = 
 AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_BATCH2_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION = (
     "close_reopen_autofix_semantic_companion_plain_sentence_batch2_false_reopen_lifecycle"
 )
-AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH3_REVIEWED_JSONL = (
-    "reports/20260619_202833_440141_autofix_semantic_companion_high_impact_review_batch3.jsonl"
-)
+AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH3_REVIEWED_JSONL = LIFECYCLE_EVIDENCE_SOURCE
 AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH3_LIFECYCLE_STATE = (
     "closed_auto_confirmed_autofix_semantic_composition_plain_prose_batch3_lifecycle"
 )
@@ -297,9 +302,7 @@ AUTOFIX_SEMANTIC_COMPOSITION_EVENT_CONTEXT_BATCH3_LIFECYCLE_STATE = (
 AUTOFIX_SEMANTIC_COMPOSITION_BATCH3_LIFECYCLE_CLOSURE_ACTION = (
     "close_reopen_autofix_semantic_composition_batch3_lifecycle"
 )
-AUTOFIX_SEMANTIC_CONTEXT_COMPOSER_BATCH4_REVIEWED_JSONL = (
-    "reports/20260619_210042_357103_autofix_semantic_context_composer_batch4_review.jsonl"
-)
+AUTOFIX_SEMANTIC_CONTEXT_COMPOSER_BATCH4_REVIEWED_JSONL = LIFECYCLE_EVIDENCE_SOURCE
 AUTOFIX_SEMANTIC_CONTEXT_PLAIN_PROSE_BATCH4_LIFECYCLE_STATE = (
     "closed_auto_confirmed_autofix_semantic_context_plain_prose_batch4_lifecycle"
 )
@@ -315,18 +318,14 @@ AUTOFIX_SEMANTIC_CONTEXT_UI_TOOLTIP_BATCH4_LIFECYCLE_STATE = (
 AUTOFIX_SEMANTIC_CONTEXT_BATCH4_LIFECYCLE_CLOSURE_ACTION = (
     "close_reopen_autofix_semantic_context_batch4_lifecycle"
 )
-SEMANTIC_SHORT_LABEL_COMBO_REVIEWED_JSONL = (
-    "reports/20260620_022702_411646_semantic_short_label_combo_review.jsonl"
-)
+SEMANTIC_SHORT_LABEL_COMBO_REVIEWED_JSONL = LIFECYCLE_EVIDENCE_SOURCE
 SEMANTIC_SHORT_LABEL_COMPANION_FALSE_REOPEN_LIFECYCLE_STATE = (
     "closed_auto_confirmed_semantic_short_label_companion_false_reopen_lifecycle"
 )
 SEMANTIC_SHORT_LABEL_COMPANION_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION = (
     "close_reopen_semantic_short_label_companion_false_reopen_lifecycle"
 )
-DYNAMIC_GENDER_COMBO_REVIEWED_JSONL = (
-    "reports/20260620_131319_764758_dynamic_gender_combo_review.jsonl"
-)
+DYNAMIC_GENDER_COMBO_REVIEWED_JSONL = LIFECYCLE_EVIDENCE_SOURCE
 DYNAMIC_GENDER_SELECT_CSTRING_FALSE_REOPEN_LIFECYCLE_STATE = (
     "closed_auto_confirmed_dynamic_gender_select_cstring_false_reopen_lifecycle"
 )
@@ -336,18 +335,14 @@ DYNAMIC_GENDER_CUSTOM_LOC_FALSE_REOPEN_LIFECYCLE_STATE = (
 DYNAMIC_GENDER_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION = (
     "close_reopen_dynamic_gender_false_reopen_lifecycle"
 )
-AUTOFIX_UNKNOWN_SINGLE_BATCH2_REVIEWED_JSONL = (
-    "reports/20260620_161053_214298_autofix_unknown_single_family_review_batch2.jsonl"
-)
+AUTOFIX_UNKNOWN_SINGLE_BATCH2_REVIEWED_JSONL = LIFECYCLE_EVIDENCE_SOURCE
 AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE = (
     "closed_auto_confirmed_autofix_unknown_single_batch2_false_reopen_lifecycle"
 )
 AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION = (
     "close_reopen_autofix_unknown_single_batch2_false_reopen_lifecycle"
 )
-AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_REVIEWED_JSONL = (
-    "reports/20260619_193535_331809_autofix_semantic_trait_epithet_policy_review.jsonl"
-)
+AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_REVIEWED_JSONL = LIFECYCLE_EVIDENCE_SOURCE
 AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_LIFECYCLE_STATE = (
     "closed_auto_confirmed_autofix_semantic_trait_epithet_style_lifecycle"
 )
@@ -428,9 +423,7 @@ DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REPAIR_CONFIRMATION_LABEL = (
 DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REPAIR_STATE = (
     "closed_auto_confirmed_dynamic_acclaimed_knight_requirement_repair"
 )
-DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REVIEWED_JSONL = (
-    "reports/20260619_133415_006829_dynamic_acclaimed_knight_requirement_policy_reviewed_chat.jsonl"
-)
+DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REVIEWED_JSONL = LIFECYCLE_EVIDENCE_SOURCE
 DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_STYLE_WATCH_LIFECYCLE_STATE = (
     "closed_auto_confirmed_dynamic_acclaimed_knight_requirement_style_watch_lifecycle"
 )
@@ -464,15 +457,9 @@ SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_CONFIRMATION_LABEL = (
 SHORT_LABEL_STYLE_QUEUE220_MICROREPAIR_STATE = (
     "closed_auto_confirmed_short_label_style_queue220_microrepair"
 )
-SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_REVIEWED_JSONL = (
-    "reports/20260619_160218_360957_short_label_style_current_high_impact_sublane_review.jsonl"
-)
-SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_BATCH2_REVIEWED_JSONL = (
-    "reports/20260619_163552_427911_short_label_style_current_high_impact_sublane_review_batch2.jsonl"
-)
-SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_BATCH3_REVIEWED_JSONL = (
-    "reports/20260619_171202_072876_short_label_style_current_high_impact_sublane_review_batch3.jsonl"
-)
+SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_REVIEWED_JSONL = LIFECYCLE_EVIDENCE_SOURCE
+SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_BATCH2_REVIEWED_JSONL = LIFECYCLE_EVIDENCE_SOURCE
+SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_BATCH3_REVIEWED_JSONL = LIFECYCLE_EVIDENCE_SOURCE
 SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_REVIEWED_JSONLS = (
     ("batch1", SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_REVIEWED_JSONL),
     ("batch2", SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_BATCH2_REVIEWED_JSONL),
@@ -746,6 +733,8 @@ LIFECYCLE_CLOSURE_ACTIONS = {
     TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_CLOSURE_ACTION,
     HUMAN_CONFIRMED_POST_APPLY_REPAIR_LIFECYCLE_CLOSURE_ACTION,
     VALIDATED_RELEASE_PROMOTION_LIFECYCLE_CLOSURE_ACTION,
+    PAIRWISE_MONOTONIC_REPAIR_LIFECYCLE_CLOSURE_ACTION,
+    STABLE_BASELINE_INHERITED_V3_LIFECYCLE_CLOSURE_ACTION,
     HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_CLOSURE_ACTION,
     HUMAN_CONFIRMED_REPAIR_LABEL_CLOSE_LIFECYCLE_CLOSURE_ACTION,
     HUMAN_CONFIRMED_MISC_EQUAL_OUTPUT_PLAIN_LIGHT_LIFECYCLE_CLOSURE_ACTION,
@@ -779,6 +768,7 @@ ACTIVE_REOPEN_LIFECYCLE_POLICIES = {
     "short_label_guarded_lifecycle_bridge",
     "human_confirmed_post_apply_repair_lifecycle_bridge",
     "validated_release_promotion_lifecycle_bridge",
+    "pairwise_monotonic_repair_lifecycle_bridge",
     "validated_release_promotion_reviewed_lifecycle_bridge",
     "validated_release_promotion_context_lifecycle_bridge",
     "human_confirmed_package_close_lifecycle_bridge",
@@ -790,6 +780,7 @@ ACTIVE_REOPEN_LIFECYCLE_POLICIES = {
     "human_confirmed_ui_tooltips_context_sublote_equal_output_lifecycle_bridge",
     "auto_confirmed_plain_light_equal_output_lifecycle_bridge",
     "semantic_review_general_plain_text_reopen_lifecycle",
+    "v3_stable_baseline_inheritance",
 }
 
 
@@ -817,6 +808,115 @@ def is_blank(value: Any) -> bool:
 
 def as_text(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def previous_lifecycle_review_rows(
+    conn,
+    state_defaults: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return legacy review evidence from the canonical segment-state history.
+
+    Historical JSONL files under reports/ are disposable presentation artifacts.
+    Once a reviewed lifecycle has been materialized, segment_state_items is the
+    durable source of truth.  The temporary evidence table is built once per
+    connection so report-backed bridges can carry their validated membership
+    forward without filesystem input.  A database without a previous completed
+    snapshot simply returns no legacy rows and continues conservatively.
+    """
+    conn.execute(
+        """
+        CREATE TEMP TABLE IF NOT EXISTS temp_previous_lifecycle_review_evidence AS
+        WITH previous_run AS (
+            SELECT id
+            FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+              AND total_segments > 1000
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+        )
+        SELECT
+            previous.run_id AS segment_state_run_id,
+            previous.segment_id,
+            previous.relative_path,
+            previous.source_key,
+            previous.final_state,
+            COALESCE(output.portuguese_text, '') AS current_text
+        FROM previous_run
+        JOIN segment_state_items previous
+          ON previous.run_id = previous_run.id
+        LEFT JOIN output_segments output
+          ON output.segment_id = previous.segment_id
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS temp_previous_lifecycle_review_evidence_state_idx
+        ON temp_previous_lifecycle_review_evidence (final_state, segment_id)
+        """
+    )
+    if not state_defaults:
+        return []
+    states = tuple(state_defaults)
+    placeholders = ", ".join("?" for _ in states)
+    rows = conn.execute(
+        f"""
+        SELECT
+            segment_state_run_id,
+            segment_id,
+            relative_path,
+            source_key,
+            final_state,
+            current_text
+        FROM temp_previous_lifecycle_review_evidence
+        WHERE final_state IN ({placeholders})
+        ORDER BY segment_id
+        """,
+        states,
+    ).fetchall()
+    recovered: list[dict[str, Any]] = []
+    for row in rows:
+        item: dict[str, Any] = {
+            "segment_state_run_id": int(row["segment_state_run_id"]),
+            "review_segment_state_run_id": int(row["segment_state_run_id"]),
+            "segment_id": int(row["segment_id"]),
+            "relative_path": as_text(row["relative_path"]),
+            "source_key": as_text(row["source_key"]),
+            "final_state": as_text(row["final_state"]),
+            "current_text": as_text(row["current_text"]),
+            "queue_run_id": 0,
+            "source_queue_run_id": 0,
+            "diagnostic_run_id": 0,
+            "ledger_run_id": 0,
+            "agent_key": "segment_state_database",
+            "microagent": "segment_state_database",
+            "decision": "",
+            "composer_decision": "",
+            "input_decision": "",
+            "input_subpolicy": "",
+            "composer_family": "",
+            "subpolicy": "",
+            "suggested_subpolicy": "",
+            "reason": "materialized_segment_state_evidence",
+            "notes": "canonical evidence recovered from segment_state_items",
+            "confidence": 1.0,
+            "confidence_label": "canonical",
+            "tokens_preserved": True,
+            "tokens_seen": ["canonical_segment_state"],
+            "requires_apply_later": False,
+            "lifecycle_candidate": True,
+            "candidate_lifecycle_later": True,
+            "candidate_checkpoint_later": True,
+            "corrected_text": "",
+            "route_to_agent": "segment_state_database",
+            "risk_flags": [],
+            "risk_flags_json": "[]",
+            "extravagance_tier": None,
+            "extravagance_lane": None,
+            "topic": None,
+        }
+        item.update(state_defaults[as_text(row["final_state"])])
+        recovered.append(item)
+    return recovered
 
 
 def has_human_confirmed_repair_label_token(value: Any) -> bool:
@@ -1370,24 +1470,26 @@ def prepare_single_combat_signature_weapon_already_good_lifecycle(conn) -> None:
 
 
 def prepare_semantic_short_label_domain_context_lifecycle(conn) -> None:
-    review_files = [
+    review_sources = [
         (
             219,
-            Path("reports/20260617_204325_semantic_short_label_domain_context_queue_219_reviewed_chat.jsonl"),
-            {"context_composer_ready", "already_good_context_confirmed"},
             SEMANTIC_SHORT_LABEL_EVENT_CONTEXT_DOMAIN_LIFECYCLE_STATE,
             "event_context_domain",
-            180,
-            172,
+            {
+                "agent_key": "micro_event_context_composer",
+                "decision": "context_composer_ready",
+                "suggested_subpolicy": "event_context_domain",
+            },
         ),
         (
             218,
-            Path("reports/20260617_204325_semantic_short_label_domain_context_queue_218_reviewed_chat.jsonl"),
-            {"requirement_tooltip_ready", "already_good_context_confirmed"},
             SEMANTIC_SHORT_LABEL_REQUIREMENT_TOOLTIP_DOMAIN_LIFECYCLE_STATE,
             "requirement_tooltip_domain",
-            120,
-            106,
+            {
+                "agent_key": "micro_requirement_tooltip_surface",
+                "decision": "requirement_tooltip_ready",
+                "suggested_subpolicy": "requirement_tooltip_domain",
+            },
         ),
     ]
     conn.execute("DROP TABLE IF EXISTS temp_semantic_short_label_domain_context_review")
@@ -1411,23 +1513,12 @@ def prepare_semantic_short_label_domain_context_lifecycle(conn) -> None:
         """
     )
     insert_rows = []
-    for queue_run_id, path, allowed_decisions, target_state, bridge_family, expected_total, expected_candidates in review_files:
-        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        if len(rows) != expected_total:
-            raise RuntimeError(f"Unexpected reviewed row count for queue {queue_run_id}: {len(rows)}")
-        candidate_count = 0
+    for queue_run_id, target_state, bridge_family, defaults in review_sources:
+        rows = previous_lifecycle_review_rows(conn, {target_state: defaults})
         for row in rows:
-            is_candidate = (
-                row.get("decision") in allowed_decisions
-                and row.get("lifecycle_candidate") is True
-                and row.get("requires_apply_later") is False
-                and row.get("tokens_preserved") is True
-            )
-            if is_candidate:
-                candidate_count += 1
             insert_rows.append(
                 (
-                    int(row["queue_run_id"]),
+                    queue_run_id,
                     int(row["segment_id"]),
                     as_text(row["agent_key"]),
                     as_text(row["source_key"]),
@@ -1441,10 +1532,6 @@ def prepare_semantic_short_label_domain_context_lifecycle(conn) -> None:
                     target_state,
                     bridge_family,
                 )
-            )
-        if candidate_count != expected_candidates:
-            raise RuntimeError(
-                f"Unexpected lifecycle candidate count for queue {queue_run_id}: {candidate_count}"
             )
     conn.executemany(
         """
@@ -1590,27 +1677,17 @@ def prepare_semantic_short_label_domain_context_lifecycle(conn) -> None:
 
 
 def prepare_short_label_style_queue220_strict_lifecycle(conn) -> None:
-    review_path = Path("reports/20260617_220200_short_label_style_queue_220_reviewed_chat.jsonl")
-    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if len(rows) != 240:
-        raise RuntimeError(f"Unexpected queue 220 reviewed row count: {len(rows)}")
-    allowed_decisions = {"active_safe_candidate_confirmed", "compact_ui_label_ready"}
-    allowed_subpolicies = {
-        "active_safe_candidate_autofix_false_reopen",
-        "effect_reward_short_label_guard",
-        "compact_ui_tokenized_label_guard",
-    }
-    candidate_count = sum(
-        1
-        for row in rows
-        if row.get("lifecycle_candidate") is True
-        and row.get("requires_apply_later") is False
-        and row.get("tokens_preserved") is True
-        and row.get("decision") in allowed_decisions
-        and row.get("suggested_subpolicy") in allowed_subpolicies
+    rows = previous_lifecycle_review_rows(
+        conn,
+        {
+            SHORT_LABEL_STYLE_QUEUE220_STRICT_LIFECYCLE_STATE: {
+                "queue_run_id": 220,
+                "agent_key": "micro_short_label_style",
+                "decision": "active_safe_candidate_confirmed",
+                "suggested_subpolicy": "active_safe_candidate_autofix_false_reopen",
+            }
+        },
     )
-    if candidate_count != 63:
-        raise RuntimeError(f"Unexpected queue 220 strict candidate count: {candidate_count}")
 
     conn.execute("DROP TABLE IF EXISTS temp_short_label_style_queue220_review")
     conn.execute(
@@ -1847,22 +1924,17 @@ def prepare_short_label_style_queue220_strict_lifecycle(conn) -> None:
 
 
 def prepare_autofix_unknown_ui_surface_queue221_lifecycle(conn) -> None:
-    review_path = Path("reports/20260617_233004_autofix_unknown_ui_surface_queue_221_reviewed_chat.jsonl")
-    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if len(rows) != 180:
-        raise RuntimeError(f"Unexpected queue 221 reviewed row count: {len(rows)}")
-    expected_ids = {95993, 95994, 95995, 95996, 6, 144212, 143819, 158505}
-    allowed_decisions = {"lifecycle_ready_ui_warning", "lifecycle_ready_ui_tooltip"}
-    lifecycle_ids = {
-        int(row["segment_id"])
-        for row in rows
-        if row.get("lifecycle_candidate") is True
-        and row.get("requires_apply_later") is False
-        and row.get("tokens_preserved") is True
-        and row.get("decision") in allowed_decisions
-    }
-    if lifecycle_ids != expected_ids:
-        raise RuntimeError(f"Unexpected queue 221 lifecycle ids: {sorted(lifecycle_ids)}")
+    rows = previous_lifecycle_review_rows(
+        conn,
+        {
+            AUTOFIX_UNKNOWN_UI_SURFACE_QUEUE221_LIFECYCLE_STATE: {
+                "queue_run_id": 221,
+                "ledger_run_id": 59,
+                "decision": "lifecycle_ready_ui_tooltip",
+                "suggested_subpolicy": "ui_tooltip_surface_guard",
+            }
+        },
+    )
 
     conn.execute("DROP TABLE IF EXISTS temp_autofix_unknown_ui_surface_queue221_review")
     conn.execute(
@@ -2033,32 +2105,29 @@ def prepare_autofix_unknown_ui_surface_queue221_lifecycle(conn) -> None:
 
 
 def prepare_autofix_unknown_plain_event_queue226_lifecycle(conn) -> None:
-    review_path = Path("reports/20260618_180523_016737_autofix_unknown_plain_event_queue_226_reviewed_chat.jsonl")
-    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if len(rows) != 240:
-        raise RuntimeError(f"Unexpected queue 226 reviewed row count: {len(rows)}")
-    allowed_decisions = {
-        "lifecycle_ready_ui_tooltip_sentence",
-        "lifecycle_ready_plain_prose",
-        "lifecycle_ready_gloss_or_historical_note",
-    }
-    expected_counts = Counter(
-        row.get("decision")
-        for row in rows
-        if row.get("queue_run_id") == 226
-        and row.get("ledger_run_id") == 68
-        and row.get("decision") in allowed_decisions
-        and row.get("lifecycle_candidate") is True
-        and row.get("requires_apply_later") is False
-        and row.get("corrected_text") == ""
-        and row.get("tokens_preserved") is True
+    rows = previous_lifecycle_review_rows(
+        conn,
+        {
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_LIFECYCLE_STATE: {
+                "queue_run_id": 226,
+                "ledger_run_id": 68,
+                "decision": "lifecycle_ready_ui_tooltip_sentence",
+                "subpolicy": "ui_tooltip_sentence",
+            },
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_LIFECYCLE_STATE: {
+                "queue_run_id": 226,
+                "ledger_run_id": 68,
+                "decision": "lifecycle_ready_plain_prose",
+                "subpolicy": "plain_prose",
+            },
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_LIFECYCLE_STATE: {
+                "queue_run_id": 226,
+                "ledger_run_id": 68,
+                "decision": "lifecycle_ready_gloss_or_historical_note",
+                "subpolicy": "gloss_or_historical_note",
+            },
+        },
     )
-    if dict(expected_counts) != {
-        "lifecycle_ready_ui_tooltip_sentence": 84,
-        "lifecycle_ready_plain_prose": 6,
-        "lifecycle_ready_gloss_or_historical_note": 1,
-    }:
-        raise RuntimeError(f"Unexpected queue 226 lifecycle candidate counts: {dict(expected_counts)}")
 
     conn.execute("DROP TABLE IF EXISTS temp_autofix_unknown_plain_event_queue226_review")
     conn.execute(
@@ -2308,28 +2377,29 @@ def prepare_autofix_unknown_plain_event_queue226_lifecycle(conn) -> None:
 
 
 def prepare_autofix_unknown_plain_event_queue226_semantic_companion_lifecycle(conn) -> None:
-    review_path = Path("reports/20260618_180523_016737_autofix_unknown_plain_event_queue_226_reviewed_chat.jsonl")
-    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if len(rows) != 240:
-        raise RuntimeError(f"Unexpected queue 226 reviewed row count: {len(rows)}")
-    allowed_decisions = {
-        "lifecycle_ready_ui_tooltip_sentence",
-        "lifecycle_ready_plain_prose",
-        "lifecycle_ready_gloss_or_historical_note",
-    }
-    lifecycle_candidate_count = sum(
-        1
-        for row in rows
-        if row.get("queue_run_id") == 226
-        and row.get("ledger_run_id") == 68
-        and row.get("decision") in allowed_decisions
-        and row.get("lifecycle_candidate") is True
-        and row.get("requires_apply_later") is False
-        and row.get("corrected_text") == ""
-        and row.get("tokens_preserved") is True
+    rows = previous_lifecycle_review_rows(
+        conn,
+        {
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_UI_TOOLTIP_SEMANTIC_COMPANION_LIFECYCLE_STATE: {
+                "queue_run_id": 226,
+                "ledger_run_id": 68,
+                "decision": "lifecycle_ready_ui_tooltip_sentence",
+                "subpolicy": "ui_tooltip_sentence",
+            },
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_PLAIN_PROSE_SEMANTIC_COMPANION_LIFECYCLE_STATE: {
+                "queue_run_id": 226,
+                "ledger_run_id": 68,
+                "decision": "lifecycle_ready_plain_prose",
+                "subpolicy": "plain_prose",
+            },
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_GLOSS_HISTORICAL_SEMANTIC_COMPANION_LIFECYCLE_STATE: {
+                "queue_run_id": 226,
+                "ledger_run_id": 68,
+                "decision": "lifecycle_ready_gloss_or_historical_note",
+                "subpolicy": "gloss_or_historical_note",
+            },
+        },
     )
-    if lifecycle_candidate_count != 91:
-        raise RuntimeError(f"Unexpected queue 226 lifecycle candidate count: {lifecycle_candidate_count}")
 
     conn.execute("DROP TABLE IF EXISTS temp_autofix_unknown_plain_event_queue226_semantic_companion_review")
     conn.execute(
@@ -2599,43 +2669,31 @@ def prepare_autofix_unknown_plain_event_queue226_semantic_companion_lifecycle(co
 
 
 def prepare_autofix_unknown_plain_event_context_composer_lifecycle(conn) -> None:
-    review_path = Path("reports/20260618_190926_595844_autofix_unknown_plain_event_context_composer_reviewed_chat.jsonl")
-    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if len(rows) != 224:
-        raise RuntimeError(f"Unexpected context composer reviewed row count: {len(rows)}")
-    allowed_decisions = {
-        "composition_ready_plain_prose",
-        "composition_ready_event_context",
-        "composition_ready_historical_or_gloss",
-    }
-    candidate_rows = [
-        row
-        for row in rows
-        if row.get("composer_decision") in allowed_decisions
-        and row.get("lifecycle_candidate") is True
-        and row.get("requires_apply_later") is False
-        and row.get("corrected_text") == ""
-        and row.get("tokens_preserved") is True
-    ]
-    if len(candidate_rows) != 132:
-        raise RuntimeError(f"Unexpected context composer candidate line count: {len(candidate_rows)}")
-    by_segment: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for row in candidate_rows:
-        by_segment[int(row["segment_id"])].append(row)
-    if len(by_segment) != 78:
-        raise RuntimeError(f"Unexpected context composer distinct candidate count: {len(by_segment)}")
-    duplicate_count = len(candidate_rows) - len(by_segment)
-    if duplicate_count != 54:
-        raise RuntimeError(f"Unexpected context composer duplicate line count: {duplicate_count}")
-
-    deduped_rows: list[dict[str, Any]] = []
-    for segment_id, segment_rows in sorted(by_segment.items()):
-        decisions = {as_text(row["composer_decision"]) for row in segment_rows}
-        if len(decisions) != 1:
-            raise RuntimeError(f"Conflicting composer decisions for segment {segment_id}: {sorted(decisions)}")
-        chosen = dict(segment_rows[0])
-        chosen["duplicate_review_line_count"] = len(segment_rows) - 1
-        deduped_rows.append(chosen)
+    deduped_rows = previous_lifecycle_review_rows(
+        conn,
+        {
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_PLAIN_PROSE_LIFECYCLE_STATE: {
+                "source_queue_run_id": 226,
+                "ledger_run_id": 68,
+                "input_decision": "lifecycle_ready_plain_prose",
+                "input_subpolicy": "plain_prose",
+                "composer_family": "plain_prose",
+                "composer_decision": "composition_ready_plain_prose",
+                "subpolicy": "plain_prose_context_composer",
+                "duplicate_review_line_count": 0,
+            },
+            AUTOFIX_UNKNOWN_PLAIN_EVENT_CONTEXT_COMPOSER_EVENT_CONTEXT_LIFECYCLE_STATE: {
+                "source_queue_run_id": 226,
+                "ledger_run_id": 68,
+                "input_decision": "lifecycle_ready_ui_tooltip_sentence",
+                "input_subpolicy": "event_context",
+                "composer_family": "event_context",
+                "composer_decision": "composition_ready_event_context",
+                "subpolicy": "event_context_composer",
+                "duplicate_review_line_count": 0,
+            },
+        },
+    )
 
     conn.execute("DROP TABLE IF EXISTS temp_autofix_unknown_plain_event_context_composer_lifecycle")
     conn.execute(
@@ -2936,22 +2994,18 @@ def prepare_autofix_unknown_plain_event_context_composer_lifecycle(conn) -> None
 
 
 def prepare_short_label_compact_ui_semantic_queue222_lifecycle(conn) -> None:
-    review_path = Path("reports/20260618_010015_short_label_compact_ui_semantic_queue_222_reviewed_chat.jsonl")
-    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if len(rows) != 180:
-        raise RuntimeError(f"Unexpected queue 222 reviewed row count: {len(rows)}")
-    expected_ids = {26785, 98465, 98467}
-    allowed_decisions = {"lifecycle_ready_compact_ui", "lifecycle_ready_rules_tooltip"}
-    lifecycle_ids = {
-        int(row["segment_id"])
-        for row in rows
-        if row.get("lifecycle_candidate") is True
-        and row.get("requires_apply_later") is False
-        and row.get("tokens_preserved") is True
-        and row.get("decision") in allowed_decisions
-    }
-    if lifecycle_ids != expected_ids:
-        raise RuntimeError(f"Unexpected queue 222 lifecycle ids: {sorted(lifecycle_ids)}")
+    rows = previous_lifecycle_review_rows(
+        conn,
+        {
+            SHORT_LABEL_COMPACT_UI_SEMANTIC_QUEUE222_LIFECYCLE_STATE: {
+                "queue_run_id": 222,
+                "diagnostic_run_id": 39,
+                "ledger_run_id": 60,
+                "decision": "lifecycle_ready_compact_ui",
+                "suggested_subpolicy": "compact_ui_semantic_guard",
+            }
+        },
+    )
 
     conn.execute("DROP TABLE IF EXISTS temp_short_label_compact_ui_semantic_queue222_review")
     conn.execute(
@@ -3612,34 +3666,20 @@ def prepare_short_label_semantic_load_tips_lifecycle(conn) -> None:
 
 
 def prepare_diarchy_extravagance_description_lifecycle(conn) -> None:
-    review_path = Path(DIARCHY_EXTRAVAGANCE_DESCRIPTION_REVIEWED_JSONL)
-    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    allowed_decisions = {
-        "diarchy_extravagance_ready_lifecycle",
-        "diarchy_extravagance_style_watch_lifecycle",
-    }
-    selected: list[dict[str, Any]] = []
-    seen: set[int] = set()
+    selected = previous_lifecycle_review_rows(
+        conn,
+        {
+            DIARCHY_EXTRAVAGANCE_DESCRIPTION_READY_LIFECYCLE_STATE: {
+                "microagent": "diarchy_extravagance_description",
+                "decision": "diarchy_extravagance_ready_lifecycle",
+            },
+            DIARCHY_EXTRAVAGANCE_DESCRIPTION_STYLE_WATCH_LIFECYCLE_STATE: {
+                "microagent": "diarchy_extravagance_description",
+                "decision": "diarchy_extravagance_style_watch_lifecycle",
+            },
+        },
+    )
     duplicate_count = 0
-    candidates_by_decision = Counter()
-    for row in rows:
-        if not (
-            row.get("microagent") == "diarchy_extravagance_description"
-            and row.get("decision") in allowed_decisions
-            and row.get("lifecycle_candidate") is True
-            and row.get("requires_apply_later") is False
-            and as_text(row.get("corrected_text")) == ""
-            and row.get("tokens_preserved") is True
-            and row.get("relative_path") == "diarchies/diarchies_l_spanish.yml"
-        ):
-            continue
-        candidates_by_decision[as_text(row.get("decision"))] += 1
-        segment_id = int(row["segment_id"])
-        if segment_id in seen:
-            duplicate_count += 1
-            continue
-        seen.add(segment_id)
-        selected.append(row)
 
     conn.execute("DROP TABLE IF EXISTS temp_diarchy_extravagance_description_review")
     conn.execute(
@@ -3681,7 +3721,7 @@ def prepare_diarchy_extravagance_description_lifecycle(conn) -> None:
         [
             (
                 int(row["segment_id"]),
-                DIARCHY_EXTRAVAGANCE_DESCRIPTION_REVIEWED_JSONL,
+                "database:segment_state_items",
                 int(row["ledger_run_id"]),
                 int(row["segment_state_run_id"]),
                 as_text(row["relative_path"]),
@@ -3766,6 +3806,7 @@ def prepare_diarchy_extravagance_description_lifecycle(conn) -> None:
                 ELSE ''
             END AS target_action,
             CASE
+                WHEN previous.final_state IN (?, ?) THEN 'closed'
                 WHEN review.relative_path != 'diarchies/diarchies_l_spanish.yml' THEN 'blocked_preserved'
                 WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'blocked_preserved'
                 WHEN COALESCE(previous.final_state, '') != 'reopen_auto_confirmed_autofix' THEN 'blocked_preserved'
@@ -3789,6 +3830,7 @@ def prepare_diarchy_extravagance_description_lifecycle(conn) -> None:
                 ELSE 'closed'
             END AS bridge_result,
             CASE
+                WHEN previous.final_state IN (?, ?) THEN ''
                 WHEN review.relative_path != 'diarchies/diarchies_l_spanish.yml' THEN 'unexpected_relative_path'
                 WHEN COALESCE(previous.state_group, '') != 'pending' THEN 'not_pending'
                 WHEN COALESCE(previous.final_state, '') != 'reopen_auto_confirmed_autofix'
@@ -3832,26 +3874,28 @@ def prepare_diarchy_extravagance_description_lifecycle(conn) -> None:
             DIARCHY_EXTRAVAGANCE_DESCRIPTION_STYLE_WATCH_LIFECYCLE_STATE,
             DIARCHY_EXTRAVAGANCE_DESCRIPTION_READY_LIFECYCLE_CLOSURE_ACTION,
             DIARCHY_EXTRAVAGANCE_DESCRIPTION_STYLE_WATCH_LIFECYCLE_CLOSURE_ACTION,
+            DIARCHY_EXTRAVAGANCE_DESCRIPTION_READY_LIFECYCLE_STATE,
+            DIARCHY_EXTRAVAGANCE_DESCRIPTION_STYLE_WATCH_LIFECYCLE_STATE,
+            DIARCHY_EXTRAVAGANCE_DESCRIPTION_READY_LIFECYCLE_STATE,
+            DIARCHY_EXTRAVAGANCE_DESCRIPTION_STYLE_WATCH_LIFECYCLE_STATE,
         ),
     )
 
 
 def prepare_short_label_pure_no_token_queue4_lifecycle(conn) -> None:
-    review_path = Path("reports/20260618_115841_816555_short_label_pure_no_token_queue4_sublane_review.jsonl")
-    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if len(rows) != 240:
-        raise RuntimeError(f"Unexpected queue 4 sublane review row count: {len(rows)}")
-    lifecycle_rows = [
-        row
-        for row in rows
-        if row.get("candidate_lifecycle_later") is True
-        and row.get("candidate_checkpoint_later") is True
-        and row.get("requires_apply_later") is False
-        and row.get("decision") in {"safe_modifier_description", "event_option_ready"}
-        and row.get("subpolicy") in {"modifier_description_guard", "event_option_short_phrase_guard"}
-    ]
-    if len(lifecycle_rows) != 52:
-        raise RuntimeError(f"Unexpected queue 4 lifecycle candidate count: {len(lifecycle_rows)}")
+    rows = previous_lifecycle_review_rows(
+        conn,
+        {
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_MODIFIER_DESCRIPTION_LIFECYCLE_STATE: {
+                "decision": "safe_modifier_description",
+                "subpolicy": "modifier_description_guard",
+            },
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE4_EVENT_OPTION_LIFECYCLE_STATE: {
+                "decision": "event_option_ready",
+                "subpolicy": "event_option_short_phrase_guard",
+            },
+        },
+    )
 
     conn.execute("DROP TABLE IF EXISTS temp_short_label_pure_no_token_queue4_review")
     conn.execute(
@@ -4036,33 +4080,43 @@ def prepare_short_label_pure_no_token_queue4_lifecycle(conn) -> None:
 
 
 def prepare_short_label_pure_no_token_queue5_lifecycle(conn) -> None:
-    review_path = Path("reports/20260618_141408_037911_short_label_pure_no_token_queue5_sublane_review.jsonl")
-    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if len(rows) != 240:
-        raise RuntimeError(f"Unexpected queue 5 sublane review row count: {len(rows)}")
-    allowed_decisions = {
-        "safe_modifier_description",
-        "event_option_ready",
-        "safe_nominal_label",
-        "safe_death_reason_fragment",
-    }
-    allowed_subpolicies = {
-        "modifier_description_guard",
-        "event_option_short_phrase_guard",
-        "pure_no_token_nominal_label_guard",
-        "death_reason_fragment_guard",
-    }
-    lifecycle_rows = [
-        row
-        for row in rows
-        if row.get("candidate_lifecycle_later") is True
-        and row.get("candidate_checkpoint_later") is True
-        and row.get("requires_apply_later") is False
-        and row.get("decision") in allowed_decisions
-        and row.get("subpolicy") in allowed_subpolicies
-    ]
-    if len(lifecycle_rows) != 69:
-        raise RuntimeError(f"Unexpected queue 5 lifecycle candidate count: {len(lifecycle_rows)}")
+    rows = previous_lifecycle_review_rows(
+        conn,
+        {
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MODIFIER_DESCRIPTION_LIFECYCLE_STATE: {
+                "decision": "safe_modifier_description",
+                "subpolicy": "modifier_description_guard",
+            },
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_MODIFIER_DESCRIPTION_FALSE_REOPEN_LIFECYCLE_STATE: {
+                "decision": "safe_modifier_description",
+                "subpolicy": "modifier_description_guard",
+            },
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_EVENT_OPTION_LIFECYCLE_STATE: {
+                "decision": "event_option_ready",
+                "subpolicy": "event_option_short_phrase_guard",
+            },
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_EVENT_OPTION_FALSE_REOPEN_LIFECYCLE_STATE: {
+                "decision": "event_option_ready",
+                "subpolicy": "event_option_short_phrase_guard",
+            },
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_NOMINAL_LABEL_LIFECYCLE_STATE: {
+                "decision": "safe_nominal_label",
+                "subpolicy": "pure_no_token_nominal_label_guard",
+            },
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_NOMINAL_LABEL_FALSE_REOPEN_LIFECYCLE_STATE: {
+                "decision": "safe_nominal_label",
+                "subpolicy": "pure_no_token_nominal_label_guard",
+            },
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_DEATH_REASON_FRAGMENT_LIFECYCLE_STATE: {
+                "decision": "safe_death_reason_fragment",
+                "subpolicy": "death_reason_fragment_guard",
+            },
+            SHORT_LABEL_PURE_NO_TOKEN_QUEUE5_DEATH_REASON_FRAGMENT_FALSE_REOPEN_LIFECYCLE_STATE: {
+                "decision": "safe_death_reason_fragment",
+                "subpolicy": "death_reason_fragment_guard",
+            },
+        },
+    )
 
     conn.execute("DROP TABLE IF EXISTS temp_short_label_pure_no_token_queue5_review")
     conn.execute(
@@ -4447,56 +4501,18 @@ def prepare_short_label_pure_no_token_queue5_false_reopen_lifecycle(conn) -> Non
 
 
 def prepare_trait_description_esta_personagem_lifecycle(conn) -> None:
-    expected_ids = {
-        281388,
-        281415,
-        281430,
-        281451,
-        281454,
-        281457,
-        281466,
-        281469,
-        281475,
-        281478,
-        281484,
-        281490,
-        281496,
-        281499,
-        281508,
-        281511,
-        281520,
-        281523,
-        281526,
-        281529,
-        281532,
-        281568,
-        281571,
-        281607,
-        281610,
-        281646,
-        281652,
-        281655,
-        281658,
-        281661,
-    }
-    review_path = Path("reports/20260618_141408_037911_short_label_pure_no_token_queue5_sublane_review.jsonl")
-    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    selected = [
-        row
-        for row in rows
-        if row.get("decision") == "needs_new_microagent"
-        and row.get("subpolicy") == "new_microagent_required"
-        and row.get("reason") == "repeated_trait_description_pattern_needs_trait_description_microagent"
-        and row.get("notes") == "trait_description_esta_personagem_pattern"
-        and row.get("relative_path") == "traits_l_spanish.yml"
-        and row.get("requires_apply_later") is False
-        and row.get("candidate_lifecycle_later") is False
-    ]
-    selected_ids = {int(row["segment_id"]) for row in selected}
-    if selected_ids != expected_ids:
-        raise RuntimeError(f"Unexpected trait description esta personagem ids: {sorted(selected_ids)}")
-    if len(selected) != 30:
-        raise RuntimeError(f"Unexpected trait description esta personagem candidate count: {len(selected)}")
+    selected = previous_lifecycle_review_rows(
+        conn,
+        {
+            TRAIT_DESCRIPTION_ESTA_PERSONAGEM_LIFECYCLE_STATE: {
+                "decision": "needs_new_microagent",
+                "subpolicy": "new_microagent_required",
+                "reason": "repeated_trait_description_pattern_needs_trait_description_microagent",
+                "notes": "trait_description_esta_personagem_pattern",
+                "candidate_lifecycle_later": False,
+            }
+        },
+    )
 
     conn.execute("DROP TABLE IF EXISTS temp_trait_description_esta_personagem_review")
     conn.execute(
@@ -4717,20 +4733,15 @@ def prepare_trait_description_esta_personagem_lifecycle(conn) -> None:
 
 
 def prepare_short_label_single_issue_residual_queue225_lifecycle(conn) -> None:
-    review_path = Path("reports/20260618_123935_802713_short_label_single_issue_residual_queue225_review.jsonl")
-    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if len(rows) != 64:
-        raise RuntimeError(f"Unexpected queue 225 review row count: {len(rows)}")
-    lifecycle_rows = [
-        row
-        for row in rows
-        if row.get("candidate_lifecycle_later") is True
-        and row.get("requires_apply_later") is False
-        and row.get("decision") == "safe_markup_no_repair"
-        and row.get("subpolicy") == "bold_no_ptbr_microrepair"
-    ]
-    if len(lifecycle_rows) != 11:
-        raise RuntimeError(f"Unexpected queue 225 lifecycle candidate count: {len(lifecycle_rows)}")
+    rows = previous_lifecycle_review_rows(
+        conn,
+        {
+            SHORT_LABEL_SINGLE_ISSUE_RESIDUAL_QUEUE225_NOOP_LIFECYCLE_STATE: {
+                "decision": "safe_markup_no_repair",
+                "subpolicy": "bold_no_ptbr_microrepair",
+            }
+        },
+    )
 
     conn.execute("DROP TABLE IF EXISTS temp_short_label_single_issue_residual_queue225_review")
     conn.execute(
@@ -4911,6 +4922,70 @@ def latest_active_score_run(conn) -> int | None:
     return int(row["id"]) if row else None
 
 
+def latest_quality_epoch_score_runs(conn) -> tuple[int, int, int | None] | None:
+    row = conn.execute(
+        """
+        SELECT epoch.old_score_run_id AS active_score_run_id,
+               epoch.output_score_run_id AS candidate_score_run_id,
+               epoch.policy_run_id
+        FROM quality_epochs epoch
+        JOIN ml_score_runs baseline ON baseline.id = epoch.old_score_run_id
+        JOIN ml_score_runs candidate ON candidate.id = epoch.output_score_run_id
+        WHERE epoch.status IN ('scored', 'evaluated', 'published')
+          AND baseline.finished_at IS NOT NULL
+          AND candidate.finished_at IS NOT NULL
+          AND baseline.model_run_id = candidate.model_run_id
+          AND baseline.rule_version = candidate.rule_version
+          AND baseline.source_snapshot_id = candidate.source_snapshot_id
+          AND baseline.candidate_text_source = 'old'
+          AND candidate.candidate_text_source = 'output'
+        ORDER BY epoch.updated_at DESC, epoch.id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if not row:
+        return None
+    return (
+        int(row["active_score_run_id"]),
+        int(row["candidate_score_run_id"]),
+        int(row["policy_run_id"]) if row["policy_run_id"] is not None else None,
+    )
+
+
+def latest_paired_package_score_runs(conn) -> tuple[int, int] | None:
+    row = conn.execute(
+        """
+        SELECT
+            baseline.id AS active_score_run_id,
+            candidate.id AS candidate_score_run_id
+        FROM ml_score_runs candidate
+        JOIN ml_score_runs baseline
+          ON baseline.source_snapshot_id = candidate.source_snapshot_id
+         AND baseline.model_run_id = candidate.model_run_id
+         AND baseline.rule_version = candidate.rule_version
+        JOIN ml_model_registry registry
+          ON registry.active_model_run_id = candidate.model_run_id
+         AND registry.model_kind = 'risk_action_classifier'
+        WHERE baseline.candidate_text_source = 'old'
+          AND candidate.candidate_text_source = 'output'
+          AND baseline.source_snapshot_id IS NOT NULL
+          AND baseline.path_filter IS NULL
+          AND candidate.path_filter IS NULL
+          AND baseline.limit_count IS NULL
+          AND candidate.limit_count IS NULL
+          AND baseline.finished_at IS NOT NULL
+          AND candidate.finished_at IS NOT NULL
+          AND baseline.scored_count > 0
+          AND candidate.scored_count > 0
+        ORDER BY candidate.finished_at DESC, candidate.id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if not row:
+        return None
+    return int(row["active_score_run_id"]), int(row["candidate_score_run_id"])
+
+
 def latest_candidate_score_run(conn) -> int | None:
     row = conn.execute(
         """
@@ -4929,16 +5004,20 @@ def latest_candidate_score_run(conn) -> int | None:
     return int(row["id"]) if row else None
 
 
-def latest_policy_run(conn) -> int | None:
+def latest_policy_run(conn, score_run_id: int | None = None) -> int | None:
+    score_filter = "AND score_run_id = ?" if score_run_id is not None else ""
+    params = (score_run_id,) if score_run_id is not None else ()
     row = conn.execute(
-        """
+        f"""
         SELECT id
         FROM ml_policy_runs
         WHERE finished_at IS NOT NULL
           AND scored_count > 0
+          {score_filter}
         ORDER BY finished_at DESC, id DESC
         LIMIT 1
-        """
+        """,
+        params,
     ).fetchone()
     return int(row["id"]) if row else None
 
@@ -5123,6 +5202,19 @@ def lifecycle_closure_allowed(row) -> bool:
     allowed_actions = actions & LIFECYCLE_CLOSURE_ACTIONS
     if not allowed_actions or int(row["lifecycle_policy_allowed"] or 0) != 1:
         return False
+    if STABLE_BASELINE_INHERITED_V3_LIFECYCLE_CLOSURE_ACTION in allowed_actions:
+        # This action is materialized only after exact frozen-package, paired-score,
+        # source-snapshot and output-alignment guards pass. Other legacy actions on
+        # the same segment must not mask that independent evidence.
+        return True
+    if PAIRWISE_MONOTONIC_REPAIR_LIFECYCLE_CLOSURE_ACTION in allowed_actions:
+        return (
+            row["confirmation_source"] == "pairwise_monotonic_repair"
+            or (
+                row["confirmation_source"] == "offline_proposals"
+                and row["confirmation_label"] == "remove_space_before_punctuation"
+            )
+        )
     if CONTROLLED_TOKEN_SUBPOLICY_CLOSURE_ACTION in allowed_actions:
         return (
             row["confirmation_source"] == CONTROLLED_TOKEN_SUBPOLICY_CONFIRMATION_SOURCE
@@ -5189,6 +5281,11 @@ def lifecycle_closure_state_and_reason(row) -> tuple[str, str] | None:
         if action.strip()
     }
     action_rules = (
+        (
+            STABLE_BASELINE_INHERITED_V3_LIFECYCLE_CLOSURE_ACTION,
+            STABLE_BASELINE_INHERITED_V3_LIFECYCLE_STATE,
+            "frozen V2 baseline, current old text and current output are identical; unresolved improvement work remains in the V3 backlog",
+        ),
         (
             CONTROLLED_TOKEN_SUBPOLICY_CLOSURE_ACTION,
             "closed_auto_confirmed_controlled_token_subpolicy",
@@ -5428,6 +5525,11 @@ def lifecycle_closure_state_and_reason(row) -> tuple[str, str] | None:
             VALIDATED_RELEASE_PROMOTION_LIFECYCLE_CLOSURE_ACTION,
             VALIDATED_RELEASE_PROMOTION_LIFECYCLE_STATE,
             "validated release promotion has current output/confirmation alignment, intact tokens and no open ledger issues",
+        ),
+        (
+            PAIRWISE_MONOTONIC_REPAIR_LIFECYCLE_CLOSURE_ACTION,
+            PAIRWISE_MONOTONIC_REPAIR_LIFECYCLE_STATE,
+            "pairwise monotonic repair has exact evidence, current output/confirmation alignment, intact tokens and no open ledger issues",
         ),
         (
             HUMAN_CONFIRMED_PACKAGE_CLOSE_LIFECYCLE_CLOSURE_ACTION,
@@ -10162,41 +10264,16 @@ def prepare_dynamic_acclaimed_knight_requirement_style_watch_lifecycle(conn) -> 
         )
         """
     )
-    review_path = db.project_path(DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_REVIEWED_JSONL)
-    if not review_path.exists():
-        return
-    rows = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    matches = [
-        row
-        for row in rows
-        if int(row.get("segment_id") or 0) == 601
-        and row.get("source_key") == "thug_attribute.unlock_tt"
-        and row.get("decision") == "acclaimed_knight_requirement_style_watch_lifecycle"
-        and row.get("lifecycle_candidate") is True
-        and row.get("requires_apply_later") is False
-    ]
-    if len(matches) != 1:
-        return
-    conn.execute(
+    rows = previous_lifecycle_review_rows(
+        conn,
+        {DYNAMIC_ACCLAIMED_KNIGHT_REQUIREMENT_STYLE_WATCH_LIFECYCLE_STATE: {}},
+    )
+    conn.executemany(
         """
         INSERT INTO temp_dynamic_acclaimed_knight_requirement_style_watch_lifecycle (segment_id)
-        SELECT previous.segment_id
-        FROM segment_state_items previous
-        WHERE previous.segment_id = 601
-          AND previous.run_id = (
-              SELECT id
-              FROM segment_state_runs
-              WHERE finished_at IS NOT NULL
-              ORDER BY finished_at DESC, id DESC
-              LIMIT 1
-          )
-          AND previous.state_group = 'pending'
-          AND previous.final_state = 'reopen_auto_confirmed_autofix'
-          AND previous.source_key = 'thug_attribute.unlock_tt'
-          AND previous.needs_output_apply = 0
-          AND previous.confirmed_matches_output = 1
-          AND previous.needs_reopen = 1
-        """
+        VALUES (?)
+        """,
+        [(int(row["segment_id"]),) for row in rows],
     )
 
 
@@ -10217,47 +10294,32 @@ def prepare_short_label_style_current_lifecycle_bridge(conn) -> None:
         """
     )
 
-    target_by_decision = {
-        "lifecycle_ready_short_phrase": SHORT_LABEL_STYLE_CURRENT_SHORT_PHRASE_LIFECYCLE_STATE,
-        "lifecycle_ready_compact_ui_label": SHORT_LABEL_STYLE_CURRENT_COMPACT_UI_LABEL_LIFECYCLE_STATE,
-        "lifecycle_ready_plain_noop": SHORT_LABEL_STYLE_CURRENT_PLAIN_NOOP_LIFECYCLE_STATE,
-    }
-    rows = []
-    for review_batch, review_jsonl in SHORT_LABEL_STYLE_CURRENT_LIFECYCLE_REVIEWED_JSONLS:
-        review_path = db.project_path(review_jsonl)
-        if not review_path.exists():
-            continue
-        for line in review_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            item = json.loads(line)
-            decision = item.get("decision")
-            if item.get("lifecycle_candidate") is not True or decision not in target_by_decision:
-                continue
-            if item.get("requires_apply_later") is True:
-                continue
-            if item.get("tokens_preserved") is not True:
-                continue
-            if int(item.get("ledger_run_id") or 0) != 76:
-                continue
-            review_state_run_id = int(item.get("segment_state_run_id") or 0)
-            if review_batch == "batch1" and review_state_run_id != 373:
-                continue
-            if review_batch == "batch2" and review_state_run_id != 377:
-                continue
-            if review_batch == "batch3" and review_state_run_id != 380:
-                continue
-            rows.append(
-                (
-                    int(item["segment_id"]),
-                    review_batch,
-                    review_jsonl,
-                    decision,
-                    target_by_decision[decision],
-                    int(item["ledger_run_id"]),
-                    review_state_run_id,
-                )
-            )
+    evidence = previous_lifecycle_review_rows(
+        conn,
+        {
+            SHORT_LABEL_STYLE_CURRENT_SHORT_PHRASE_LIFECYCLE_STATE: {
+                "decision": "lifecycle_ready_short_phrase",
+            },
+            SHORT_LABEL_STYLE_CURRENT_COMPACT_UI_LABEL_LIFECYCLE_STATE: {
+                "decision": "lifecycle_ready_compact_ui_label",
+            },
+            SHORT_LABEL_STYLE_CURRENT_PLAIN_NOOP_LIFECYCLE_STATE: {
+                "decision": "lifecycle_ready_plain_noop",
+            },
+        },
+    )
+    rows = [
+        (
+            int(item["segment_id"]),
+            "database",
+            "database:segment_state_items",
+            as_text(item["decision"]),
+            as_text(item["final_state"]),
+            76,
+            int(item["segment_state_run_id"]),
+        )
+        for item in evidence
+    ]
     conn.executemany(
         """
         INSERT OR REPLACE INTO temp_short_label_style_current_lifecycle_review (
@@ -10350,42 +10412,39 @@ def prepare_autofix_semantic_companion_false_reopen_lifecycle(conn) -> None:
         )
         """
     )
-    review_path = db.project_path(AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_REVIEWED_JSONL)
-    if review_path.exists():
-        rows = []
-        for line in review_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            item = json.loads(line)
-            decision = item.get("decision", "")
-            rows.append(
-                (
-                    int(item["segment_id"]),
-                    AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_REVIEWED_JSONL,
-                    decision,
-                    (
-                        AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_FALSE_REOPEN_LIFECYCLE_STATE
-                        if decision == "companion_ready_autofix_semantic_plain_sentence"
-                        else AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_LIFECYCLE_STATE
-                        if decision == "composition_ready_plain_prose"
-                        else ""
-                    ),
-                    1 if item.get("requires_apply_later") is True else 0,
-                )
-            )
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO temp_autofix_semantic_companion_false_reopen_review (
-                segment_id,
-                review_jsonl,
-                decision,
-                target_state,
-                requires_apply_later
-            )
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            rows,
+    evidence = previous_lifecycle_review_rows(
+        conn,
+        {
+            AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_FALSE_REOPEN_LIFECYCLE_STATE: {
+                "decision": "companion_ready_autofix_semantic_plain_sentence",
+            },
+            AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_LIFECYCLE_STATE: {
+                "decision": "composition_ready_plain_prose",
+            },
+        },
+    )
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO temp_autofix_semantic_companion_false_reopen_review (
+            segment_id,
+            review_jsonl,
+            decision,
+            target_state,
+            requires_apply_later
         )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(item["segment_id"]),
+                "database:segment_state_items",
+                as_text(item["decision"]),
+                as_text(item["final_state"]),
+                0,
+            )
+            for item in evidence
+        ],
+    )
     conn.execute(
         """
         CREATE TEMP TABLE temp_autofix_semantic_companion_false_reopen_bridge AS
@@ -10560,40 +10619,36 @@ def prepare_autofix_semantic_trait_epithet_style_lifecycle(conn) -> None:
         )
         """
     )
-    review_path = db.project_path(AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_REVIEWED_JSONL)
-    if review_path.exists():
-        rows = []
-        for line in review_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            item = json.loads(line)
-            decision = item.get("trait_epithet_decision", "")
-            rows.append(
-                (
-                    int(item["segment_id"]),
-                    AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_REVIEWED_JSONL,
-                    decision,
-                    (
-                        AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_LIFECYCLE_STATE
-                        if decision == "trait_epithet_style_watch_lifecycle"
-                        else ""
-                    ),
-                    1 if item.get("requires_apply_later") is True else 0,
-                )
-            )
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO temp_autofix_semantic_trait_epithet_style_review (
-                segment_id,
-                review_jsonl,
-                decision,
-                target_state,
-                requires_apply_later
-            )
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            rows,
+    evidence = previous_lifecycle_review_rows(
+        conn,
+        {
+            AUTOFIX_SEMANTIC_TRAIT_EPITHET_STYLE_LIFECYCLE_STATE: {
+                "decision": "trait_epithet_style_watch_lifecycle",
+            }
+        },
+    )
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO temp_autofix_semantic_trait_epithet_style_review (
+            segment_id,
+            review_jsonl,
+            decision,
+            target_state,
+            requires_apply_later
         )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(item["segment_id"]),
+                "database:segment_state_items",
+                as_text(item["decision"]),
+                as_text(item["final_state"]),
+                0,
+            )
+            for item in evidence
+        ],
+    )
     conn.execute(
         """
         CREATE TEMP TABLE temp_autofix_semantic_trait_epithet_style_bridge AS
@@ -10689,40 +10744,36 @@ def prepare_autofix_semantic_composition_plain_prose_batch2_lifecycle(conn) -> N
         )
         """
     )
-    review_path = db.project_path(AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH2_REVIEWED_JSONL)
-    if review_path.exists():
-        rows = []
-        for line in review_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            item = json.loads(line)
-            decision = item.get("decision", "")
-            rows.append(
-                (
-                    int(item["segment_id"]),
-                    AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH2_REVIEWED_JSONL,
-                    decision,
-                    (
-                        AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH2_LIFECYCLE_STATE
-                        if decision == "composition_ready_plain_prose"
-                        else ""
-                    ),
-                    1 if item.get("requires_apply_later") is True else 0,
-                )
-            )
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO temp_autofix_semantic_composition_plain_prose_batch2_review (
-                segment_id,
-                review_jsonl,
-                decision,
-                target_state,
-                requires_apply_later
-            )
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            rows,
+    evidence = previous_lifecycle_review_rows(
+        conn,
+        {
+            AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH2_LIFECYCLE_STATE: {
+                "decision": "composition_ready_plain_prose",
+            }
+        },
+    )
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO temp_autofix_semantic_composition_plain_prose_batch2_review (
+            segment_id,
+            review_jsonl,
+            decision,
+            target_state,
+            requires_apply_later
         )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(item["segment_id"]),
+                "database:segment_state_items",
+                as_text(item["decision"]),
+                as_text(item["final_state"]),
+                0,
+            )
+            for item in evidence
+        ],
+    )
     conn.execute(
         """
         CREATE TEMP TABLE temp_autofix_semantic_composition_plain_prose_batch2_bridge AS
@@ -10818,40 +10869,36 @@ def prepare_autofix_semantic_companion_plain_sentence_batch2_lifecycle(conn) -> 
         )
         """
     )
-    review_path = db.project_path(AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH2_REVIEWED_JSONL)
-    if review_path.exists():
-        rows = []
-        for line in review_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            item = json.loads(line)
-            decision = item.get("decision", "")
-            rows.append(
-                (
-                    int(item["segment_id"]),
-                    AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH2_REVIEWED_JSONL,
-                    decision,
-                    (
-                        AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE
-                        if decision == "companion_ready_autofix_semantic_plain_sentence"
-                        else ""
-                    ),
-                    1 if item.get("requires_apply_later") is True else 0,
-                )
-            )
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO temp_autofix_semantic_companion_plain_sentence_batch2_review (
-                segment_id,
-                review_jsonl,
-                decision,
-                target_state,
-                requires_apply_later
-            )
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            rows,
+    evidence = previous_lifecycle_review_rows(
+        conn,
+        {
+            AUTOFIX_SEMANTIC_COMPANION_PLAIN_SENTENCE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE: {
+                "decision": "companion_ready_autofix_semantic_plain_sentence",
+            }
+        },
+    )
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO temp_autofix_semantic_companion_plain_sentence_batch2_review (
+            segment_id,
+            review_jsonl,
+            decision,
+            target_state,
+            requires_apply_later
         )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(item["segment_id"]),
+                "database:segment_state_items",
+                as_text(item["decision"]),
+                as_text(item["final_state"]),
+                0,
+            )
+            for item in evidence
+        ],
+    )
     conn.execute(
         """
         CREATE TEMP TABLE temp_autofix_semantic_companion_plain_sentence_batch2_bridge AS
@@ -10947,42 +10994,39 @@ def prepare_autofix_semantic_composition_batch3_lifecycle(conn) -> None:
         )
         """
     )
-    review_path = db.project_path(AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH3_REVIEWED_JSONL)
-    if review_path.exists():
-        rows = []
-        for line in review_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            item = json.loads(line)
-            decision = item.get("decision", "")
-            rows.append(
-                (
-                    int(item["segment_id"]),
-                    AUTOFIX_SEMANTIC_COMPANION_HIGH_IMPACT_BATCH3_REVIEWED_JSONL,
-                    decision,
-                    (
-                        AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH3_LIFECYCLE_STATE
-                        if decision == "composition_ready_plain_prose"
-                        else AUTOFIX_SEMANTIC_COMPOSITION_EVENT_CONTEXT_BATCH3_LIFECYCLE_STATE
-                        if decision == "composition_ready_event_context"
-                        else ""
-                    ),
-                    1 if item.get("requires_apply_later") is True else 0,
-                )
-            )
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO temp_autofix_semantic_composition_batch3_review (
-                segment_id,
-                review_jsonl,
-                decision,
-                target_state,
-                requires_apply_later
-            )
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            rows,
+    evidence = previous_lifecycle_review_rows(
+        conn,
+        {
+            AUTOFIX_SEMANTIC_COMPOSITION_PLAIN_PROSE_BATCH3_LIFECYCLE_STATE: {
+                "decision": "composition_ready_plain_prose",
+            },
+            AUTOFIX_SEMANTIC_COMPOSITION_EVENT_CONTEXT_BATCH3_LIFECYCLE_STATE: {
+                "decision": "composition_ready_event_context",
+            },
+        },
+    )
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO temp_autofix_semantic_composition_batch3_review (
+            segment_id,
+            review_jsonl,
+            decision,
+            target_state,
+            requires_apply_later
         )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(item["segment_id"]),
+                "database:segment_state_items",
+                as_text(item["decision"]),
+                as_text(item["final_state"]),
+                0,
+            )
+            for item in evidence
+        ],
+    )
     conn.execute(
         """
         CREATE TEMP TABLE temp_autofix_semantic_composition_batch3_bridge AS
@@ -11078,46 +11122,45 @@ def prepare_autofix_semantic_context_batch4_lifecycle(conn) -> None:
         )
         """
     )
-    review_path = db.project_path(AUTOFIX_SEMANTIC_CONTEXT_COMPOSER_BATCH4_REVIEWED_JSONL)
-    if review_path.exists():
-        rows = []
-        for line in review_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            item = json.loads(line)
-            decision = item.get("context_decision", "")
-            rows.append(
-                (
-                    int(item["segment_id"]),
-                    AUTOFIX_SEMANTIC_CONTEXT_COMPOSER_BATCH4_REVIEWED_JSONL,
-                    decision,
-                    (
-                        AUTOFIX_SEMANTIC_CONTEXT_PLAIN_PROSE_BATCH4_LIFECYCLE_STATE
-                        if decision == "context_ready_plain_prose"
-                        else AUTOFIX_SEMANTIC_CONTEXT_SHORT_EVENT_BATCH4_LIFECYCLE_STATE
-                        if decision == "context_ready_short_event_context"
-                        else AUTOFIX_SEMANTIC_CONTEXT_MEMORY_ACTIVITY_BATCH4_LIFECYCLE_STATE
-                        if decision == "context_ready_memory_or_activity"
-                        else AUTOFIX_SEMANTIC_CONTEXT_UI_TOOLTIP_BATCH4_LIFECYCLE_STATE
-                        if decision == "context_ready_ui_tooltip"
-                        else ""
-                    ),
-                    1 if item.get("requires_apply_later") is True else 0,
-                )
-            )
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO temp_autofix_semantic_context_batch4_review (
-                segment_id,
-                review_jsonl,
-                decision,
-                target_state,
-                requires_apply_later
-            )
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            rows,
+    evidence = previous_lifecycle_review_rows(
+        conn,
+        {
+            AUTOFIX_SEMANTIC_CONTEXT_PLAIN_PROSE_BATCH4_LIFECYCLE_STATE: {
+                "decision": "context_ready_plain_prose",
+            },
+            AUTOFIX_SEMANTIC_CONTEXT_SHORT_EVENT_BATCH4_LIFECYCLE_STATE: {
+                "decision": "context_ready_short_event_context",
+            },
+            AUTOFIX_SEMANTIC_CONTEXT_MEMORY_ACTIVITY_BATCH4_LIFECYCLE_STATE: {
+                "decision": "context_ready_memory_or_activity",
+            },
+            AUTOFIX_SEMANTIC_CONTEXT_UI_TOOLTIP_BATCH4_LIFECYCLE_STATE: {
+                "decision": "context_ready_ui_tooltip",
+            },
+        },
+    )
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO temp_autofix_semantic_context_batch4_review (
+            segment_id,
+            review_jsonl,
+            decision,
+            target_state,
+            requires_apply_later
         )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(item["segment_id"]),
+                "database:segment_state_items",
+                as_text(item["decision"]),
+                as_text(item["final_state"]),
+                0,
+            )
+            for item in evidence
+        ],
+    )
     conn.execute(
         """
         CREATE TEMP TABLE temp_autofix_semantic_context_batch4_bridge AS
@@ -11223,40 +11266,36 @@ def prepare_semantic_short_label_companion_false_reopen_lifecycle(conn) -> None:
         )
         """
     )
-    review_path = db.project_path(SEMANTIC_SHORT_LABEL_COMBO_REVIEWED_JSONL)
-    if review_path.exists():
-        rows = []
-        for line in review_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            item = json.loads(line)
-            decision = item.get("decision", "")
-            rows.append(
-                (
-                    int(item["segment_id"]),
-                    SEMANTIC_SHORT_LABEL_COMBO_REVIEWED_JSONL,
-                    decision,
-                    (
-                        SEMANTIC_SHORT_LABEL_COMPANION_FALSE_REOPEN_LIFECYCLE_STATE
-                        if decision == "semantic_short_label_companion_ready_false_reopen"
-                        else ""
-                    ),
-                    1 if item.get("requires_apply_later") is True else 0,
-                )
-            )
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO temp_semantic_short_label_companion_review (
-                segment_id,
-                review_jsonl,
-                decision,
-                target_state,
-                requires_apply_later
-            )
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            rows,
+    evidence = previous_lifecycle_review_rows(
+        conn,
+        {
+            SEMANTIC_SHORT_LABEL_COMPANION_FALSE_REOPEN_LIFECYCLE_STATE: {
+                "decision": "semantic_short_label_companion_ready_false_reopen",
+            }
+        },
+    )
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO temp_semantic_short_label_companion_review (
+            segment_id,
+            review_jsonl,
+            decision,
+            target_state,
+            requires_apply_later
         )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(item["segment_id"]),
+                "database:segment_state_items",
+                as_text(item["decision"]),
+                as_text(item["final_state"]),
+                0,
+            )
+            for item in evidence
+        ],
+    )
     conn.execute(
         """
         CREATE TEMP TABLE temp_semantic_short_label_companion_bridge AS
@@ -11349,43 +11388,41 @@ def prepare_dynamic_gender_ready_false_reopen_lifecycle(conn) -> None:
         )
         """
     )
-    review_path = db.project_path(DYNAMIC_GENDER_COMBO_REVIEWED_JSONL)
-    allowed_targets = {
-        "dynamic_gender_ready_select_cstring_false_reopen": DYNAMIC_GENDER_SELECT_CSTRING_FALSE_REOPEN_LIFECYCLE_STATE,
-        "dynamic_gender_ready_custom_loc_false_reopen": DYNAMIC_GENDER_CUSTOM_LOC_FALSE_REOPEN_LIFECYCLE_STATE,
-    }
-    if review_path.exists():
-        rows = []
-        for line in review_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            item = json.loads(line)
-            decision = item.get("dynamic_gender_decision") or item.get("decision", "")
-            tokens = item.get("tokens_seen") or []
-            rows.append(
-                (
-                    int(item["segment_id"]),
-                    DYNAMIC_GENDER_COMBO_REVIEWED_JSONL,
-                    decision,
-                    allowed_targets.get(decision, ""),
-                    1 if item.get("requires_apply_later") is True else 0,
-                    1 if isinstance(tokens, list) and tokens else 0,
-                )
-            )
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO temp_dynamic_gender_ready_false_reopen_review (
-                segment_id,
-                review_jsonl,
-                decision,
-                target_state,
-                requires_apply_later,
-                tokens_present
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            rows,
+    evidence = previous_lifecycle_review_rows(
+        conn,
+        {
+            DYNAMIC_GENDER_SELECT_CSTRING_FALSE_REOPEN_LIFECYCLE_STATE: {
+                "decision": "dynamic_gender_ready_select_cstring_false_reopen",
+            },
+            DYNAMIC_GENDER_CUSTOM_LOC_FALSE_REOPEN_LIFECYCLE_STATE: {
+                "decision": "dynamic_gender_ready_custom_loc_false_reopen",
+            },
+        },
+    )
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO temp_dynamic_gender_ready_false_reopen_review (
+            segment_id,
+            review_jsonl,
+            decision,
+            target_state,
+            requires_apply_later,
+            tokens_present
         )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(item["segment_id"]),
+                "database:segment_state_items",
+                as_text(item["decision"]),
+                as_text(item["final_state"]),
+                0,
+                1,
+            )
+            for item in evidence
+        ],
+    )
     conn.execute(
         """
         CREATE TEMP TABLE temp_dynamic_gender_ready_false_reopen_bridge AS
@@ -11488,42 +11525,38 @@ def prepare_autofix_unknown_single_batch2_ready_lifecycle(conn) -> None:
         )
         """
     )
-    review_path = db.project_path(AUTOFIX_UNKNOWN_SINGLE_BATCH2_REVIEWED_JSONL)
-    if review_path.exists():
-        rows = []
-        for line in review_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            item = json.loads(line)
-            decision = item.get("single_autofix_decision") or item.get("decision", "")
-            rows.append(
-                (
-                    int(item["segment_id"]),
-                    AUTOFIX_UNKNOWN_SINGLE_BATCH2_REVIEWED_JSONL,
-                    decision,
-                    AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE
-                    if decision == "single_autofix_ready_false_reopen"
-                    else "",
-                    AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION
-                    if decision == "single_autofix_ready_false_reopen"
-                    else "",
-                    1 if item.get("requires_apply_later") is True else 0,
-                )
-            )
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO temp_autofix_unknown_single_batch2_ready_lifecycle_review (
-                segment_id,
-                review_jsonl,
-                decision,
-                target_state,
-                target_action,
-                requires_apply_later
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            rows,
+    evidence = previous_lifecycle_review_rows(
+        conn,
+        {
+            AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_STATE: {
+                "decision": "single_autofix_ready_false_reopen",
+            }
+        },
+    )
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO temp_autofix_unknown_single_batch2_ready_lifecycle_review (
+            segment_id,
+            review_jsonl,
+            decision,
+            target_state,
+            target_action,
+            requires_apply_later
         )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                int(item["segment_id"]),
+                "database:segment_state_items",
+                as_text(item["decision"]),
+                as_text(item["final_state"]),
+                AUTOFIX_UNKNOWN_SINGLE_BATCH2_FALSE_REOPEN_LIFECYCLE_CLOSURE_ACTION,
+                0,
+            )
+            for item in evidence
+        ],
+    )
     conn.execute(
         """
         CREATE TEMP TABLE temp_autofix_unknown_single_batch2_ready_lifecycle AS
@@ -22529,7 +22562,8 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
                 "- tooltip_candidates: 106",
                 f"- tooltip_closed: {semantic_domain_closed_by_queue.get(218, 0):,}",
                 f"- tooltip_blocked: {semantic_domain_blocked_by_queue.get(218, 0):,}",
-                "- validation_scope: exact reviewed JSONLs for queues 218/219 only; lifecycle_candidate=true, "
+                f"- evidence_source: {LIFECYCLE_EVIDENCE_SOURCE}",
+                "- validation_scope: materialized queue 218/219 lifecycle evidence; lifecycle_candidate=true, "
                 "requires_apply_later=false, tokens_preserved=true, allowlisted decisions, previous pending reopen, "
                 "confirmation/output canonical and token alignment, and ledger 57 semantic+short-label issue pair.",
                 f"- event_subpolicies: {json.dumps(dict(semantic_subpolicies[219]), ensure_ascii=False, sort_keys=True)}",
@@ -22545,12 +22579,12 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
                 "",
                 "Short-label style queue 220 strict lifecycle:",
                 "- queue_id: 220",
-                "- reviewed_jsonl: reports/20260617_220200_short_label_style_queue_220_reviewed_chat.jsonl",
+                f"- evidence_source: {LIFECYCLE_EVIDENCE_SOURCE}",
                 f"- candidates_read: {len(short_label_style_queue220_rows):,}",
                 f"- closed: {len(short_label_style_queue220_closed):,}",
                 f"- blocked: {len(short_label_style_queue220_blocked):,}",
                 f"- block_reasons: {json.dumps(short_label_style_queue220_block_reasons, ensure_ascii=False, sort_keys=True)}",
-                "- validation_scope: exact reviewed JSONL only; existing confirmation, confirmation/output canonical match, pending reopen state, token alignment, ledger 58 single short-label issue, no high issue, no other open issue, and strict visible-text guards.",
+                "- validation_scope: materialized database evidence; existing confirmation, confirmation/output canonical match, pending reopen state, token alignment, ledger 58 single short-label issue, no high issue, no other open issue, and strict visible-text guards.",
             ]
         )
         if short_label_style_queue220_bold_no_examples:
@@ -22572,12 +22606,12 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
                 "",
                 "Autofix unknown UI surface queue 221 lifecycle:",
                 "- queue_id: 221",
-                "- reviewed_jsonl: reports/20260617_233004_autofix_unknown_ui_surface_queue_221_reviewed_chat.jsonl",
+                f"- evidence_source: {LIFECYCLE_EVIDENCE_SOURCE}",
                 f"- candidates_read: {len(autofix_unknown_ui_surface_queue221_rows):,}",
                 f"- closed: {len(autofix_unknown_ui_surface_queue221_closed):,}",
                 f"- blocked: {len(autofix_unknown_ui_surface_queue221_blocked):,}",
                 f"- block_reasons: {json.dumps(autofix_unknown_ui_surface_queue221_block_reasons, ensure_ascii=False, sort_keys=True)}",
-                "- validation_scope: exact reviewed JSONL only; allowlisted lifecycle IDs, lifecycle_candidate=true, requires_apply_later=false, tokens_preserved=true, allowed UI decisions, previous pending reopen, confirmation/output canonical and token alignment, ledger 59 with no non-autofix open issue and no high issue.",
+                "- validation_scope: materialized database evidence; lifecycle_candidate=true, requires_apply_later=false, tokens_preserved=true, allowed UI decisions, previous pending reopen, confirmation/output canonical and token alignment, ledger 59 with no non-autofix open issue and no high issue.",
             ]
         )
 
@@ -22589,7 +22623,7 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
                 "",
                 "Autofix unknown plain/event queue 226 lifecycle:",
                 "- queue_id: 226",
-                "- reviewed_jsonl: reports/20260618_180523_016737_autofix_unknown_plain_event_queue_226_reviewed_chat.jsonl",
+                f"- evidence_source: {LIFECYCLE_EVIDENCE_SOURCE}",
                 f"- baseline_run: {autofix_unknown_plain_event_queue226_baseline_run}",
                 f"- candidates_by_decision: {json.dumps(dict(autofix_unknown_plain_event_queue226_candidates_by_decision), ensure_ascii=False, sort_keys=True)}",
                 f"- closed_by_decision: {json.dumps(dict(autofix_unknown_plain_event_queue226_closed_by_decision), ensure_ascii=False, sort_keys=True)}",
@@ -22597,7 +22631,7 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
                 f"- blocked_reasons: {json.dumps(dict(autofix_unknown_plain_event_queue226_block_reasons), ensure_ascii=False, sort_keys=True)}",
                 f"- expected_delta_max: {expected_delta:,}",
                 f"- real_delta_closed: {real_delta:,}",
-                "- validation_scope: exact reviewed JSONL only; queue_run_id=226, ledger_run_id=68, lifecycle_ready decisions only, lifecycle_candidate=true, requires_apply_later=false, corrected_text empty, tokens_preserved=true, previous pending reopen, confirmation/output canonical and token alignment, no output apply, no high issue, and ledger 68 with no non-autofix open issue.",
+                "- validation_scope: materialized database evidence; queue_run_id=226, ledger_run_id=68, lifecycle_ready decisions only, lifecycle_candidate=true, requires_apply_later=false, corrected_text empty, tokens_preserved=true, previous pending reopen, confirmation/output canonical and token alignment, no output apply, no high issue, and ledger 68 with no non-autofix open issue.",
             ]
         )
         if autofix_unknown_plain_event_queue226_blocked:
@@ -22619,7 +22653,7 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
                 "",
                 "Autofix unknown plain/event queue 226 semantic companion lifecycle:",
                 "- queue_id: 226",
-                "- reviewed_jsonl: reports/20260618_180523_016737_autofix_unknown_plain_event_queue_226_reviewed_chat.jsonl",
+                f"- evidence_source: {LIFECYCLE_EVIDENCE_SOURCE}",
                 f"- baseline_run: {autofix_unknown_plain_event_queue226_semantic_companion_baseline_run}",
                 f"- candidates_by_decision: {json.dumps(dict(autofix_unknown_plain_event_queue226_semantic_companion_candidates_by_decision), ensure_ascii=False, sort_keys=True)}",
                 f"- closed_by_decision: {json.dumps(dict(autofix_unknown_plain_event_queue226_semantic_companion_closed_by_decision), ensure_ascii=False, sort_keys=True)}",
@@ -22627,7 +22661,7 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
                 f"- blocked_reasons: {json.dumps(dict(autofix_unknown_plain_event_queue226_semantic_companion_block_reasons), ensure_ascii=False, sort_keys=True)}",
                 f"- expected_delta_max: {expected_delta:,}",
                 f"- real_delta_closed: {real_delta:,}",
-                "- validation_scope: exact reviewed JSONL only; queue_run_id=226, ledger_run_id=68, lifecycle_ready decisions only, lifecycle_candidate=true, requires_apply_later=false, corrected_text empty, tokens_preserved=true, previous pending reopen, excludes previous plain/event lifecycle closures, confirmation/output canonical and token alignment, no output apply, no high issue, and ledger 68 exact autofix_unknown + semantic_review open issue pair.",
+                "- validation_scope: materialized database evidence; queue_run_id=226, ledger_run_id=68, lifecycle_ready decisions only, lifecycle_candidate=true, requires_apply_later=false, corrected_text empty, tokens_preserved=true, previous pending reopen, excludes previous plain/event lifecycle closures, confirmation/output canonical and token alignment, no output apply, no high issue, and ledger 68 exact autofix_unknown + semantic_review open issue pair.",
             ]
         )
         if autofix_unknown_plain_event_queue226_semantic_companion_blocked:
@@ -22648,7 +22682,7 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
             [
                 "",
                 "Autofix unknown plain/event context composer lifecycle:",
-                "- reviewed_jsonl: reports/20260618_190926_595844_autofix_unknown_plain_event_context_composer_reviewed_chat.jsonl",
+                f"- evidence_source: {LIFECYCLE_EVIDENCE_SOURCE}",
                 f"- baseline_run: {autofix_unknown_plain_event_context_composer_baseline_run}",
                 f"- candidate_lines: {autofix_unknown_plain_event_context_composer_candidate_lines:,}",
                 f"- distinct_candidates: {len(autofix_unknown_plain_event_context_composer_rows):,}",
@@ -22659,7 +22693,7 @@ def build_report(conn, run_id: int, counters: dict[str, Counter], settings: dict
                 f"- blocked_reasons: {json.dumps(dict(autofix_unknown_plain_event_context_composer_block_reasons), ensure_ascii=False, sort_keys=True)}",
                 f"- expected_max_close: {expected_delta:,}",
                 f"- real_delta_closed: {real_delta:,}",
-                "- validation_scope: exact composer reviewed JSONL only; composition_ready_plain_prose/event_context only, deduped by segment_id, lifecycle_candidate=true, requires_apply_later=false, corrected_text empty, tokens_preserved=true, previous reopen_auto_confirmed_autofix, confirmation/output canonical and token alignment, no output apply, no high issue, no banned issue families, and ledger 69 issue set A or B only.",
+                "- validation_scope: materialized database evidence; composition_ready_plain_prose/event_context only, deduped by segment_id, lifecycle_candidate=true, requires_apply_later=false, corrected_text empty, tokens_preserved=true, previous reopen_auto_confirmed_autofix, confirmation/output canonical and token alignment, no output apply, no high issue, no banned issue families, and ledger 69 issue set A or B only.",
             ]
         )
         if autofix_unknown_plain_event_context_composer_blocked:
@@ -22877,9 +22911,21 @@ def main(limit: int | None = None) -> int:
         ensure_short_label_bridge_tables(conn)
         ensure_autofix_unknown_surface_bridge_tables(conn)
         register_sql_functions(conn)
-        active_score_run_id = latest_active_score_run(conn)
-        candidate_score_run_id = latest_candidate_score_run(conn)
-        policy_run_id = latest_policy_run(conn)
+        epoch_score_runs = latest_quality_epoch_score_runs(conn)
+        if epoch_score_runs:
+            active_score_run_id, candidate_score_run_id, policy_run_id = epoch_score_runs
+        else:
+            policy_run_id = None
+        paired_score_runs = latest_paired_package_score_runs(conn) if not epoch_score_runs else None
+        if paired_score_runs:
+            active_score_run_id, candidate_score_run_id = paired_score_runs
+        elif not epoch_score_runs:
+            active_score_run_id = latest_active_score_run(conn)
+            candidate_score_run_id = latest_candidate_score_run(conn)
+        if policy_run_id is None:
+            policy_run_id = latest_policy_run(conn, candidate_score_run_id)
+        if policy_run_id is None:
+            policy_run_id = latest_policy_run(conn)
         agent_routing_run_id = latest_agent_routing_run(conn)
         reopen_lifecycle_policy_run_ids = latest_reopen_lifecycle_policy_runs(conn)
         prepare_autofix_unknown_semantic_companion_building_lifecycle(conn)

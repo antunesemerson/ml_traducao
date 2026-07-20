@@ -203,6 +203,178 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
 
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS v3_improvement_backlog_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            source_segment_state_run_id INTEGER NOT NULL,
+            active_score_run_id INTEGER,
+            candidate_score_run_id INTEGER,
+            source_snapshot_id INTEGER,
+            baseline_package_version_id INTEGER,
+            lifecycle_policy_run_id INTEGER,
+            backlog_status TEXT NOT NULL DEFAULT 'open',
+            candidate_count INTEGER NOT NULL DEFAULT 0,
+            parser_architecture_count INTEGER NOT NULL DEFAULT 0,
+            rule_specialist_count INTEGER NOT NULL DEFAULT 0,
+            semantic_human_count INTEGER NOT NULL DEFAULT 0,
+            guard_status TEXT NOT NULL,
+            guards_json TEXT,
+            report_path TEXT,
+            jsonl_path TEXT,
+            csv_path TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(source_segment_state_run_id) REFERENCES segment_state_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(active_score_run_id) REFERENCES ml_score_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(candidate_score_run_id) REFERENCES ml_score_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(source_snapshot_id) REFERENCES source_tree_snapshots(id) ON DELETE SET NULL,
+            FOREIGN KEY(baseline_package_version_id) REFERENCES package_versions(id) ON DELETE RESTRICT,
+            FOREIGN KEY(lifecycle_policy_run_id) REFERENCES auto_confirmation_reopen_lifecycle_policy_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS v3_improvement_backlog_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            baseline_text_hash TEXT,
+            output_text_hash TEXT,
+            confirmation_text_hash TEXT,
+            captured_final_state TEXT,
+            captured_review_state TEXT,
+            confirmation_locked INTEGER NOT NULL DEFAULT 0,
+            confirmed_matches_output INTEGER NOT NULL DEFAULT 0,
+            output_equals_baseline INTEGER NOT NULL DEFAULT 0,
+            needs_output_apply INTEGER NOT NULL DEFAULT 0,
+            primary_family TEXT NOT NULL,
+            families_json TEXT NOT NULL,
+            learning_lane TEXT NOT NULL,
+            old_score REAL,
+            candidate_score REAL,
+            backlog_status TEXT NOT NULL DEFAULT 'open',
+            review_priority REAL NOT NULL DEFAULT 0,
+            source_delta_status TEXT NOT NULL DEFAULT 'unknown_pre_v3',
+            reasons_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES v3_improvement_backlog_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(run_id, segment_id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS source_tree_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_label TEXT NOT NULL,
+            game_version TEXT,
+            english_tree_hash TEXT NOT NULL,
+            spanish_tree_hash TEXT NOT NULL,
+            english_file_count INTEGER NOT NULL DEFAULT 0,
+            spanish_file_count INTEGER NOT NULL DEFAULT 0,
+            english_total_bytes INTEGER NOT NULL DEFAULT 0,
+            spanish_total_bytes INTEGER NOT NULL DEFAULT 0,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(english_tree_hash, spanish_tree_hash)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS source_tree_snapshot_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id INTEGER NOT NULL,
+            source_kind TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            file_hash TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            source_mtime_ns INTEGER,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(snapshot_id) REFERENCES source_tree_snapshots(id) ON DELETE CASCADE,
+            UNIQUE(snapshot_id, source_kind, relative_path)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS quality_epochs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            epoch_key TEXT NOT NULL UNIQUE,
+            scoring_contract_hash TEXT NOT NULL,
+            data_snapshot_hash TEXT NOT NULL,
+            knowledge_snapshot_hash TEXT,
+            source_snapshot_id INTEGER,
+            english_tree_hash TEXT,
+            spanish_tree_hash TEXT,
+            baseline_tree_hash TEXT NOT NULL,
+            output_tree_hash TEXT NOT NULL,
+            model_run_id INTEGER,
+            model_version TEXT,
+            scoring_rule_version TEXT,
+            old_score_run_id INTEGER,
+            output_score_run_id INTEGER,
+            policy_run_id INTEGER,
+            segment_state_run_id INTEGER,
+            status TEXT NOT NULL DEFAULT 'open',
+            invalidation_reason TEXT,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL,
+            scored_at TEXT,
+            evaluated_at TEXT,
+            published_at TEXT,
+            invalidated_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(source_snapshot_id) REFERENCES source_tree_snapshots(id) ON DELETE SET NULL,
+            FOREIGN KEY(model_run_id) REFERENCES ml_model_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(old_score_run_id) REFERENCES ml_score_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(output_score_run_id) REFERENCES ml_score_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(policy_run_id) REFERENCES ml_policy_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(segment_state_run_id) REFERENCES segment_state_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS quality_epoch_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            epoch_id INTEGER,
+            event_type TEXT NOT NULL,
+            event_source TEXT NOT NULL,
+            mutation_scope TEXT NOT NULL DEFAULT 'metadata',
+            details_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(epoch_id) REFERENCES quality_epochs(id) ON DELETE SET NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_quality_epochs_status_updated
+        ON quality_epochs(status, updated_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_quality_epoch_events_epoch_created
+        ON quality_epoch_events(epoch_id, created_at DESC)
+        """
+    )
+
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS files (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             package_name TEXT NOT NULL,
@@ -856,11 +1028,15 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
             needs_autofix_count INTEGER NOT NULL DEFAULT 0,
             blocked_structure_count INTEGER NOT NULL DEFAULT 0,
             deterministic_block_count INTEGER NOT NULL DEFAULT 0,
+            source_snapshot_id INTEGER,
+            candidate_text_source TEXT,
+            candidate_tree_hash TEXT,
             notes TEXT,
             started_at TEXT NOT NULL,
             finished_at TEXT,
             updated_at TEXT NOT NULL,
-            FOREIGN KEY(model_run_id) REFERENCES ml_model_runs(id) ON DELETE CASCADE
+            FOREIGN KEY(model_run_id) REFERENCES ml_model_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(source_snapshot_id) REFERENCES source_tree_snapshots(id) ON DELETE SET NULL
         )
         """
     )
@@ -930,6 +1106,382 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
             UNIQUE(run_id, segment_id)
         )
         """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_quality_shadow_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_key TEXT NOT NULL UNIQUE,
+            source_rule_version TEXT NOT NULL,
+            score_run_id INTEGER NOT NULL,
+            record_count INTEGER NOT NULL DEFAULT 0,
+            eligible_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'completed',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(score_run_id) REFERENCES ml_score_runs(id) ON DELETE RESTRICT
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_quality_shadow_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            lane TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES ml_quality_shadow_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE RESTRICT,
+            UNIQUE(run_id, segment_id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_pairwise_quality_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            source_rule_version TEXT NOT NULL,
+            source_score_run_id INTEGER NOT NULL,
+            source_model_run_id INTEGER,
+            evidence_type TEXT NOT NULL,
+            source_jsonl_path TEXT NOT NULL,
+            candidate_count INTEGER NOT NULL DEFAULT 0,
+            inserted_count INTEGER NOT NULL DEFAULT 0,
+            reused_count INTEGER NOT NULL DEFAULT 0,
+            training_eligible_count INTEGER NOT NULL DEFAULT 0,
+            promotion_eligible_count INTEGER NOT NULL DEFAULT 0,
+            auto_safe_eligible_count INTEGER NOT NULL DEFAULT 0,
+            report_path TEXT,
+            dataset_path TEXT,
+            summary_path TEXT,
+            notes TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(source_score_run_id) REFERENCES ml_score_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(source_model_run_id) REFERENCES ml_model_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_pairwise_quality_evidence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            evidence_key TEXT NOT NULL UNIQUE,
+            first_run_id INTEGER NOT NULL,
+            last_run_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            baseline_text TEXT NOT NULL,
+            candidate_text TEXT NOT NULL,
+            baseline_hash TEXT NOT NULL,
+            candidate_hash TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            preference_label TEXT NOT NULL,
+            training_target TEXT NOT NULL,
+            absolute_quality_lane TEXT NOT NULL,
+            calibration_band TEXT NOT NULL,
+            recommended_route TEXT NOT NULL,
+            baseline_score_raw REAL,
+            candidate_score_raw REAL,
+            pairwise_score REAL,
+            pairwise_delta REAL,
+            evidence_weight REAL NOT NULL DEFAULT 1.0,
+            token_integrity_ok INTEGER NOT NULL DEFAULT 0,
+            post_validation_clean INTEGER NOT NULL DEFAULT 0,
+            training_eligible INTEGER NOT NULL DEFAULT 0,
+            promotion_eligible INTEGER NOT NULL DEFAULT 0,
+            auto_safe_eligible INTEGER NOT NULL DEFAULT 0,
+            blockers_json TEXT,
+            source_metadata_json TEXT,
+            occurrence_count INTEGER NOT NULL DEFAULT 1,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            FOREIGN KEY(first_run_id) REFERENCES ml_pairwise_quality_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(last_run_id) REFERENCES ml_pairwise_quality_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_pairwise_calibration_review_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            queue_key TEXT NOT NULL UNIQUE,
+            rule_version TEXT NOT NULL,
+            quality_epoch_id INTEGER NOT NULL,
+            old_score_run_id INTEGER NOT NULL,
+            output_score_run_id INTEGER NOT NULL,
+            technical_tie_epsilon REAL NOT NULL,
+            priority_delta_threshold REAL NOT NULL,
+            control_count INTEGER NOT NULL DEFAULT 0,
+            candidate_count INTEGER NOT NULL DEFAULT 0,
+            review_count INTEGER NOT NULL DEFAULT 0,
+            priority_count INTEGER NOT NULL DEFAULT 0,
+            positive_control_count INTEGER NOT NULL DEFAULT 0,
+            negative_control_count INTEGER NOT NULL DEFAULT 0,
+            pending_count INTEGER NOT NULL DEFAULT 0,
+            decided_count INTEGER NOT NULL DEFAULT 0,
+            controls_passed_count INTEGER NOT NULL DEFAULT 0,
+            control_accuracy REAL,
+            consumption_status TEXT NOT NULL DEFAULT 'pending',
+            consumption_rule_version TEXT,
+            consumed_count INTEGER NOT NULL DEFAULT 0,
+            inherited_count INTEGER NOT NULL DEFAULT 0,
+            consumed_at TEXT,
+            consumption_summary_json TEXT,
+            report_path TEXT,
+            decisions_template_path TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(quality_epoch_id) REFERENCES quality_epochs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(old_score_run_id) REFERENCES ml_score_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(output_score_run_id) REFERENCES ml_score_runs(id) ON DELETE RESTRICT
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_pairwise_calibration_review_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            evidence_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_line_number INTEGER,
+            review_lane TEXT NOT NULL,
+            display_order INTEGER NOT NULL,
+            baseline_text TEXT NOT NULL,
+            candidate_text TEXT NOT NULL,
+            baseline_score_raw REAL NOT NULL,
+            candidate_score_raw REAL NOT NULL,
+            raw_delta REAL NOT NULL,
+            score_outcome TEXT NOT NULL,
+            expected_preference TEXT NOT NULL,
+            review_status TEXT NOT NULL DEFAULT 'pending',
+            reviewer_label TEXT,
+            reviewer_reason TEXT,
+            reviewer TEXT,
+            reviewed_at TEXT,
+            training_eligible INTEGER NOT NULL DEFAULT 0,
+            holdout_eligible INTEGER NOT NULL DEFAULT 0,
+            control_blinded INTEGER NOT NULL DEFAULT 0,
+            pair_hash TEXT NOT NULL,
+            stable_pair_key TEXT,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES ml_pairwise_calibration_review_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(evidence_id) REFERENCES ml_pairwise_quality_evidence(id) ON DELETE RESTRICT,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(run_id, evidence_id, review_lane)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_pairwise_calibration_review_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            item_id INTEGER NOT NULL,
+            review_label TEXT NOT NULL,
+            review_reason TEXT,
+            reviewer TEXT NOT NULL,
+            control_passed INTEGER,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES ml_pairwise_calibration_review_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(item_id) REFERENCES ml_pairwise_calibration_review_items(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_pairwise_calibration_labels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pair_key TEXT NOT NULL UNIQUE,
+            segment_id INTEGER NOT NULL,
+            evidence_id INTEGER NOT NULL,
+            evidence_type TEXT NOT NULL,
+            baseline_hash TEXT NOT NULL,
+            candidate_hash TEXT NOT NULL,
+            baseline_text TEXT NOT NULL,
+            candidate_text TEXT NOT NULL,
+            review_label TEXT NOT NULL,
+            review_reason TEXT,
+            reviewer TEXT NOT NULL,
+            training_eligible INTEGER NOT NULL DEFAULT 0,
+            source_run_id INTEGER NOT NULL,
+            source_item_id INTEGER NOT NULL,
+            control_accuracy REAL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            FOREIGN KEY(evidence_id) REFERENCES ml_pairwise_quality_evidence(id) ON DELETE RESTRICT,
+            FOREIGN KEY(source_run_id) REFERENCES ml_pairwise_calibration_review_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(source_item_id) REFERENCES ml_pairwise_calibration_review_items(id) ON DELETE RESTRICT
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_pairwise_calibration_policy_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_key TEXT NOT NULL UNIQUE,
+            rule_version TEXT NOT NULL,
+            quality_epoch_id INTEGER,
+            old_score_run_id INTEGER,
+            output_score_run_id INTEGER,
+            decision TEXT NOT NULL CHECK(decision IN ('skip', 'sample', 'required')),
+            recommended_control_count INTEGER NOT NULL DEFAULT 0,
+            candidate_count INTEGER NOT NULL DEFAULT 0,
+            non_improving_count INTEGER NOT NULL DEFAULT 0,
+            invalid_integrity_count INTEGER NOT NULL DEFAULT 0,
+            active_segment_count INTEGER NOT NULL DEFAULT 0,
+            large_batch_threshold INTEGER NOT NULL DEFAULT 0,
+            batch_ratio REAL NOT NULL DEFAULT 0,
+            reasons_json TEXT NOT NULL,
+            metrics_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(quality_epoch_id) REFERENCES quality_epochs(id) ON DELETE SET NULL,
+            FOREIGN KEY(old_score_run_id) REFERENCES ml_score_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(output_score_run_id) REFERENCES ml_score_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_quality_pattern_discovery_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_key TEXT NOT NULL UNIQUE,
+            rule_version TEXT NOT NULL,
+            quality_epoch_id INTEGER,
+            score_run_id INTEGER NOT NULL,
+            scoring_contract_hash TEXT,
+            low_score_threshold REAL NOT NULL DEFAULT 0.5,
+            active_segment_count INTEGER NOT NULL DEFAULT 0,
+            evidence_segment_count INTEGER NOT NULL DEFAULT 0,
+            family_count INTEGER NOT NULL DEFAULT 0,
+            new_family_count INTEGER NOT NULL DEFAULT 0,
+            recurring_family_count INTEGER NOT NULL DEFAULT 0,
+            covered_family_count INTEGER NOT NULL DEFAULT 0,
+            actionable_family_count INTEGER NOT NULL DEFAULT 0,
+            ignored_score_only_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'completed',
+            summary_json TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(quality_epoch_id) REFERENCES quality_epochs(id) ON DELETE SET NULL,
+            FOREIGN KEY(score_run_id) REFERENCES ml_score_runs(id) ON DELETE RESTRICT
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_quality_pattern_families (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            family_key TEXT NOT NULL UNIQUE,
+            evidence_kind TEXT NOT NULL,
+            issue_type TEXT NOT NULL,
+            token_context TEXT NOT NULL,
+            file_family TEXT NOT NULL,
+            text_relation TEXT NOT NULL,
+            provider_id TEXT,
+            evidence_type TEXT,
+            status TEXT NOT NULL,
+            first_run_id INTEGER NOT NULL,
+            last_run_id INTEGER NOT NULL,
+            first_score_run_id INTEGER NOT NULL,
+            last_score_run_id INTEGER NOT NULL,
+            observation_count INTEGER NOT NULL DEFAULT 1,
+            latest_priority REAL NOT NULL DEFAULT 0,
+            latest_confidence REAL NOT NULL DEFAULT 0,
+            latest_reach REAL NOT NULL DEFAULT 0,
+            latest_severity REAL NOT NULL DEFAULT 0,
+            latest_segment_count INTEGER NOT NULL DEFAULT 0,
+            samples_json TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(first_run_id) REFERENCES ml_quality_pattern_discovery_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(last_run_id) REFERENCES ml_quality_pattern_discovery_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(first_score_run_id) REFERENCES ml_score_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(last_score_run_id) REFERENCES ml_score_runs(id) ON DELETE RESTRICT
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_quality_pattern_observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            family_id INTEGER NOT NULL,
+            segment_count INTEGER NOT NULL DEFAULT 0,
+            occurrence_count INTEGER NOT NULL DEFAULT 0,
+            low_score_count INTEGER NOT NULL DEFAULT 0,
+            low_score_share REAL NOT NULL DEFAULT 0,
+            active_package_share REAL NOT NULL DEFAULT 0,
+            average_score REAL,
+            minimum_score REAL,
+            maximum_score REAL,
+            severity REAL NOT NULL DEFAULT 0,
+            confidence REAL NOT NULL DEFAULT 0,
+            novelty REAL NOT NULL DEFAULT 0,
+            reach REAL NOT NULL DEFAULT 0,
+            priority REAL NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            samples_json TEXT NOT NULL,
+            metrics_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES ml_quality_pattern_discovery_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(family_id) REFERENCES ml_quality_pattern_families(id) ON DELETE CASCADE,
+            UNIQUE(run_id, family_id)
+        )
+        """
+    )
+
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_pairwise_calibration_review_runs",
+            [
+                ("consumption_status", "TEXT NOT NULL DEFAULT 'pending'"),
+                ("consumption_rule_version", "TEXT"),
+                ("consumed_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("inherited_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("consumed_at", "TEXT"),
+                ("consumption_summary_json", "TEXT"),
+            ],
+        )
+    )
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_pairwise_calibration_review_items",
+            [("stable_pair_key", "TEXT")],
+        )
     )
 
     conn.execute(
@@ -4933,6 +5485,9 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
                 ("needs_autofix_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("blocked_structure_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("deterministic_block_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("source_snapshot_id", "INTEGER"),
+                ("candidate_text_source", "TEXT"),
+                ("candidate_tree_hash", "TEXT"),
                 ("notes", "TEXT"),
                 ("started_at", "TEXT"),
                 ("finished_at", "TEXT"),
@@ -7421,6 +7976,96 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
     )
     conn.execute(
         """
+        CREATE INDEX IF NOT EXISTS idx_ml_quality_shadow_runs_source
+        ON ml_quality_shadow_runs(source_rule_version, score_run_id, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_quality_shadow_items_run_lane
+        ON ml_quality_shadow_items(run_id, lane, segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_pairwise_quality_runs_source
+        ON ml_pairwise_quality_runs(source_score_run_id, evidence_type, started_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_pairwise_quality_evidence_training
+        ON ml_pairwise_quality_evidence(training_eligible, calibration_band, baseline_score_raw DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_pairwise_quality_evidence_segment
+        ON ml_pairwise_quality_evidence(segment_id, evidence_type, last_seen_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_pairwise_calibration_review_runs_epoch
+        ON ml_pairwise_calibration_review_runs(quality_epoch_id, started_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_pairwise_calibration_review_items_run_lane
+        ON ml_pairwise_calibration_review_items(run_id, review_lane, review_status, display_order)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_pairwise_calibration_review_items_segment
+        ON ml_pairwise_calibration_review_items(segment_id, run_id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_pairwise_calibration_review_decisions_item
+        ON ml_pairwise_calibration_review_decisions(item_id, created_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_pairwise_calibration_review_items_stable_pair
+        ON ml_pairwise_calibration_review_items(stable_pair_key, run_id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_pairwise_calibration_labels_scope
+        ON ml_pairwise_calibration_labels(evidence_type, segment_id, updated_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_pairwise_calibration_policy_epoch
+        ON ml_pairwise_calibration_policy_decisions(quality_epoch_id, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_quality_pattern_discovery_runs_epoch
+        ON ml_quality_pattern_discovery_runs(quality_epoch_id, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_quality_pattern_families_status_priority
+        ON ml_quality_pattern_families(status, latest_priority DESC, last_seen_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_quality_pattern_observations_run_priority
+        ON ml_quality_pattern_observations(run_id, priority DESC, family_id)
+        """
+    )
+    conn.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_ml_holdout_eval_runs_dataset
         ON ml_holdout_eval_runs(dataset_run_id, finished_at)
         """
@@ -8359,6 +9004,24 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         """
         CREATE INDEX IF NOT EXISTS idx_package_version_changes_version_delta
         ON package_version_changes(version_id, score_delta, segment_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_v3_improvement_backlog_runs_status
+        ON v3_improvement_backlog_runs(backlog_status, started_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_v3_improvement_backlog_items_lane
+        ON v3_improvement_backlog_items(run_id, backlog_status, learning_lane, review_priority DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_v3_improvement_backlog_items_segment
+        ON v3_improvement_backlog_items(segment_id, run_id)
         """
     )
     conn.execute(

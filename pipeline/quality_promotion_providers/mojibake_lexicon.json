@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "provider_id": "mojibake_lexicon",
+  "label": "Reconstrucao lexical de mojibake com ponto de interrogacao",
+  "enabled": true,
+  "priority": 400,
+  "evidence_type": "deterministic_mojibake_lexicon_repair",
+  "discovery": {
+    "issue_types": ["replacement_question_mark_mojibake"]
+  },
+  "shadow_script": "pipeline/quality_mojibake_lexicon_shadow.py",
+  "shadow_args": ["--minimum-support", "2"],
+  "evidence_script": "pipeline/quality_mojibake_lexicon_pairwise_evidence.py",
+  "evidence_args": []
+}

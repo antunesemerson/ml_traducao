@@ -23,6 +23,8 @@ DEFAULT_DB = ROOT / "memory" / "translation_engine.sqlite"
 NEURAL_VISUALIZATION_FILE = ROOT / "docs" / "neurosymbolic_network_visualization.json"
 LEARNING_STATUS_FILE = ROOT / "memory" / "learning_status.json"
 BASE_DASHBOARD_CACHE_FILE = ROOT / "memory" / "dashboard_cache.json"
+FULL_DASHBOARD_CACHE_FILE = ROOT / "memory" / "dashboard_full_cache.json"
+PRODUCTION_DISK_PREFLIGHT_CACHE_FILE = ROOT / "memory" / "production_disk_preflight_cache.json"
 POST_RELEASE_FEEDBACK_STATUS_FILE = ROOT / "memory" / "post_release_feedback_status.json"
 FEEDBACK_ARCHIVED_STATUSES = {
     "applied",
@@ -48,13 +50,30 @@ PRODUCTION_SAFETY_POLICY_FILE = ROOT / "memory" / "production_safety_policy.json
 SAFE_FULL_PRODUCTION_PREFLIGHT_FILE = ROOT / "memory" / "safe_full_production_preflight_latest.json"
 PRE_FULL_PRODUCTION_OUTPUT_RESTORE_FILE = ROOT / "memory" / "pre_full_production_output_restore_latest.json"
 PRODUCTION_RUN_STATUS_FILE = ROOT / "memory" / "production_run_status.json"
+DIAGNOSTIC_RUN_STATUS_FILE = ROOT / "memory" / "diagnostic_run_status.json"
 PRODUCTION_SNAPSHOT_ROOT = ROOT / "memory" / "production_snapshots"
 PRODUCTION_SNAPSHOT_ARCHIVE_ROOT = ROOT / "memory" / "production_snapshot_archives"
 EVALUATION_DECISION_LATEST_FILE = ROOT / "memory" / "evaluation_decision_latest.json"
+RELEASE_DIFF_REVIEW_CACHE_FILE = ROOT / "memory" / "release_diff_review_cache.json"
+QUALITY_PROMOTION_PROVIDERS_DIR = ROOT / "pipeline" / "quality_promotion_providers"
+RELEASE_DIFF_REVIEW_SCHEMA_VERSION = 5
+DASHBOARD_CACHE_SCHEMA_VERSION = 7
 PRODUCTION_FULL_SQLITE_BACKUP_ENABLED = False
 PRODUCTION_RUN_LOCK = threading.Lock()
+DIAGNOSTIC_RUN_LOCK = threading.Lock()
+DIAGNOSTIC_STATUS_LOCK = threading.Lock()
 DASHBOARD_CACHE_LOCK = threading.Lock()
 DASHBOARD_CACHE: dict[str, Any] | None = None
+FULL_DASHBOARD_CACHE_LOCK = threading.Lock()
+FULL_DASHBOARD_CACHE: dict[str, Any] | None = None
+FULL_DASHBOARD_CACHE_REFRESHING = False
+QUALITY_HOTSPOTS_LOCK = threading.Lock()
+QUALITY_HOTSPOTS_CACHE: dict[str, Any] = {"score_run_id": None, "items": []}
+PACKAGE_VERSION_BANDS_LOCK = threading.Lock()
+PACKAGE_VERSION_BANDS_CACHE: dict[str, Any] = {"key": None, "items": {}}
+RELEASE_DIFF_REVIEW_CACHE: dict[str, Any] = {"key": None, "payload": None}
+DISK_PREFLIGHT_LOCK = threading.Lock()
+DISK_PREFLIGHT_CACHE_TTL_SECONDS = 600
 ACTIVE_DB_PATH = DEFAULT_DB
 TRAINING_LOCK_FILES = (
     ROOT / "memory" / "training_in_progress.flag",
@@ -3913,11 +3932,13 @@ def _score_tier(value: Any) -> str:
     if score >= 0.9:
         return "high"
     if score >= 0.75:
-        return "medium_high"
+        return "good"
     if score >= 0.5:
-        return "medium"
-    if score >= 0:
+        return "moderate"
+    if score >= 0.2:
         return "low"
+    if score >= 0:
+        return "critical"
     return "not_scored"
 
 
@@ -3931,6 +3952,7 @@ ES_OA_FINAL_VOWEL_BEFORE_HELPER_PATTERN = re.compile(
 )
 OCCIDENTAL_WORD_PATTERN = re.compile(r"\boccidental\b", re.IGNORECASE)
 OCIDENTAL_WORD_PATTERN = re.compile(r"\bocidental\b", re.IGNORECASE)
+SPACE_BEFORE_PUNCTUATION_PATTERN = re.compile(r"\s+([,.;:!?])")
 VISIBLE_TOKEN_RE = re.compile(r"\$[^$\s]+\$|\[[^\]]+\]|@[A-Za-z0-9_]+!|#[A-Za-z0-9_]+|#!")
 SPANISH_BOLD_RESIDUAL_HINTS = (
     "recuperacion",
@@ -4063,6 +4085,28 @@ def _is_feedback_microfix_equal_output_repair(record: dict[str, Any]) -> bool:
     if feedback_marker not in str(record.get("final_state") or "") and feedback_marker not in str(record.get("confirmation_source") or ""):
         return False
     return _is_closed_confirmed_output_change(record)
+
+
+def _is_space_before_punctuation_microrepair(record: dict[str, Any]) -> bool:
+    if not _is_closed_confirmed_output_change(record):
+        return False
+    old_text = str(record.get("old_text") or "")
+    output_text = str(record.get("output_text") or "")
+    if not SPACE_BEFORE_PUNCTUATION_PATTERN.search(old_text):
+        return False
+    if SPACE_BEFORE_PUNCTUATION_PATTERN.search(output_text):
+        return False
+    if _score_token_signature(output_text) != _score_token_signature(old_text):
+        return False
+    expected_output = SPACE_BEFORE_PUNCTUATION_PATTERN.sub(r"\1", old_text)
+    if _package_compare_text(expected_output) != _package_compare_text(output_text):
+        return False
+    return str(record.get("confirmation_label") or "") in {
+        "remove_space_before_punctuation",
+        "space_after_token+remove_space_before_punctuation",
+        "remove_space_before_punctuation+space_after_token",
+        "remove_space_before_punctuation+visible_phrase_replacement",
+    }
 
 
 def _is_closed_confirmed_production_microrepair(record: dict[str, Any]) -> bool:
@@ -4289,7 +4333,314 @@ def _apply_effective_score_calibration(
         record["score_comparison_status"] = "score_regressed_known_repair"
 
 
-def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: int | None) -> dict[str, Any]:
+def _pairwise_calibration_review_payload(con: sqlite3.Connection) -> dict[str, Any]:
+    empty = {
+        "instrumented": False,
+        "run_id": None,
+        "quality_epoch_id": None,
+        "pending_count": 0,
+        "decided_count": 0,
+        "review_count": 0,
+        "priority_count": 0,
+        "positive_control_count": 0,
+        "negative_control_count": 0,
+        "control_accuracy": None,
+        "consumption_status": "not_instrumented",
+        "consumed_count": 0,
+        "inherited_count": 0,
+        "consumed_at": None,
+        "policy_decision_id": None,
+        "policy_decision": "not_evaluated",
+        "policy_reason_summary": None,
+        "policy_reasons": [],
+        "policy_metrics": {},
+        "policy_recommended_control_count": 0,
+        "items": [],
+    }
+    policy = {}
+    if _table_exists(con, "ml_pairwise_calibration_policy_decisions"):
+        policy = _one(
+            con,
+            """
+            SELECT *
+            FROM ml_pairwise_calibration_policy_decisions
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+        )
+    policy_reasons: list[str] = []
+    policy_metrics: dict[str, Any] = {}
+    if policy:
+        try:
+            parsed_reasons = json.loads(policy.get("reasons_json") or "[]")
+            if isinstance(parsed_reasons, list):
+                policy_reasons = [str(item) for item in parsed_reasons]
+        except json.JSONDecodeError:
+            pass
+        try:
+            parsed_metrics = json.loads(policy.get("metrics_json") or "{}")
+            if isinstance(parsed_metrics, dict):
+                policy_metrics = parsed_metrics
+        except json.JSONDecodeError:
+            pass
+    policy_payload = {
+        "policy_decision_id": _int(policy.get("id")) or None,
+        "policy_decision": policy.get("decision") or "not_evaluated",
+        "policy_reason_summary": " ".join(policy_reasons),
+        "policy_reasons": policy_reasons,
+        "policy_metrics": policy_metrics,
+        "policy_recommended_control_count": _int(policy.get("recommended_control_count")),
+    }
+    required = {
+        "ml_pairwise_calibration_review_runs",
+        "ml_pairwise_calibration_review_items",
+    }
+    if not all(_table_exists(con, table) for table in required):
+        return {**empty, **policy_payload, "instrumented": bool(policy)}
+    policy_epoch_id = _int(policy.get("quality_epoch_id"))
+    policy_decision = str(policy.get("decision") or "not_evaluated")
+    run = _one(
+        con,
+        """
+        SELECT *
+        FROM ml_pairwise_calibration_review_runs
+        WHERE (? = 0 OR quality_epoch_id = ?)
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (policy_epoch_id, policy_epoch_id),
+    )
+    if not run:
+        if policy and policy_decision == "skip":
+            return {
+                **empty,
+                **policy_payload,
+                "instrumented": True,
+                "quality_epoch_id": policy_epoch_id or None,
+                "old_score_run_id": _int(policy.get("old_score_run_id")) or None,
+                "output_score_run_id": _int(policy.get("output_score_run_id")) or None,
+                "consumption_status": "skipped_by_policy",
+            }
+        return {
+            **empty,
+            **policy_payload,
+            "instrumented": bool(policy),
+            "quality_epoch_id": policy_epoch_id or None,
+            "consumption_status": "policy_not_materialized" if policy else "not_instrumented",
+        }
+    items = _all(
+        con,
+        """
+        SELECT id, run_id, evidence_id, segment_id, relative_path, source_key,
+               source_line_number, review_lane, display_order, baseline_text,
+               candidate_text, baseline_score_raw, candidate_score_raw, raw_delta,
+               score_outcome, review_status, reviewer_label, reviewer_reason,
+               reviewer, reviewed_at, training_eligible, holdout_eligible,
+               control_blinded, pair_hash
+        FROM ml_pairwise_calibration_review_items
+        WHERE run_id = ?
+        ORDER BY display_order, id
+        LIMIT 200
+        """,
+        (_int(run.get("id")),),
+    )
+    public_items: list[dict[str, Any]] = []
+    for item in items:
+        is_control = bool(_int(item.get("control_blinded")))
+        lane = str(item.get("review_lane") or "score_review")
+        public_baseline_score = None if is_control else item.get("baseline_score_raw")
+        public_candidate_score = None if is_control else item.get("candidate_score_raw")
+        public_delta = None if is_control else item.get("raw_delta")
+        public_items.append(
+            {
+                **item,
+                "review_lane": "control" if is_control else lane,
+                "is_priority": lane == "priority_review",
+                "is_control": is_control,
+                "baseline_score_raw": public_baseline_score,
+                "candidate_score_raw": public_candidate_score,
+                "raw_delta": public_delta,
+                "old_text": item.get("baseline_text"),
+                "output_text": item.get("candidate_text"),
+                "review_old_score": public_baseline_score,
+                "review_new_score": public_candidate_score,
+                "review_score_delta": public_delta,
+            }
+        )
+    return {
+        "instrumented": True,
+        **policy_payload,
+        "run_id": _int(run.get("id")),
+        "quality_epoch_id": _int(run.get("quality_epoch_id")),
+        "old_score_run_id": _int(run.get("old_score_run_id")),
+        "output_score_run_id": _int(run.get("output_score_run_id")),
+        "pending_count": _int(run.get("pending_count")),
+        "decided_count": _int(run.get("decided_count")),
+        "review_count": _int(run.get("review_count")),
+        "priority_count": _int(run.get("priority_count")),
+        "positive_control_count": _int(run.get("positive_control_count")),
+        "negative_control_count": _int(run.get("negative_control_count")),
+        "control_accuracy": run.get("control_accuracy"),
+        "consumption_status": run.get("consumption_status") or "pending",
+        "consumed_count": _int(run.get("consumed_count")),
+        "inherited_count": _int(run.get("inherited_count")),
+        "consumed_at": run.get("consumed_at"),
+        "items": public_items,
+    }
+
+
+def _empty_low_score_cohorts() -> dict[str, int | float]:
+    return {
+        "total": 0,
+        "actionable": 0,
+        "informational": 0,
+        "explicit_text_issue": 0,
+        "structural_block_without_issue": 0,
+        "deterministic_safe_but_low_score": 0,
+        "unchanged_or_preserved_text": 0,
+        "low_confidence_without_specific_evidence": 0,
+        "actionable_share_pct": 0.0,
+    }
+
+
+def _low_score_cohort(record: dict[str, Any]) -> str:
+    if _int(record.get("issue_count")) > 0:
+        return "explicit_text_issue"
+    if (
+        str(record.get("token_status") or "").lower() == "mismatch"
+        or str(record.get("score_action") or record.get("final_action") or "").lower()
+        == "blocked_structure"
+    ):
+        return "structural_block_without_issue"
+    if str(record.get("score_action") or record.get("final_action") or "").lower() == "auto_safe":
+        return "deterministic_safe_but_low_score"
+    candidate_text = record.get("score_candidate_text", record.get("candidate_text"))
+    if candidate_text is not None and any(
+        candidate_text == record.get(field)
+        for field in ("old_text", "spanish_text", "english_text")
+        if record.get(field) is not None
+    ):
+        return "unchanged_or_preserved_text"
+    return "low_confidence_without_specific_evidence"
+
+
+def _score_semantics_payload(
+    old_run: dict[str, Any],
+    output_run: dict[str, Any],
+    *,
+    comparable_contract: bool,
+) -> dict[str, Any]:
+    model_kind = str(output_run.get("model_kind") or old_run.get("model_kind") or "")
+    operational_risk = model_kind == "risk_action_classifier"
+    return {
+        "metric_kind": (
+            "operational_risk_probability"
+            if operational_risk
+            else "model_score_unspecified"
+        ),
+        "label": "Score operacional" if operational_risk else "Score do modelo",
+        "baseline_sensitive": operational_risk,
+        "absolute_quality_interpretation": False,
+        "within_epoch_contract_comparable": comparable_contract,
+        "cross_version_comparable": bool(comparable_contract and not operational_risk),
+        "comparison_guidance": (
+            "Use para risco dentro da mesma epoch; use delta pareado congelado para ganho entre versoes."
+            if operational_risk
+            else "A comparabilidade entre versoes ainda nao foi comprovada."
+        ),
+        "feature_context": (
+            "candidate_plus_old_output_lifecycle_context"
+            if operational_risk
+            else "unspecified"
+        ),
+    }
+
+
+def _latest_materialized_pairwise_gain_payload(con: sqlite3.Connection) -> dict[str, Any]:
+    unavailable = {
+        "available": False,
+        "version_id": None,
+        "version_number": None,
+        "paired_count": 0,
+        "improved_count": 0,
+        "regressed_count": 0,
+        "equal_count": 0,
+        "avg_previous_score": None,
+        "avg_current_score": None,
+        "avg_delta": None,
+        "global_equivalent_delta": None,
+    }
+    if not (
+        _table_exists(con, "package_versions")
+        and _table_exists(con, "package_version_changes")
+    ):
+        return unavailable
+    version = _one(
+        con,
+        """
+        SELECT id, version_number, version_label, measured_score_count
+        FROM package_versions
+        WHERE status = 'materialized'
+        ORDER BY version_number DESC, id DESC
+        LIMIT 1
+        """,
+    )
+    version_id = _int(version.get("id"))
+    if not version_id:
+        return unavailable
+    stats = _one(
+        con,
+        """
+        SELECT
+          COUNT(*) AS paired_count,
+          SUM(CASE WHEN score_delta > 0.000001 THEN 1 ELSE 0 END) AS improved_count,
+          SUM(CASE WHEN score_delta < -0.000001 THEN 1 ELSE 0 END) AS regressed_count,
+          SUM(CASE WHEN ABS(score_delta) <= 0.000001 THEN 1 ELSE 0 END) AS equal_count,
+          AVG(previous_score) AS avg_previous_score,
+          AVG(current_score) AS avg_current_score,
+          AVG(score_delta) AS avg_delta,
+          SUM(score_delta) AS score_delta_sum
+        FROM package_version_changes
+        WHERE version_id = ?
+          AND previous_score IS NOT NULL
+          AND current_score IS NOT NULL
+          AND score_delta IS NOT NULL
+        """,
+        (version_id,),
+    )
+    paired_count = _int(stats.get("paired_count"))
+    if not paired_count:
+        return {**unavailable, "version_id": version_id, "version_number": _int(version.get("version_number"))}
+
+    measured_count = _int(version.get("measured_score_count"))
+    score_delta_sum = _num(stats.get("score_delta_sum"), 0.0)
+
+    def rounded(key: str) -> float | None:
+        value = stats.get(key)
+        return round(float(value), 9) if value is not None else None
+
+    return {
+        "available": True,
+        "version_id": version_id,
+        "version_number": _int(version.get("version_number")),
+        "version_label": version.get("version_label"),
+        "paired_count": paired_count,
+        "improved_count": _int(stats.get("improved_count")),
+        "regressed_count": _int(stats.get("regressed_count")),
+        "equal_count": _int(stats.get("equal_count")),
+        "avg_previous_score": rounded("avg_previous_score"),
+        "avg_current_score": rounded("avg_current_score"),
+        "avg_delta": rounded("avg_delta"),
+        "global_equivalent_delta": (
+            round(score_delta_sum / measured_count, 12) if measured_count else None
+        ),
+        "score_delta_sum": round(score_delta_sum, 9),
+        "measured_population": measured_count,
+        "comparison_basis": "frozen_same_contract_pairwise_changes",
+    }
+
+
+def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: int | None) -> dict[str, Any]:
     empty = {
         "instrumented": False,
         "summary": {
@@ -4308,12 +4659,22 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
             "package_not_closed": 0,
             "raw_not_closed": 0,
             "low_score": 0,
+            "low_score_actionable": 0,
+            "low_score_informational": 0,
+            "low_score_explicit_issue": 0,
+            "low_score_structural_block": 0,
+            "low_score_deterministic_safe": 0,
+            "low_score_preserved": 0,
+            "low_score_unexplained": 0,
             "score_regressions": 0,
             "unhandled_by_network": 0,
             "calibrated_score_exceptions": 0,
             "legacy_needs_output_apply": 0,
             "output_apply_count": 0,
             "lifecycle_apply_count": 0,
+            "calibration_review_pending": 0,
+            "calibration_review_priority": 0,
+            "calibration_review_controls": 0,
         },
         "changed_segments": [],
         "package_diff_segments": [],
@@ -4322,7 +4683,10 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
         "apply_segments": [],
         "output_apply_segments": [],
         "low_score_segments": [],
+        "low_score_cohorts": _empty_low_score_cohorts(),
         "score_regression_segments": [],
+        "calibration_review_segments": [],
+        "calibration_review": _pairwise_calibration_review_payload(con),
         "unhandled_segments": [],
     }
     required = ("source_segments", "output_segments")
@@ -4352,6 +4716,20 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
         _int(state_run.get("candidate_score_run_id"))
         or (_int(latest_score.get("id")) if has_score else 0)
     )
+    pairwise_evidence_by_segment: dict[int, dict[str, Any]] = {}
+    if _table_exists(con, "ml_pairwise_quality_evidence"):
+        for evidence in _all(
+            con,
+            """
+            SELECT id, segment_id, baseline_text, candidate_text,
+                   baseline_score_raw, candidate_score_raw, pairwise_score,
+                   pairwise_delta, evidence_type, promotion_eligible,
+                   token_integrity_ok, post_validation_clean
+            FROM ml_pairwise_quality_evidence
+            ORDER BY id
+            """,
+        ):
+            pairwise_evidence_by_segment[_int(evidence.get("segment_id"))] = evidence
 
     old_score_join = "LEFT JOIN ml_score_items oldscore ON oldscore.run_id = ? AND oldscore.segment_id = s.id" if has_score and old_score_run_id else ""
     score_join = "LEFT JOIN ml_score_items score ON score.run_id = ? AND score.segment_id = s.id" if has_score and latest_score_run_id else ""
@@ -4368,9 +4746,10 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
     )
     score_columns = (
         "score.model_safe_probability, score.model_confidence, score.final_action AS score_action, "
-        "score.risk_class, score.token_status, score.issue_count, score.high_issue_count"
+        "score.risk_class, score.token_status, score.issue_count, score.high_issue_count, "
+        "score.candidate_text AS score_candidate_text"
         if has_score
-        else "NULL AS model_safe_probability, NULL AS model_confidence, NULL AS score_action, NULL AS risk_class, NULL AS token_status, NULL AS issue_count, NULL AS high_issue_count"
+        else "NULL AS model_safe_probability, NULL AS model_confidence, NULL AS score_action, NULL AS risk_class, NULL AS token_status, NULL AS issue_count, NULL AS high_issue_count, NULL AS score_candidate_text"
     )
     old_score_columns = (
         "oldscore.model_safe_probability AS old_model_safe_probability, "
@@ -4442,23 +4821,69 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
         ).get("total")
     )
     low_score_count = 0
+    low_score_cohorts = _empty_low_score_cohorts()
     unhandled_count = 0
     if has_score and latest_score_run_id:
-        low_score_count = _int(
-            _one(
-                con,
-                """
-                SELECT COUNT(*) AS total
-                FROM ml_score_items score
-                JOIN source_segments s ON s.id = score.segment_id
-                WHERE score.run_id = ?
-                  AND s.is_active = 1
-                  AND score.model_safe_probability IS NOT NULL
-                  AND score.model_safe_probability < 0.5
-                """,
-                (latest_score_run_id,),
-            ).get("total")
+        low_score_counts = _one(
+            con,
+            """
+            SELECT
+              COUNT(*) AS total,
+              SUM(CASE WHEN cohort = 'explicit_text_issue' THEN 1 ELSE 0 END) AS explicit_text_issue,
+              SUM(CASE WHEN cohort = 'structural_block_without_issue' THEN 1 ELSE 0 END) AS structural_block_without_issue,
+              SUM(CASE WHEN cohort = 'deterministic_safe_but_low_score' THEN 1 ELSE 0 END) AS deterministic_safe_but_low_score,
+              SUM(CASE WHEN cohort = 'unchanged_or_preserved_text' THEN 1 ELSE 0 END) AS unchanged_or_preserved_text,
+              SUM(CASE WHEN cohort = 'low_confidence_without_specific_evidence' THEN 1 ELSE 0 END) AS low_confidence_without_specific_evidence
+            FROM (
+              SELECT
+                CASE
+                  WHEN score.issue_count > 0 THEN 'explicit_text_issue'
+                  WHEN score.token_status = 'mismatch' OR score.final_action = 'blocked_structure'
+                    THEN 'structural_block_without_issue'
+                  WHEN score.final_action = 'auto_safe'
+                    THEN 'deterministic_safe_but_low_score'
+                  WHEN score.candidate_text = s.old_text
+                    OR score.candidate_text = s.spanish_text
+                    OR score.candidate_text = s.english_text
+                    THEN 'unchanged_or_preserved_text'
+                  ELSE 'low_confidence_without_specific_evidence'
+                END AS cohort
+              FROM ml_score_items score
+              JOIN source_segments s ON s.id = score.segment_id
+              WHERE score.run_id = ?
+                AND s.is_active = 1
+                AND score.model_safe_probability IS NOT NULL
+                AND score.model_safe_probability < 0.5
+            )
+            """,
+            (latest_score_run_id,),
         )
+        low_score_count = _int(low_score_counts.get("total"))
+        low_score_cohorts.update(
+            {
+                key: _int(low_score_counts.get(key))
+                for key in (
+                    "total",
+                    "explicit_text_issue",
+                    "structural_block_without_issue",
+                    "deterministic_safe_but_low_score",
+                    "unchanged_or_preserved_text",
+                    "low_confidence_without_specific_evidence",
+                )
+            }
+        )
+        low_score_cohorts["actionable"] = (
+            _int(low_score_cohorts.get("explicit_text_issue"))
+            + _int(low_score_cohorts.get("structural_block_without_issue"))
+        )
+        low_score_cohorts["informational"] = (
+            _int(low_score_cohorts.get("deterministic_safe_but_low_score"))
+            + _int(low_score_cohorts.get("unchanged_or_preserved_text"))
+        )
+        low_score_cohorts["actionable_share_pct"] = round(
+            100.0 * _int(low_score_cohorts.get("actionable")) / low_score_count,
+            2,
+        ) if low_score_count else 0.0
         if has_state and current_state_run_id:
             unhandled_count = _int(
                 _one(
@@ -4470,6 +4895,7 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
                     WHERE state.run_id = ?
                       AND s.is_active = 1
                       AND COALESCE(state.state_group, '') != 'closed'
+                      AND COALESCE(state.needs_output_apply, 0) = 0
                     """,
                     (current_state_run_id,),
                 ).get("total")
@@ -4493,6 +4919,7 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
     def rows(sql_suffix: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         records = _all(con, f"{base_select} {sql_suffix}", (*join_params, *params))
         for record in records:
+            record["low_score_cohort"] = _low_score_cohort(record)
             record["score_tier"] = _score_tier(record.get("model_safe_probability"))
             record["new_score"] = record.get("model_safe_probability")
             record["old_score"] = record.get("old_model_safe_probability")
@@ -4516,7 +4943,48 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
                     record["score_comparison_status"] = "score_regressed"
                 else:
                     record["score_comparison_status"] = "score_equal"
-            if _is_bold_no_to_nao_microrepair(record):
+            pairwise_evidence = pairwise_evidence_by_segment.get(_int(record.get("segment_id")))
+            pairwise_applied_and_confirmed = bool(
+                pairwise_evidence
+                and str(record.get("confirmation_source") or "") == "pairwise_monotonic_repair"
+                and str(record.get("confirmed_text") or "") == str(record.get("output_text") or "")
+                and str(record.get("state_group") or "").lower() == "closed"
+            )
+            pairwise_match = bool(
+                pairwise_evidence
+                and (
+                    _int(pairwise_evidence.get("promotion_eligible")) == 1
+                    or pairwise_applied_and_confirmed
+                )
+                and _int(pairwise_evidence.get("token_integrity_ok")) == 1
+                and _int(pairwise_evidence.get("post_validation_clean")) == 1
+                and str(record.get("old_text") or "")
+                == str(pairwise_evidence.get("baseline_text") or "")
+                and str(record.get("output_text") or "")
+                == str(pairwise_evidence.get("candidate_text") or "")
+            )
+            if pairwise_match:
+                pairwise_baseline = float(pairwise_evidence["baseline_score_raw"])
+                pairwise_score = float(pairwise_evidence["pairwise_score"])
+                pairwise_delta = pairwise_score - pairwise_baseline
+                record["score_calibration"] = f"pairwise_{pairwise_evidence.get('evidence_type') or 'evidence'}"
+                record["score_used_kind"] = "pairwise_same_contract"
+                record["pairwise_contract_comparable"] = True
+                record["pairwise_evidence_type"] = pairwise_evidence.get("evidence_type")
+                record["pairwise_baseline_score"] = round(pairwise_baseline, 6)
+                record["pairwise_candidate_score_raw"] = pairwise_evidence.get("candidate_score_raw")
+                record["old_score"] = round(pairwise_baseline, 6)
+                record["effective_new_score"] = round(pairwise_score, 6)
+                record["effective_score_delta"] = round(pairwise_delta, 6)
+                record["score_comparison_status"] = (
+                    "score_improved_calibrated_repair"
+                    if pairwise_delta > 0.0001
+                    else "score_regressed_known_repair"
+                    if pairwise_delta < -0.0001
+                    else "score_equal"
+                )
+                record["pairwise_evidence_id"] = pairwise_evidence.get("id")
+            elif _is_bold_no_to_nao_microrepair(record):
                 _apply_effective_score_calibration(
                     record,
                     "bold_no_to_nao_microrepair",
@@ -4557,6 +5025,13 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
                     "feedback_microfix_equal_output_repair",
                     floor=0.92,
                     gain=0.03,
+                )
+            elif _is_space_before_punctuation_microrepair(record):
+                _apply_effective_score_calibration(
+                    record,
+                    "deterministic_space_before_punctuation_microrepair_v2",
+                    floor=0.92,
+                    gain=0.02,
                 )
             elif _is_closed_confirmed_production_microrepair(record):
                 _apply_effective_score_calibration(
@@ -4608,7 +5083,11 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
                     gain=0.03,
                 )
             if record.get("score_calibration"):
-                record["score_used_kind"] = "effective_calibrated"
+                record["score_used_kind"] = (
+                    "effective_calibrated_pairwise"
+                    if pairwise_match
+                    else "effective_calibrated"
+                )
             _annotate_package_integrity(record, has_state=has_state)
             record["promotion_gate"] = (
                 "allow_new_segment"
@@ -4704,6 +5183,81 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
         )
         < -0.0001
     ]
+    adjusted_non_improving_records: list[dict[str, Any]] = []
+    for record in changed_score_records:
+        raw_delta = record.get("score_delta")
+        adjustment_applied = bool(
+            record.get("confirmed_text") is not None
+            and _package_compare_text(record.get("output_text"))
+            == _package_compare_text(record.get("confirmed_text"))
+            and _package_compare_text(record.get("output_text"))
+            != _package_compare_text(record.get("old_text"))
+        )
+        if not adjustment_applied or raw_delta is None or _num(raw_delta, 1) > 0.0001:
+            continue
+        raw_regressed = _num(raw_delta, 0) < -0.0001
+        adjusted_non_improving_records.append(
+            {
+                **record,
+                "score_review_basis": "raw_model_after_applied_adjustment",
+                "score_review_kind": "raw_regression" if raw_regressed else "raw_equal",
+                "score_review_reason": (
+                    "applied adjustment reduced the raw score"
+                    if raw_regressed
+                    else "applied adjustment did not change the raw score"
+                ),
+                "review_old_score": record.get("raw_old_score"),
+                "review_new_score": record.get("raw_new_score"),
+                "review_score_delta": raw_delta,
+            }
+        )
+    score_review_by_segment: dict[int, dict[str, Any]] = {
+        _int(record.get("segment_id")): {
+            **record,
+            "score_review_basis": "effective_package_score",
+            "score_review_kind": "effective_regression",
+            "score_review_reason": "effective package score regressed",
+            "review_old_score": record.get("old_score"),
+            "review_new_score": record.get("effective_new_score") or record.get("new_score"),
+            "review_score_delta": (
+                record.get("effective_score_delta")
+                if record.get("effective_score_delta") is not None
+                else record.get("score_delta")
+            ),
+        }
+        for record in package_regression_records
+    }
+    for record in adjusted_non_improving_records:
+        score_review_by_segment[_int(record.get("segment_id"))] = record
+    calibration_review = _pairwise_calibration_review_payload(con)
+    calibration_by_segment = {
+        _int(item.get("segment_id")): item
+        for item in calibration_review.get("items") or []
+        if not item.get("is_control")
+    }
+    score_review_records = [
+        {
+            **record,
+            "calibration_review_item_id": calibration_by_segment.get(_int(record.get("segment_id")), {}).get("id"),
+            "calibration_review_lane": calibration_by_segment.get(_int(record.get("segment_id")), {}).get("review_lane"),
+            "calibration_review_status": calibration_by_segment.get(_int(record.get("segment_id")), {}).get("review_status"),
+            "calibration_review_label": calibration_by_segment.get(_int(record.get("segment_id")), {}).get("reviewer_label"),
+            "calibration_review_priority": bool(calibration_by_segment.get(_int(record.get("segment_id")), {}).get("is_priority")),
+        }
+        for record in score_review_by_segment.values()
+    ]
+    reviewed_raw_score_regressions = sum(
+        1
+        for record in score_review_records
+        if str(record.get("calibration_review_status") or "").lower() == "decided"
+        or bool(record.get("score_calibration"))
+    )
+    unresolved_raw_score_regressions = sum(
+        1
+        for record in score_review_records
+        if str(record.get("calibration_review_status") or "").lower() != "decided"
+        and not record.get("score_calibration")
+    )
     package_segments = sorted(
         package_records,
         key=lambda record: (
@@ -4726,10 +5280,90 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
         if _is_publication_lifecycle_apply_candidate(record, has_state=has_state)
     ]
     lifecycle_apply_ids = {_int(record.get("segment_id")) for record in lifecycle_apply_records}
-    promotion_records = [
+    output_promotion_records = [
         record
         for record in promotion_candidate_records
         if _int(record.get("segment_id")) not in lifecycle_apply_ids
+    ]
+    evidence_promotion_records: list[dict[str, Any]] = []
+    if _table_exists(con, "ml_pairwise_quality_evidence") and has_state and current_state_run_id:
+        evidence_rows = _all(
+            con,
+            """
+            SELECT
+              evidence.id AS pairwise_evidence_id,
+              evidence.segment_id,
+              evidence.relative_path,
+              evidence.source_key,
+              evidence.baseline_text AS old_text,
+              evidence.candidate_text AS output_text,
+              evidence.baseline_score_raw AS old_score,
+              evidence.pairwise_score AS new_score,
+              evidence.pairwise_delta AS score_delta,
+              evidence.evidence_type,
+              evidence.token_integrity_ok,
+              evidence.post_validation_clean,
+              state.final_state,
+              state.state_group,
+              state.needs_output_apply,
+              output.portuguese_text AS current_output_text
+            FROM ml_pairwise_quality_evidence evidence
+            JOIN output_segments output ON output.segment_id = evidence.segment_id
+            JOIN segment_state_items state
+              ON state.segment_id = evidence.segment_id
+             AND state.run_id = ?
+            WHERE evidence.id = (
+                SELECT MAX(latest.id)
+                FROM ml_pairwise_quality_evidence latest
+                WHERE latest.segment_id = evidence.segment_id
+                  AND latest.evidence_type = evidence.evidence_type
+            )
+              AND evidence.promotion_eligible = 1
+              AND evidence.token_integrity_ok = 1
+              AND evidence.post_validation_clean = 1
+              AND output.portuguese_text = evidence.baseline_text
+              AND evidence.candidate_text <> output.portuguese_text
+              AND state.state_group = 'closed'
+              AND COALESCE(state.needs_output_apply, 0) = 0
+            ORDER BY evidence.pairwise_score DESC, evidence.segment_id
+            """,
+            (current_state_run_id,),
+        )
+        for record in evidence_rows:
+            old_score = record.get("old_score")
+            new_score = record.get("new_score")
+            score_delta = (
+                round(float(new_score) - float(old_score), 6)
+                if old_score is not None and new_score is not None
+                else record.get("score_delta")
+            )
+            record.update(
+                {
+                    "raw_old_score": old_score,
+                    "raw_new_score": new_score,
+                    "effective_new_score": new_score,
+                    "effective_score_delta": score_delta,
+                    "score_delta": score_delta,
+                    "score_comparison_status": "score_improved_pairwise_suggestion",
+                    "score_calibration": f"pairwise_{record.get('evidence_type')}",
+                    "score_used_kind": "pairwise_suggestion",
+                    "promotion_gate": "allow_pairwise_evidence_candidate",
+                    "recommended_resolution": "use_candidate",
+                    "package_integrity_status": "promotion_suggested_not_applied",
+                    "package_integrity_ok": 1,
+                    "investigation_queue": None,
+                }
+            )
+        evidence_promotion_records = evidence_rows
+    evidence_promotion_keys = {
+        (_int(record.get("segment_id")), str(record.get("output_text") or ""))
+        for record in evidence_promotion_records
+    }
+    promotion_records = evidence_promotion_records + [
+        record
+        for record in output_promotion_records
+        if (_int(record.get("segment_id")), str(record.get("output_text") or ""))
+        not in evidence_promotion_keys
     ]
     promotion_segments = sorted(
         promotion_records,
@@ -4792,7 +5426,7 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
         record["apply_kind"] = "output_write"
         record["apply_reason"] = "legacy_needs_output_apply"
     apply_segments = sorted(
-        lifecycle_apply_records,
+        [*lifecycle_apply_records, *output_apply_segments],
         key=lambda record: (
             -_num(record.get("effective_new_score") if record.get("effective_new_score") is not None else record.get("new_score"), -1),
             record.get("relative_path") or "",
@@ -4802,23 +5436,29 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
     score_regression_segments = [
         record
         for record in sorted(
-            package_regression_records,
+            score_review_records,
             key=lambda item: (
-                (
-                    item.get("effective_score_delta")
-                    if item.get("effective_score_delta") is not None
-                    else item.get("score_delta")
-                )
-                if (
-                    item.get("effective_score_delta") is not None
-                    or item.get("score_delta") is not None
-                )
+                item.get("review_score_delta")
+                if item.get("review_score_delta") is not None
                 else 1,
                 item.get("relative_path") or "",
                 _int(item.get("segment_id")),
             ),
         )
     ][:80]
+    effective_score_regression_segments = sorted(
+        package_regression_records,
+        key=lambda item: (
+            _num(
+                item.get("effective_score_delta")
+                if item.get("effective_score_delta") is not None
+                else item.get("score_delta"),
+                1,
+            ),
+            item.get("relative_path") or "",
+            _int(item.get("segment_id")),
+        ),
+    )[:80]
     if has_score and latest_score_run_id:
         low_score_segments = rows(
             """
@@ -4826,7 +5466,20 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
               AND score.run_id = ?
               AND score.model_safe_probability IS NOT NULL
               AND score.model_safe_probability < 0.5
-            ORDER BY score.model_safe_probability ASC, score.high_issue_count DESC, s.relative_path, s.source_line_number
+            ORDER BY
+              CASE
+                WHEN score.issue_count > 0 THEN 0
+                WHEN score.token_status = 'mismatch' OR score.final_action = 'blocked_structure' THEN 1
+                WHEN score.final_action = 'auto_safe' THEN 2
+                WHEN score.candidate_text = s.old_text
+                  OR score.candidate_text = s.spanish_text
+                  OR score.candidate_text = s.english_text THEN 3
+                ELSE 4
+              END,
+              score.model_safe_probability ASC,
+              score.high_issue_count DESC,
+              s.relative_path,
+              s.source_line_number
             LIMIT 80
             """,
             (latest_score_run_id,),
@@ -4840,6 +5493,7 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
                 WHERE s.is_active = 1
                   AND state.run_id = ?
                   AND COALESCE(state.state_group, '') != 'closed'
+                  AND COALESCE(state.needs_output_apply, 0) = 0
                 ORDER BY
                   CASE WHEN score.model_safe_probability IS NULL THEN 1 ELSE 0 END ASC,
                   score.model_safe_probability DESC,
@@ -4847,7 +5501,7 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
                   COALESCE(state.priority_score, 0) DESC,
                   s.relative_path,
                   s.source_line_number
-                LIMIT 80
+                LIMIT 200
                 """,
                 (current_state_run_id,),
             )
@@ -4865,6 +5519,15 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
     else:
         low_score_segments = []
         unhandled_segments = []
+
+    if lifecycle_apply_ids:
+        unhandled_segments = [
+            record
+            for record in unhandled_segments
+            if _int(record.get("segment_id")) not in lifecycle_apply_ids
+        ]
+        unhandled_count = max(0, unhandled_count - len(lifecycle_apply_ids))
+    unhandled_segments = unhandled_segments[:80]
 
     def score_comparison_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
         measured = [
@@ -4918,6 +5581,233 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
             "calibrated_count": sum(1 for record in measured if record.get("score_calibration")),
         }
 
+    def global_score_comparison_summary() -> dict[str, Any]:
+        if not has_score or not old_score_run_id or not latest_score_run_id:
+            return {
+                "scope": "all_active_segments",
+                "total_segment_count": 0,
+                "measured_count": 0,
+                "old_measured_count": 0,
+                "new_measured_count": 0,
+                "coverage": None,
+                "old_coverage": None,
+                "new_coverage": None,
+                "avg_old_score": None,
+                "avg_new_score": None,
+                "avg_delta": None,
+                "weighted_avg_old_score": None,
+                "weighted_avg_new_score": None,
+                "weighted_avg_delta": None,
+                "score_semantics": {
+                    "metric_kind": "operational_risk_probability",
+                    "label": "Score operacional",
+                    "baseline_sensitive": True,
+                    "absolute_quality_interpretation": False,
+                    "within_epoch_contract_comparable": False,
+                    "cross_version_comparable": False,
+                },
+                "validated_pairwise_gain": _latest_materialized_pairwise_gain_payload(con),
+                "quality_bands": {},
+            }
+
+        total = _int(
+            _one(con, "SELECT COUNT(*) AS total FROM source_segments WHERE is_active = 1").get("total")
+        )
+
+        def aggregate_score_run(run_id: int) -> dict[str, Any]:
+            return _one(
+                con,
+                """
+                SELECT
+                    COUNT(*) AS measured_count,
+                    AVG(model_safe_probability) AS avg_score,
+                    SUM(CASE WHEN model_safe_probability < 0.20 THEN 1 ELSE 0 END) AS critical_count,
+                    SUM(CASE WHEN model_safe_probability >= 0.20 AND model_safe_probability < 0.50 THEN 1 ELSE 0 END) AS low_count,
+                    SUM(CASE WHEN model_safe_probability >= 0.50 AND model_safe_probability < 0.75 THEN 1 ELSE 0 END) AS moderate_count,
+                    SUM(CASE WHEN model_safe_probability >= 0.75 AND model_safe_probability < 0.90 THEN 1 ELSE 0 END) AS good_count,
+                    SUM(CASE WHEN model_safe_probability >= 0.90 THEN 1 ELSE 0 END) AS high_count
+                FROM ml_score_items
+                WHERE run_id = ?
+                  AND model_safe_probability IS NOT NULL
+                """,
+                (run_id,),
+            )
+
+        old_aggregate = aggregate_score_run(old_score_run_id)
+        new_aggregate = aggregate_score_run(latest_score_run_id)
+        old_measured = _int(old_aggregate.get("measured_count"))
+        new_measured = _int(new_aggregate.get("measured_count"))
+        measured = min(old_measured, new_measured)
+
+        old_run = _one(
+            con,
+            """
+            SELECT score.rule_version, score.model_run_id, score.model_version,
+                   score.source_snapshot_id, score.candidate_text_source,
+                   model.model_kind
+            FROM ml_score_runs score
+            LEFT JOIN ml_model_runs model ON model.id = score.model_run_id
+            WHERE score.id = ?
+            """,
+            (old_score_run_id,),
+        )
+        new_run = _one(
+            con,
+            """
+            SELECT score.rule_version, score.model_run_id, score.model_version,
+                   score.source_snapshot_id, score.candidate_text_source,
+                   model.model_kind
+            FROM ml_score_runs score
+            LEFT JOIN ml_model_runs model ON model.id = score.model_run_id
+            WHERE score.id = ?
+            """,
+            (latest_score_run_id,),
+        )
+        comparable_contract = all(
+            old_run.get(key) == new_run.get(key)
+            for key in ("rule_version", "model_run_id", "model_version", "source_snapshot_id")
+        )
+        changed_raw_deltas = [
+            float(record["raw_new_score"]) - float(record["raw_old_score"])
+            for record in changed_score_records
+            if record.get("raw_new_score") is not None and record.get("raw_old_score") is not None
+        ]
+        improved_count = sum(1 for delta in changed_raw_deltas if delta > 0.0001)
+        regressed_count = sum(1 for delta in changed_raw_deltas if delta < -0.0001)
+
+        def rounded(aggregate: dict[str, Any], key: str) -> float | None:
+            value = aggregate.get(key)
+            return round(float(value), 6) if value is not None else None
+
+        def bands(aggregate: dict[str, Any], measured_count: int) -> dict[str, int]:
+            return {
+                "critical": _int(aggregate.get("critical_count")),
+                "low": _int(aggregate.get("low_count")),
+                "moderate": _int(aggregate.get("moderate_count")),
+                "good": _int(aggregate.get("good_count")),
+                "high": _int(aggregate.get("high_count")),
+                "unmeasured": max(0, total - measured_count),
+            }
+
+        pairwise_overlay = {"calibrated_count": 0, "score_adjustment_sum": 0.0}
+        if _table_exists(con, "ml_pairwise_quality_evidence"):
+            pairwise_overlay = _one(
+                con,
+                """
+                SELECT
+                  COUNT(*) AS calibrated_count,
+                  COALESCE(SUM(evidence.pairwise_score - score.model_safe_probability), 0.0)
+                    AS score_adjustment_sum
+                FROM ml_pairwise_quality_evidence evidence
+                JOIN ml_pairwise_quality_runs evidence_run ON evidence_run.id = evidence.last_run_id
+                JOIN ml_score_runs evidence_score_run ON evidence_score_run.id = evidence_run.source_score_run_id
+                JOIN ml_score_runs target_score_run ON target_score_run.id = ?
+                JOIN source_segments source ON source.id = evidence.segment_id
+                JOIN output_segments output ON output.segment_id = evidence.segment_id
+                LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = evidence.segment_id
+                JOIN ml_score_items score
+                  ON score.segment_id = evidence.segment_id AND score.run_id = ?
+                WHERE evidence.id = (
+                    SELECT MAX(e2.id)
+                    FROM ml_pairwise_quality_evidence e2
+                    WHERE e2.segment_id = evidence.segment_id
+                      AND e2.evidence_type = evidence.evidence_type
+                )
+                  AND (
+                    evidence.promotion_eligible = 1
+                    OR (
+                      confirmation.confirmation_source = 'pairwise_monotonic_repair'
+                      AND confirmation.confirmed_text = output.portuguese_text
+                    )
+                  )
+                  AND evidence.token_integrity_ok = 1
+                  AND evidence.post_validation_clean = 1
+                  AND source.is_active = 1
+                  AND source.old_text = evidence.baseline_text
+                  AND output.portuguese_text = evidence.candidate_text
+                  AND score.model_safe_probability IS NOT NULL
+                  AND evidence_score_run.model_run_id = target_score_run.model_run_id
+                  AND evidence_score_run.rule_version = target_score_run.rule_version
+                  AND evidence_score_run.source_snapshot_id = target_score_run.source_snapshot_id
+                """,
+                (latest_score_run_id, latest_score_run_id),
+            )
+
+        old_avg = rounded(old_aggregate, "avg_score")
+        raw_new_avg = rounded(new_aggregate, "avg_score")
+        adjustment_sum = _num(pairwise_overlay.get("score_adjustment_sum"), 0.0)
+        new_avg = (
+            round(raw_new_avg + (adjustment_sum / new_measured), 6)
+            if raw_new_avg is not None and new_measured
+            else raw_new_avg
+        )
+        avg_delta = round(new_avg - old_avg, 6) if old_avg is not None and new_avg is not None else None
+        score_semantics = _score_semantics_payload(
+            old_run,
+            new_run,
+            comparable_contract=comparable_contract,
+        )
+
+        return {
+            "scope": "all_active_segments",
+            "aggregation_method": "arithmetic_mean_all_measured_active_segments_with_pairwise_overlay",
+            "weighting_method": "uniform_active_segment",
+            "comparable_score_contract": comparable_contract,
+            "score_contract": {
+                "old": {
+                    "run_id": old_score_run_id,
+                    "rule_version": old_run.get("rule_version"),
+                    "model_run_id": old_run.get("model_run_id"),
+                    "model_version": old_run.get("model_version"),
+                    "source_snapshot_id": old_run.get("source_snapshot_id"),
+                },
+                "output": {
+                    "run_id": latest_score_run_id,
+                    "rule_version": new_run.get("rule_version"),
+                    "model_run_id": new_run.get("model_run_id"),
+                    "model_version": new_run.get("model_version"),
+                    "source_snapshot_id": new_run.get("source_snapshot_id"),
+                },
+            },
+            "total_segment_count": total,
+            "measured_count": measured,
+            "old_measured_count": old_measured,
+            "new_measured_count": new_measured,
+            "coverage": round(min(old_measured, new_measured) / total, 6) if total else None,
+            "old_coverage": round(old_measured / total, 6) if total else None,
+            "new_coverage": round(new_measured / total, 6) if total else None,
+            "avg_old_score": old_avg,
+            "avg_new_score": new_avg,
+            "raw_avg_new_score": raw_new_avg,
+            "pairwise_calibrated_count": _int(pairwise_overlay.get("calibrated_count")),
+            "pairwise_score_adjustment_sum": round(adjustment_sum, 6),
+            "avg_delta": avg_delta,
+            "package_quality_score": new_avg,
+            "weighted_avg_old_score": old_avg,
+            "weighted_avg_new_score": new_avg,
+            "weighted_avg_delta": avg_delta,
+            "weighted_package_quality_score": new_avg,
+            "score_semantics": score_semantics,
+            "validated_pairwise_gain": _latest_materialized_pairwise_gain_payload(con),
+            "improved_count": improved_count if comparable_contract else None,
+            "regressed_count": regressed_count if comparable_contract else None,
+            "equal_count": max(0, measured - improved_count - regressed_count) if comparable_contract else None,
+            "quality_bands": {
+                "score_kind": "raw_model",
+                "thresholds": {
+                    "critical": "score < 0.20",
+                    "low": "0.20 <= score < 0.50",
+                    "moderate": "0.50 <= score < 0.75",
+                    "good": "0.75 <= score < 0.90",
+                    "high": "score >= 0.90",
+                },
+                "old": bands(old_aggregate, old_measured),
+                "output": bands(new_aggregate, new_measured),
+            },
+        }
+
+    global_package_score = global_score_comparison_summary()
+
     return {
         "instrumented": True,
         "baseline": "source_segments.old_text",
@@ -4933,7 +5823,7 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
             "promotions_vs_old": len(promotion_records),
             "promotion_candidates_vs_old": len(promotion_candidate_records),
             "new_vs_old": new_count,
-            "needs_apply": len(lifecycle_apply_records),
+            "needs_apply": len(lifecycle_apply_records) + len(output_apply_segments),
             "lifecycle_apply_count": len(lifecycle_apply_records),
             "output_apply_count": _int(
                 _one(
@@ -4964,7 +5854,31 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
                 ).get("total")
             ) if has_state and current_state_run_id else 0,
             "low_score": low_score_count,
-            "score_regressions": len(package_regression_records),
+            "low_score_actionable": _int(low_score_cohorts.get("actionable")),
+            "low_score_informational": _int(low_score_cohorts.get("informational")),
+            "low_score_explicit_issue": _int(low_score_cohorts.get("explicit_text_issue")),
+            "low_score_structural_block": _int(low_score_cohorts.get("structural_block_without_issue")),
+            "low_score_deterministic_safe": _int(low_score_cohorts.get("deterministic_safe_but_low_score")),
+            "low_score_preserved": _int(low_score_cohorts.get("unchanged_or_preserved_text")),
+            "low_score_unexplained": _int(low_score_cohorts.get("low_confidence_without_specific_evidence")),
+            "score_regressions": len(score_review_records),
+            "raw_score_regressions": len(score_review_records),
+            "reviewed_raw_score_regressions": reviewed_raw_score_regressions,
+            "unresolved_raw_score_regressions": unresolved_raw_score_regressions,
+            "score_regressed_after_adjustment": sum(
+                1 for record in score_review_records
+                if record.get("score_review_kind") in {"raw_regression", "effective_regression"}
+            ),
+            "score_equal_after_adjustment": sum(
+                1 for record in score_review_records
+                if record.get("score_review_kind") == "raw_equal"
+            ),
+            "calibration_review_pending": _int(calibration_review.get("pending_count")),
+            "calibration_review_priority": _int(calibration_review.get("priority_count")),
+            "calibration_review_controls": _int(calibration_review.get("positive_control_count"))
+            + _int(calibration_review.get("negative_control_count")),
+            "effective_package_score_regressions": len(package_regression_records),
+            "effective_score_regressions": len(package_regression_records),
             "calibrated_score_exceptions": sum(
                 1 for record in changed_score_records if record.get("score_calibration")
             ),
@@ -4998,7 +5912,8 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
             ),
             "unhandled_by_network": unhandled_count,
             "changed_score_comparison": score_comparison_summary(changed_score_records),
-            "package_score_comparison": score_comparison_summary(package_records),
+            "package_score_comparison": global_package_score,
+            "changed_cohort_score_comparison": score_comparison_summary(package_records),
             "promotion_score_comparison": score_comparison_summary(promotion_records),
             "new_score_summary": score_comparison_summary(new_segments),
         },
@@ -5009,9 +5924,124 @@ def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: 
         "apply_segments": apply_segments,
         "output_apply_segments": output_apply_segments[:80],
         "low_score_segments": low_score_segments,
+        "low_score_cohorts": low_score_cohorts,
         "score_regression_segments": score_regression_segments,
+        "effective_score_regression_segments": effective_score_regression_segments,
+        "calibration_review_segments": calibration_review.get("items") or [],
+        "calibration_review": calibration_review,
         "unhandled_segments": unhandled_segments,
     }
+
+
+def _release_diff_review_cache_key(
+    con: sqlite3.Connection,
+    segment_state_run_id: int | None,
+) -> str:
+    state = (
+        _one(
+            con,
+            """
+            SELECT id, active_score_run_id, candidate_score_run_id, policy_run_id,
+                   finished_at, updated_at
+            FROM segment_state_runs
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (_int(segment_state_run_id),),
+        )
+        if segment_state_run_id and _table_exists(con, "segment_state_runs")
+        else {}
+    )
+    evidence_id = (
+        _int(_one(con, "SELECT MAX(id) AS id FROM ml_pairwise_quality_evidence").get("id"))
+        if _table_exists(con, "ml_pairwise_quality_evidence")
+        else 0
+    )
+    confirmation_id = (
+        _int(_one(con, "SELECT MAX(id) AS id FROM segment_confirmations").get("id"))
+        if _table_exists(con, "segment_confirmations")
+        else 0
+    )
+    epoch_id = (
+        _int(_one(con, "SELECT MAX(id) AS id FROM quality_epochs").get("id"))
+        if _table_exists(con, "quality_epochs")
+        else 0
+    )
+    calibration_review = (
+        _one(
+            con,
+            """
+            SELECT id, updated_at
+            FROM ml_pairwise_calibration_review_runs
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+        )
+        if _table_exists(con, "ml_pairwise_calibration_review_runs")
+        else {}
+    )
+    calibration_policy = (
+        _one(
+            con,
+            """
+            SELECT id, updated_at
+            FROM ml_pairwise_calibration_policy_decisions
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+        )
+        if _table_exists(con, "ml_pairwise_calibration_policy_decisions")
+        else {}
+    )
+    payload = {
+        "schema_version": RELEASE_DIFF_REVIEW_SCHEMA_VERSION,
+        "segment_state_run_id": _int(state.get("id")),
+        "active_score_run_id": _int(state.get("active_score_run_id")),
+        "candidate_score_run_id": _int(state.get("candidate_score_run_id")),
+        "policy_run_id": _int(state.get("policy_run_id")),
+        "state_finished_at": state.get("finished_at"),
+        "state_updated_at": state.get("updated_at"),
+        "pairwise_evidence_id": evidence_id,
+        "confirmation_id": confirmation_id,
+        "quality_epoch_id": epoch_id,
+        "calibration_review_run_id": _int(calibration_review.get("id")),
+        "calibration_review_updated_at": calibration_review.get("updated_at"),
+        "calibration_policy_decision_id": _int(calibration_policy.get("id")),
+        "calibration_policy_updated_at": calibration_policy.get("updated_at"),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: int | None) -> dict[str, Any]:
+    global RELEASE_DIFF_REVIEW_CACHE
+    cache_key = _release_diff_review_cache_key(con, segment_state_run_id)
+    if RELEASE_DIFF_REVIEW_CACHE.get("key") == cache_key:
+        cached = RELEASE_DIFF_REVIEW_CACHE.get("payload")
+        if isinstance(cached, dict):
+            return cached
+    if RELEASE_DIFF_REVIEW_CACHE_FILE.exists():
+        try:
+            disk_cache = json.loads(RELEASE_DIFF_REVIEW_CACHE_FILE.read_text(encoding="utf-8"))
+            if disk_cache.get("key") == cache_key and isinstance(disk_cache.get("payload"), dict):
+                RELEASE_DIFF_REVIEW_CACHE = disk_cache
+                return disk_cache["payload"]
+        except (OSError, json.JSONDecodeError):
+            pass
+    payload = _compute_release_diff_review_payload(con, segment_state_run_id)
+    cache_record = {
+        "key": cache_key,
+        "generated_at": _now_iso(),
+        "payload": payload,
+    }
+    RELEASE_DIFF_REVIEW_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temp_file = RELEASE_DIFF_REVIEW_CACHE_FILE.with_suffix(".tmp")
+    temp_file.write_text(
+        json.dumps(cache_record, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    temp_file.replace(RELEASE_DIFF_REVIEW_CACHE_FILE)
+    RELEASE_DIFF_REVIEW_CACHE = cache_record
+    return payload
 
 
 def _decision_record(record: dict[str, Any], queue: str) -> dict[str, Any]:
@@ -5071,8 +6101,15 @@ def _evaluation_decision_payload(
         "output_apply_count": _int(summary.get("output_apply_count")),
         "lifecycle_apply_count": _int(summary.get("lifecycle_apply_count")),
         "regressions": _int(summary.get("score_regressions"), len(queues["regressions"])),
+        "effective_regressions": _int(
+            summary.get("effective_package_score_regressions"),
+            _int(summary.get("score_regressions"), len(queues["regressions"])),
+        ),
         "unhandled": _int(summary.get("unhandled_by_network"), len(queues["unhandled"])),
         "low_score": _int(summary.get("low_score"), len(queues["low_score"])),
+        "low_score_actionable": _int(summary.get("low_score_actionable")),
+        "low_score_informational": _int(summary.get("low_score_informational")),
+        "low_score_unexplained": _int(summary.get("low_score_unexplained")),
         "changed_vs_old": _int(summary.get("changed_vs_old")),
         "calibrated_score_exceptions": _int(summary.get("calibrated_score_exceptions")),
     }
@@ -5085,14 +6122,16 @@ def _evaluation_decision_payload(
     next_actions: list[str] = []
     if counts["apply"] > 0:
         next_actions.append("run_publication_apply_confirmed")
-    if counts["regressions"] > 0:
+    if counts["effective_regressions"] > 0:
         next_actions.append("review_score_regressions")
     if counts["promotions"] > 0:
         next_actions.append("materialize_safe_promotions_after_review")
     if counts["unhandled"] > 0:
         next_actions.append("triage_unhandled_network_queue")
-    if counts["low_score"] > 0:
-        next_actions.append("improve_low_score_rules_or_manual_review")
+    if counts["low_score_actionable"] > 0:
+        next_actions.append("investigate_actionable_low_score_cohorts")
+    elif counts["low_score_unexplained"] > 0:
+        next_actions.append("investigate_unexplained_low_confidence")
     if not next_actions:
         next_actions.append("candidate_clear_for_publication_gate")
     return {
@@ -5107,6 +6146,9 @@ def _evaluation_decision_payload(
         "output": diff_review.get("output"),
         "counts": counts,
         "quality": quality,
+        "low_score_cohorts": diff_review.get("low_score_cohorts")
+        if isinstance(diff_review.get("low_score_cohorts"), dict)
+        else _empty_low_score_cohorts(),
         "next_actions": next_actions,
         "queue_order": ["apply", "package", "new", "promotions", "regressions", "unhandled", "feedback", "low_score"],
         "queues": {
@@ -5158,9 +6200,13 @@ def _write_evaluation_decision_artifacts(
         f"- New: `{counts['new']}`",
         f"- Promotions: `{counts['promotions']}`",
         f"- Apply: `{counts['apply']}`",
-        f"- Regressions: `{counts['regressions']}`",
+        f"- Raw score regressions: `{counts['regressions']}`",
+        f"- Effective regressions after calibration: `{counts['effective_regressions']}`",
         f"- Unhandled: `{counts['unhandled']}`",
         f"- Low score: `{counts['low_score']}`",
+        f"- Low score actionable: `{counts['low_score_actionable']}`",
+        f"- Low score informational: `{counts['low_score_informational']}`",
+        f"- Low score unexplained: `{counts['low_score_unexplained']}`",
         f"- Changed vs old: `{counts['changed_vs_old']}`",
         f"- Calibrated score exceptions: `{counts['calibrated_score_exceptions']}`",
         "",
@@ -5338,6 +6384,26 @@ def _safe_full_production_payload(post_release_status: dict[str, Any], segment_s
             "parser_dynamic_backlog": post_summary.get("parser_dynamic_backlog"),
         },
     }
+
+
+def _apply_pairwise_calibration_gate(
+    safety_status: dict[str, Any],
+    diff_review: dict[str, Any],
+) -> None:
+    calibration = diff_review.get("calibration_review")
+    if not isinstance(calibration, dict):
+        return
+    decision = str(calibration.get("policy_decision") or "not_evaluated")
+    pending_count = _int(calibration.get("pending_count"))
+    if decision not in {"sample", "required"} or pending_count <= 0:
+        return
+    evaluation_gate = safety_status.setdefault("evaluation_gate", {})
+    evaluation_gate["status"] = "bloqueada"
+    evaluation_gate["can_start_evaluation_full_production_now"] = False
+    evaluation_gate["calibration_pending_count"] = pending_count
+    reasons = evaluation_gate.setdefault("blocking_reasons", [])
+    if "pairwise_calibration_review_pending" not in reasons:
+        reasons.append("pairwise_calibration_review_pending")
 
 
 def _now_iso() -> str:
@@ -5537,6 +6603,27 @@ def _cache_stage_compact(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def _production_run_progress(run: dict[str, Any], stages: list[dict[str, Any]]) -> int:
+    """Calcula o progresso agregado sem depender do snapshot pesado do dashboard."""
+    if run.get("status") == "completed":
+        return 100
+    if not stages:
+        return 0
+
+    done_stages = sum(1 for stage in stages if isinstance(stage, dict) and stage.get("status") == "done")
+    running_stage = next(
+        (stage for stage in stages if isinstance(stage, dict) and stage.get("status") == "running"),
+        None,
+    )
+    running_progress = 0.0
+    if running_stage:
+        try:
+            running_progress = min(90.0, max(0.0, float(running_stage.get("progress_pct") or 0))) / 100.0
+        except (TypeError, ValueError):
+            running_progress = 0.0
+    return round(((done_stages + running_progress) / len(stages)) * 100)
+
+
 def _pending_by_family_payload(con: sqlite3.Connection, segment_state_run_id: int | None) -> list[dict[str, Any]]:
     ledger_run_id = _latest_ledger_run_id(con)
     if not segment_state_run_id or not ledger_run_id:
@@ -5559,6 +6646,765 @@ def _pending_by_family_payload(con: sqlite3.Connection, segment_state_run_id: in
         """,
         (ledger_run_id,),
     )
+
+
+def _package_versions_payload(con: sqlite3.Connection) -> list[dict[str, Any]]:
+    if not _table_exists(con, "package_versions"):
+        return []
+    versions = _all(
+        con,
+        """
+        SELECT
+          id,
+          version_number,
+          version_label,
+          package_name,
+          package_role,
+          parent_version_id,
+          file_count,
+          segment_count,
+          measured_score_count,
+          full_average_score,
+          change_cohort_score,
+          change_cohort_delta,
+          changed_from_parent_count,
+          segment_state_run_id,
+          score_run_id,
+          score_rule_version,
+          closed_count,
+          pending_count,
+          needs_output_apply_count,
+          status,
+          frozen_at
+        FROM package_versions
+        ORDER BY version_number
+        """,
+    )
+    if not versions or not _table_exists(con, "package_version_items"):
+        return versions
+
+    # V1/V2 used a partial measurement population and are intentionally omitted
+    # from the overview trend. Aggregate only full-package snapshots (V3+) and
+    # cache them because version rows are immutable after materialization.
+    comparable_versions = [row for row in versions if _int(row.get("version_number")) >= 3]
+    cache_key = tuple(
+        (_int(row.get("id")), _int(row.get("measured_score_count")))
+        for row in comparable_versions
+    )
+    with PACKAGE_VERSION_BANDS_LOCK:
+        if PACKAGE_VERSION_BANDS_CACHE.get("key") != cache_key:
+            version_ids = [version_id for version_id, _ in cache_key if version_id]
+            band_items: dict[int, dict[str, int]] = {}
+            if version_ids:
+                placeholders = ", ".join("?" for _ in version_ids)
+                rows = _all(
+                    con,
+                    f"""
+                    SELECT
+                      version_id,
+                      COUNT(score) AS measured,
+                      SUM(CASE WHEN score < 0.20 THEN 1 ELSE 0 END) AS critical,
+                      SUM(CASE WHEN score >= 0.20 AND score < 0.50 THEN 1 ELSE 0 END) AS low,
+                      SUM(CASE WHEN score >= 0.50 AND score < 0.75 THEN 1 ELSE 0 END) AS moderate,
+                      SUM(CASE WHEN score >= 0.75 AND score < 0.90 THEN 1 ELSE 0 END) AS good,
+                      SUM(CASE WHEN score >= 0.90 THEN 1 ELSE 0 END) AS high
+                    FROM package_version_items
+                    WHERE version_id IN ({placeholders})
+                    GROUP BY version_id
+                    """,
+                    tuple(version_ids),
+                )
+                for row in rows:
+                    version_id = _int(row.get("version_id"))
+                    version = next(
+                        (item for item in comparable_versions if _int(item.get("id")) == version_id),
+                        {},
+                    )
+                    measured = _int(row.get("measured"))
+                    band_items[version_id] = {
+                        "critical": _int(row.get("critical")),
+                        "low": _int(row.get("low")),
+                        "moderate": _int(row.get("moderate")),
+                        "good": _int(row.get("good")),
+                        "high": _int(row.get("high")),
+                        "unmeasured": max(0, _int(version.get("segment_count")) - measured),
+                    }
+            PACKAGE_VERSION_BANDS_CACHE["key"] = cache_key
+            PACKAGE_VERSION_BANDS_CACHE["items"] = band_items
+        cached_bands = dict(PACKAGE_VERSION_BANDS_CACHE.get("items") or {})
+
+    for version in versions:
+        version["quality_bands"] = cached_bands.get(_int(version.get("id")))
+    return versions
+
+
+def _quality_hotspots_payload(con: sqlite3.Connection) -> list[dict[str, Any]]:
+    if not _table_exists(con, "ml_score_items"):
+        return []
+    latest_score_run = _latest_score(con, operational=True) or _latest_score(con)
+    latest_score_run_id = _int(latest_score_run.get("id"))
+    if not latest_score_run_id:
+        return []
+    with QUALITY_HOTSPOTS_LOCK:
+        if QUALITY_HOTSPOTS_CACHE.get("score_run_id") == latest_score_run_id:
+            return list(QUALITY_HOTSPOTS_CACHE.get("items") or [])
+        items = _all(
+            con,
+            """
+            WITH scored AS (
+              SELECT
+                CASE
+                  WHEN instr(score.relative_path, '/') > 0
+                  THEN substr(score.relative_path, 1, instr(score.relative_path, '/') - 1)
+                  ELSE COALESCE(NULLIF(score.relative_path, ''), 'root')
+                END AS area,
+                score.model_safe_probability AS score
+              FROM ml_score_items score
+              WHERE score.run_id = ?
+                AND score.model_safe_probability IS NOT NULL
+            )
+            SELECT
+              area AS label,
+              COUNT(*) AS measured_count,
+              SUM(CASE WHEN score < 0.20 THEN 1 ELSE 0 END) AS critical_count,
+              SUM(CASE WHEN score >= 0.20 AND score < 0.50 THEN 1 ELSE 0 END) AS low_count,
+              SUM(CASE WHEN score < 0.50 THEN 1 ELSE 0 END) AS attention_count,
+              AVG(score) AS average_score
+            FROM scored
+            GROUP BY area
+            HAVING attention_count > 0
+            ORDER BY attention_count DESC, critical_count DESC, area
+            LIMIT 8
+            """,
+            (latest_score_run_id,),
+        )
+        QUALITY_HOTSPOTS_CACHE["score_run_id"] = latest_score_run_id
+        QUALITY_HOTSPOTS_CACHE["items"] = items
+        return list(items)
+
+
+def _quality_pattern_discovery_payload(con: sqlite3.Connection) -> dict[str, Any]:
+    required_tables = {
+        "ml_quality_pattern_discovery_runs",
+        "ml_quality_pattern_families",
+        "ml_quality_pattern_observations",
+    }
+    if not all(_table_exists(con, table_name) for table_name in required_tables):
+        return {"instrumented": False, "families": []}
+    run = _one(
+        con,
+        """
+        SELECT id AS run_id, run_key, rule_version, quality_epoch_id, score_run_id,
+               low_score_threshold, active_segment_count, evidence_segment_count,
+               family_count, new_family_count, recurring_family_count,
+               covered_family_count, actionable_family_count,
+               ignored_score_only_count, status, summary_json, finished_at, updated_at
+        FROM ml_quality_pattern_discovery_runs
+        WHERE status = 'completed'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+    )
+    run_id = _int(run.get("run_id"))
+    if not run_id:
+        return {"instrumented": True, "families": []}
+    try:
+        run_summary = json.loads(run.get("summary_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        run_summary = {}
+    if isinstance(run_summary, dict):
+        for key in ("monitoring_family_count", "closed_family_count"):
+            if key in run_summary:
+                run[key] = run_summary[key]
+    run.pop("summary_json", None)
+    families = _all(
+        con,
+        """
+        SELECT family.id, family.family_key, family.evidence_kind,
+               family.issue_type, family.token_context, family.file_family,
+               family.text_relation, family.provider_id, family.evidence_type,
+               family.observation_count, observation.status,
+               observation.segment_count, observation.occurrence_count,
+               observation.low_score_count, observation.low_score_share,
+               observation.active_package_share, observation.average_score,
+               observation.minimum_score, observation.maximum_score,
+               observation.severity, observation.confidence,
+               observation.novelty, observation.reach, observation.priority,
+               observation.samples_json, observation.metrics_json
+        FROM ml_quality_pattern_observations observation
+        JOIN ml_quality_pattern_families family ON family.id = observation.family_id
+        WHERE observation.run_id = ?
+        ORDER BY observation.priority DESC, observation.segment_count DESC, family.id
+        LIMIT 120
+        """,
+        (run_id,),
+    )
+    for family in families:
+        try:
+            samples = json.loads(family.get("samples_json") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            samples = []
+        family["samples"] = samples if isinstance(samples, list) else []
+        family.pop("samples_json", None)
+        try:
+            metrics = json.loads(family.get("metrics_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            metrics = {}
+        if isinstance(metrics, dict):
+            for key in (
+                "operational_segment_count",
+                "closed_segment_count",
+                "lifecycle_observed_count",
+            ):
+                if key in metrics:
+                    family[key] = metrics[key]
+        family.pop("metrics_json", None)
+    return {
+        "instrumented": True,
+        **run,
+        "families": families,
+    }
+
+
+def _load_quality_promotion_provider_manifests(
+    directory: Path = QUALITY_PROMOTION_PROVIDERS_DIR,
+) -> list[dict[str, Any]]:
+    providers: list[dict[str, Any]] = []
+    for manifest_path in sorted(directory.glob("*.json")):
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or not payload.get("enabled", True):
+            continue
+        provider_id = str(payload.get("provider_id") or "").strip()
+        evidence_type = str(payload.get("evidence_type") or "").strip()
+        shadow_script = str(payload.get("shadow_script") or "").strip()
+        if not provider_id or not evidence_type or not shadow_script:
+            continue
+        providers.append(
+            {
+                "provider_id": provider_id,
+                "label": str(payload.get("label") or provider_id),
+                "priority": _int(payload.get("priority"), 1000),
+                "evidence_type": evidence_type,
+                "shadow_script": shadow_script,
+                "manifest_path": str(manifest_path),
+            }
+        )
+    return sorted(providers, key=lambda item: (item["priority"], item["provider_id"]))
+
+
+def _quality_promotion_provider_health_payload(
+    con: sqlite3.Connection,
+    quality_pattern_discovery: dict[str, Any],
+    quality_epoch: dict[str, Any],
+    *,
+    provider_manifests: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    providers = (
+        _load_quality_promotion_provider_manifests()
+        if provider_manifests is None
+        else provider_manifests
+    )
+    score_run_id = (
+        _int(quality_epoch.get("output_score_run_id"))
+        or _int(quality_pattern_discovery.get("score_run_id"))
+    )
+    discovery_run_id = _int(quality_pattern_discovery.get("run_id"))
+    family_metrics: dict[str, dict[str, int]] = {}
+    uncovered_actionable_family_count = 0
+    uncovered_actionable_reach = 0
+    monitoring_family_count = 0
+    closed_family_count = 0
+    if discovery_run_id and all(
+        _table_exists(con, table_name)
+        for table_name in ("ml_quality_pattern_observations", "ml_quality_pattern_families")
+    ):
+        family_rows = _all(
+            con,
+            """
+            SELECT family.provider_id, observation.status,
+                   observation.segment_count, observation.metrics_json
+            FROM ml_quality_pattern_observations observation
+            JOIN ml_quality_pattern_families family ON family.id = observation.family_id
+            WHERE observation.run_id = ?
+            """,
+            (discovery_run_id,),
+        )
+        for row in family_rows:
+            status = str(row.get("status") or "")
+            try:
+                details = json.loads(row.get("metrics_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                details = {}
+            operational_reach = _int(
+                details.get("operational_segment_count")
+                if isinstance(details, dict)
+                else 0
+            )
+            provider_id = str(row.get("provider_id") or "")
+            if provider_id:
+                metrics = family_metrics.setdefault(
+                    provider_id,
+                    {
+                        "observed_family_count": 0,
+                        "active_family_count": 0,
+                        "closed_family_count": 0,
+                        "operational_family_reach": 0,
+                    },
+                )
+                metrics["observed_family_count"] += 1
+                metrics["operational_family_reach"] += operational_reach
+                if status == "closed_observation":
+                    metrics["closed_family_count"] += 1
+                elif status == "covered_by_provider":
+                    metrics["active_family_count"] += 1
+            if status in {"new_candidate", "recurring_candidate"}:
+                uncovered_actionable_family_count += 1
+                uncovered_actionable_reach += operational_reach or _int(row.get("segment_count"))
+            elif status == "monitoring":
+                monitoring_family_count += 1
+            elif status == "closed_observation":
+                closed_family_count += 1
+
+    has_shadow = _table_exists(con, "ml_quality_shadow_runs")
+    has_pairwise_runs = _table_exists(con, "ml_pairwise_quality_runs")
+    has_active_evidence = all(
+        _table_exists(con, table_name)
+        for table_name in (
+            "ml_pairwise_quality_evidence",
+            "ml_pairwise_quality_runs",
+            "output_segments",
+        )
+    )
+    rows: list[dict[str, Any]] = []
+    for manifest in providers:
+        provider_id = str(manifest.get("provider_id") or "")
+        evidence_type = str(manifest.get("evidence_type") or "")
+        historical_run = (
+            _one(
+                con,
+                """
+                SELECT id, source_rule_version, source_score_run_id,
+                       candidate_count, promotion_eligible_count, finished_at
+                FROM ml_pairwise_quality_runs
+                WHERE evidence_type = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (evidence_type,),
+            )
+            if has_pairwise_runs
+            else {}
+        )
+        source_rule_version = str(historical_run.get("source_rule_version") or "")
+        shadow_stem = Path(str(manifest.get("shadow_script") or "")).stem
+        shadow = {}
+        if has_shadow and score_run_id:
+            if source_rule_version:
+                shadow = _one(
+                    con,
+                    """
+                    SELECT id, source_rule_version, score_run_id, record_count,
+                           eligible_count, status, finished_at
+                    FROM ml_quality_shadow_runs
+                    WHERE score_run_id = ? AND source_rule_version = ?
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (score_run_id, source_rule_version),
+                )
+            if not shadow and shadow_stem:
+                shadow = _one(
+                    con,
+                    """
+                    SELECT id, source_rule_version, score_run_id, record_count,
+                           eligible_count, status, finished_at
+                    FROM ml_quality_shadow_runs
+                    WHERE score_run_id = ? AND source_rule_version LIKE ?
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (score_run_id, f"{shadow_stem}_v%"),
+                )
+        current_evidence_run = (
+            _one(
+                con,
+                """
+                SELECT id, candidate_count, inserted_count, reused_count,
+                       training_eligible_count, promotion_eligible_count, finished_at
+                FROM ml_pairwise_quality_runs
+                WHERE evidence_type = ? AND source_score_run_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (evidence_type, score_run_id),
+            )
+            if has_pairwise_runs and score_run_id
+            else {}
+        )
+        promotion_ready_count = 0
+        if has_active_evidence and score_run_id:
+            promotion_ready_count = _int(
+                _one(
+                    con,
+                    """
+                    SELECT COUNT(DISTINCT evidence.segment_id) AS total
+                    FROM ml_pairwise_quality_evidence evidence
+                    JOIN ml_pairwise_quality_runs evidence_run ON evidence_run.id = evidence.last_run_id
+                    JOIN output_segments output ON output.segment_id = evidence.segment_id
+                    WHERE evidence.evidence_type = ?
+                      AND evidence_run.source_score_run_id = ?
+                      AND evidence.promotion_eligible = 1
+                      AND evidence.id = (
+                        SELECT MAX(latest.id)
+                        FROM ml_pairwise_quality_evidence latest
+                        WHERE latest.segment_id = evidence.segment_id
+                          AND latest.evidence_type = evidence.evidence_type
+                      )
+                      AND output.portuguese_text = evidence.baseline_text
+                      AND evidence.candidate_text <> output.portuguese_text
+                    """,
+                    (evidence_type, score_run_id),
+                ).get("total")
+            )
+        last_productive = (
+            _one(
+                con,
+                """
+                SELECT id, source_score_run_id, candidate_count,
+                       promotion_eligible_count, finished_at
+                FROM ml_pairwise_quality_runs
+                WHERE evidence_type = ? AND promotion_eligible_count > 0
+                ORDER BY id DESC LIMIT 1
+                """,
+                (evidence_type,),
+            )
+            if has_pairwise_runs
+            else {}
+        )
+        inspected_count = _int(shadow.get("record_count"))
+        shadow_eligible_count = _int(shadow.get("eligible_count"))
+        evidence_count = _int(current_evidence_run.get("candidate_count"))
+        executed = bool(shadow and str(shadow.get("status") or "") == "completed")
+        if not shadow:
+            status = "not_run"
+        elif str(shadow.get("status") or "") != "completed":
+            status = "failed"
+        elif promotion_ready_count > 0:
+            status = "promotion_ready"
+        elif shadow_eligible_count > 0 or evidence_count > 0:
+            status = "candidates_filtered"
+        else:
+            status = "clean"
+        owned = family_metrics.get(provider_id, {})
+        rows.append(
+            {
+                "provider_id": provider_id,
+                "label": manifest.get("label") or provider_id,
+                "priority": _int(manifest.get("priority"), 1000),
+                "evidence_type": evidence_type,
+                "status": status,
+                "executed": executed,
+                "score_run_id": score_run_id or None,
+                "shadow_run_id": _int(shadow.get("id")) or None,
+                "shadow_rule_version": shadow.get("source_rule_version") or source_rule_version or None,
+                "inspected_count": inspected_count,
+                "shadow_eligible_count": shadow_eligible_count,
+                "evidence_count": evidence_count,
+                "promotion_ready_count": promotion_ready_count,
+                "shadow_yield_rate": _pct(shadow_eligible_count, inspected_count),
+                "promotion_yield_rate": _pct(promotion_ready_count, evidence_count),
+                "observed_family_count": _int(owned.get("observed_family_count")),
+                "active_family_count": _int(owned.get("active_family_count")),
+                "closed_family_count": _int(owned.get("closed_family_count")),
+                "operational_family_reach": _int(owned.get("operational_family_reach")),
+                "finished_at": shadow.get("finished_at"),
+                "last_productive_run_id": _int(last_productive.get("id")) or None,
+                "last_productive_score_run_id": _int(last_productive.get("source_score_run_id")) or None,
+                "last_productive_count": _int(last_productive.get("promotion_eligible_count")),
+                "last_productive_at": last_productive.get("finished_at"),
+            }
+        )
+
+    provider_count = len(rows)
+    executed_provider_count = sum(1 for row in rows if row["executed"])
+    healthy_provider_count = sum(
+        1 for row in rows if row["status"] in {"clean", "promotion_ready", "candidates_filtered"}
+    )
+    productive_provider_count = sum(
+        1
+        for row in rows
+        if row["shadow_eligible_count"] or row["evidence_count"] or row["promotion_ready_count"]
+    )
+    active_covered_family_count = sum(_int(row.get("active_family_count")) for row in rows)
+    coverable_family_count = active_covered_family_count + uncovered_actionable_family_count
+    coverage_rate = 100.0 if coverable_family_count == 0 else _pct(
+        active_covered_family_count,
+        coverable_family_count,
+    )
+    status = (
+        "healthy"
+        if provider_count and executed_provider_count == provider_count
+        else "partial"
+        if executed_provider_count
+        else "not_instrumented"
+    )
+    return {
+        "instrumented": bool(provider_count),
+        "status": status,
+        "quality_epoch_id": _int(quality_epoch.get("id")) or None,
+        "score_run_id": score_run_id or None,
+        "discovery_run_id": discovery_run_id or None,
+        "provider_count": provider_count,
+        "executed_provider_count": executed_provider_count,
+        "healthy_provider_count": healthy_provider_count,
+        "productive_provider_count": productive_provider_count,
+        "inspected_count": sum(_int(row.get("inspected_count")) for row in rows),
+        "shadow_eligible_count": sum(_int(row.get("shadow_eligible_count")) for row in rows),
+        "evidence_count": sum(_int(row.get("evidence_count")) for row in rows),
+        "promotion_ready_count": sum(_int(row.get("promotion_ready_count")) for row in rows),
+        "active_covered_family_count": active_covered_family_count,
+        "uncovered_actionable_family_count": uncovered_actionable_family_count,
+        "uncovered_actionable_reach": uncovered_actionable_reach,
+        "monitoring_family_count": monitoring_family_count,
+        "closed_family_count": closed_family_count,
+        "coverage_rate": coverage_rate,
+        "providers": rows,
+    }
+
+
+def _operational_closure_payload(
+    segment_state: dict[str, Any],
+    output_coverage: float,
+) -> dict[str, Any]:
+    total = _int(segment_state.get("total_segments"))
+    closed = _int(segment_state.get("closed_count"))
+    pending = _int(segment_state.get("pending_count"))
+    needs_apply = _int(segment_state.get("needs_apply"))
+    blockers: list[str] = []
+    if pending:
+        blockers.append("pending_segments")
+    if needs_apply:
+        blockers.append("needs_output_apply")
+    instrumented = bool(_int(segment_state.get("run_id")) and total)
+    is_closed = bool(
+        instrumented
+        and closed >= total
+        and pending == 0
+        and needs_apply == 0
+    )
+    status = (
+        "closed"
+        if is_closed
+        else "needs_apply"
+        if needs_apply
+        else "open"
+        if instrumented
+        else "unknown"
+    )
+    return {
+        "instrumented": instrumented,
+        "status": status,
+        "is_closed": is_closed,
+        "segment_state_run_id": _int(segment_state.get("run_id")) or None,
+        "total_segments": total,
+        "closed_count": closed,
+        "closed_rate": _pct(closed, total),
+        "pending_count": pending,
+        "needs_apply": needs_apply,
+        "output_coverage": output_coverage,
+        "blocking_reasons": blockers,
+        "definition": "segment_state_closed_without_pending_or_apply",
+        "coverage_is_context_only": True,
+    }
+
+
+def _quality_debt_payload(
+    quality_pattern_discovery: dict[str, Any],
+    provider_health: dict[str, Any],
+    diff_review: dict[str, Any],
+    post_release_status: dict[str, Any],
+) -> dict[str, Any]:
+    diff_summary = diff_review.get("summary") if isinstance(diff_review.get("summary"), dict) else {}
+    low_score = diff_review.get("low_score_cohorts") if isinstance(diff_review.get("low_score_cohorts"), dict) else {}
+    feedback_summary = (
+        post_release_status.get("summary")
+        if isinstance(post_release_status.get("summary"), dict)
+        else {}
+    )
+    calibration = (
+        diff_review.get("calibration_review")
+        if isinstance(diff_review.get("calibration_review"), dict)
+        else {}
+    )
+    calibration_decision = str(calibration.get("policy_decision") or "not_evaluated")
+    calibration_pending = (
+        _int(calibration.get("pending_count"))
+        if calibration_decision in {"sample", "required"}
+        else 0
+    )
+    uncovered_families = _int(provider_health.get("uncovered_actionable_family_count"))
+    uncovered_reach = _int(provider_health.get("uncovered_actionable_reach"))
+    promotion_ready = _int(provider_health.get("promotion_ready_count"))
+    effective_regressions = _int(
+        diff_summary.get("effective_score_regressions"),
+        _int(diff_summary.get("score_regressions")),
+    )
+    known_open = _int(
+        feedback_summary.get("known_open_findings"),
+        _int(feedback_summary.get("known_open")),
+    )
+    actionable_signal_count = (
+        uncovered_families
+        + promotion_ready
+        + effective_regressions
+        + known_open
+        + calibration_pending
+    )
+    monitoring_families = _int(provider_health.get("monitoring_family_count"))
+    discovery_complete = bool(
+        quality_pattern_discovery.get("instrumented")
+        and str(quality_pattern_discovery.get("status") or "") == "completed"
+    )
+    if actionable_signal_count:
+        status = "actionable"
+    elif discovery_complete and monitoring_families:
+        status = "monitoring"
+    elif discovery_complete and provider_health.get("status") == "healthy":
+        status = "clear"
+    else:
+        status = "unknown"
+    return {
+        "instrumented": bool(discovery_complete and provider_health.get("instrumented")),
+        "status": status,
+        "has_actionable_debt": actionable_signal_count > 0,
+        "actionable_signal_count": actionable_signal_count,
+        "uncovered_actionable_family_count": uncovered_families,
+        "uncovered_actionable_reach": uncovered_reach,
+        "promotion_ready_count": promotion_ready,
+        "effective_regression_count": effective_regressions,
+        "known_open_finding_count": known_open,
+        "calibration_pending_count": calibration_pending,
+        "monitoring_family_count": monitoring_families,
+        "closed_family_count": _int(provider_health.get("closed_family_count")),
+        "risk_watch": {
+            "actionable_low_score_count": _int(low_score.get("actionable")),
+            "informational_low_score_count": _int(low_score.get("informational")),
+            "ignored_score_only_count": _int(quality_pattern_discovery.get("ignored_score_only_count")),
+            "counted_as_quality_debt": False,
+            "reason": "operational_score_is_baseline_sensitive_and_requires_specific_evidence",
+        },
+        "blocks_operational_closure": False,
+        "definition": "specific_unresolved_quality_evidence_separate_from_operational_lifecycle",
+    }
+
+
+def _pending_taxonomy_summary_payload(
+    con: sqlite3.Connection,
+    run_id: int | None,
+) -> dict[str, Any]:
+    """Build only the operational taxonomy needed by the production dashboard."""
+    if not run_id or not (
+        _table_exists(con, "segment_state_runs")
+        and _table_exists(con, "segment_state_items")
+    ):
+        return {
+            "run_id": 0,
+            "closed_consolidated": 0,
+            "actionable_pending": 0,
+            "actionable_pending_without_bridge": 0,
+            "model_suspicion_watch": 0,
+            "governed_bridge_pending": 0,
+            "raw_pending": 0,
+            "learning_backlog": 0,
+            "needs_apply": 0,
+            "distribution": [],
+        }
+
+    summary = _one(
+        con,
+        """
+        SELECT
+          closed_count,
+          pending_count,
+          output_apply_pending_count
+        FROM segment_state_runs
+        WHERE id = ?
+        """,
+        (run_id,),
+    )
+    state_counts = _one(
+        con,
+        """
+        SELECT
+          COALESCE(SUM(CASE
+            WHEN final_state = 'reopen_auto_confirmed_autofix'
+             AND confirmed_matches_output = 1
+             AND output_state = 'output_present'
+            THEN 1 ELSE 0 END), 0) AS model_watch,
+          COALESCE(SUM(CASE
+            WHEN state_group = 'pending'
+             AND (
+               needs_output_apply = 1
+               OR output_state IN ('output_missing', 'confirmation_mismatch')
+               OR final_state IN (
+                 'pending_unknown_open',
+                 'pending_output_missing_real',
+                 'pending_blocked_structure',
+                 'pending_human_review',
+                 'reopen_auto_confirmed'
+               )
+             )
+            THEN 1 ELSE 0 END), 0) AS actionable_pending
+        FROM segment_state_items
+        WHERE run_id = ?
+        """,
+        (run_id,),
+    )
+
+    governed_bridge_pending = 0
+    if _table_exists(con, "ml_issue_select_cstring_governed_bridge_proposal_items"):
+        bridge = _one(
+            con,
+            """
+            SELECT COUNT(*) AS pending
+            FROM ml_issue_select_cstring_governed_bridge_proposal_items p
+            JOIN (
+              SELECT MAX(run_id) AS run_id
+              FROM ml_issue_select_cstring_governed_bridge_proposal_items
+            ) latest ON latest.run_id = p.run_id
+            JOIN segment_state_items s
+              ON s.segment_id = p.segment_id
+             AND s.run_id = ?
+            WHERE s.state_group = 'pending'
+            """,
+            (run_id,),
+        )
+        governed_bridge_pending = _int(bridge.get("pending"))
+
+    closed = _int(summary.get("closed_count"))
+    raw_pending = _int(summary.get("pending_count"))
+    needs_apply = _int(summary.get("output_apply_pending_count"))
+    actionable_pending = max(_int(state_counts.get("actionable_pending")), governed_bridge_pending)
+    model_watch = max(_int(state_counts.get("model_watch")) - governed_bridge_pending, 0)
+    actionable_without_bridge = max(actionable_pending - governed_bridge_pending, 0)
+    learning_backlog = max(raw_pending - actionable_pending, 0)
+    return {
+        "run_id": run_id,
+        "closed_consolidated": closed,
+        "actionable_pending": actionable_pending,
+        "actionable_pending_without_bridge": actionable_without_bridge,
+        "model_suspicion_watch": model_watch,
+        "governed_bridge_pending": governed_bridge_pending,
+        "raw_pending": raw_pending,
+        "learning_backlog": learning_backlog,
+        "needs_apply": needs_apply,
+        "distribution": [
+            {"name": "Consolidado", "value": closed, "group": "closed_consolidated", "color": "#10b981"},
+            {"name": "Pendencia acionavel", "value": actionable_without_bridge, "group": "actionable_pending", "color": "#f59e0b"},
+            {"name": "Suspeita ML / Watch", "value": model_watch, "group": "model_suspicion_watch", "color": "#8b5cf6"},
+            {"name": "Ponte governada pendente", "value": governed_bridge_pending, "group": "governed_bridge_pending", "color": "#38bdf8"},
+        ],
+    }
 
 
 def _pending_actionability_payload(con: sqlite3.Connection, segment_state_run_id: int | None) -> dict[str, Any]:
@@ -5724,15 +7570,101 @@ def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
         production_delta = _last_production_delta_payload(con, run, segment_state)
         segment_trend = _segment_state_trend(con)
         previous_state = segment_trend[-2] if len(segment_trend) > 1 else {}
-        taxonomy = _pending_taxonomy_payload(con, segment_state["run_id"])
+        taxonomy = _pending_taxonomy_summary_payload(con, segment_state["run_id"])
         diff_review = _release_diff_review_payload(con, segment_state["run_id"])
+        _apply_pairwise_calibration_gate(safety_status, diff_review)
+        quality_pattern_discovery = _quality_pattern_discovery_payload(con)
+        quality_epoch = (
+            _one(
+                con,
+                """
+                SELECT id, epoch_key, scoring_contract_hash, data_snapshot_hash,
+                       source_snapshot_id, baseline_tree_hash, output_tree_hash,
+                       model_run_id, model_version, scoring_rule_version,
+                       old_score_run_id, output_score_run_id, policy_run_id,
+                       segment_state_run_id, status, invalidation_reason,
+                       created_at, scored_at, evaluated_at, published_at,
+                       invalidated_at, updated_at
+                FROM quality_epochs
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+            )
+            if _table_exists(con, "quality_epochs")
+            else {}
+        )
+        epoch_status = str(quality_epoch.get("status") or "missing")
+        active_model = (
+            _one(
+                con,
+                """
+                SELECT active_model_run_id, active_model_version
+                FROM ml_model_registry
+                WHERE model_kind = 'risk_action_classifier'
+                LIMIT 1
+                """,
+            )
+            if _table_exists(con, "ml_model_registry")
+            else {}
+        )
+        active_model_run_id = _int(active_model.get("active_model_run_id"))
+        epoch_model_is_active = bool(
+            active_model_run_id
+            and active_model_run_id == _int(quality_epoch.get("model_run_id"))
+        )
+        quality_epoch["active_model_run_id"] = active_model_run_id or None
+        quality_epoch["active_model_version"] = active_model.get("active_model_version")
+        quality_epoch["model_is_active"] = epoch_model_is_active
+        if epoch_status not in {"scored", "evaluated"}:
+            evaluation_gate = safety_status.setdefault("evaluation_gate", {})
+            evaluation_gate["status"] = "bloqueada"
+            evaluation_gate["can_start_evaluation_full_production_now"] = False
+            reasons = evaluation_gate.setdefault("blocking_reasons", [])
+            if "quality_epoch_not_scored" not in reasons:
+                reasons.append("quality_epoch_not_scored")
+        if quality_epoch and active_model_run_id and not epoch_model_is_active:
+            evaluation_gate = safety_status.setdefault("evaluation_gate", {})
+            evaluation_gate["status"] = "bloqueada"
+            evaluation_gate["can_start_evaluation_full_production_now"] = False
+            evaluation_reasons = evaluation_gate.setdefault("blocking_reasons", [])
+            if "quality_epoch_model_not_active" not in evaluation_reasons:
+                evaluation_reasons.append("quality_epoch_model_not_active")
+            publication_gate = safety_status.setdefault("publication_gate", {})
+            publication_gate["status"] = "bloqueada"
+            publication_gate["can_publish_after_full_production"] = False
+            publication_gate["can_publish_after_full_production_now"] = False
+            publication_reasons = publication_gate.setdefault("blocking_reasons", [])
+            if "quality_epoch_model_not_active" not in publication_reasons:
+                publication_reasons.append("quality_epoch_model_not_active")
+        if segment_state["needs_apply"] and epoch_status != "evaluated":
+            publication_gate = safety_status.setdefault("publication_gate", {})
+            publication_gate["status"] = "bloqueada"
+            publication_gate["can_publish_after_full_production"] = False
+            reasons = publication_gate.setdefault("blocking_reasons", [])
+            if "quality_epoch_not_evaluated" not in reasons:
+                reasons.append("quality_epoch_not_evaluated")
         evaluation_decision = _read_json_file(EVALUATION_DECISION_LATEST_FILE)
         if evaluation_decision:
             evaluation_decision["stale"] = (
                 _int(evaluation_decision.get("segment_state_run_id")) != _int(segment_state.get("run_id"))
             )
         pending_by_family = _pending_by_family_payload(con, segment_state["run_id"])
+        package_versions = _package_versions_payload(con)
+        quality_hotspots = _quality_hotspots_payload(con)
         pending_actionability = _pending_actionability_payload(con, segment_state["run_id"])
+        output_coverage = _output_coverage(con)
+        promotion_provider_health = _quality_promotion_provider_health_payload(
+            con,
+            quality_pattern_discovery,
+            quality_epoch,
+        )
+        operational_closure = _operational_closure_payload(segment_state, output_coverage)
+        quality_debt = _quality_debt_payload(
+            quality_pattern_discovery,
+            promotion_provider_health,
+            diff_review,
+            post_release_status,
+        )
         pending_next_focus = _pending_next_focus_payload(
             taxonomy,
             pending_by_family,
@@ -5742,17 +7674,7 @@ def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
         run_active = run.get("status") in {"starting", "running"}
         stages = run.get("stages") if run.get("run_id") else _new_production_run_status("preview").get("stages", [])
         stages = stages if isinstance(stages, list) else []
-        done_stages = sum(1 for stage in stages if isinstance(stage, dict) and stage.get("status") == "done")
-        running_stage = next((stage for stage in stages if isinstance(stage, dict) and stage.get("status") == "running"), None)
-        running_progress = 0.0
-        if running_stage:
-            running_progress = min(90.0, max(0.0, float(running_stage.get("progress_pct") or 0))) / 100.0
-        if stages:
-            progress_pct = round(((done_stages + running_progress) / len(stages)) * 100)
-            if run.get("status") == "completed":
-                progress_pct = 100
-        else:
-            progress_pct = 100 if run.get("status") == "completed" else 0
+        progress_pct = _production_run_progress(run, stages)
         generated_at = datetime.now().isoformat(timespec="seconds")
         disk_preflight = _production_disk_preflight_payload()
         release_status = (
@@ -5776,9 +7698,13 @@ def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
                 "pending_count": segment_state["pending_count"],
                 "closed_rate": segment_state["closed_rate"],
                 "needs_apply": segment_state["needs_apply"],
-                "output_coverage": _output_coverage(con),
+                "output_coverage": output_coverage,
+                "operational_closure": operational_closure,
+                "quality_debt": quality_debt,
+                "promotion_provider_health": promotion_provider_health,
                 "latest_segment_state_run_id": segment_state["run_id"],
                 "latest_ledger_run_id": _latest_ledger_run_id(con),
+                "quality_epoch": quality_epoch,
                 "segment_state_finished_at": segment_state["finished_at"],
                 "segment_state_trend": segment_trend,
                 "previous_segment_state_delta": {
@@ -5797,6 +7723,8 @@ def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
                     "raw_pending": _int(taxonomy.get("raw_pending")),
                 },
                 "pending_by_family": pending_by_family,
+                "package_versions": package_versions,
+                "quality_hotspots": quality_hotspots,
                 "pending_actionability": pending_actionability,
                 "pending_next_focus": pending_next_focus,
                 "post_release": {
@@ -5804,6 +7732,7 @@ def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
                     **post_release_status.get("summary", {}),
                     **safety_status.get("post_release_summary", {}),
                     "diff_review": diff_review,
+                    "quality_pattern_discovery": quality_pattern_discovery,
                     "evaluation_decision": evaluation_decision,
                     "stable_baseline_path": post_release_status.get("baseline_control", {}).get("stable_baseline_path"),
                     "broken_release_path": post_release_status.get("baseline_control", {}).get("broken_release_path"),
@@ -5880,6 +7809,7 @@ def _refresh_dashboard_cache(db_path: Path) -> dict[str, Any]:
     global DASHBOARD_CACHE
     payload = _build_app_state_payload(db_path)
     cache_payload = {
+        "schema_version": DASHBOARD_CACHE_SCHEMA_VERSION,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "source_db_mtime": _db_mtime(db_path),
         "app_state": payload,
@@ -5894,20 +7824,347 @@ def _refresh_dashboard_cache(db_path: Path) -> dict[str, Any]:
 def _get_dashboard_cache(db_path: Path, *, force: bool = False) -> dict[str, Any]:
     global DASHBOARD_CACHE
     with DASHBOARD_CACHE_LOCK:
-        if not force and DASHBOARD_CACHE is not None:
+        if (
+            not force
+            and DASHBOARD_CACHE is not None
+            and int(DASHBOARD_CACHE.get("schema_version") or 0) == DASHBOARD_CACHE_SCHEMA_VERSION
+        ):
             return DASHBOARD_CACHE
         cache_file = _dashboard_cache_file()
         if not force and cache_file.exists():
             try:
-                DASHBOARD_CACHE = json.loads(cache_file.read_text(encoding="utf-8"))
-                return DASHBOARD_CACHE
+                candidate = json.loads(cache_file.read_text(encoding="utf-8"))
+                if int(candidate.get("schema_version") or 0) == DASHBOARD_CACHE_SCHEMA_VERSION:
+                    DASHBOARD_CACHE = candidate
+                    return DASHBOARD_CACHE
             except json.JSONDecodeError:
                 DASHBOARD_CACHE = None
         return _refresh_dashboard_cache(db_path)
 
 
+DIAGNOSTIC_PHASE_BLUEPRINT = (
+    ("state", "Estado atual"),
+    ("discovery", "Descoberta"),
+    ("suggestions", "Sugestões"),
+    ("consolidation", "Consolidação"),
+)
+
+DIAGNOSTIC_STAGE_METADATA = {
+    "source_tree_snapshot": ("state", "Fotografar árvore de fontes"),
+    "quality_epoch_open": ("state", "Abrir ou reutilizar epoch"),
+    "score_package_old": ("state", "Pontuar baseline"),
+    "score_package_output": ("state", "Pontuar output"),
+    "score_package_policy": ("state", "Calibrar política de score"),
+    "quality_epoch_finalize": ("state", "Fixar scores da epoch"),
+    "quality_epoch_contract": ("state", "Validar contrato da epoch"),
+    "segment_state": ("state", "Recalcular segment-state"),
+    "quality_promotion_discovery": ("discovery", "Descobrir e registrar sugestões"),
+    "quality_epoch_noop_close": ("consolidation", "Fechar epoch sem alterações"),
+    "dashboard_cache": ("consolidation", "Consolidar cache e painel"),
+}
+
+
+def _diagnostic_status_progress(status: dict[str, Any]) -> int:
+    if status.get("status") == "completed":
+        return 100
+    stages = status.get("stages") or []
+    if not stages:
+        return 1
+    planned_stage_count = max(
+        len(stages),
+        _int(status.get("planned_stage_count")) or len(stages),
+    )
+    completed = sum(1 for stage in stages if stage.get("status") == "done")
+    running_fraction = max(
+        (
+            min(99.0, max(0.0, float(stage.get("progress_pct") or 0))) / 100.0
+            for stage in stages
+            if stage.get("status") == "running"
+        ),
+        default=0.0,
+    )
+    return max(
+        1,
+        min(99, round(((completed + running_fraction) / planned_stage_count) * 100)),
+    )
+
+
+def _write_diagnostic_status(status: dict[str, Any]) -> None:
+    status["updated_at"] = _now_iso()
+    status["progress_pct"] = _diagnostic_status_progress(status)
+    DIAGNOSTIC_RUN_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with DIAGNOSTIC_STATUS_LOCK:
+        DIAGNOSTIC_RUN_STATUS_FILE.write_text(
+            json.dumps(status, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+
+def _read_diagnostic_status() -> dict[str, Any]:
+    with DIAGNOSTIC_STATUS_LOCK:
+        if not DIAGNOSTIC_RUN_STATUS_FILE.exists():
+            return {}
+        try:
+            payload = json.loads(DIAGNOSTIC_RUN_STATUS_FILE.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _new_diagnostic_status() -> dict[str, Any]:
+    started_at = _now_iso()
+    status = {
+        "run_id": datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
+        "status": "running",
+        "started_at": started_at,
+        "updated_at": started_at,
+        "finished_at": "",
+        "current_stage": "",
+        "current_label": "Preparar diagnóstico",
+        "progress_pct": 1,
+        "planned_stage_count": 9,
+        "phases": [
+            {"id": phase_id, "label": label, "status": "pending"}
+            for phase_id, label in DIAGNOSTIC_PHASE_BLUEPRINT
+        ],
+        "stages": [],
+        "error": "",
+    }
+    _write_diagnostic_status(status)
+    return status
+
+
+def _diagnostic_start_stage(status: dict[str, Any], stage_id: str) -> None:
+    phase_id, label = DIAGNOSTIC_STAGE_METADATA.get(
+        stage_id,
+        ("state", stage_id.replace("_", " ").title()),
+    )
+    phase_ids = [phase[0] for phase in DIAGNOSTIC_PHASE_BLUEPRINT]
+    phase_index = phase_ids.index(phase_id)
+    for index, phase in enumerate(status.get("phases") or []):
+        if index < phase_index and phase.get("status") == "pending":
+            phase["status"] = "done"
+        if phase.get("id") == phase_id:
+            phase["status"] = "running"
+            phase["current_stage"] = stage_id
+            phase["current_label"] = label
+    status["status"] = "running"
+    status["current_stage"] = stage_id
+    status["current_label"] = label
+    status.setdefault("stages", []).append(
+        {
+            "id": stage_id,
+            "label": label,
+            "phase": phase_id,
+            "status": "running",
+            "started_at": _now_iso(),
+            "updated_at": _now_iso(),
+            "heartbeat_at": "",
+            "elapsed_seconds": 0,
+            "progress_pct": 1,
+            "finished_at": "",
+            "exit_code": None,
+        }
+    )
+    _write_diagnostic_status(status)
+
+
+def _diagnostic_finish_stage(
+    status: dict[str, Any],
+    stage_id: str,
+    *,
+    exit_code: int,
+    stdout_tail: list[str] | None = None,
+    stderr_tail: list[str] | None = None,
+) -> None:
+    stage = next(
+        (item for item in reversed(status.get("stages") or []) if item.get("id") == stage_id),
+        None,
+    )
+    if stage is not None:
+        stage["status"] = "done" if exit_code == 0 else "failed"
+        stage["updated_at"] = _now_iso()
+        stage["finished_at"] = stage["updated_at"]
+        stage["exit_code"] = exit_code
+        if exit_code == 0:
+            stage["progress_pct"] = 100
+        stage["stdout_tail"] = list(stdout_tail or [])[-12:]
+        stage["stderr_tail"] = list(stderr_tail or [])[-12:]
+
+    phase_id, _ = DIAGNOSTIC_STAGE_METADATA.get(stage_id, ("state", stage_id))
+    phase = next(
+        (item for item in status.get("phases") or [] if item.get("id") == phase_id),
+        None,
+    )
+    if exit_code != 0:
+        if phase is not None:
+            phase["status"] = "failed"
+        status["status"] = "failed"
+        status["finished_at"] = _now_iso()
+        status["error"] = "\n".join((stderr_tail or stdout_tail or [])[-12:])
+    elif stage_id == "segment_state":
+        if phase is not None:
+            phase["status"] = "done"
+    elif stage_id == "quality_promotion_discovery":
+        if phase is not None:
+            phase["status"] = "done"
+        suggestions = next(
+            (item for item in status.get("phases") or [] if item.get("id") == "suggestions"),
+            None,
+        )
+        if suggestions is not None:
+            suggestions["status"] = "done"
+            suggestions["current_stage"] = stage_id
+            suggestions["current_label"] = "Registrar sugestões de melhoria"
+    elif stage_id == "dashboard_cache":
+        if phase is not None:
+            phase["status"] = "done"
+        status["status"] = "completed"
+        status["finished_at"] = _now_iso()
+        status["current_label"] = "Diagnóstico concluído"
+    _write_diagnostic_status(status)
+
+
+DIAGNOSTIC_STAGE_EXPECTED_SECONDS = {
+    "source_tree_snapshot": 30,
+    "quality_epoch_open": 15,
+    "score_package_old": 300,
+    "score_package_output": 300,
+    "score_package_policy": 60,
+    "quality_epoch_finalize": 30,
+    "segment_state": 600,
+    "quality_promotion_discovery": 120,
+    "quality_epoch_noop_close": 30,
+}
+
+
+def _diagnostic_stage_progress(stage_id: str, elapsed_seconds: float) -> int:
+    expected_seconds = max(1, DIAGNOSTIC_STAGE_EXPECTED_SECONDS.get(stage_id, 120))
+    return min(95, max(2, round((elapsed_seconds / expected_seconds) * 90)))
+
+
+def _run_diagnostic_command(
+    status: dict[str, Any],
+    stage_id: str,
+    command: list[str],
+    *,
+    timeout: int,
+    heartbeat_interval: float = 5.0,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    process = subprocess.Popen(
+        command,
+        cwd=str(ROOT),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    started_monotonic = time.monotonic()
+    heartbeat_stop = threading.Event()
+
+    def heartbeat_status() -> None:
+        while not heartbeat_stop.wait(heartbeat_interval):
+            if process.poll() is not None:
+                break
+            elapsed_seconds = time.monotonic() - started_monotonic
+            now = _now_iso()
+            stage = next(
+                (item for item in reversed(status.get("stages") or []) if item.get("id") == stage_id),
+                None,
+            )
+            if stage is None:
+                break
+            stage.update(
+                {
+                    "updated_at": now,
+                    "heartbeat_at": now,
+                    "elapsed_seconds": round(elapsed_seconds, 1),
+                    "progress_pct": _diagnostic_stage_progress(stage_id, elapsed_seconds),
+                }
+            )
+            status["heartbeat_at"] = now
+            _write_diagnostic_status(status)
+
+    heartbeat_thread = threading.Thread(target=heartbeat_status, daemon=True)
+    heartbeat_thread.start()
+    timed_out = False
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        process.kill()
+        stdout, stderr = process.communicate()
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=1.0)
+
+    if timed_out:
+        timeout_message = f"Command timed out after {timeout} seconds."
+        stderr = f"{stderr.rstrip()}\n{timeout_message}" if stderr else timeout_message
+    return subprocess.CompletedProcess(
+        command,
+        124 if timed_out else process.returncode,
+        stdout,
+        stderr,
+    )
+
+
+def _diagnostic_score_sources(epoch_payload: dict[str, Any]) -> list[str]:
+    score_plan = epoch_payload.get("score_plan")
+    if not isinstance(score_plan, dict):
+        return ["old", "output"]
+    required_sources = score_plan.get("required_sources")
+    if not isinstance(required_sources, list):
+        return ["old", "output"]
+    sources: list[str] = []
+    for source in required_sources:
+        normalized = str(source or "").strip().lower()
+        if normalized in {"old", "output"} and normalized not in sources:
+            sources.append(normalized)
+    return sources or ["old", "output"]
+
+
+def _resumable_diagnostic_score_run_id(
+    db_path: Path,
+    epoch_payload: dict[str, Any],
+    score_source: str,
+) -> int | None:
+    fingerprint = epoch_payload.get("fingerprint") or {}
+    tree_hash_key = "baseline_tree_hash" if score_source == "old" else "output_tree_hash"
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            """
+            SELECT id
+            FROM ml_score_runs
+            WHERE finished_at IS NULL
+              AND model_run_id = ?
+              AND source_snapshot_id = ?
+              AND candidate_text_source = ?
+              AND candidate_tree_hash = ?
+              AND path_filter IS NULL
+              AND limit_count IS NULL
+              AND scored_count > 0
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (
+                _int(fingerprint.get("model_run_id")),
+                _int(fingerprint.get("source_snapshot_id")),
+                score_source,
+                fingerprint.get(tree_hash_key),
+            ),
+        ).fetchone()
+    return _int(row["id"]) or None if row else None
+
+
 def _run_diagnostic_segment_state(db_path: Path) -> dict[str, Any]:
     started_at = _now_iso()
+    diagnostic_status = _new_diagnostic_status()
     previous_run_id = 0
     try:
         with sqlite3.connect(db_path) as con:
@@ -5916,13 +8173,201 @@ def _run_diagnostic_segment_state(db_path: Path) -> dict[str, Any]:
     except Exception:
         previous_run_id = 0
 
-    process = subprocess.run(
-        [sys.executable, "pipeline/main.py", "segment-state"],
-        cwd=str(ROOT),
-        capture_output=True,
-        text=True,
-        timeout=900,
-    )
+    epoch_bootstrap_commands = [
+        (
+            "source_tree_snapshot",
+            [sys.executable, "pipeline/source_tree_snapshot.py", "--label", "diagnostic_quality_epoch"],
+        ),
+        (
+            "quality_epoch_open",
+            [sys.executable, "pipeline/quality_epoch.py", "open", "--source", "diagnostic"],
+        ),
+    ]
+    scoring_commands: list[tuple[str, list[str]]] = []
+    analysis_commands = [
+        (
+            "segment_state",
+            [sys.executable, "pipeline/main.py", "segment-state"],
+        ),
+        (
+            "quality_promotion_discovery",
+            [sys.executable, "pipeline/quality_promotion_cycle.py", "diagnostic"],
+        ),
+        (
+            "quality_epoch_noop_close",
+            [sys.executable, "pipeline/quality_epoch.py", "close-noop", "--source", "diagnostic"],
+        ),
+    ]
+    command_results: list[dict[str, Any]] = []
+    process_returncode = 0
+    epoch_payload: dict[str, Any] = {}
+    needs_scoring = True
+    score_sources: list[str] = []
+    commands = list(epoch_bootstrap_commands)
+    for stage_id, command in commands:
+        _diagnostic_start_stage(diagnostic_status, stage_id)
+        process = _run_diagnostic_command(
+            diagnostic_status,
+            stage_id,
+            command,
+            timeout=900,
+        )
+        stdout_lines = (process.stdout or "").splitlines()
+        stderr_lines = (process.stderr or "").splitlines()
+        command_results.append(
+            {
+                "stage_id": stage_id,
+                "command": command,
+                "exit_code": process.returncode,
+                "stdout_tail": stdout_lines[-12:],
+                "stderr_tail": stderr_lines[-12:],
+            }
+        )
+        _diagnostic_finish_stage(
+            diagnostic_status,
+            stage_id,
+            exit_code=process.returncode,
+            stdout_tail=stdout_lines,
+            stderr_tail=stderr_lines,
+        )
+        if process.returncode != 0:
+            process_returncode = process.returncode
+            break
+        if stage_id == "quality_epoch_open":
+            for line in reversed(stdout_lines):
+                if not line.startswith("[quality_epoch] "):
+                    continue
+                try:
+                    epoch_payload = json.loads(line.split("[quality_epoch] ", 1)[1])
+                except json.JSONDecodeError:
+                    epoch_payload = {}
+                break
+            needs_scoring = epoch_payload.get("needs_scoring") is not False
+            if not needs_scoring:
+                diagnostic_status["planned_stage_count"] = (
+                    len(epoch_bootstrap_commands) + len(analysis_commands) + 1
+                )
+                _write_diagnostic_status(diagnostic_status)
+
+    if process_returncode == 0 and needs_scoring:
+        model_run_id = _int((epoch_payload.get("fingerprint") or {}).get("model_run_id"))
+        if not model_run_id:
+            process_returncode = 1
+            _diagnostic_start_stage(diagnostic_status, "quality_epoch_contract")
+            command_results.append(
+                {
+                    "stage_id": "quality_epoch_contract",
+                    "command": [],
+                    "exit_code": 1,
+                    "stdout_tail": [],
+                    "stderr_tail": ["Quality epoch did not provide a pinned model_run_id."],
+                }
+            )
+            _diagnostic_finish_stage(
+                diagnostic_status,
+                "quality_epoch_contract",
+                exit_code=1,
+                stderr_tail=["Quality epoch did not provide a pinned model_run_id."],
+            )
+        else:
+            score_base = [sys.executable, "pipeline/main.py", "ml-score", "--ml-model-run-id", str(model_run_id)]
+            score_sources = _diagnostic_score_sources(epoch_payload)
+            scoring_commands = []
+            for score_source in score_sources:
+                score_command = [
+                    *score_base,
+                    "--ml-candidate-text-source",
+                    score_source,
+                    "--ml-include-locked",
+                ]
+                resume_run_id = _resumable_diagnostic_score_run_id(
+                    db_path,
+                    epoch_payload,
+                    score_source,
+                )
+                if resume_run_id:
+                    score_command.extend(["--ml-resume-run-id", str(resume_run_id)])
+                scoring_commands.append((f"score_package_{score_source}", score_command))
+            scoring_commands += [
+                ("score_package_policy", [sys.executable, "pipeline/main.py", "ml-group-threshold-policy"]),
+                (
+                    "quality_epoch_finalize",
+                    [sys.executable, "pipeline/quality_epoch.py", "finalize-scoring", "--source", "diagnostic"],
+                ),
+            ]
+            diagnostic_status["planned_stage_count"] = (
+                len(epoch_bootstrap_commands)
+                + len(scoring_commands)
+                + len(analysis_commands)
+                + 1
+            )
+            _write_diagnostic_status(diagnostic_status)
+
+    if process_returncode == 0:
+        remaining_commands = (scoring_commands if needs_scoring else []) + analysis_commands
+        for stage_id, command in remaining_commands:
+            _diagnostic_start_stage(diagnostic_status, stage_id)
+            process = _run_diagnostic_command(
+                diagnostic_status,
+                stage_id,
+                command,
+                timeout=7200 if stage_id.startswith("score_package_") else 900,
+            )
+            stdout_lines = (process.stdout or "").splitlines()
+            stderr_lines = (process.stderr or "").splitlines()
+            stage_exit_code = process.returncode
+            if stage_id == "segment_state" and stage_exit_code == 0:
+                epoch_id = _int(epoch_payload.get("epoch_id"))
+                attach_command = [
+                    sys.executable,
+                    "pipeline/quality_epoch.py",
+                    "attach-state",
+                    "--source",
+                    "diagnostic",
+                ]
+                if epoch_id:
+                    attach_command.extend(["--epoch-id", str(epoch_id)])
+                attach_process = subprocess.run(
+                    attach_command,
+                    cwd=str(ROOT),
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                stdout_lines.extend((attach_process.stdout or "").splitlines())
+                stderr_lines.extend((attach_process.stderr or "").splitlines())
+                if attach_process.returncode != 0:
+                    stage_exit_code = attach_process.returncode
+            if stage_id == "quality_epoch_noop_close" and stage_exit_code == 0:
+                for line in reversed(stdout_lines):
+                    if not line.startswith("[quality_epoch] "):
+                        continue
+                    try:
+                        close_payload = json.loads(line.split("[quality_epoch] ", 1)[1])
+                    except json.JSONDecodeError:
+                        close_payload = {}
+                    if close_payload:
+                        epoch_payload = {**epoch_payload, **close_payload}
+                    break
+            command_results.append(
+                {
+                    "stage_id": stage_id,
+                    "command": command,
+                    "exit_code": stage_exit_code,
+                    "stdout_tail": stdout_lines[-12:],
+                    "stderr_tail": stderr_lines[-12:],
+                }
+            )
+            _diagnostic_finish_stage(
+                diagnostic_status,
+                stage_id,
+                exit_code=stage_exit_code,
+                stdout_tail=stdout_lines,
+                stderr_tail=stderr_lines,
+            )
+            if stage_exit_code != 0:
+                process_returncode = stage_exit_code
+                break
 
     new_run_id = 0
     try:
@@ -5932,24 +8377,29 @@ def _run_diagnostic_segment_state(db_path: Path) -> dict[str, Any]:
     except Exception:
         new_run_id = 0
 
-    stdout_lines = (process.stdout or "").splitlines()
-    stderr_lines = (process.stderr or "").splitlines()
+    last_result = command_results[-1] if command_results else {}
     return {
         "started_at": started_at,
         "finished_at": _now_iso(),
-        "exit_code": process.returncode,
+        "exit_code": process_returncode,
         "previous_segment_state_run_id": previous_run_id,
         "new_segment_state_run_id": new_run_id,
         "created_new_segment_state_run": bool(new_run_id and new_run_id != previous_run_id),
-        "stdout_tail": stdout_lines[-12:],
-        "stderr_tail": stderr_lines[-12:],
+        "diagnostic_contract": "open_or_reuse_quality_epoch_score_consistently_and_suggest_without_confirming_or_writing_output",
+        "quality_epoch": epoch_payload,
+        "quality_epoch_scoring_performed": needs_scoring,
+        "quality_epoch_score_sources": score_sources,
+        "diagnostic_status": diagnostic_status,
+        "stages": command_results,
+        "stdout_tail": last_result.get("stdout_tail", []),
+        "stderr_tail": last_result.get("stderr_tail", []),
     }
 
 
 def _app_state_payload(db_path: Path, *, force: bool = False) -> dict[str, Any]:
     cache = _get_dashboard_cache(db_path, force=force)
-    app_state = cache.get("app_state") or {}
-    app_state.setdefault("cache", {})
+    app_state = dict(cache.get("app_state") or {})
+    app_state["cache"] = dict(app_state.get("cache") or {})
     app_state["cache"].update(
         {
             "generated_at": cache.get("generated_at"),
@@ -5957,6 +8407,26 @@ def _app_state_payload(db_path: Path, *, force: bool = False) -> dict[str, Any]:
             "stale": _db_mtime(db_path) != cache.get("source_db_mtime"),
         }
     )
+
+    # O snapshot do dashboard pode permanecer em cache durante uma produção longa,
+    # mas a run atual é pequena e persistida separadamente. Sobrepor somente esse
+    # estado evita que o frontend volte a exibir uma run concluída/placeholder no
+    # meio de Diagnóstico, Avaliação ou Publicação.
+    run = _read_production_run_status()
+    if run.get("run_id"):
+        stages = run.get("stages")
+        stages = stages if isinstance(stages, list) else []
+        production = dict(app_state.get("production") or {})
+        production.update(
+            {
+                "active": run.get("status") in {"starting", "running"},
+                "last_run": run,
+                "current_stage": run.get("current_stage"),
+                "progress_pct": _production_run_progress(run, stages),
+                "stages_compact": _cache_stage_compact(stages),
+            }
+        )
+        app_state["production"] = production
     return app_state
 
 
@@ -6179,7 +8649,11 @@ def _publication_preflight_payload(db_path: Path, *, force: bool = False) -> dic
         else {}
     )
     promotion_count = _int(diff_summary.get("promotions_vs_old"), len(diff_review.get("promotion_segments") or []))
-    regression_count = _int(diff_summary.get("score_regressions"))
+    raw_regression_count = _int(diff_summary.get("score_regressions"))
+    regression_count = _int(
+        diff_summary.get("effective_package_score_regressions"),
+        raw_regression_count,
+    )
     unhandled_count = _int(diff_summary.get("unhandled_by_network"), _int(release.get("pending_count")))
     low_score_count = _int(diff_summary.get("low_score"))
     feedback_count = len(active_feedback) if isinstance(active_feedback, list) else _int(post_release.get("active_findings"))
@@ -6312,6 +8786,7 @@ def _publication_preflight_payload(db_path: Path, *, force: bool = False) -> dic
             "package_excluded": _int(diff_summary.get("package_excluded_count")),
             "promotions": promotion_count,
             "score_regressions": regression_count,
+            "raw_score_regressions": raw_regression_count,
             "unhandled_by_network": unhandled_count,
             "low_score": low_score_count,
             "active_feedback": feedback_count,
@@ -6472,6 +8947,7 @@ def _publication_apply_readiness(
             result_counts["missing_token_policy_decision"] += missing_decision_candidates
     ready = (
         int(result_counts.get("ready", 0))
+        + int(result_counts.get("ready_preserved_output_token_signature", 0))
         + int(result_counts.get("ready_token_override", 0))
         + int(result_counts.get("ready_token_policy_decision", 0))
     )
@@ -6504,6 +8980,13 @@ def _new_production_run_status(run_id: str, *, evaluation_only: bool = True) -> 
         {"id": "snapshot", "label": "Snapshot pre-run", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "snapshot_archive", "label": "Arquivar snapshot", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "preflight_sync", "label": "Sincronizar indice", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+    ]
+    if evaluation_only:
+        stages.extend([
+            {"id": "quality_epoch_validate", "label": "Validar epoch de qualidade", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+            {"id": "quality_promotion_approval", "label": "Aprovar filas de promocao", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        ])
+    stages.extend([
         {"id": "segment_state_before", "label": "Segment-state inicial", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "apply_general_dry_run", "label": "Dry-run geral", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "apply_token_policy_dry_run", "label": "Dry-run politica de tokens", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
@@ -6512,7 +8995,7 @@ def _new_production_run_status(run_id: str, *, evaluation_only: bool = True) -> 
         {"id": "same_token_boundary_repair_audit", "label": "Auditoria same-token", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "same_token_boundary_repair_dry_run", "label": "Dry-run reparo same-token", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "title_landed_es_repair_dry_run", "label": "Dry-run titulos -es", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
-    ]
+    ])
     if not evaluation_only:
         stages.extend([
         {"id": "apply_general_write", "label": "Escrita regular", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
@@ -6531,7 +9014,8 @@ def _new_production_run_status(run_id: str, *, evaluation_only: bool = True) -> 
         ])
     stages.append({"id": "composite_review_progress", "label": "Progresso composto", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None})
     if evaluation_only:
-        stages.append({"id": "package_score_recalibration", "label": "Recalibrar score do pacote", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None})
+        stages.append({"id": "quality_epoch_mark_evaluated", "label": "Fixar epoch avaliada", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None})
+        stages.append({"id": "package_score_recalibration", "label": "Consolidar epoch e filas", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None})
     stages.append({"id": "production_report", "label": "Relatorio final", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None})
     snapshot_path = PRODUCTION_SNAPSHOT_ROOT / run_id
     return {
@@ -6562,6 +9046,7 @@ def _new_publication_apply_status(run_id: str) -> dict[str, Any]:
         {"id": "publication_preflight", "label": "Preflight publicavel", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "apply_confirmed_dry_run", "label": "Dry-run apply confirmado", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "apply_confirmed_write", "label": "Aplicar fila confirmada", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "pairwise_lifecycle_bridge", "label": "Consolidar reparos pareados", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "segment_state_after", "label": "Segment-state pos-apply", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "publication_preflight_after", "label": "Preflight pos-apply", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "production_report", "label": "Relatorio final", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
@@ -6724,36 +9209,53 @@ def _production_snapshot_sources() -> dict[str, Path]:
     return sources
 
 
-def _production_disk_preflight_payload() -> dict[str, Any]:
-    sources = _production_snapshot_sources()
-    sqlite_db_size = DEFAULT_DB.stat().st_size if DEFAULT_DB.exists() else 0
-    estimated_size = DEFAULT_DB.stat().st_size if PRODUCTION_FULL_SQLITE_BACKUP_ENABLED and DEFAULT_DB.exists() else 0
-    estimated_size += sum(_path_size(path, _snapshot_ignore) for path in sources.values())
-    required_space = int(estimated_size * 1.08)
-    usage_path = PRODUCTION_SNAPSHOT_ROOT if PRODUCTION_SNAPSHOT_ROOT.exists() else ROOT
-    usage = shutil.disk_usage(usage_path)
-    missing = max(0, required_space - usage.free)
-    ok = usage.free >= required_space
-    return {
-        "checked_at": _now_iso(),
-        "status": "ok" if ok else "insufficient_disk_space",
-        "ok": ok,
-        "path": str(usage_path),
-        "estimated_snapshot_bytes": estimated_size,
-        "required_free_bytes": required_space,
-        "free_bytes": usage.free,
-        "missing_bytes": missing,
-        "margin_ratio": 1.08,
-        "sqlite_full_backup_enabled": PRODUCTION_FULL_SQLITE_BACKUP_ENABLED,
-        "sqlite_backup_mode": "full_backup" if PRODUCTION_FULL_SQLITE_BACKUP_ENABLED else "metadata_only",
-        "sqlite_db_size_bytes": sqlite_db_size,
-        "message": (
-            "Disk preflight ok."
-            if ok
-            else f"Insufficient disk space for production snapshot. Required {required_space} bytes, free {usage.free} bytes."
-        ),
-        "suggestion": "" if ok else "Limpar ou mover snapshots antigos antes de iniciar a producao.",
-    }
+def _production_disk_preflight_payload(*, force: bool = False) -> dict[str, Any]:
+    with DISK_PREFLIGHT_LOCK:
+        if not force and PRODUCTION_DISK_PREFLIGHT_CACHE_FILE.exists():
+            age_seconds = time.time() - PRODUCTION_DISK_PREFLIGHT_CACHE_FILE.stat().st_mtime
+            if age_seconds <= DISK_PREFLIGHT_CACHE_TTL_SECONDS:
+                cached = _read_json_file(PRODUCTION_DISK_PREFLIGHT_CACHE_FILE)
+                if cached:
+                    cached["cache_age_seconds"] = round(max(age_seconds, 0), 1)
+                    cached["cached"] = True
+                    return cached
+
+        sources = _production_snapshot_sources()
+        sqlite_db_size = DEFAULT_DB.stat().st_size if DEFAULT_DB.exists() else 0
+        estimated_size = DEFAULT_DB.stat().st_size if PRODUCTION_FULL_SQLITE_BACKUP_ENABLED and DEFAULT_DB.exists() else 0
+        estimated_size += sum(_path_size(path, _snapshot_ignore) for path in sources.values())
+        required_space = int(estimated_size * 1.08)
+        usage_path = PRODUCTION_SNAPSHOT_ROOT if PRODUCTION_SNAPSHOT_ROOT.exists() else ROOT
+        usage = shutil.disk_usage(usage_path)
+        missing = max(0, required_space - usage.free)
+        ok = usage.free >= required_space
+        payload = {
+            "checked_at": _now_iso(),
+            "status": "ok" if ok else "insufficient_disk_space",
+            "ok": ok,
+            "path": str(usage_path),
+            "estimated_snapshot_bytes": estimated_size,
+            "required_free_bytes": required_space,
+            "free_bytes": usage.free,
+            "missing_bytes": missing,
+            "margin_ratio": 1.08,
+            "sqlite_full_backup_enabled": PRODUCTION_FULL_SQLITE_BACKUP_ENABLED,
+            "sqlite_backup_mode": "full_backup" if PRODUCTION_FULL_SQLITE_BACKUP_ENABLED else "metadata_only",
+            "sqlite_db_size_bytes": sqlite_db_size,
+            "message": (
+                "Disk preflight ok."
+                if ok
+                else f"Insufficient disk space for production snapshot. Required {required_space} bytes, free {usage.free} bytes."
+            ),
+            "suggestion": "" if ok else "Limpar ou mover snapshots antigos antes de iniciar a producao.",
+            "cache_age_seconds": 0.0,
+            "cached": False,
+        }
+        PRODUCTION_DISK_PREFLIGHT_CACHE_FILE.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return payload
 
 
 def _copy_tree_snapshot(source: Path, target: Path) -> None:
@@ -6829,7 +9331,7 @@ def _create_production_snapshot(status: dict[str, Any], log_handle) -> None:
     snapshot_root.mkdir(parents=True, exist_ok=False)
 
     sources = _production_snapshot_sources()
-    disk_preflight = _production_disk_preflight_payload()
+    disk_preflight = _production_disk_preflight_payload(force=True)
     estimated_size = int(disk_preflight.get("estimated_snapshot_bytes") or 0)
     free_space = int(disk_preflight.get("free_bytes") or 0)
     required_space = int(disk_preflight.get("required_free_bytes") or 0)
@@ -7104,6 +9606,19 @@ def _run_production_command(status: dict[str, Any], *, stage_id: str, command: l
             "token_mismatch": "token_mismatch",
             "stale_token_policy_confirmed_hash": "stale_token_policy_confirmed_hash",
         }),
+        ("[quality_pairwise_promotion_queue]", {
+            "Ready": "ready",
+            "Blocked": "blocked",
+            "Queued": "queued",
+        }),
+        ("[quality_promotion_cycle]", {
+            "Providers": "providers",
+            "Queues": "queues",
+            "Evidence": "evidence",
+            "Ready": "ready",
+            "Blocked": "blocked",
+            "Queued": "queued",
+        }),
         ("[controlled_token_subpolicy_apply]", {
             "Candidates": "candidates",
             "Eligible": "eligible",
@@ -7365,6 +9880,50 @@ def _stage_metrics(status: dict[str, Any], stage_id: str) -> dict[str, Any]:
     return {}
 
 
+def _quality_epoch_command(*args: str) -> dict[str, Any]:
+    process = subprocess.run(
+        [sys.executable, "pipeline/quality_epoch.py", *args],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    payload: dict[str, Any] = {}
+    for line in reversed((process.stdout or "").splitlines()):
+        if not line.startswith("[quality_epoch] "):
+            continue
+        try:
+            payload = json.loads(line.split("[quality_epoch] ", 1)[1])
+        except json.JSONDecodeError:
+            payload = {}
+        break
+    if process.returncode != 0:
+        error = payload.get("error") or (process.stderr or process.stdout or "quality epoch command failed").strip()
+        raise RuntimeError(str(error))
+    return payload
+
+
+def _materialize_version_command(*, apply: bool) -> dict[str, Any]:
+    command = [sys.executable, "pipeline/materialize_package_version.py"]
+    if apply:
+        command.append("--apply")
+    process = subprocess.run(
+        command,
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        timeout=1800,
+    )
+    try:
+        payload = json.loads(process.stdout or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    if process.returncode != 0 or payload.get("ok") is False:
+        message = payload.get("error") or (process.stderr or process.stdout or "version materialization failed").strip()
+        raise RuntimeError(message)
+    return payload
+
+
 def _run_publication_preflight_stage(
     status: dict[str, Any],
     log_handle,
@@ -7374,6 +9933,13 @@ def _run_publication_preflight_stage(
     require_apply_queue: bool = False,
 ) -> tuple[list[int], dict[str, Any]]:
     _start_inline_stage(status, stage_id, "Validating publication preflight.", log_handle)
+    if require_apply_queue:
+        quality_epoch = _quality_epoch_command("validate", "--require-status", "evaluated")
+        status["quality_epoch"] = quality_epoch
+        _append_run_log(
+            status,
+            f"[quality_epoch] validated epoch {quality_epoch.get('epoch_id')} for publication",
+        )
     payload = _publication_preflight_payload(ACTIVE_DB_PATH, force=force)
     preflight = payload.get("publication_preflight") if isinstance(payload, dict) else {}
     if not isinstance(preflight, dict):
@@ -7417,6 +9983,7 @@ def _run_publication_preflight_stage(
         "low_score": _int(counts.get("low_score")),
         "can_apply_pending": 1 if preflight.get("can_apply_pending") else 0,
         "can_publish_now": 1 if preflight.get("can_publish_now") else 0,
+        "quality_epoch_id": _int((status.get("quality_epoch") or {}).get("epoch_id")),
     }
     if require_apply_queue:
         if preflight.get("can_apply_pending") is not True:
@@ -7442,6 +10009,73 @@ def _run_publication_preflight_stage(
         message=f"Publication preflight ok: {len(segment_ids)} apply ids.",
     )
     return segment_ids, preflight
+
+
+def _publication_pairwise_segment_ids(db_path: Path, segment_ids: list[int]) -> list[int]:
+    if not segment_ids:
+        return []
+    placeholders = ",".join("?" for _ in segment_ids)
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(
+            f"""
+            SELECT segment_id
+            FROM segment_confirmations
+            WHERE segment_id IN ({placeholders})
+              AND confirmation_source = 'pairwise_monotonic_repair'
+            ORDER BY segment_id
+            """,
+            segment_ids,
+        ).fetchall()
+    return [int(row[0]) for row in rows]
+
+
+def _validate_publication_segments_closed(db_path: Path, segment_ids: list[int]) -> dict[str, Any]:
+    if not segment_ids:
+        return {"segment_state_run_id": 0, "expected": 0, "closed": 0, "blocked": 0, "blocked_ids": []}
+    placeholders = ",".join("?" for _ in segment_ids)
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        run_row = con.execute(
+            "SELECT id FROM segment_state_runs WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if not run_row:
+            raise RuntimeError("Publication closure validation failed: no completed segment-state run.")
+        state_run_id = int(run_row["id"])
+        rows = con.execute(
+            f"""
+            SELECT
+              state.segment_id,
+              state.state_group,
+              state.final_state,
+              COALESCE(state.needs_output_apply, 0) AS needs_output_apply,
+              output.portuguese_text AS output_text,
+              confirmation.confirmed_text
+            FROM segment_state_items state
+            LEFT JOIN output_segments output ON output.segment_id = state.segment_id
+            LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = state.segment_id
+            WHERE state.run_id = ?
+              AND state.segment_id IN ({placeholders})
+            """,
+            (state_run_id, *segment_ids),
+        ).fetchall()
+    by_id = {int(row["segment_id"]): row for row in rows}
+    blocked_ids = []
+    for segment_id in segment_ids:
+        row = by_id.get(segment_id)
+        if (
+            row is None
+            or row["state_group"] != "closed"
+            or int(row["needs_output_apply"] or 0) != 0
+            or row["output_text"] != row["confirmed_text"]
+        ):
+            blocked_ids.append(segment_id)
+    return {
+        "segment_state_run_id": state_run_id,
+        "expected": len(segment_ids),
+        "closed": len(segment_ids) - len(blocked_ids),
+        "blocked": len(blocked_ids),
+        "blocked_ids": blocked_ids,
+    }
 
 
 def _publication_apply_worker(run_id: str) -> None:
@@ -7563,6 +10197,42 @@ def _publication_apply_worker(run_id: str) -> None:
                     raise RuntimeError(
                         f"Publication apply mismatch: applied {applied_count} != expected {len(segment_ids)}."
                     )
+            pairwise_segment_ids = _publication_pairwise_segment_ids(ACTIVE_DB_PATH, segment_ids)
+            if pairwise_segment_ids:
+                pairwise_ids_csv = ",".join(str(segment_id) for segment_id in pairwise_segment_ids)
+                bridge_command = [
+                    sys.executable,
+                    "pipeline/pairwise_monotonic_lifecycle_materializer.py",
+                    "--segment-ids",
+                    pairwise_ids_csv,
+                    "--expected-count",
+                    str(len(pairwise_segment_ids)),
+                    "--apply",
+                ]
+                state_run_id = _int(preflight.get("segment_state_run_id"))
+                if state_run_id:
+                    bridge_command.extend(["--segment-state-run-id", str(state_run_id)])
+                bridge_exit = _run_production_command(
+                    status,
+                    stage_id="pairwise_lifecycle_bridge",
+                    command=bridge_command,
+                    log_handle=log_handle,
+                )
+                if bridge_exit != 0:
+                    raise RuntimeError("Publication pairwise lifecycle bridge failed.")
+            else:
+                _start_inline_stage(
+                    status,
+                    "pairwise_lifecycle_bridge",
+                    "No pairwise confirmations require the lifecycle bridge.",
+                    log_handle,
+                )
+                _finish_inline_stage(
+                    status,
+                    "pairwise_lifecycle_bridge",
+                    metrics={"expected": 0, "released": 0, "blocked": 0},
+                    message="Pairwise lifecycle bridge not required.",
+                )
             state_exit = _run_production_command(
                 status,
                 stage_id="segment_state_after",
@@ -7571,6 +10241,20 @@ def _publication_apply_worker(run_id: str) -> None:
             )
             if state_exit != 0:
                 raise RuntimeError("Publication segment-state failed.")
+            closure_validation = _validate_publication_segments_closed(ACTIVE_DB_PATH, segment_ids)
+            status["publication_closure_validation"] = closure_validation
+            _append_run_log(
+                status,
+                "[publication_closure] "
+                f"closed={closure_validation['closed']} blocked={closure_validation['blocked']} "
+                f"expected={closure_validation['expected']} state_run={closure_validation['segment_state_run_id']}",
+            )
+            if closure_validation["blocked"]:
+                raise RuntimeError(
+                    "Publication lifecycle closure mismatch: "
+                    f"closed {closure_validation['closed']} / expected {closure_validation['expected']}; "
+                    f"blocked ids {closure_validation['blocked_ids'][:20]}."
+                )
             _run_publication_preflight_stage(
                 status,
                 log_handle,
@@ -7578,6 +10262,21 @@ def _publication_apply_worker(run_id: str) -> None:
                 force=True,
                 require_apply_queue=False,
             )
+            quality_epoch_id = _int((status.get("quality_epoch") or {}).get("epoch_id"))
+            if not quality_epoch_id:
+                raise RuntimeError("Publication completed without a pinned quality epoch id.")
+            published_epoch = _quality_epoch_command(
+                "mark",
+                "published",
+                "--source",
+                "publication",
+                "--epoch-id",
+                str(quality_epoch_id),
+                "--segment-state-run-id",
+                str(closure_validation["segment_state_run_id"]),
+            )
+            status["quality_epoch"] = published_epoch
+            _append_run_log(status, f"[quality_epoch] published epoch {quality_epoch_id}")
             status["status"] = "completed"
             status["message"] = "Publication apply run completed."
             _refresh_run_effect_summary(status)
@@ -7616,6 +10315,20 @@ def _production_run_worker(run_id: str) -> None:
     _write_production_run_status(status)
     commands = [
         ("preflight_sync", [sys.executable, "pipeline/main.py", "cycle"]),
+        (
+            "quality_epoch_validate",
+            [
+                sys.executable,
+                "pipeline/quality_epoch.py",
+                "validate",
+                "--require-status",
+                "scored,evaluated",
+            ],
+        ),
+        (
+            "quality_promotion_approval",
+            [sys.executable, "pipeline/quality_promotion_cycle.py", "evaluation"],
+        ),
         ("segment_state_before", [sys.executable, "pipeline/main.py", "segment-state"]),
         (
             "apply_general_dry_run",
@@ -7796,10 +10509,23 @@ def _production_run_worker(run_id: str) -> None:
             ],
         ),
         ("composite_review_progress", [sys.executable, "pipeline/main.py", "ml-composite-review-progress"]),
+        (
+            "quality_epoch_mark_evaluated",
+            [
+                sys.executable,
+                "pipeline/quality_epoch.py",
+                "mark",
+                "evaluated",
+                "--source",
+                "evaluation",
+            ],
+        ),
     ]
     if not status.get("apply_output"):
         evaluation_stage_ids = {
             "preflight_sync",
+            "quality_epoch_validate",
+            "quality_promotion_approval",
             "segment_state_before",
             "apply_general_dry_run",
             "apply_token_policy_dry_run",
@@ -7809,8 +10535,16 @@ def _production_run_worker(run_id: str) -> None:
             "same_token_boundary_repair_dry_run",
             "title_landed_es_repair_dry_run",
             "composite_review_progress",
+            "quality_epoch_mark_evaluated",
         }
         commands = [(stage_id, command) for stage_id, command in commands if stage_id in evaluation_stage_ids]
+    else:
+        evaluation_score_stage_ids = {
+            "quality_epoch_validate",
+            "quality_promotion_approval",
+            "quality_epoch_mark_evaluated",
+        }
+        commands = [(stage_id, command) for stage_id, command in commands if stage_id not in evaluation_score_stage_ids]
     try:
         with log_path.open("w", encoding="utf-8", newline="\n") as log_handle:
             log_handle.write(f"CK3 PT-BR production run {run_id}\n")
@@ -7825,6 +10559,16 @@ def _production_run_worker(run_id: str) -> None:
             for stage_id, command in commands:
                 if status.get("status") == "failed":
                     break
+                if stage_id == "quality_epoch_mark_evaluated":
+                    state_run_id = _int(
+                        _stage_metrics(status, "segment_state_before").get("segment_state_run_id")
+                    )
+                    if state_run_id:
+                        command = [
+                            *command,
+                            "--segment-state-run-id",
+                            str(state_run_id),
+                        ]
                 exit_code = _run_production_command(status, stage_id=stage_id, command=command, log_handle=log_handle)
                 if exit_code != 0:
                     status["status"] = "failed"
@@ -11343,7 +14087,7 @@ def _lifecycle_payload(con: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
-def _dashboard_payload(db_path: Path) -> dict[str, Any]:
+def _build_full_dashboard_payload(db_path: Path) -> dict[str, Any]:
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     try:
@@ -11836,6 +14580,88 @@ def _dashboard_payload(db_path: Path) -> dict[str, Any]:
         con.close()
 
 
+def _write_full_dashboard_cache(db_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    global FULL_DASHBOARD_CACHE
+    cache_payload = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "source_db_mtime": _db_mtime(db_path),
+        "payload": payload,
+    }
+    cache_file = FULL_DASHBOARD_CACHE_FILE
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary_file = cache_file.with_suffix(cache_file.suffix + ".tmp")
+    temporary_file.write_text(
+        json.dumps(cache_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary_file.replace(cache_file)
+    with FULL_DASHBOARD_CACHE_LOCK:
+        FULL_DASHBOARD_CACHE = cache_payload
+    return cache_payload
+
+
+def _refresh_full_dashboard_cache(db_path: Path) -> dict[str, Any]:
+    return _write_full_dashboard_cache(db_path, _build_full_dashboard_payload(db_path))
+
+
+def _load_full_dashboard_cache() -> dict[str, Any] | None:
+    global FULL_DASHBOARD_CACHE
+    with FULL_DASHBOARD_CACHE_LOCK:
+        if FULL_DASHBOARD_CACHE is not None:
+            return FULL_DASHBOARD_CACHE
+        if not FULL_DASHBOARD_CACHE_FILE.exists():
+            return None
+        try:
+            candidate = json.loads(FULL_DASHBOARD_CACHE_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(candidate, dict) or not isinstance(candidate.get("payload"), dict):
+            return None
+        FULL_DASHBOARD_CACHE = candidate
+        return FULL_DASHBOARD_CACHE
+
+
+def _start_full_dashboard_cache_refresh(db_path: Path) -> bool:
+    global FULL_DASHBOARD_CACHE_REFRESHING
+    if _production_run_active() or _read_diagnostic_status().get("status") == "running":
+        return False
+    with FULL_DASHBOARD_CACHE_LOCK:
+        if FULL_DASHBOARD_CACHE_REFRESHING:
+            return False
+        FULL_DASHBOARD_CACHE_REFRESHING = True
+
+    def refresh_worker() -> None:
+        global FULL_DASHBOARD_CACHE_REFRESHING
+        try:
+            _refresh_full_dashboard_cache(db_path)
+        except Exception as exc:  # pragma: no cover - stale cache remains usable
+            print(f"Full dashboard cache refresh failed: {exc}")
+        finally:
+            with FULL_DASHBOARD_CACHE_LOCK:
+                FULL_DASHBOARD_CACHE_REFRESHING = False
+
+    threading.Thread(target=refresh_worker, daemon=True).start()
+    return True
+
+
+def _dashboard_payload(db_path: Path) -> dict[str, Any]:
+    cache = _load_full_dashboard_cache()
+    if cache is None:
+        cache = _refresh_full_dashboard_cache(db_path)
+    source_db_mtime = _db_mtime(db_path)
+    stale = cache.get("source_db_mtime") != source_db_mtime
+    refresh_started = _start_full_dashboard_cache_refresh(db_path) if stale else False
+    payload = dict(cache.get("payload") or {})
+    payload["databasePath"] = str(db_path)
+    payload["analyticsCache"] = {
+        "generated_at": cache.get("generated_at"),
+        "source_db_mtime": cache.get("source_db_mtime"),
+        "stale": stale,
+        "refreshing": refresh_started or FULL_DASHBOARD_CACHE_REFRESHING,
+    }
+    return payload
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     db_path: Path = DEFAULT_DB
 
@@ -11867,6 +14693,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if _is_client_disconnect(exc):
                 return
             raise
+
+    def _read_json_body(self) -> dict[str, Any]:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError as exc:
+            raise ValueError("Invalid Content-Length.") from exc
+        if length <= 0:
+            return {}
+        payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("JSON body must be an object.")
+        return payload
 
     def do_OPTIONS(self) -> None:
         self._send_json(204, {})
@@ -11919,6 +14757,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as exc:  # pragma: no cover - server diagnostic path
                 self._send_json(500, {"error": str(exc)})
             return
+        if path == "/api/diagnostic/status":
+            self._send_json(200, {"ok": True, "diagnostic": _read_diagnostic_status()})
+            return
         if path == "/api/neural-visualization":
             if not NEURAL_VISUALIZATION_FILE.exists():
                 self._send_json(404, {"error": f"Neural visualization file not found: {NEURAL_VISUALIZATION_FILE}"})
@@ -11962,7 +14803,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/production/preflight/disk":
             try:
-                self._send_json(200, {"disk_preflight": _production_disk_preflight_payload()})
+                self._send_json(200, {"disk_preflight": _production_disk_preflight_payload(force=True)})
             except Exception as exc:  # pragma: no cover - server diagnostic path
                 self._send_json(500, {"error": str(exc)})
             return
@@ -11987,16 +14828,82 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path == "/api/production/pairwise-calibration/review":
+            if not self.db_path.exists():
+                self._send_json(500, {"ok": False, "error": f"SQLite not found: {self.db_path}"})
+                return
+            try:
+                request = self._read_json_body()
+                item_id = _int(request.get("item_id"))
+                label = str(request.get("review_label") or "").strip()
+                reason = str(request.get("review_reason") or "").strip() or None
+                reviewer = str(request.get("reviewer") or "dashboard_human_review").strip()
+                if not item_id or not label:
+                    raise ValueError("item_id and review_label are required.")
+                pipeline_dir = str(ROOT / "pipeline")
+                if pipeline_dir not in sys.path:
+                    sys.path.insert(0, pipeline_dir)
+                from db import ensure_database as ensure_pipeline_database
+                from quality_pairwise_calibration_review_queue import record_review_decision
+
+                con = sqlite3.connect(self.db_path, timeout=300)
+                con.row_factory = sqlite3.Row
+                try:
+                    con.execute("PRAGMA foreign_keys = ON")
+                    ensure_pipeline_database(con)
+                    result = record_review_decision(
+                        con,
+                        item_id=item_id,
+                        review_label=label,
+                        review_reason=reason,
+                        reviewer=reviewer,
+                    )
+                finally:
+                    con.close()
+                cache = _get_dashboard_cache(self.db_path, force=True)
+                result["app_state"] = cache.get("app_state", {})
+                self._send_json(200, result)
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json(400, {"ok": False, "error": str(exc)})
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"ok": False, "error": str(exc)})
+            return
         if path == "/api/cache/refresh":
             if not self.db_path.exists():
                 self._send_json(500, {"error": f"SQLite not found: {self.db_path}"})
+                return
+            if not DIAGNOSTIC_RUN_LOCK.acquire(blocking=False):
+                self._send_json(
+                    409,
+                    {
+                        "ok": False,
+                        "error": "Já existe um Diagnóstico em execução.",
+                        "diagnostic": _read_diagnostic_status(),
+                    },
+                )
                 return
             try:
                 segment_state_refresh = _run_diagnostic_segment_state(self.db_path)
                 if segment_state_refresh.get("exit_code") != 0:
                     message = "\n".join(segment_state_refresh.get("stderr_tail") or segment_state_refresh.get("stdout_tail") or [])
                     raise RuntimeError(message or "segment-state diagnostic refresh failed")
-                cache = _get_dashboard_cache(self.db_path, force=True)
+                diagnostic_status = segment_state_refresh.get("diagnostic_status") or _read_diagnostic_status()
+                _diagnostic_start_stage(diagnostic_status, "dashboard_cache")
+                try:
+                    cache = _get_dashboard_cache(self.db_path, force=True)
+                except Exception as cache_exc:
+                    _diagnostic_finish_stage(
+                        diagnostic_status,
+                        "dashboard_cache",
+                        exit_code=1,
+                        stderr_tail=[str(cache_exc)],
+                    )
+                    raise
+                _diagnostic_finish_stage(
+                    diagnostic_status,
+                    "dashboard_cache",
+                    exit_code=0,
+                )
                 self._send_json(
                     200,
                     {
@@ -12004,10 +14911,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "cache": cache.get("app_state", {}).get("cache", {}),
                         "app_state": cache.get("app_state", {}),
                         "diagnostic_segment_state": segment_state_refresh,
+                        "diagnostic_status": diagnostic_status,
                     },
                 )
             except Exception as exc:  # pragma: no cover - server diagnostic path
+                diagnostic_status = _read_diagnostic_status()
+                if diagnostic_status.get("status") == "running":
+                    current_stage = str(diagnostic_status.get("current_stage") or "diagnostic")
+                    if not any(
+                        stage.get("id") == current_stage
+                        for stage in diagnostic_status.get("stages") or []
+                    ):
+                        _diagnostic_start_stage(diagnostic_status, current_stage)
+                    _diagnostic_finish_stage(
+                        diagnostic_status,
+                        current_stage,
+                        exit_code=1,
+                        stderr_tail=[str(exc)],
+                    )
                 self._send_json(500, {"ok": False, "error": str(exc)})
+            finally:
+                DIAGNOSTIC_RUN_LOCK.release()
             return
         if path == "/api/production/start":
             if not self.db_path.exists():
@@ -12032,6 +14956,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 segment_state = _latest_segment_state_summary(con)
                 post_release_status = _post_release_feedback_payload(segment_state)
                 safety_status = _safe_full_production_payload(post_release_status, segment_state)
+                diff_review = _release_diff_review_payload(con, segment_state["run_id"])
+                _apply_pairwise_calibration_gate(safety_status, diff_review)
                 evaluation_gate = safety_status.get("evaluation_gate", {})
                 if evaluation_gate.get("can_start_evaluation_full_production_now") is not True:
                     self._send_json(
@@ -12045,7 +14971,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         },
                     )
                     return
-                disk_preflight = _production_disk_preflight_payload()
+                disk_preflight = _production_disk_preflight_payload(force=True)
                 if disk_preflight.get("ok") is not True:
                     self._send_json(
                         507,
@@ -12114,6 +15040,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"ok": False, "error": str(exc)})
             finally:
                 con.close()
+            return
+        if path in {"/api/version/materialize/preflight", "/api/version/materialize/start"}:
+            if not self.db_path.exists():
+                self._send_json(500, {"ok": False, "error": f"SQLite not found: {self.db_path}"})
+                return
+            apply = path.endswith("/start")
+            try:
+                with PRODUCTION_RUN_LOCK:
+                    if _production_run_active():
+                        self._send_json(
+                            409,
+                            {"ok": False, "status": "blocked", "error": "A production run is active."},
+                        )
+                        return
+                    payload = _materialize_version_command(apply=apply)
+                    if apply:
+                        cache = _get_dashboard_cache(self.db_path, force=True)
+                        payload["app_state"] = cache.get("app_state", {})
+                    self._send_json(200, payload)
+            except Exception as exc:  # pragma: no cover - filesystem materialization path
+                self._send_json(423 if not apply else 500, {"ok": False, "status": "blocked", "error": str(exc)})
             return
         self._send_json(404, {"error": "Not found"})
 

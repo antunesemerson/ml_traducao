@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 from datetime import datetime
 from typing import Any
 
@@ -23,46 +22,53 @@ def percent(value: float | None) -> str:
     return f"{value:.2%}"
 
 
-def parse_holdout_report(path) -> dict[str, Any]:
-    text = path.read_text(encoding="utf-8", errors="replace")
-
-    def find(pattern: str, cast):
-        match = re.search(pattern, text)
-        if not match:
-            return None
-        return cast(match.group(1))
-
+def _holdout_metrics(row: Any) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    payload = dict(row)
     return {
-        "path": str(path.relative_to(db.PROJECT_ROOT)).replace("\\", "/"),
-        "dataset_run_id": find(r"Dataset run id: (\d+)", int),
-        "false_safe": find(r"- False safe: (\d+)", int),
-        "predicted_safe": find(r"- Predicted safe: (\d+)", int),
-        "false_safe_rate": find(r"- False safe rate among predicted safe: ([0-9.]+)%", lambda value: float(value) / 100),
-        "safe_precision": find(r"- Safe precision: ([0-9.]+)%", lambda value: float(value) / 100),
-        "safe_recall": find(r"- Safe recall: ([0-9.]+)%", lambda value: float(value) / 100),
+        "holdout_run_id": int(payload["id"]),
+        "path": payload.get("report_path"),
+        "dataset_run_id": int(payload["dataset_run_id"]),
+        "false_safe": int(payload.get("false_safe_count") or 0),
+        "predicted_safe": int(payload.get("predicted_safe_count") or 0),
+        "false_safe_rate": payload.get("false_safe_rate"),
+        "safe_precision": payload.get("safe_precision"),
+        "safe_recall": payload.get("safe_recall"),
+        "accuracy": payload.get("accuracy"),
+        "macro_f1": payload.get("macro_f1"),
+        "metrics_source": "ml_holdout_eval_runs",
     }
 
 
-def holdout_reports(settings: dict) -> list[dict[str, Any]]:
-    reports_dir = db.project_path(settings["reports_dir"])
-    reports = sorted(reports_dir.glob("*_ml_holdout_eval.txt"), key=lambda path: path.stat().st_mtime)
-    return [parse_holdout_report(path) for path in reports]
+def latest_holdout_metrics(conn) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT *
+        FROM ml_holdout_eval_runs
+        WHERE finished_at IS NOT NULL
+        ORDER BY finished_at DESC, id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return _holdout_metrics(row)
 
 
-def latest_holdout_metrics(settings: dict) -> dict[str, Any] | None:
-    reports = holdout_reports(settings)
-    if not reports:
-        return None
-    return reports[-1]
-
-
-def latest_holdout_metrics_for_dataset(settings: dict, dataset_run_id: int | None) -> dict[str, Any] | None:
+def latest_holdout_metrics_for_dataset(conn, dataset_run_id: int | None) -> dict[str, Any] | None:
     if dataset_run_id is None:
         return None
-    matches = [report for report in holdout_reports(settings) if report.get("dataset_run_id") == dataset_run_id]
-    if not matches:
-        return None
-    return matches[-1]
+    row = conn.execute(
+        """
+        SELECT *
+        FROM ml_holdout_eval_runs
+        WHERE dataset_run_id = ?
+          AND finished_at IS NOT NULL
+        ORDER BY finished_at DESC, id DESC
+        LIMIT 1
+        """,
+        (int(dataset_run_id),),
+    ).fetchone()
+    return _holdout_metrics(row)
 
 
 def fetch_model_run(conn, model_run_id: int | None) -> dict[str, Any]:
@@ -473,9 +479,12 @@ def main(
         db.ensure_database(conn)
         candidate = fetch_model_run(conn, model_run_id)
         active = fetch_active_model(conn)
-        holdout_metrics = latest_holdout_metrics(settings)
+        holdout_metrics = latest_holdout_metrics_for_dataset(
+            conn,
+            int(candidate["dataset_run_id"]),
+        )
         active_holdout_metrics = latest_holdout_metrics_for_dataset(
-            settings,
+            conn,
             int(active["dataset_run_id"]) if active else None,
         )
         candidate_score_run = fetch_latest_full_score_run(conn, int(candidate["id"]))

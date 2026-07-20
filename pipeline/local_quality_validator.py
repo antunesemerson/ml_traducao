@@ -33,12 +33,8 @@ GENDER_SUFFIX_QUESTION_PATTERN = re.compile(
 SPANISH_PUNCTUATION = (
     "\u00bf",
     "\u00a1",
-    "\u00ab",
-    "\u00bb",
     "\u00c2\u00bf",
     "\u00c2\u00a1",
-    "\u00c2\u00ab",
-    "\u00c2\u00bb",
 )
 
 SPANISH_RESIDUE_WORDS = {

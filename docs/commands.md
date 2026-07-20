@@ -5,7 +5,7 @@ Este arquivo reúne os principais comandos do projeto CK3 PT-BR.
 Os comandos devem ser executados na raiz do projeto:
 
 ```powershell
-cd "C:\Users\Emerson\OneDrive\Área de Trabalho\Projetos\0001 - ML Tradução"
+Set-Location -LiteralPath "<caminho-do-projeto>"
 ```
 
 ## Setup E Ciclo Base

@@ -277,8 +277,10 @@ def validate_candidate(
         return "missing_output_file", None, None
 
     spanish_tokens = structural_tokens(row["spanish_text"])
+    current_tokens = structural_tokens(current_text)
     confirmed_tokens = structural_tokens(confirmed_text)
     token_mismatch = spanish_tokens != confirmed_tokens
+    preserves_output_token_signature = current_tokens == confirmed_tokens
     locked_override = allow_locked_token_override and row["review_state"] == "human_locked" and int(row["locked"] or 0) == 1
     token_policy_decision = row.get("token_policy_decision_id") is not None
     token_policy_allowed = require_token_policy_decision or allow_token_policy_decision
@@ -291,7 +293,7 @@ def validate_candidate(
             return "stale_token_policy_confirmed_hash", None, None
         if row.get("token_policy_output_text_hash") != sha256_text(current_text):
             return "stale_token_policy_output_hash", None, None
-    elif token_mismatch and not locked_override:
+    elif token_mismatch and not locked_override and not preserves_output_token_signature:
         return "token_mismatch", None, None
 
     lines = output_path.read_text(encoding="utf-8-sig").splitlines()
@@ -311,6 +313,8 @@ def validate_candidate(
 
     if new_line == current_line:
         return "already_matches_line", current_line, new_line
+    if token_mismatch and preserves_output_token_signature and not require_token_policy_decision:
+        return "ready_preserved_output_token_signature", current_line, new_line
     if token_mismatch and token_policy_decision:
         return "ready_token_policy_decision", current_line, new_line
     if token_mismatch and locked_override:
@@ -319,7 +323,12 @@ def validate_candidate(
 
 
 def validation_priority(status: str) -> int:
-    if status in {"ready", "ready_token_override", "ready_token_policy_decision"}:
+    if status in {
+        "ready",
+        "ready_preserved_output_token_signature",
+        "ready_token_override",
+        "ready_token_policy_decision",
+    }:
         return 0
     if status in {"already_matches", "already_matches_line"}:
         return 1
@@ -448,7 +457,12 @@ def insert_apply_items(
         segment_id = int(row["segment_id"])
         result_status = status
         applied = 0
-        if status in {"ready", "ready_token_override", "ready_token_policy_decision"} and apply:
+        if status in {
+            "ready",
+            "ready_preserved_output_token_signature",
+            "ready_token_override",
+            "ready_token_policy_decision",
+        } and apply:
             if segment_id in applied_segment_ids:
                 result_status = "applied"
                 applied = 1
@@ -669,7 +683,12 @@ def main(
         include_intentional_blank=include_intentional_blank,
     )
     for row, status, _current_line, new_line in previews:
-        if status in {"ready", "ready_token_override", "ready_token_policy_decision"} and new_line is not None:
+        if status in {
+            "ready",
+            "ready_preserved_output_token_signature",
+            "ready_token_override",
+            "ready_token_policy_decision",
+        } and new_line is not None:
             file_updates[row["relative_path"]][int(row["output_line_number"])] = new_line
             ready_entries.append((row, new_line))
 
@@ -687,6 +706,7 @@ def main(
     elapsed = datetime.now() - started_at
     ready_count = (
         result_counts["ready"]
+        + result_counts["ready_preserved_output_token_signature"]
         + result_counts["ready_token_override"]
         + result_counts["ready_token_policy_decision"]
     )
@@ -734,7 +754,14 @@ def main(
     if not previews:
         report_lines.append("- No candidates selected")
 
-    report_path = db.write_report(settings, "apply_segment_state_updates", report_lines)
+    report_kind = (
+        "apply_segment_state_updates_token_policy"
+        if require_token_policy_decision
+        else "apply_segment_state_updates_mixed_token_policy"
+        if allow_token_policy_decision
+        else "apply_segment_state_updates"
+    )
+    report_path = db.write_report(settings, report_kind, report_lines)
     finished_at_db = datetime.now().isoformat(timespec="seconds")
     with db.connect(settings) as conn:
         db.ensure_database(conn)

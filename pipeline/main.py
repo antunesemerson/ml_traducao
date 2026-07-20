@@ -1455,6 +1455,12 @@ def main() -> None:
         help="During ml-score, include locked human confirmations in the scoring sample.",
     )
     parser.add_argument(
+        "--ml-candidate-text-source",
+        choices=["effective", "old", "output"],
+        default="effective",
+        help="During ml-score, select the exact package text to score.",
+    )
+    parser.add_argument(
         "--ml-feature-set",
         choices=["legacy_v1", "structural_v2", "structural_v3", "language_v4"],
         default="legacy_v1",
@@ -1550,6 +1556,12 @@ def main() -> None:
         type=int,
         default=None,
         help="During compatible ML modes, evaluate a specific model run id instead of the active model.",
+    )
+    parser.add_argument(
+        "--ml-resume-run-id",
+        type=int,
+        default=None,
+        help="During ml-score, resume an exact unfinished score run after validating its contract.",
     )
     parser.add_argument(
         "--ml-active-score-run-id",
@@ -4068,6 +4080,8 @@ def main() -> None:
                         include_locked=args.ml_include_locked,
                         batch_size=args.ml_score_batch_size,
                         model_run_id=args.ml_model_run_id,
+                        candidate_text_source=args.ml_candidate_text_source,
+                        resume_run_id=args.ml_resume_run_id,
                     )
             except Exception:
                 traceback.print_exc(file=buffer)

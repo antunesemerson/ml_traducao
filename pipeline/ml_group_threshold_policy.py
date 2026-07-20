@@ -94,10 +94,23 @@ def latest_score_run_id(conn) -> int:
         SELECT id
         FROM ml_score_runs
         WHERE finished_at IS NOT NULL
+          AND path_filter IS NULL
+          AND limit_count IS NULL
+          AND candidate_text_source = 'output'
         ORDER BY id DESC
         LIMIT 1
         """
     ).fetchone()
+    if row is None:
+        row = conn.execute(
+            """
+            SELECT id
+            FROM ml_score_runs
+            WHERE finished_at IS NOT NULL
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
     if row is None:
         raise RuntimeError("No completed ml_score_runs found. Run ml-score first.")
     return int(row["id"])

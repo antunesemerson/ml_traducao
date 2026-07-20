@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "provider_id": "spanish_dynamic_literal",
+  "label": "Espanhol residual em literal dinâmico",
+  "enabled": true,
+  "priority": 300,
+  "evidence_type": "deterministic_spanish_dynamic_literal_repair",
+  "discovery": {
+    "issue_types": ["spanish_residue_in_literal"]
+  },
+  "shadow_script": "pipeline/quality_spanish_dynamic_literal_shadow.py",
+  "shadow_args": [],
+  "evidence_script": "pipeline/quality_spanish_dynamic_literal_pairwise_evidence.py",
+  "evidence_args": []
+}
