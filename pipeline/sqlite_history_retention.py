@@ -53,8 +53,18 @@ def _database_stats(conn: sqlite3.Connection, database_path: Path | None) -> dic
         if database_path is not None and database_path.exists()
         else page_size * page_count
     )
+    wal_bytes = 0
+    shm_bytes = 0
+    if database_path is not None:
+        wal_path = Path(f"{database_path}-wal")
+        shm_path = Path(f"{database_path}-shm")
+        wal_bytes = int(wal_path.stat().st_size) if wal_path.exists() else 0
+        shm_bytes = int(shm_path.stat().st_size) if shm_path.exists() else 0
     return {
         "database_bytes": database_bytes,
+        "wal_bytes": wal_bytes,
+        "shm_bytes": shm_bytes,
+        "total_storage_bytes": database_bytes + wal_bytes + shm_bytes,
         "page_size": page_size,
         "page_count": page_count,
         "freelist_pages": freelist_count,

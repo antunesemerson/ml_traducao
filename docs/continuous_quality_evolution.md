@@ -13,6 +13,23 @@ O fluxo ja possui a espinha dorsal necessaria para deixar de depender de uma inv
 
 Os provedores sao genericos e independentes do numero da versao. Portanto, qualquer investigacao nova pode entrar no proximo Diagnostico apenas com scripts de shadow/evidencia, manifest e testes.
 
+### Contrato operacional do segment-state
+
+O commit de `segment_state_runs` e `segment_state_items` no SQLite e o marco autoritativo
+de conclusao. Relatorios em `reports/` sao artefatos auxiliares, ficam desabilitados no
+Diagnostico e podem ser gerados separadamente para uma run concluida. Falha, ausencia ou
+timeout de relatorio nao invalida o snapshot.
+
+Se um processo expirar depois do commit critico, o Diagnostico procura uma run completa
+compativel com a epoch, reutiliza essa run e a anexa explicitamente antes de continuar a
+descoberta. Os tempos de preparacao, materializacao, reconciliacao, resumo e relatorio
+ficam registrados em `segment_state_runs.notes_json`.
+
+Detalhes historicos antigos sao tratados pela politica auditavel de
+`sqlite_history_retention.py`: resumos permanecem no banco e qualquer run referenciada por
+epoch, versao materializada ou outro historico fica protegida. A exclusao nunca ocorre no
+Diagnostico e exige plano dry-run e token de confirmacao.
+
 ## Qualidade dos dados de baixo score
 
 Na score run `#376`, os 63.423 segmentos abaixo de 50% se dividem assim:
@@ -59,6 +76,16 @@ O ranking combina severidade, alcance logaritmico no pacote, confianca da eviden
 O baixo score serve para aumentar a prioridade de uma familia, mas uma regra descoberta deve ser pesquisada em todos os segmentos ativos. Isso permite que um padrao encontrado na cauda abaixo de 50% corrija tambem casos de score moderado ou alto.
 
 ### 2. Geracao de provedores
+
+Status: **primeiro estagio implementado** por `pipeline/quality_provider_proposal_generator.py` e integrado ao Diagnostico. O gerador consome somente familias acionaveis ainda sem cobertura e grava no SQLite:
+
+- um manifest desabilitado, nunca carregado como provedor ativo;
+- o seletor e o contrato deterministico ainda por implementar;
+- invariantes obrigatorias de tokens, chave, YAML e ausencia de escrita no output;
+- casos positivos, controles negativos da mesma familia de arquivos e testes de fronteira/idempotencia;
+- a exigencia explicita de revisao humana, shadow integral, evidencia pairwise e gate monotonico.
+
+O gerador nao inventa uma traducao nem cria scripts executaveis. Ele transforma evidencia observada em um rascunho auditavel para reduzir o trabalho de especificacao sem conceder autoridade de promocao.
 
 Cada familia candidata passa por um contrato declarativo:
 
@@ -133,7 +160,18 @@ Mesmo ao pular, a epoch deve guardar a decisao e os valores que a justificaram. 
 1. **Concluido:** persistir a politica de calibracao e trocar a chamada incondicional do Diagnostico por `skip/sample/required`.
 2. **Parcialmente concluido:** medir maturidade por provedor com decisoes, epochs e acuracia supervisionada; a proxima evolucao e persistir uma serie historica propria de saude.
 3. **Concluido:** materializar a fila generica de familias descobertas, usando issues e bloqueios estruturais do pacote inteiro, com deduplicacao historica e cobertura declarada pelos provedores.
-4. Criar o gerador assistido de propostas de provedor e testes de fronteira.
+4. **Primeiro estagio concluido:** gerar e persistir propostas desabilitadas com contratos e testes de fronteira. A proxima evolucao e assistir a implementacao do transformador a partir de uma proposta revisada.
 5. Adicionar um modo de piloto automatico apenas para provedores maduros; Publicavel e Nova versao continuam como checkpoints explicitos ate haver historico suficiente.
 
 Essa ordem reduz trabalho manual sem misturar descoberta, decisao de score e escrita fisica. Cada etapa continua reversivel, mensuravel e explicavel no painel.
+## Auditoria de observações fechadas
+
+O fechamento operacional continua sendo determinado pelo lifecycle. Em seguida,
+uma auditoria independente amostra cada família `closed_observation` e reconcilia
+o segmento com score, estado atual, output e confirmação. A auditoria classifica
+evidência governada, observações sensíveis à baseline, itens que exigem revisão e
+inconsistências, mas nunca promove, reabre ou altera conteúdo automaticamente.
+
+O contrato mede separadamente a quantidade de famílias, segmentos únicos e
+vínculos segmento–família. Isso preserva o grão analítico quando o mesmo segmento
+participa de mais de uma família de sinais.

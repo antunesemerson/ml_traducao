@@ -27,6 +27,10 @@ Depois da escrita, o bridge de lifecycle resolve a evidencia pelo `evidence_type
 
 ## Registrar uma nova investigacao
 
+Quando a descoberta encontra uma familia acionavel sem cobertura, `quality_provider_proposal_generator.py` cria primeiro uma proposta desabilitada no SQLite. A proposta agrupa familias compativeis por issue/contexto, sugere a identidade do provedor e materializa casos positivos, negativos e de fronteira. Ela nunca cria um provedor ativo, nao escreve confirmacoes e nao altera score ou output.
+
+O painel exibe esses rascunhos em **Propostas**. Somente depois da revisao do contrato e da implementacao dos scripts abaixo o manifest pode ser habilitado.
+
 Uma investigacao nova precisa de:
 
 - um script de shadow que descubra candidatos e gere artefatos auditaveis;

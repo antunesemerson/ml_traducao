@@ -1462,6 +1462,180 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         """
     )
 
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_quality_closed_observation_audit_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_key TEXT NOT NULL UNIQUE,
+            rule_version TEXT NOT NULL,
+            discovery_run_id INTEGER NOT NULL,
+            quality_epoch_id INTEGER,
+            score_run_id INTEGER NOT NULL,
+            segment_state_run_id INTEGER,
+            observation_count INTEGER NOT NULL DEFAULT 0,
+            closed_observation_count INTEGER NOT NULL DEFAULT 0,
+            sampled_family_count INTEGER NOT NULL DEFAULT 0,
+            sampled_segment_count INTEGER NOT NULL DEFAULT 0,
+            sampled_item_count INTEGER NOT NULL DEFAULT 0,
+            accepted_count INTEGER NOT NULL DEFAULT 0,
+            baseline_watch_count INTEGER NOT NULL DEFAULT 0,
+            review_required_count INTEGER NOT NULL DEFAULT 0,
+            inconsistent_count INTEGER NOT NULL DEFAULT 0,
+            duplicate_count INTEGER NOT NULL DEFAULT 0,
+            orphan_count INTEGER NOT NULL DEFAULT 0,
+            invalid_sample_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'completed',
+            summary_json TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(discovery_run_id) REFERENCES ml_quality_pattern_discovery_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(quality_epoch_id) REFERENCES quality_epochs(id) ON DELETE SET NULL,
+            FOREIGN KEY(score_run_id) REFERENCES ml_score_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(segment_state_run_id) REFERENCES segment_state_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_quality_closed_observation_audit_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            observation_id INTEGER NOT NULL,
+            family_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            relative_path TEXT,
+            source_key TEXT,
+            evidence_kind TEXT NOT NULL,
+            issue_type TEXT NOT NULL,
+            token_context TEXT NOT NULL,
+            file_family TEXT NOT NULL,
+            text_relation TEXT NOT NULL,
+            score REAL,
+            state_group TEXT,
+            final_state TEXT,
+            locked INTEGER NOT NULL DEFAULT 0,
+            confirmed_matches_output INTEGER NOT NULL DEFAULT 0,
+            needs_output_apply INTEGER NOT NULL DEFAULT 0,
+            confirmation_level TEXT,
+            confirmation_source TEXT,
+            confirmation_label TEXT,
+            closure_class TEXT NOT NULL CHECK(
+                closure_class IN (
+                    'accepted_closed',
+                    'baseline_sensitive_watch',
+                    'review_required',
+                    'inconsistent_closure'
+                )
+            ),
+            review_reason TEXT NOT NULL,
+            evidence_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES ml_quality_closed_observation_audit_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(observation_id) REFERENCES ml_quality_pattern_observations(id) ON DELETE CASCADE,
+            FOREIGN KEY(family_id) REFERENCES ml_quality_pattern_families(id) ON DELETE CASCADE,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(run_id, observation_id, segment_id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_quality_provider_proposal_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_key TEXT NOT NULL UNIQUE,
+            rule_version TEXT NOT NULL,
+            quality_epoch_id INTEGER,
+            discovery_run_id INTEGER NOT NULL,
+            score_run_id INTEGER NOT NULL,
+            actionable_family_count INTEGER NOT NULL DEFAULT 0,
+            proposal_count INTEGER NOT NULL DEFAULT 0,
+            positive_case_count INTEGER NOT NULL DEFAULT 0,
+            negative_case_count INTEGER NOT NULL DEFAULT 0,
+            boundary_case_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'completed',
+            summary_json TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(quality_epoch_id) REFERENCES quality_epochs(id) ON DELETE SET NULL,
+            FOREIGN KEY(discovery_run_id) REFERENCES ml_quality_pattern_discovery_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(score_run_id) REFERENCES ml_score_runs(id) ON DELETE RESTRICT
+        )
+        """
+    )
+
+    changes.extend(
+        ensure_columns(
+            conn,
+            "ml_quality_closed_observation_audit_runs",
+            [("sampled_item_count", "INTEGER NOT NULL DEFAULT 0")],
+        )
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_quality_provider_proposals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            proposal_key TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            label TEXT NOT NULL,
+            issue_type TEXT NOT NULL,
+            token_context TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft_review_required',
+            priority REAL NOT NULL DEFAULT 0,
+            confidence REAL NOT NULL DEFAULT 0,
+            family_count INTEGER NOT NULL DEFAULT 0,
+            segment_count INTEGER NOT NULL DEFAULT 0,
+            manifest_draft_json TEXT NOT NULL,
+            contract_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES ml_quality_provider_proposal_runs(id) ON DELETE CASCADE,
+            UNIQUE(run_id, proposal_key)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_quality_provider_proposal_families (
+            proposal_id INTEGER NOT NULL,
+            family_id INTEGER NOT NULL,
+            priority REAL NOT NULL DEFAULT 0,
+            segment_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(proposal_id, family_id),
+            FOREIGN KEY(proposal_id) REFERENCES ml_quality_provider_proposals(id) ON DELETE CASCADE,
+            FOREIGN KEY(family_id) REFERENCES ml_quality_pattern_families(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_quality_provider_proposal_cases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            proposal_id INTEGER NOT NULL,
+            case_key TEXT NOT NULL,
+            case_kind TEXT NOT NULL CHECK(case_kind IN ('positive', 'negative', 'boundary')),
+            segment_id INTEGER,
+            relative_path TEXT,
+            source_key TEXT,
+            input_text TEXT NOT NULL,
+            expected_behavior TEXT NOT NULL,
+            assertions_json TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(proposal_id) REFERENCES ml_quality_provider_proposals(id) ON DELETE CASCADE,
+            UNIQUE(proposal_id, case_key)
+        )
+        """
+    )
+
     changes.extend(
         ensure_columns(
             conn,
@@ -8062,6 +8236,36 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         """
         CREATE INDEX IF NOT EXISTS idx_ml_quality_pattern_observations_run_priority
         ON ml_quality_pattern_observations(run_id, priority DESC, family_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_quality_closed_audit_runs_discovery
+        ON ml_quality_closed_observation_audit_runs(discovery_run_id, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_quality_closed_audit_items_class
+        ON ml_quality_closed_observation_audit_items(run_id, closure_class, family_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_quality_provider_proposal_runs_discovery
+        ON ml_quality_provider_proposal_runs(discovery_run_id, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_quality_provider_proposals_run_priority
+        ON ml_quality_provider_proposals(run_id, priority DESC, id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_quality_provider_proposal_cases_proposal_kind
+        ON ml_quality_provider_proposal_cases(proposal_id, case_kind, id)
         """
     )
     conn.execute(
