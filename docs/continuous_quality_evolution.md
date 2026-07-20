@@ -25,6 +25,10 @@ compativel com a epoch, reutiliza essa run e a anexa explicitamente antes de con
 descoberta. Os tempos de preparacao, materializacao, reconciliacao, resumo e relatorio
 ficam registrados em `segment_state_runs.notes_json`.
 
+O mesmo principio vale para a promocao pareada: shadow/evidencia/gate/fila passam IDs de
+runs do SQLite. Relatorios podem ser solicitados com `--report`, mas nao sao entrada do
+ciclo nem requisito para gravar ou reutilizar evidencia.
+
 Detalhes historicos antigos sao tratados pela politica auditavel de
 `sqlite_history_retention.py`: resumos permanecem no banco e qualquer run referenciada por
 epoch, versao materializada ou outro historico fica protegida. A exclusao nunca ocorre no

@@ -172,27 +172,18 @@ def queue_confirmation(
     )
 
 
-def write_reports(
+def summarize_records(
     records: list[dict[str, Any]],
     state_run_id: int,
     evidence_type: str,
     apply: bool,
 ) -> dict[str, Any]:
-    reports_dir = db.project_path(db.load_settings()["reports_dir"])
-    base = reports_dir / f"{stamp()}_quality_pairwise_promotion_queue_{'apply' if apply else 'dry_run'}"
-    markdown_path = base.with_suffix(".md")
-    jsonl_path = base.with_suffix(".jsonl")
-    summary_path = base.with_name(base.name + "_summary.json")
     ready = [row for row in records if row["ready"]]
     blocked = [row for row in records if not row["ready"]]
     newly_queued = [row for row in ready if not row["already_queued"]]
     already_queued = [row for row in ready if row["already_queued"]]
     block_counts = Counter(reason for row in blocked for reason in row["block_reasons"])
-
-    with jsonl_path.open("w", encoding="utf-8", newline="\n") as handle:
-        for row in records:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-    summary = {
+    return {
         "schema_version": 1,
         "source": RULE_VERSION,
         "evidence_type": evidence_type,
@@ -208,11 +199,36 @@ def write_reports(
         "source_changed": False,
         "output_changed": False,
         "next_step": "run_segment_state_and_apply_dry_runs" if apply else "rerun_with_apply_if_all_ready",
-        "artifacts": {
-            "markdown": str(markdown_path),
-            "jsonl": str(jsonl_path),
-            "summary": str(summary_path),
-        },
+        "artifacts": {},
+    }
+
+
+def write_reports(
+    records: list[dict[str, Any]],
+    state_run_id: int,
+    evidence_type: str,
+    apply: bool,
+) -> dict[str, Any]:
+    reports_dir = db.project_path(db.load_settings()["reports_dir"])
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    base = reports_dir / f"{stamp()}_quality_pairwise_promotion_queue_{'apply' if apply else 'dry_run'}"
+    markdown_path = base.with_suffix(".md")
+    jsonl_path = base.with_suffix(".jsonl")
+    summary_path = base.with_name(base.name + "_summary.json")
+    ready = [row for row in records if row["ready"]]
+    blocked = [row for row in records if not row["ready"]]
+    newly_queued = [row for row in ready if not row["already_queued"]]
+    already_queued = [row for row in ready if row["already_queued"]]
+    block_counts = Counter(reason for row in blocked for reason in row["block_reasons"])
+
+    with jsonl_path.open("w", encoding="utf-8", newline="\n") as handle:
+        for row in records:
+            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    summary = summarize_records(records, state_run_id, evidence_type, apply)
+    summary["artifacts"] = {
+        "markdown": str(markdown_path),
+        "jsonl": str(jsonl_path),
+        "summary": str(summary_path),
     }
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     lines = [
@@ -244,6 +260,11 @@ def main() -> int:
     )
     parser.add_argument("--evidence-type", default=DEFAULT_EVIDENCE_TYPE)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="Write optional report artifacts; confirmations and SQLite remain authoritative.",
+    )
     args = parser.parse_args()
     settings = db.load_settings()
     database_path = db.get_database_path(settings)
@@ -265,12 +286,18 @@ def main() -> int:
             records = evaluate_rows(conn, state_run_id, args.evidence_type)
     if not records:
         raise RuntimeError("No promotion-eligible pairwise evidence was found.")
-    summary = write_reports(records, state_run_id, args.evidence_type, args.apply)
+    summary = (
+        write_reports(records, state_run_id, args.evidence_type, args.apply)
+        if args.report
+        else summarize_records(records, state_run_id, args.evidence_type, args.apply)
+    )
     print("[quality_pairwise_promotion_queue] Completed")
     print(f"[quality_pairwise_promotion_queue] Ready: {summary['ready_count']}")
     print(f"[quality_pairwise_promotion_queue] Blocked: {summary['blocked_count']}")
     print(f"[quality_pairwise_promotion_queue] Queued: {summary['queued_confirmation_count']}")
-    print(f"[quality_pairwise_promotion_queue] Summary: {summary['artifacts']['summary']}")
+    if summary["artifacts"].get("summary"):
+        print(f"[quality_pairwise_promotion_queue] Summary: {summary['artifacts']['summary']}")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 
 

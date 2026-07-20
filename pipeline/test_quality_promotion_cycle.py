@@ -13,6 +13,7 @@ if str(PIPELINE_DIR) not in sys.path:
 
 from quality_promotion_cycle import (  # noqa: E402
     PROVIDERS_DIR,
+    _promotion_counts,
     load_providers,
     promotion_evidence_types,
     run_diagnostic,
@@ -20,6 +21,21 @@ from quality_promotion_cycle import (  # noqa: E402
 
 
 class QualityPromotionCycleTests(unittest.TestCase):
+    def test_promotion_counts_prefer_structured_payload(self) -> None:
+        stage = {
+            "payload": {
+                "ready_count": 30,
+                "blocked_count": 0,
+                "queued_confirmation_count": 0,
+            },
+            "stdout_tail": ["[quality_pairwise_promotion_queue] Ready: 0"],
+        }
+
+        self.assertEqual(
+            _promotion_counts(stage),
+            {"ready": 30, "blocked": 0, "queued": 0},
+        )
+
     def test_registered_providers_are_unique_and_version_agnostic(self) -> None:
         providers = load_providers()
 

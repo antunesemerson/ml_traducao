@@ -20,6 +20,7 @@ from quality_spanish_dynamic_literal_pairwise_evidence import (  # noqa: E402
 from quality_spanish_dynamic_literal_shadow import (  # noqa: E402
     PROMOTION_SAFE_LITERAL_SOURCES,
     repair_dynamic_literals,
+    requires_sentence_composition,
 )
 
 
@@ -105,9 +106,61 @@ class SpanishDynamicLiteralShadowTests(unittest.TestCase):
         self.assertNotRegex(provider.shadow_script.name.casefold(), r"(^|[_-])v\d+($|[_-])")
         self.assertNotRegex(provider.evidence_script.name.casefold(), r"(^|[_-])v\d+($|[_-])")
 
-    def test_past_tense_mapping_stays_out_of_initial_automatic_scope(self) -> None:
-        self.assertNotIn("hiciste", PROMOTION_SAFE_LITERAL_SOURCES)
+    def test_context_guarded_past_tense_mapping_enters_automatic_scope(self) -> None:
+        self.assertIn("hiciste", PROMOTION_SAFE_LITERAL_SOURCES)
         self.assertIn("vasallo", PROMOTION_SAFE_LITERAL_SOURCES)
+
+    def test_allows_past_tense_pair_with_nominal_complement(self) -> None:
+        original = (
+            "[actor.GetShortUIName|U] "
+            "[Select_CString(actor.IsLocalPlayer,'hiciste','hizo')] preparativos"
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertIn("'fez','fez'", candidate.replace(" ", ""))
+        self.assertFalse(any(requires_sentence_composition(item) for item in repairs))
+
+    def test_blocks_translated_verb_before_existing_finite_verb(self) -> None:
+        original = (
+            "[actor.GetShortUIName|U] "
+            "[Select_CString(actor.IsLocalPlayer,'ganaste','ganó')] adquiriu experiência"
+        )
+
+        _, repairs = repair_dynamic_literals(original)
+
+        self.assertTrue(any(requires_sentence_composition(item) for item in repairs))
+
+    def test_blocks_translated_verb_after_incompatible_preposition(self) -> None:
+        original = (
+            "foi decapitado por "
+            "[Select_CString(actor.IsLocalPlayer,'hiciste','hizo')] e usou a cabeça"
+        )
+
+        _, repairs = repair_dynamic_literals(original)
+
+        self.assertTrue(any(requires_sentence_composition(item) for item in repairs))
+
+    def test_blocks_empty_and_reflexive_finite_complements(self) -> None:
+        _, empty_repairs = repair_dynamic_literals(
+            "[actor.GetName] [Select_CString(actor.IsLocalPlayer,'hiciste','hizo')]"
+        )
+        _, reflexive_repairs = repair_dynamic_literals(
+            "[actor.GetName] [LocalPlayerString('recibiste','recibió')] se machucou"
+        )
+
+        self.assertTrue(any(requires_sentence_composition(item) for item in empty_repairs))
+        self.assertTrue(any(requires_sentence_composition(item) for item in reflexive_repairs))
+
+    def test_blocks_causative_starvation_composition(self) -> None:
+        original = (
+            "[target.GetName] lhe "
+            "[Select_CString(target.IsLocalPlayer,'hiciste','hizo')] matar de fome"
+        )
+
+        _, repairs = repair_dynamic_literals(original)
+
+        self.assertTrue(any(requires_sentence_composition(item) for item in repairs))
 
     def test_reconciles_only_current_provider_evidence_as_active(self) -> None:
         conn = sqlite3.connect(":memory:")
