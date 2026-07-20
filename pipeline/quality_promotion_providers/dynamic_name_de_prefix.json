@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "provider_id": "dynamic_name_de_prefix",
+  "label": "Preposicao de antes de nome dinamico",
+  "enabled": true,
+  "priority": 500,
+  "evidence_type": "deterministic_dynamic_name_de_prefix_repair",
+  "discovery": {
+    "issue_types": []
+  },
+  "shadow_script": "pipeline/quality_dynamic_name_de_prefix_shadow.py",
+  "shadow_args": [],
+  "evidence_script": "pipeline/quality_dynamic_name_de_prefix_pairwise_evidence.py",
+  "evidence_args": []
+}

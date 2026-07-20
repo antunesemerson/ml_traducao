@@ -11,6 +11,7 @@ from typing import Any
 import joblib
 
 import db
+import source_tree_snapshot
 import local_quality_validator
 from apply_safe_output_updates import protected_tokens
 from ml_train_risk import DEFAULT_FEATURE_SET, candidate_differs_from_output, language_features, make_text
@@ -341,9 +342,18 @@ def fetch_segments(
     limit: int | None,
     path_like: str | None,
     include_locked: bool,
+    candidate_text_source: str = "effective",
     offset: int = 0,
     scope_sql: str | None = None,
 ) -> list[dict[str, Any]]:
+    candidate_expressions = {
+        "effective": "coalesce(o.portuguese_text, sc.confirmed_text, s.old_text, s.spanish_text, '')",
+        "old": "coalesce(s.old_text, '')",
+        "output": "coalesce(o.portuguese_text, '')",
+    }
+    candidate_expression = candidate_expressions.get(candidate_text_source)
+    if candidate_expression is None:
+        raise ValueError(f"Unsupported candidate text source: {candidate_text_source}")
     path_sql, path_params = path_filter_sql(path_like)
     qualified_scope_sql = qualify_trusted_scope_sql(scope_sql)
     scope_filter_sql = f"AND ({qualified_scope_sql})" if qualified_scope_sql else ""
@@ -375,7 +385,7 @@ def fetch_segments(
             s.has_english,
             s.has_old,
             o.portuguese_text AS output_text,
-            coalesce(o.portuguese_text, sc.confirmed_text, s.old_text, s.spanish_text, '') AS candidate_text,
+            {candidate_expression} AS candidate_text,
             sc.confirmation_level,
             coalesce(sc.locked, 0) AS locked,
             sc.confidence_score AS confirmation_confidence,
@@ -385,7 +395,7 @@ def fetch_segments(
         LEFT JOIN segment_confirmations sc ON sc.segment_id = s.id
         LEFT JOIN token_counts tc ON tc.segment_id = s.id
         WHERE s.is_active = 1
-          AND coalesce(o.portuguese_text, sc.confirmed_text, s.old_text, s.spanish_text, '') <> ''
+          AND {candidate_expression} <> ''
           {path_sql}
           {scope_filter_sql}
           {locked_sql}
@@ -404,6 +414,7 @@ def fetch_segments(
     result: list[dict[str, Any]] = []
     for row in rows:
         data = dict(row)
+        data["candidate_text_source"] = candidate_text_source
         data["text_length"] = len(data.get("candidate_text") or "")
         result.append(data)
     return result
@@ -484,7 +495,11 @@ def final_decision(
             + ",".join(validation["suppressed_issue_codes"])
         )
 
-    if model_action == "auto_safe" and candidate_differs_from_output(row):
+    if (
+        model_action == "auto_safe"
+        and row.get("candidate_text_source") == "effective"
+        and candidate_differs_from_output(row)
+    ):
         final_action = "needs_human"
         risk_class = "high"
         deterministic_blocked = 1
@@ -664,6 +679,9 @@ def insert_run(
     path_like: str | None,
     limit: int | None,
     started_at: str,
+    source_snapshot_id: int | None = None,
+    candidate_text_source: str = "effective",
+    candidate_tree_hash: str | None = None,
     scope_sql: str | None = None,
 ) -> int:
     notes = "Scores real segments with deterministic safety gates; does not apply changes."
@@ -677,11 +695,14 @@ def insert_run(
             model_version,
             path_filter,
             limit_count,
+            source_snapshot_id,
+            candidate_text_source,
+            candidate_tree_hash,
             notes,
             started_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             RULE_VERSION,
@@ -689,12 +710,69 @@ def insert_run(
             model_run["model_version"],
             path_like or ("trusted_specialist_scope" if scope_sql else None),
             limit,
+            source_snapshot_id,
+            candidate_text_source,
+            candidate_tree_hash,
             notes,
             started_at,
             started_at,
         ),
     )
     return int(cursor.lastrowid)
+
+
+def validate_resume_run(
+    conn,
+    resume_run_id: int,
+    *,
+    model_run_id: int,
+    path_like: str | None,
+    limit: int | None,
+    source_snapshot_id: int | None,
+    candidate_text_source: str,
+    candidate_tree_hash: str | None,
+    scope_sql: str | None,
+) -> tuple[int, int]:
+    run = conn.execute(
+        "SELECT * FROM ml_score_runs WHERE id = ?",
+        (int(resume_run_id),),
+    ).fetchone()
+    if not run:
+        raise RuntimeError(f"Score run {resume_run_id} does not exist.")
+    payload = dict(run)
+    expected_path_filter = path_like or ("trusted_specialist_scope" if scope_sql else None)
+    checks = {
+        "rule_version": (payload.get("rule_version"), RULE_VERSION),
+        "model_run_id": (int(payload.get("model_run_id") or 0), int(model_run_id)),
+        "path_filter": (payload.get("path_filter"), expected_path_filter),
+        "limit_count": (payload.get("limit_count"), limit),
+        "source_snapshot_id": (payload.get("source_snapshot_id"), source_snapshot_id),
+        "candidate_text_source": (payload.get("candidate_text_source"), candidate_text_source),
+        "candidate_tree_hash": (payload.get("candidate_tree_hash"), candidate_tree_hash),
+    }
+    mismatches = [
+        f"{key}={actual!r} expected {expected!r}"
+        for key, (actual, expected) in checks.items()
+        if actual != expected
+    ]
+    if payload.get("finished_at"):
+        mismatches.append("run is already finished")
+    if mismatches:
+        raise RuntimeError(
+            f"Score run {resume_run_id} cannot be resumed: " + "; ".join(mismatches)
+        )
+    item_count = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM ml_score_items WHERE run_id = ?",
+            (int(resume_run_id),),
+        ).fetchone()[0]
+    )
+    if item_count != int(payload.get("scored_count") or 0):
+        raise RuntimeError(
+            f"Score run {resume_run_id} summary is inconsistent: "
+            f"scored_count={payload.get('scored_count')} items={item_count}."
+        )
+    return int(resume_run_id), item_count
 
 
 def insert_items(conn, run_id: int, items: list[dict[str, Any]], created_at: str) -> None:
@@ -842,12 +920,30 @@ def main(
     batch_size: int = 5000,
     model_run_id: int | None = None,
     scope_sql: str | None = None,
+    candidate_text_source: str = "effective",
+    resume_run_id: int | None = None,
 ) -> int:
     settings = db.load_settings()
     started_at_dt = datetime.now()
     started_at = started_at_dt.isoformat(timespec="seconds")
     print("[ml_score_segments] Starting ML segment scoring")
     print(f"[ml_score_segments] Rule version: {RULE_VERSION}")
+
+    if candidate_text_source not in {"effective", "old", "output"}:
+        raise ValueError(f"Unsupported candidate text source: {candidate_text_source}")
+
+    source_snapshot_id = None
+    candidate_tree_hash = None
+    if candidate_text_source in {"old", "output"}:
+        snapshot = source_tree_snapshot.create_snapshot(
+            label=f"ml_score_{candidate_text_source}_{started_at_dt.strftime('%Y%m%d_%H%M%S')}",
+            game_version=None,
+            metadata={"consumer": "ml_score_segments", "candidate_text_source": candidate_text_source},
+        )
+        source_snapshot_id = int(snapshot["snapshot_id"])
+        candidate_root_key = "spanish_traduzido_old" if candidate_text_source == "old" else "output_spanish"
+        candidate_summary, _ = source_tree_snapshot.inspect_tree(db.project_path(settings[candidate_root_key]))
+        candidate_tree_hash = candidate_summary["tree_hash"]
 
     with db.connect(settings) as conn:
         db.ensure_database(conn)
@@ -858,16 +954,48 @@ def main(
         model = bundle["model"]
         metadata = bundle.get("metadata", {})
         feature_set = metadata.get("feature_set") or DEFAULT_FEATURE_SET
-        score_run_id = insert_run(conn, model_run, path_like, limit, started_at, scope_sql=scope_sql)
+        if resume_run_id is not None:
+            score_run_id, resumed_scored_count = validate_resume_run(
+                conn,
+                resume_run_id,
+                model_run_id=int(model_run["id"]),
+                path_like=path_like,
+                limit=limit,
+                source_snapshot_id=source_snapshot_id,
+                candidate_text_source=candidate_text_source,
+                candidate_tree_hash=candidate_tree_hash,
+                scope_sql=scope_sql,
+            )
+        else:
+            score_run_id = insert_run(
+                conn,
+                model_run,
+                path_like,
+                limit,
+                started_at,
+                source_snapshot_id=source_snapshot_id,
+                candidate_text_source=candidate_text_source,
+                candidate_tree_hash=candidate_tree_hash,
+                scope_sql=scope_sql,
+            )
+            resumed_scored_count = 0
         conn.commit()
         print(f"[ml_score_segments] Model run id: {model_run['id']}")
         print(f"[ml_score_segments] Score run id: {score_run_id}")
+        print(f"[ml_score_segments] Candidate text source: {candidate_text_source}")
+        print(f"[ml_score_segments] Source snapshot id: {source_snapshot_id}")
+        print(f"[ml_score_segments] Candidate tree hash: {candidate_tree_hash}")
         print(f"[ml_score_segments] Batch size: {batch_size}")
+        if resume_run_id is not None:
+            print(
+                f"[ml_score_segments] Resuming score run {score_run_id} "
+                f"from {resumed_scored_count} committed items"
+            )
         if scope_sql:
             print("[ml_score_segments] Trusted specialist scope enabled")
 
-        total_scored = 0
-        offset = 0
+        total_scored = resumed_scored_count
+        offset = resumed_scored_count
         effective_batch_size = max(1, batch_size)
         while True:
             remaining = None if limit is None else max(limit - total_scored, 0)
@@ -879,6 +1007,7 @@ def main(
                 limit=current_limit,
                 path_like=path_like,
                 include_locked=include_locked,
+                candidate_text_source=candidate_text_source,
                 offset=offset,
                 scope_sql=scope_sql,
             )

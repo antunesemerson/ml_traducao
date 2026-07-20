@@ -90,16 +90,18 @@ def fetch_candidates(
         SELECT
             op.*,
             s.spanish_text,
+            o.portuguese_text AS current_output_text,
             sc.locked AS existing_locked,
             sc.confirmation_level AS existing_confirmation_level
         FROM offline_proposals op
         JOIN source_segments s ON s.id = op.segment_id
+        LEFT JOIN output_segments o ON o.segment_id = op.segment_id
         LEFT JOIN segment_confirmations sc ON sc.segment_id = op.segment_id
         WHERE op.run_id = ?
           AND op.status = 'auto_ready'
           AND op.confidence_score >= ?
           AND op.apply_result IS NULL
-          AND sc.segment_id IS NULL
+          AND (sc.segment_id IS NULL OR COALESCE(sc.locked, 0) = 0)
           AND op.proposal_source IN ({allowed_sources_sql})
           {token_sql}
           {path_sql}
@@ -130,6 +132,8 @@ def validate_candidate(item: dict, include_literal_changed: bool) -> tuple[bool,
         item["proposed_text"],
         risk_terms,
     )
+    if str(item.get("original_text") or "") != str(item.get("current_output_text") or ""):
+        reasons.append("stale_current_output")
     if status == "mismatch":
         reasons.append("token_structure_mismatch")
     if status == "literal_changed" and not include_literal_changed:

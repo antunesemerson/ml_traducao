@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { createPortal } from 'react-dom';
 import './styles.css';
 import {
   Activity,
@@ -10,6 +11,8 @@ import {
   BarChart3,
   BrainCircuit,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Cpu,
   Database,
   ExternalLink,
@@ -50,7 +53,7 @@ import {
   Pie,
   PieChart,
   ResponsiveContainer,
-  Tooltip,
+  Tooltip as RechartsTooltip,
   XAxis,
   YAxis,
 } from 'recharts';
@@ -172,12 +175,242 @@ const chartText = { fontSize: 12, fill: 'currentColor', opacity: 0.65 };
 
 const cn = (...classes) => classes.filter(Boolean).join(' ');
 
+const GLOBAL_TOOLTIP_ID = 'global-dashboard-tooltip';
+const GLOBAL_TOOLTIP_SELECTOR = '[data-tooltip], [data-tooltip-description], [data-tooltip-title]';
+
+const tooltipPayloadFor = (anchor) => {
+  let title = String(anchor.dataset.tooltipTitle ?? '').trim();
+  let description = String(anchor.dataset.tooltipDescription ?? anchor.dataset.tooltip ?? '').trim();
+  let meta = String(anchor.dataset.tooltipMeta ?? '').trim();
+
+  const descriptionLines = description.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!title && descriptionLines.length > 1) {
+    title = descriptionLines.shift();
+    const statusIndex = descriptionLines.findIndex((line) => /^Status:/i.test(line));
+    if (!meta && statusIndex >= 0) meta = descriptionLines.splice(statusIndex, 1)[0];
+    description = descriptionLines.join('\n');
+  }
+
+  if (!meta && description) {
+    const statusMatch = description.match(/(?:^|\s)(Status:\s*[^.]+)\.?$/i);
+    if (statusMatch?.index > 0) {
+      meta = statusMatch[1].trim();
+      description = description.slice(0, statusMatch.index).trim();
+    }
+  }
+
+  if (!title && description) {
+    const colonIndex = description.indexOf(':');
+    const candidate = colonIndex > 0 ? description.slice(0, colonIndex).trim() : '';
+    if (candidate && candidate.length <= 42 && !/[\\/]/.test(candidate)) {
+      title = candidate;
+      description = description.slice(colonIndex + 1).trim();
+    } else if (description.length <= 72 && !description.includes('\n')) {
+      title = description;
+      description = '';
+    }
+  }
+
+  return title || description || meta ? { title, description, meta } : null;
+};
+
+function GlobalTooltipLayer() {
+  const [tooltip, setTooltip] = useState(null);
+  const activeAnchorRef = useRef(null);
+
+  useEffect(() => {
+    const migrateTitle = (element) => {
+      if (!(element instanceof Element)) return;
+      const nativeTitle = String(element.getAttribute('title') ?? '').trim();
+      if (!nativeTitle) {
+        if (element.hasAttribute('title')) element.removeAttribute('title');
+        return;
+      }
+      const hasExplicitTooltip = element.hasAttribute('data-tooltip-title') || element.hasAttribute('data-tooltip-description');
+      const isMigratedTooltip = element.dataset.tooltipSource === 'native-title';
+      if (!hasExplicitTooltip && (!element.hasAttribute('data-tooltip') || isMigratedTooltip)) {
+        element.dataset.tooltip = nativeTitle;
+        element.dataset.tooltipSource = 'native-title';
+      }
+      element.removeAttribute('title');
+    };
+
+    const migrateTree = (root) => {
+      if (!(root instanceof Element)) return;
+      migrateTitle(root);
+      root.querySelectorAll('[title]').forEach(migrateTitle);
+    };
+
+    const restoreDescription = (anchor) => {
+      if (!(anchor instanceof Element) || !anchor.hasAttribute('data-tooltip-previous-describedby')) return;
+      const previous = anchor.getAttribute('data-tooltip-previous-describedby') ?? '';
+      if (previous) anchor.setAttribute('aria-describedby', previous);
+      else anchor.removeAttribute('aria-describedby');
+      anchor.removeAttribute('data-tooltip-previous-describedby');
+    };
+
+    const hideTooltip = () => {
+      restoreDescription(activeAnchorRef.current);
+      activeAnchorRef.current = null;
+      setTooltip(null);
+    };
+
+    const showTooltip = (anchor) => {
+      const payload = tooltipPayloadFor(anchor);
+      if (!payload) return;
+      const rect = anchor.getBoundingClientRect();
+      if (!rect.width && !rect.height) return;
+
+      if (activeAnchorRef.current && activeAnchorRef.current !== anchor) {
+        restoreDescription(activeAnchorRef.current);
+      }
+      activeAnchorRef.current = anchor;
+
+      if (!anchor.hasAttribute('data-tooltip-previous-describedby')) {
+        const previous = anchor.getAttribute('aria-describedby') ?? '';
+        anchor.setAttribute('data-tooltip-previous-describedby', previous);
+        const describedBy = previous.split(/\s+/).filter(Boolean);
+        if (!describedBy.includes(GLOBAL_TOOLTIP_ID)) describedBy.push(GLOBAL_TOOLTIP_ID);
+        anchor.setAttribute('aria-describedby', describedBy.join(' '));
+      }
+
+      const viewportPadding = 12;
+      const maxWidth = Math.max(180, Math.min(380, window.innerWidth - viewportPadding * 2));
+      const halfWidth = maxWidth / 2;
+      const anchorCenter = rect.left + rect.width / 2;
+      const left = Math.min(
+        Math.max(anchorCenter, viewportPadding + halfWidth),
+        window.innerWidth - viewportPadding - halfWidth
+      );
+      const belowSpace = window.innerHeight - rect.bottom;
+      const placement = belowSpace >= 140 || belowSpace >= rect.top ? 'bottom' : 'top';
+
+      setTooltip({
+        ...payload,
+        left,
+        maxWidth,
+        placement,
+        top: placement === 'bottom' ? rect.bottom + 10 : Math.max(viewportPadding, rect.top - 10),
+      });
+    };
+
+    const findAnchor = (target) => target instanceof Element ? target.closest(GLOBAL_TOOLTIP_SELECTOR) : null;
+    const onPointerOver = (event) => {
+      const anchor = findAnchor(event.target);
+      if (!anchor || anchor === activeAnchorRef.current) return;
+      showTooltip(anchor);
+    };
+    const onPointerOut = (event) => {
+      const anchor = activeAnchorRef.current;
+      if (!anchor) return;
+      if (event.relatedTarget instanceof Node && anchor.contains(event.relatedTarget)) return;
+      hideTooltip();
+    };
+    const onFocusIn = (event) => {
+      const anchor = findAnchor(event.target);
+      if (anchor) showTooltip(anchor);
+    };
+    const onFocusOut = (event) => {
+      const anchor = activeAnchorRef.current;
+      if (!anchor) return;
+      if (event.relatedTarget instanceof Node && anchor.contains(event.relatedTarget)) return;
+      hideTooltip();
+    };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') hideTooltip();
+    };
+
+    migrateTree(document.body);
+    const observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        if (mutation.type === 'attributes') migrateTitle(mutation.target);
+        mutation.addedNodes.forEach((node) => migrateTree(node));
+      });
+    });
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['title'] });
+
+    document.addEventListener('pointerover', onPointerOver, true);
+    document.addEventListener('pointerout', onPointerOut, true);
+    document.addEventListener('focusin', onFocusIn, true);
+    document.addEventListener('focusout', onFocusOut, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    document.addEventListener('scroll', hideTooltip, true);
+    window.addEventListener('resize', hideTooltip);
+
+    return () => {
+      observer.disconnect();
+      hideTooltip();
+      document.removeEventListener('pointerover', onPointerOver, true);
+      document.removeEventListener('pointerout', onPointerOut, true);
+      document.removeEventListener('focusin', onFocusIn, true);
+      document.removeEventListener('focusout', onFocusOut, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+      document.removeEventListener('scroll', hideTooltip, true);
+      window.removeEventListener('resize', hideTooltip);
+    };
+  }, []);
+
+  if (!tooltip || typeof document === 'undefined') return null;
+  return createPortal(
+    <div
+      id={GLOBAL_TOOLTIP_ID}
+      role="tooltip"
+      className="dashboard-tooltip-surface global-dashboard-tooltip pointer-events-none fixed z-[100000] rounded-xl border border-slate-500/45 bg-slate-950/[0.98] px-3.5 py-3 text-left text-xs leading-relaxed text-slate-200 shadow-[0_18px_55px_rgba(0,0,0,0.55)]"
+      style={{
+        left: tooltip.left,
+        top: tooltip.top,
+        width: 'max-content',
+        minWidth: Math.min(220, tooltip.maxWidth),
+        maxWidth: tooltip.maxWidth,
+        transform: tooltip.placement === 'top' ? 'translate(-50%, -100%)' : 'translateX(-50%)',
+        whiteSpace: 'pre-line',
+      }}
+    >
+      {tooltip.title && <p className="font-bold text-white">{tooltip.title}</p>}
+      {tooltip.description && (
+        <p className={cn(tooltip.title && 'mt-1.5', 'text-[11px] leading-[1.55] text-slate-300')}>
+          {tooltip.description}
+        </p>
+      )}
+      {tooltip.meta && (
+        <p className={cn((tooltip.title || tooltip.description) && 'mt-2', 'border-t border-slate-700/70 pt-2 text-[10px] font-bold text-cyan-300')}>
+          {tooltip.meta}
+        </p>
+      )}
+    </div>,
+    document.body
+  );
+}
+
+const chartTooltipContentStyle = {
+  borderRadius: 12,
+  border: '1px solid rgba(100, 116, 139, 0.45)',
+  background: 'rgba(2, 6, 23, 0.96)',
+  boxShadow: '0 18px 55px rgba(0, 0, 0, 0.5)',
+  color: '#e2e8f0',
+  padding: '12px 14px',
+  fontSize: 12,
+  fontSynthesis: 'none',
+  lineHeight: 1.5,
+};
+
+const Tooltip = ({ contentStyle, labelStyle, itemStyle, wrapperStyle, allowEscapeViewBox, ...props }) => (
+  <RechartsTooltip
+    {...props}
+    allowEscapeViewBox={allowEscapeViewBox ?? { x: true, y: true }}
+    contentStyle={{ ...chartTooltipContentStyle, ...contentStyle }}
+    labelStyle={{ color: '#f8fafc', fontWeight: 700, marginBottom: 6, ...labelStyle }}
+    itemStyle={{ color: '#cbd5e1', paddingTop: 2, paddingBottom: 2, ...itemStyle }}
+    wrapperStyle={{ zIndex: 10000, outline: 'none', ...wrapperStyle }}
+  />
+);
+
 const ModelTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
   const source = payload[0]?.payload ?? {};
   return (
-    <div className="rounded-md border border-slate-300 bg-white p-3 text-sm shadow-lg dark:border-slate-700 dark:bg-slate-950">
-      <p className="mb-2 font-bold text-slate-900 dark:text-white">{source.modelVersion ?? `Run ${label}`}</p>
+    <div className="dashboard-tooltip-surface rounded-xl border border-slate-500/45 bg-slate-950/[0.98] px-3.5 py-3 text-xs leading-relaxed text-slate-200 shadow-[0_18px_55px_rgba(0,0,0,0.5)]">
+      <p className="mb-2 font-bold text-white">{source.modelVersion ?? `Run ${label}`}</p>
       {payload.map((item) => (
         <p key={item.dataKey} style={{ color: item.color }}>
           {item.name}: {['falseSafe', 'predictedSafe', 'risk'].includes(item.dataKey) ? fmt(item.value) : item.dataKey === 'holdoutCoverage' || item.dataKey === 'safePrecision' ? pct(item.value) : pct(Number(item.value) * 100)}
@@ -191,8 +424,8 @@ const CockpitTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
   const source = payload[0]?.payload ?? {};
   return (
-    <div className="rounded-md border border-slate-300 bg-white p-3 text-sm shadow-lg dark:border-slate-700 dark:bg-slate-950">
-      <p className="mb-2 font-bold text-slate-900 dark:text-white">
+    <div className="dashboard-tooltip-surface rounded-xl border border-slate-500/45 bg-slate-950/[0.98] px-3.5 py-3 text-xs leading-relaxed text-slate-200 shadow-[0_18px_55px_rgba(0,0,0,0.5)]">
+      <p className="mb-2 font-bold text-white">
         {source.modelVersion ? `${source.runLabel} · ${source.modelVersion}` : source.runLabel ?? label}
       </p>
       {payload.map((item) => (
@@ -205,7 +438,7 @@ const CockpitTooltip = ({ active, payload, label }) => {
 };
 
 const Card = ({ children, className = '' }) => (
-  <div className={`rounded-2xl border border-[var(--dash-border)] bg-[var(--dash-card)] shadow-[var(--dash-shadow)] ${className}`}>
+  <div className={`dashboard-surface border ${className}`}>
     {children}
   </div>
 );
@@ -304,18 +537,16 @@ const ChartCard = ({ title, subtitle, children, className = '' }) => (
 );
 
 const Badge = ({ children, tone = 'emerald' }) => (
-  <span className={`rounded-full px-3 py-1 text-xs font-bold ${colorClasses[tone] ?? colorClasses.emerald}`}>{children}</span>
+  <span className={`dashboard-badge px-3 py-1 text-xs font-bold ${colorClasses[tone] ?? colorClasses.emerald}`}>{children}</span>
 );
 
 const ViewToggle = ({ options, value, onChange }) => (
-  <div className="inline-flex h-10 items-center rounded-xl border border-[var(--dash-border)] bg-[var(--dash-card)] p-1 shadow-[0_18px_60px_rgba(0,0,0,0.18)]">
+  <div className="dashboard-segmented">
     {options.map((item) => (
       <button
         key={item}
         onClick={() => onChange(item)}
-        className={`h-8 rounded-lg px-3 text-sm font-medium transition ${
-          value === item ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20 dark:bg-blue-500/20 dark:text-blue-200 dark:shadow-none' : 'text-[var(--dash-muted)] hover:bg-[var(--dash-subtle)] hover:text-[var(--dash-text)]'
-        }`}
+        className={cn('dashboard-segmented-button px-3 text-sm font-medium', value === item && 'is-active')}
       >
         {item}
       </button>
@@ -2034,18 +2265,18 @@ const statusTone = (status) => {
 const statusLabel = (status) => {
   const key = String(status ?? '').trim().toLowerCase();
   return ({
-    done: 'Done',
-    completed: 'Completed',
-    starting: 'Starting',
-    running: 'Running',
-    blocked: 'Blocked',
-    pending: 'Pending',
-    failed: 'Failed',
-    cancelled: 'Cancelled',
-    idle: 'Idle',
-    learning_locked: 'Learning locked',
-    ready_for_game_test: 'Ready for game test',
-    ready_with_known_issues: 'Ready with known issues',
+    done: 'Concluída',
+    completed: 'Concluída',
+    starting: 'Iniciando',
+    running: 'Em execução',
+    blocked: 'Bloqueada',
+    pending: 'Pendente',
+    failed: 'Falhou',
+    cancelled: 'Cancelada',
+    idle: 'Livre',
+    learning_locked: 'Aprendizado bloqueado',
+    ready_for_game_test: 'Pronta para teste',
+    ready_with_known_issues: 'Pronta com ressalvas',
     queued_visual_stub: 'Etapa',
   }[key] ?? status ?? 'Unknown');
 };
@@ -2072,6 +2303,16 @@ const openDashboardTab = (tab) => {
 };
 
 const neuralProductionStages = {
+  source_tree_snapshot: 'Registra o fingerprint exato dos sources English e Spanish usados na avaliacao.',
+  score_package_old: 'Reavalia toda a baseline spanish_old com o modelo e as regras atuais.',
+  score_package_output: 'Reavalia todo o output candidato com o mesmo modelo, regras e snapshot.',
+  score_package_policy: 'Recalcula thresholds e politica usando o score fresco do candidato.',
+  quality_epoch_validate: 'Confirma que scores, regras, modelo, sources, baseline e output pertencem a mesma epoch imutavel.',
+  quality_promotion_approval: 'Consome todos os provedores registrados e aprova apenas promocoes que continuam integras e monotonicas.',
+  quality_epoch_mark_evaluated: 'Fixa a epoch validada para que o Publicavel rejeite qualquer fila obsoleta.',
+  pairwise_gender_token_monotonic_gate: 'Valida reparos locais de duplicacao a/o antes de ES_OA/ES_AO sem promover o segmento inteiro.',
+  pairwise_gender_token_promotion_queue: 'Materializa apenas reparos de genero que mantiveram baseline fechado, tokens e validacao local.',
+  pairwise_monotonic_promotion_queue: 'Materializa como confirmacao pendente apenas reparos locais que melhoram monotonicamente um baseline fechado.',
   segment_state_before: 'Classifica estado com sinais de ML, memoria, politicas e lifecycle.',
   apply_general_dry_run: 'Simula aplicacao de confirmacoes confiaveis, incluindo aprendizado aprovado.',
   apply_token_policy_dry_run: 'Simula aplicacao com gate de politica de tokens.',
@@ -2093,13 +2334,23 @@ const neuralProductionStages = {
   same_token_boundary_repair_reaudit: 'Mede ganho real dos reparos same-token depois do segment-state.',
   title_landed_es_repair_reaudit: 'Confere fechamento real dos titulos -es apos segment-state.',
   composite_review_progress: 'Atualiza progresso do gate composto e handoff de aprendizado.',
-  package_score_recalibration: 'Reaplica a calibragem atual do score e reconstroi filas old vs output.',
+  package_score_recalibration: 'Consolida filas e comparativos usando os scores ja fixados pelo Diagnostico.',
 };
 
 const productionStageDetails = {
   snapshot: 'Cria snapshot local antes de qualquer escrita no output.',
   snapshot_archive: 'Arquiva o snapshot para backup e rastreabilidade da execucao.',
   preflight_sync: 'Sincroniza indice, banco e fontes antes do fluxo principal.',
+  source_tree_snapshot: neuralProductionStages.source_tree_snapshot,
+  score_package_old: neuralProductionStages.score_package_old,
+  score_package_output: neuralProductionStages.score_package_output,
+  score_package_policy: neuralProductionStages.score_package_policy,
+  quality_epoch_validate: neuralProductionStages.quality_epoch_validate,
+  quality_promotion_approval: neuralProductionStages.quality_promotion_approval,
+  quality_epoch_mark_evaluated: neuralProductionStages.quality_epoch_mark_evaluated,
+  pairwise_gender_token_monotonic_gate: neuralProductionStages.pairwise_gender_token_monotonic_gate,
+  pairwise_gender_token_promotion_queue: neuralProductionStages.pairwise_gender_token_promotion_queue,
+  pairwise_monotonic_promotion_queue: neuralProductionStages.pairwise_monotonic_promotion_queue,
   segment_state_before: neuralProductionStages.segment_state_before,
   apply_general_dry_run: neuralProductionStages.apply_general_dry_run,
   apply_token_policy_dry_run: neuralProductionStages.apply_token_policy_dry_run,
@@ -2130,6 +2381,12 @@ const productionStageBlueprint = [
   ['snapshot', 'Snapshot pre-run'],
   ['snapshot_archive', 'Arquivar snapshot'],
   ['preflight_sync', 'Sincronizar indice'],
+  ['source_tree_snapshot', 'Fingerprint dos sources'],
+  ['score_package_old', 'Pontuar baseline old'],
+  ['score_package_output', 'Pontuar candidato output'],
+  ['score_package_policy', 'Recalcular politica de score'],
+  ['quality_epoch_validate', 'Validar epoch de qualidade'],
+  ['quality_promotion_approval', 'Aprovar filas de promocao'],
   ['segment_state_before', 'Segment-state inicial'],
   ['apply_general_dry_run', 'Dry-run geral'],
   ['apply_token_policy_dry_run', 'Dry-run politica de tokens'],
@@ -2152,7 +2409,8 @@ const productionStageBlueprint = [
   ['same_token_boundary_repair_reaudit', 'Reauditoria same-token'],
   ['title_landed_es_repair_reaudit', 'Reauditoria titulos -es'],
   ['composite_review_progress', 'Progresso composto'],
-  ['package_score_recalibration', 'Recalibrar score do pacote'],
+  ['quality_epoch_mark_evaluated', 'Fixar epoch avaliada'],
+  ['package_score_recalibration', 'Consolidar epoch e filas'],
   ['production_report', 'Relatorio final'],
 ].map(([id, label]) => ({ id, label, status: 'queued_visual_stub' }));
 
@@ -2160,6 +2418,7 @@ const publicationStageDetails = {
   publication_preflight: 'Confere gates, score do pacote e fila confirmada antes de qualquer escrita.',
   apply_confirmed_dry_run: 'Simula a aplicacao exata dos segmentos em needs apply.',
   apply_confirmed_write: 'Escreve somente a fila confirmada que passou no dry-run.',
+  pairwise_lifecycle_bridge: 'Consolida reparos pareados ja aplicados usando evidencia exata e idempotente.',
   segment_state_after: 'Recalcula fechamento apos o apply publicavel.',
   publication_preflight_after: 'Recalcula gates, needs apply e score do pacote depois da escrita.',
   production_report: 'Gera relatorio final do fluxo publicavel.',
@@ -2169,6 +2428,7 @@ const publicationStageBlueprint = [
   ['publication_preflight', 'Preflight publicavel'],
   ['apply_confirmed_dry_run', 'Dry-run apply confirmado'],
   ['apply_confirmed_write', 'Aplicar fila confirmada'],
+  ['pairwise_lifecycle_bridge', 'Consolidar reparos pareados'],
   ['segment_state_after', 'Segment-state pos-apply'],
   ['publication_preflight_after', 'Preflight pos-apply'],
   ['production_report', 'Relatorio final'],
@@ -2230,14 +2490,16 @@ const evaluationPhaseBlueprint = [
   {
     id: 'preparation',
     title: 'Preparacao',
-    purpose: 'Snapshot, arquivo, indice e segment-state antes da avaliacao.',
-    stageIds: ['snapshot', 'snapshot_archive', 'preflight_sync', 'segment_state_before'],
+    purpose: 'Protege a execucao e valida a epoch de qualidade criada pelo Diagnostico.',
+    stageIds: ['snapshot', 'snapshot_archive', 'preflight_sync', 'quality_epoch_validate'],
   },
   {
     id: 'analysis_policy',
     title: 'Analise',
-    purpose: 'Dry-runs e politicas medem o que pode ser promovido com seguranca.',
+    purpose: 'Valida promocoes e executa dry-runs sem recalcular scores no meio do ciclo.',
     stageIds: [
+      'quality_promotion_approval',
+      'segment_state_before',
       'apply_general_dry_run',
       'apply_token_policy_dry_run',
       'controlled_token_subpolicy_dry_run',
@@ -2250,8 +2512,8 @@ const evaluationPhaseBlueprint = [
   {
     id: 'queue_report',
     title: 'Fila e score',
-    purpose: 'Consolida promocoes, regressões, pendencias e fila candidata para apply.',
-    stageIds: ['composite_review_progress', 'package_score_recalibration'],
+    purpose: 'Consolida promocoes, regressoes, pendencias e fixa a fila candidata para apply.',
+    stageIds: ['composite_review_progress', 'quality_epoch_mark_evaluated', 'package_score_recalibration'],
   },
   {
     id: 'evaluation_report',
@@ -2272,7 +2534,11 @@ const publicationPhaseBlueprint = [
     id: 'apply_confirmed',
     title: 'Apply confirmado',
     purpose: 'Simula e escreve apenas o que ja esta confirmado para output.',
-    stageIds: ['apply_confirmed_dry_run', 'apply_confirmed_write'],
+    stageIds: [
+      'apply_confirmed_dry_run',
+      'apply_confirmed_write',
+      'pairwise_lifecycle_bridge',
+    ],
   },
   {
     id: 'publication_validation',
@@ -2359,7 +2625,10 @@ function ProductionControl({ data }) {
         const response = await fetch(`${API_BASE}/production/runs/latest`);
         if (!response.ok) return;
         const payload = await response.json();
-        setRunStatus(payload.run ?? null);
+        const latestRun = payload.run ?? null;
+        const baselineRunId = runStartBaselineIdRef.current;
+        if (runStartPending && baselineRunId && latestRun?.run_id === baselineRunId) return;
+        setRunStatus(latestRun);
       } catch {
         // Keep the last visible state; the next dashboard refresh can recover.
       }
@@ -2596,6 +2865,19 @@ function ProductionControl({ data }) {
 function ProductionControlCompact({ data, onRefreshAppState }) {
   const appState = data.appState ?? {};
   const release = appState.release ?? {};
+  const operationalClosure = release.operational_closure ?? {};
+  const qualityDebt = release.quality_debt ?? {};
+  const providerHealth = release.promotion_provider_health ?? {};
+  const operationallyClosed = operationalClosure.is_closed === true
+    || (!operationalClosure.instrumented && !Number(release.pending_count ?? 0) && !Number(release.needs_apply ?? 0));
+  const qualityDebtActionable = qualityDebt.has_actionable_debt === true;
+  const qualityDebtHeaderLabel = qualityDebt.status === 'clear'
+    ? 'sem dívida ativa'
+    : qualityDebt.status === 'monitoring'
+      ? 'dívida em observação'
+      : qualityDebtActionable
+        ? `${compact(qualityDebt.actionable_signal_count ?? 0)} sinais de qualidade`
+        : 'dívida não medida';
   const cache = appState.cache ?? {};
   const learning = appState.learning_gate ?? {};
   const productionState = appState.production ?? {};
@@ -2619,13 +2901,17 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const [refreshing, setRefreshing] = useState(false);
   const [selectedMode, setSelectedMode] = useState('diagnostic');
   const [postReleaseView, setPostReleaseView] = useState('apply');
+  const [calibrationSubmittingItemId, setCalibrationSubmittingItemId] = useState(null);
   const [lastDiagnostic, setLastDiagnostic] = useState(null);
   const [actionNotice, setActionNotice] = useState(null);
   const [diskPreflight, setDiskPreflight] = useState(initialDiskPreflight);
   const [clockTick, setClockTick] = useState(0);
   const [diagnosticStartedAt, setDiagnosticStartedAt] = useState(null);
   const [diagnosticFinishedAt, setDiagnosticFinishedAt] = useState(null);
+  const [diagnosticRunStatus, setDiagnosticRunStatus] = useState(null);
   const terminalRefreshRef = useRef('');
+  const runStartBaselineIdRef = useRef(lastRun?.run_id ?? null);
+  const reviewTabsRef = useRef(null);
   const runStatusValue = normalizedRunStatus(runStatus?.status);
   const actionNoticeStatus = normalizedRunStatus(actionNotice?.status);
   const startStatusValue = normalizedRunStatus(startStatus);
@@ -2638,11 +2924,11 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const activeStageBlueprint = visualRunMode === 'publication' ? publicationStageBlueprint : productionStageBlueprint;
   const evaluationStartPending = actionNotice?.mode === 'evaluation'
     && !runActive
-    && !runStatus?.run_id
+    && !actionNotice?.runId
     && ['checking', 'starting', 'running'].includes(actionNoticeStatus || startStatusValue);
   const publicationStartPending = actionNotice?.mode === 'publication'
     && !runActive
-    && !runStatus?.run_id
+    && !actionNotice?.runId
     && ['checking', 'starting', 'running'].includes(actionNoticeStatus || startStatusValue);
   const runStartPending = evaluationStartPending || publicationStartPending;
   const hasLiveRunStages = Array.isArray(runStatus?.stages) && runStatus.stages.length > 0;
@@ -2650,7 +2936,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     ? runStatus.stages.map((stage) => ({ ...stage, status: normalizedStageStatus(stage.status ?? stage.state) }))
     : [];
   const liveStagesHaveActivity = normalizedLiveStages.some((stage) => ['running', 'done', 'failed', 'cancelled'].includes(stage.status));
-  const currentStageIndex = runStatus?.current_stage
+  const currentStageIndex = !runStartPending && runStatus?.current_stage
     ? activeStageBlueprint.findIndex((stage) => stage.id === runStatus.current_stage)
     : -1;
   const fallbackRunningStageIndex = currentStageIndex >= 0 ? currentStageIndex : 0;
@@ -2668,7 +2954,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         status: currentStageIndex < 0 ? (index === 0 ? 'running' : 'pending') : index < currentStageIndex ? 'done' : index === currentStageIndex ? 'running' : 'pending',
       }))
     : [];
-  const runStages = liveStagesForDisplay.length
+  const runStages = !runStartPending && liveStagesForDisplay.length
     ? liveStagesForDisplay
     : evaluationVisualActive
       ? activeBlueprintStages
@@ -2676,7 +2962,9 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const displayPhases = buildProductionPhases(runStages?.length ? runStages : activeStageBlueprint, visualRunMode);
   const canStart = Boolean(learning.can_start_production) && !runActive && !runStartPending;
   const doneStages = (runStages ?? []).filter((stage) => stage.status === 'done').length;
-  const currentStage = (runStages ?? []).find((stage) => stage.id === runStatus?.current_stage) ?? (runStages ?? []).find((stage) => stage.status === 'running');
+  const currentStage = runStartPending
+    ? (runStages ?? []).find((stage) => stage.status === 'running')
+    : (runStages ?? []).find((stage) => stage.id === runStatus?.current_stage) ?? (runStages ?? []).find((stage) => stage.status === 'running');
   const runningStageContribution = evaluationVisualActive && currentStage
     ? clampNumber(Number(currentStage.progress_pct ?? currentStage.metrics?.progress_pct ?? 35), 8, 90) / 100
     : 0;
@@ -2688,10 +2976,22 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const diskBlocksProduction = diskPreflight?.ok === false;
   const evaluationReasons = Array.isArray(evaluationGate.blocking_reasons) ? evaluationGate.blocking_reasons : [];
   const publicationReasons = Array.isArray(publicationGate.blocking_reasons) ? publicationGate.blocking_reasons : [];
+  const qualityEpoch = release.quality_epoch ?? {};
   const evaluatedDiffSummary = postRelease.diff_review?.summary && typeof postRelease.diff_review.summary === 'object'
     ? postRelease.diff_review.summary
     : {};
   const evaluatedApplyCount = Number(evaluatedDiffSummary.needs_apply ?? 0);
+  const rawScoreRegressionCount = Number(evaluatedDiffSummary.raw_score_regressions ?? evaluatedDiffSummary.score_regressions ?? 0);
+  const effectiveScoreRegressionCount = Number(
+    evaluatedDiffSummary.effective_score_regressions
+      ?? evaluatedDiffSummary.effective_package_score_regressions
+      ?? 0
+  );
+  const reviewedRawScoreRegressionCount = Number(evaluatedDiffSummary.reviewed_raw_score_regressions ?? 0);
+  const unresolvedRawScoreRegressionCount = Number(
+    evaluatedDiffSummary.unresolved_raw_score_regressions
+      ?? Math.max(0, rawScoreRegressionCount - reviewedRawScoreRegressionCount)
+  );
   const hasVerifiedApplyQueue = evaluatedApplyCount > 0;
   const publicationActionAllowed = publicationAllowed && hasVerifiedApplyQueue;
   const publicationModeStatus = publicationActionAllowed
@@ -2706,6 +3006,30 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     : publicationAllowed
       ? 'Bloqueada para execucao: avaliacao nao tem apply verificado para aplicar.'
       : 'Bloqueada pelos gates de publicacao.';
+  const packageDeltaKeys = ['raw_output_diff_count', 'changed_vs_old', 'package_diff_count'];
+  const packageDeltaMeasured = packageDeltaKeys.some((key) => Object.prototype.hasOwnProperty.call(evaluatedDiffSummary, key));
+  const packageChangeCount = Number(
+    evaluatedDiffSummary.raw_output_diff_count
+      ?? evaluatedDiffSummary.changed_vs_old
+      ?? evaluatedDiffSummary.package_diff_count
+      ?? 0
+  );
+  const materializedPackageVersions = (Array.isArray(release.package_versions) ? release.package_versions : [])
+    .filter((version) => version.status === 'materialized');
+  const latestMaterializedPackageVersion = materializedPackageVersions.reduce(
+    (latest, version) => Number(version.version_number ?? 0) > Number(latest?.version_number ?? 0) ? version : latest,
+    null
+  );
+  const latestMaterializedVersionLabel = latestMaterializedPackageVersion?.version_number
+    ? `V${latestMaterializedPackageVersion.version_number}`
+    : 'A versão materializada atual';
+  const versionBaseGatesReady = ['scored', 'evaluated', 'published'].includes(String(qualityEpoch.status ?? ''))
+    && Number(release.pending_count ?? 0) === 0
+    && Number(release.needs_apply ?? 0) === 0
+    && effectiveScoreRegressionCount === 0;
+  const versionHasPackageDelta = !packageDeltaMeasured || packageChangeCount > 0;
+  const versionNoPackageDelta = versionBaseGatesReady && packageDeltaMeasured && packageChangeCount === 0;
+  const versionMaterializationEligible = versionBaseGatesReady && versionHasPackageDelta;
   const releaseModes = [
     {
       id: 'diagnostic',
@@ -2717,8 +3041,8 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       statusKind: 'open',
       button: 'Atualizar diagnóstico',
       actionLabel: 'Atualizar',
-      description: 'Atualiza cache, métricas e preflight. Não altera output.',
-      warning: 'Leitura segura para validar estado visual e operacional.',
+      description: 'Analisa o estado, gera evidências e sugere promoções. Não confirma apply nem altera output.',
+      warning: 'Descoberta segura: propostas continuam sujeitas à Avaliação.',
     },
     {
       id: 'evaluation',
@@ -2730,8 +3054,8 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       statusKind: evaluationAllowed && !diskBlocksProduction ? 'open' : 'blocked',
       button: 'Rodar produção de avaliação',
       actionLabel: 'Rodar',
-      description: 'Gera novo output para medir score, diff, regressão e fallback.',
-      warning: diskBlocksProduction ? 'Bloqueada por espaço em disco insuficiente.' : 'Não libera publicação. Gera métricas e comparação contra baseline.',
+      description: 'Reavalia scores, valida promoções e aprova somente as seguras para Apply.',
+      warning: diskBlocksProduction ? 'Bloqueada por espaço em disco insuficiente.' : 'Não escreve output. Produz a fila de Apply verificada.',
     },
     {
       id: 'publication',
@@ -2741,9 +3065,9 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       tone: publicationModeTone,
       color: 'violet',
       statusKind: publicationModeStatusKind,
-      button: 'Validar publicavel',
-      actionLabel: 'Validar',
-      description: 'Valida gates, fila de apply, promocoes e qualidade final do pacote.',
+      button: 'Aplicar confirmados',
+      actionLabel: 'Aplicar',
+      description: 'Aplica a fila verificada, escreve output e exige fechamento completo no lifecycle.',
       warning: publicationModeWarning,
     },
     {
@@ -2758,6 +3082,23 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       actionLabel: releaseCandidate.current_candidate_path ? 'Abrir' : 'Preparar',
       description: 'Opera sobre release candidate pequeno baseado em feedback visual.',
       warning: 'Não substitui uma produção full ampla.',
+    },
+    {
+      id: 'version',
+      label: 'Materializar nova versão',
+      shortLabel: 'Nova versão',
+      status: versionNoPackageDelta ? 'sem alterações' : versionMaterializationEligible ? 'liberada' : 'bloqueada',
+      tone: versionNoPackageDelta ? 'blue' : versionMaterializationEligible ? 'emerald' : 'red',
+      color: 'slate',
+      statusKind: versionMaterializationEligible ? 'open' : 'blocked',
+      button: 'Materializar nova versão',
+      actionLabel: 'Materializar',
+      description: 'Congela a versão no banco e promove output/spanish para source/spanish_old.',
+      warning: versionNoPackageDelta
+        ? `${latestMaterializedVersionLabel} já representa integralmente o output atual. Uma nova versão exige alterações reais no pacote.`
+        : versionMaterializationEligible
+        ? `Cria backup da baseline atual, verifica hashes e reindexa o banco.${rawScoreRegressionCount > 0 ? ` ${compact(rawScoreRegressionCount)} observações brutas já foram resolvidas pela calibração.` : ''}`
+        : `Exige epoch pontuada, zero regressões efetivas, zero pendências e zero apply. Epoch atual: ${qualityEpoch.status ?? 'ausente'}.`,
     },
   ];
   const effectiveSelectedMode = runActive ? activeRunMode : selectedMode;
@@ -2820,25 +3161,85 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   }, []);
 
   useEffect(() => {
-    if (!runActive && !runStartPending) return undefined;
-    const timer = setInterval(async () => {
+    let active = true;
+    const loadLatestRun = async () => {
       try {
         const response = await fetch(`${API_BASE}/production/runs/latest`);
         if (!response.ok) return;
         const payload = await response.json();
-        setRunStatus(payload.run ?? null);
+        const latestRun = payload.run ?? null;
+        const baselineRunId = runStartBaselineIdRef.current;
+        if (runStartPending && baselineRunId && latestRun?.run_id === baselineRunId) return;
+        if (active && latestRun?.run_id) setRunStatus(latestRun);
       } catch {
         // Keep cached run visible; the next refresh can recover.
       }
-    }, 4000);
-    return () => clearInterval(timer);
+    };
+    loadLatestRun();
+    const timer = setInterval(loadLatestRun, runActive || runStartPending ? 4000 : 15000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   }, [runActive, runStartPending]);
+
+  useEffect(() => {
+    if (!runActive || !runStatus?.run_id) return;
+    setStartStatus(runStatus.status);
+    setActionNotice((current) => {
+      if (
+        current?.mode === activeRunMode
+        && current?.runId === runStatus.run_id
+        && current?.status === runStatus.status
+        && current?.currentStage === runStatus.current_stage
+      ) return current;
+      return {
+        ...(current ?? {}),
+        mode: activeRunMode,
+        status: runStatus.status,
+        tone: activeRunMode === 'publication' ? 'violet' : 'blue',
+        title: activeRunMode === 'publication'
+          ? 'Produção publicável em execução'
+          : 'Produção de avaliação em execução',
+        body: `Run ${runStatus.run_id} · etapa ${runStatus.current_label ?? runStatus.current_stage ?? 'preparando'}.`,
+        outputChanged: Boolean(runStatus.output_changed),
+        runId: runStatus.run_id,
+        currentStage: runStatus.current_stage,
+      };
+    });
+  }, [activeRunMode, runActive, runStatus?.run_id, runStatus?.status, runStatus?.current_stage]);
 
   useEffect(() => {
     if (!runActive && !runStartPending && !refreshing) return undefined;
     const timer = setInterval(() => setClockTick((tick) => tick + 1), 1000);
     return () => clearInterval(timer);
   }, [runActive, runStartPending, refreshing]);
+
+  useEffect(() => {
+    if (!refreshing) return undefined;
+    let active = true;
+    const loadDiagnosticStatus = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/diagnostic/status`);
+        if (!response.ok) return;
+        const payload = await response.json();
+        const candidate = payload.diagnostic;
+        const candidateStartedAt = timestampMs(candidate?.started_at);
+        const belongsToCurrentAttempt = candidate
+          && candidateStartedAt !== null
+          && (!diagnosticStartedAt || candidateStartedAt >= diagnosticStartedAt - 5000);
+        if (active && belongsToCurrentAttempt) setDiagnosticRunStatus(candidate);
+      } catch {
+        // O POST principal continua sendo a fonte terminal; o próximo polling recupera o status.
+      }
+    };
+    loadDiagnosticStatus();
+    const timer = setInterval(loadDiagnosticStatus, 1500);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [refreshing, diagnosticStartedAt]);
 
   useEffect(() => {
     if (!runStatus?.run_id || !['completed', 'failed'].includes(runStatus.status)) return;
@@ -2898,11 +3299,23 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     setStartStatus('refreshing');
     setDiagnosticStartedAt(Date.now());
     setDiagnosticFinishedAt(null);
+    setDiagnosticRunStatus({
+      status: 'starting',
+      progress_pct: 1,
+      current_label: 'Preparar diagnóstico',
+      phases: [
+        { id: 'state', label: 'Estado atual', status: 'running' },
+        { id: 'discovery', label: 'Descoberta', status: 'pending' },
+        { id: 'suggestions', label: 'Sugestões', status: 'pending' },
+        { id: 'consolidation', label: 'Consolidação', status: 'pending' },
+      ],
+    });
     try {
       const response = await fetch(`${API_BASE}/cache/refresh`, { method: 'POST' });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error ?? `API ${response.status}`);
       const completedAt = new Date().toLocaleString('pt-BR', { hour12: false });
+      if (payload.diagnostic_status) setDiagnosticRunStatus(payload.diagnostic_status);
       const diagnostic = {
         completedAt,
         cacheUpdated: true,
@@ -2910,6 +3323,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         productionRunStarted: false,
         cacheGeneratedAt: payload.cache?.generated_at ?? payload.generated_at ?? completedAt,
         segmentStateRunId: payload.diagnostic_segment_state?.new_segment_state_run_id ?? null,
+        stages: payload.diagnostic_segment_state?.stages ?? [],
       };
       setLastDiagnostic(diagnostic);
       setStartStatus('refresh_completed');
@@ -2918,13 +3332,17 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         status: 'completed',
         tone: 'emerald',
         title: 'Diagnóstico atualizado',
-        body: `Refresh concluído às ${completedAt}. Segment-state ${payload.diagnostic_segment_state?.new_segment_state_run_id ? `#${payload.diagnostic_segment_state.new_segment_state_run_id}` : 'recalculado'}, cache atualizado, nenhum output alterado e nenhuma produção iniciada.`,
+        body: `Análise concluída às ${completedAt}. Segment-state ${payload.diagnostic_segment_state?.new_segment_state_run_id ? `#${payload.diagnostic_segment_state.new_segment_state_run_id}` : 'recalculado'}, evidências e sugestões atualizadas, sem confirmar candidatos nem alterar output.`,
         outputChanged: false,
         runId: null,
       });
       setDiagnosticFinishedAt(Date.now());
-      await onRefreshAppState?.();
-      await refreshDiskPreflight();
+      await onRefreshAppState?.(payload.app_state);
+      const consolidatedDiskPreflight = payload.app_state?.production?.disk_preflight
+        ?? payload.app_state?.release?.disk_preflight
+        ?? payload.app_state?.release?.safety?.disk_preflight;
+      if (consolidatedDiskPreflight) setDiskPreflight(consolidatedDiskPreflight);
+      else await refreshDiskPreflight();
     } catch (err) {
       setStartError(err.message);
       setStartStatus('failed');
@@ -2943,9 +3361,57 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     }
   };
 
+  const submitCalibrationReview = async (itemId, reviewLabel, requireReason = false) => {
+    const reviewReason = requireReason
+      ? window.prompt('Registre o motivo desta preferencia para a analise de calibracao:')
+      : null;
+    if (requireReason && !String(reviewReason ?? '').trim()) return;
+    setCalibrationSubmittingItemId(itemId);
+    setStartError(null);
+    try {
+      const response = await fetch(`${API_BASE}/production/pairwise-calibration/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          item_id: itemId,
+          review_label: reviewLabel,
+          review_reason: reviewReason,
+          reviewer: 'dashboard_human_review',
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error ?? `API ${response.status}`);
+      setActionNotice({
+        mode: 'diagnostic',
+        status: 'completed',
+        tone: 'emerald',
+        title: 'Revisao de calibracao registrada',
+        body: `Item #${itemId}: ${reviewLabel}. Nenhum score, apply ou output foi alterado.`,
+        outputChanged: false,
+        runId: null,
+      });
+      await onRefreshAppState?.(payload.app_state);
+    } catch (err) {
+      setStartError(err.message);
+    } finally {
+      setCalibrationSubmittingItemId(null);
+    }
+  };
+
   const startProduction = async () => {
     setStartStatus('checking');
     setStartError(null);
+    runStartBaselineIdRef.current = runStatus?.run_id ?? lastRun?.run_id ?? null;
+    setRunStatus(null);
+    setActionNotice({
+      mode: 'evaluation',
+      status: 'checking',
+      tone: 'blue',
+      title: 'Preparando producao de avaliacao',
+      body: 'Validando preflight e preparando a primeira fase da nova run.',
+      outputChanged: false,
+      runId: null,
+    });
     const disk = await refreshDiskPreflight();
     if (disk?.ok === false) {
       const message = disk.message ?? 'Insufficient disk space';
@@ -2972,7 +3438,6 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       outputChanged: true,
       runId: null,
     });
-    setRunStatus(null);
     try {
       const response = await fetch(`${API_BASE}/production/start`, { method: 'POST' });
       const payload = await response.json().catch(() => ({}));
@@ -3089,6 +3554,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const startPublicationApplyConfirmed = async () => {
     setStartStatus('checking');
     setStartError(null);
+    runStartBaselineIdRef.current = runStatus?.run_id ?? lastRun?.run_id ?? null;
     setActionNotice({
       mode: 'publication',
       status: 'starting',
@@ -3147,6 +3613,69 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     }
   };
 
+  const materializeVersion = async () => {
+    setStartStatus('checking');
+    setStartError(null);
+    setActionNotice({
+      mode: 'version', status: 'checking', tone: 'blue', title: 'Validando nova versão',
+      body: 'Checando epoch, regressões, pendências, apply e integridade dos pacotes.',
+      outputChanged: false, runId: null,
+    });
+    try {
+      const preflightResponse = await fetch(`${API_BASE}/version/materialize/preflight`, { method: 'POST' });
+      const preflight = await preflightResponse.json().catch(() => ({}));
+      if (!preflightResponse.ok) throw new Error(preflight.error ?? `API ${preflightResponse.status}`);
+      if (preflight.eligible === false && preflight.reason === 'no_package_delta') {
+        const currentVersion = preflight.current_version_number ? `V${preflight.current_version_number}` : latestMaterializedVersionLabel;
+        setStartStatus('completed');
+        setActionNotice({
+          mode: 'version', status: 'completed', tone: 'blue',
+          title: 'Nenhuma nova versão necessária',
+          body: `${currentVersion} já representa integralmente output/spanish. O próximo checkpoint será liberado somente depois de alterações reais no pacote.`,
+          outputChanged: false, runId: null,
+        });
+        await onRefreshAppState?.();
+        return;
+      }
+      const confirmed = window.confirm(
+        `Materializar v${preflight.version_number}?\n\n` +
+        `${preflight.changed_count} mudanças serão congeladas no banco.\n` +
+        `source/spanish_old será substituído por uma cópia verificada de output/spanish.\n` +
+        'A baseline atual será preservada em release_candidates.'
+      );
+      if (!confirmed) {
+        setStartStatus(null);
+        setActionNotice(null);
+        return;
+      }
+      setStartStatus('running');
+      setActionNotice({
+        mode: 'version', status: 'running', tone: 'blue',
+        title: `Materializando v${preflight.version_number}`,
+        body: 'Congelando banco, copiando baseline, verificando hashes e reindexando fontes.',
+        outputChanged: false, runId: null,
+      });
+      const response = await fetch(`${API_BASE}/version/materialize/start`, { method: 'POST' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error ?? `API ${response.status}`);
+      setStartStatus('completed');
+      setActionNotice({
+        mode: 'version', status: 'completed', tone: 'emerald',
+        title: `Versão v${payload.version_number} materializada`,
+        body: `${payload.item_count ?? 0} segmentos congelados. spanish_old sincronizado com output; backup preservado. Rode Diagnóstico para abrir a próxima epoch.`,
+        outputChanged: false, runId: null,
+      });
+      await onRefreshAppState?.(payload.app_state);
+    } catch (err) {
+      setStartStatus('failed');
+      setStartError(err.message);
+      setActionNotice({
+        mode: 'version', status: 'failed', tone: 'red', title: 'Materialização bloqueada',
+        body: err.message, outputChanged: false, runId: null,
+      });
+    }
+  };
+
   const runSelectedModeAction = () => {
     if (effectiveSelectedMode === 'diagnostic') {
       refreshCache();
@@ -3162,6 +3691,10 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       } else {
         startPublicationPreflight();
       }
+      return;
+    }
+    if (effectiveSelectedMode === 'version') {
+      materializeVersion();
     }
   };
 
@@ -3191,9 +3724,11 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         ? (!evaluationAllowed || diskBlocksProduction || runActive || startStatus === 'checking')
         : effectiveSelectedMode === 'publication'
           ? (refreshing || startStatus === 'checking' || (!publicationActionAllowed && !publicationCanApply))
+        : effectiveSelectedMode === 'version'
+          ? (!versionMaterializationEligible || refreshing || ['checking', 'running'].includes(startStatus))
         : true;
   const modeButtonClass = (mode, active) => {
-    const base = 'group relative flex h-10 min-w-0 flex-col justify-center overflow-hidden rounded-xl border px-2.5 pr-7 text-left text-white shadow-lg transition hover:-translate-y-0.5 hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-white/45';
+    const base = 'group relative flex h-9 min-w-0 flex-1 items-center justify-start overflow-visible rounded-xl border px-3 pr-8 text-white shadow-lg transition hover:-translate-y-0.5 hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-cyan-300/70';
     const palette =
       mode.color === 'emerald' ? 'border-emerald-200/35 bg-emerald-600 shadow-emerald-950/35 hover:bg-emerald-500' :
         mode.color === 'violet' ? 'border-violet-200/35 bg-violet-600 shadow-violet-950/35 hover:bg-violet-500' :
@@ -3203,8 +3738,19 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     return cn(
       base,
       palette,
-      active ? 'z-10 scale-[1.025] translate-y-[-1px] border-white/70 opacity-100 ring-2 ring-white/65 brightness-115 shadow-2xl' : 'opacity-70 saturate-[0.78] hover:opacity-95'
+      active ? 'z-10 -translate-y-0.5 border-cyan-200/90 opacity-100 ring-2 ring-cyan-300/90 brightness-115 shadow-[0_0_18px_rgba(34,211,238,0.42)]' : 'opacity-70 saturate-[0.78] hover:opacity-95'
     );
+  };
+  const modeIcon = (mode) => {
+    const icons = {
+      diagnostic: SearchCheck,
+      evaluation: Scale,
+      publication: Rocket,
+      hotfix: ShieldAlert,
+      version: Layers3,
+    };
+    const Icon = icons[mode.id] ?? Workflow;
+    return <Icon size={18} strokeWidth={2.2} />;
   };
   const modeStatusIcon = (mode) => {
     if (mode.statusKind === 'blocked') return <Lock size={10} />;
@@ -3296,8 +3842,35 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       : [];
   const diffReview = postRelease.diff_review ?? {};
   const diffSummary = diffReview.summary ?? {};
+  const patternDiscovery = postRelease.quality_pattern_discovery ?? {};
+  const patternFamilies = Array.isArray(patternDiscovery.families) ? patternDiscovery.families : [];
+  const actionablePatternCount = Number(patternDiscovery.actionable_family_count ?? 0);
+  const providerRows = Array.isArray(providerHealth.providers) ? providerHealth.providers : [];
+  const providerStatusLabels = {
+    clean: 'sem candidatos',
+    promotion_ready: 'promoção pronta',
+    candidates_filtered: 'candidatos filtrados',
+    failed: 'falhou',
+    not_run: 'não executado',
+  };
+  const providerStatusTone = (status) => (
+    status === 'clean'
+      ? 'emerald'
+      : status === 'promotion_ready'
+        ? 'blue'
+        : status === 'candidates_filtered'
+          ? 'amber'
+          : status === 'failed'
+            ? 'red'
+            : 'slate'
+  );
+  const lowScoreCohorts = diffReview.low_score_cohorts ?? {};
+  const lowScoreActionable = Number(lowScoreCohorts.actionable ?? diffSummary.low_score_actionable ?? 0);
+  const lowScoreInformational = Number(lowScoreCohorts.informational ?? diffSummary.low_score_informational ?? 0);
+  const lowScoreUnexplained = Number(lowScoreCohorts.low_confidence_without_specific_evidence ?? diffSummary.low_score_unexplained ?? 0);
   const changedScoreComparison = diffSummary.changed_score_comparison ?? {};
   const packageScoreComparison = diffSummary.package_score_comparison ?? {};
+  const changedCohortScoreComparison = diffSummary.changed_cohort_score_comparison ?? {};
   const rawChangedSegments = Array.isArray(diffReview.changed_segments) ? diffReview.changed_segments : [];
   const rawPackageSegments = Array.isArray(diffReview.package_diff_segments)
     ? diffReview.package_diff_segments
@@ -3309,15 +3882,43 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const rawApplySegments = Array.isArray(diffReview.apply_segments) ? diffReview.apply_segments : [];
   const rawLowScoreSegments = Array.isArray(diffReview.low_score_segments) ? diffReview.low_score_segments : [];
   const rawScoreRegressionSegments = Array.isArray(diffReview.score_regression_segments) ? diffReview.score_regression_segments : [];
+  const calibrationReview = diffReview.calibration_review ?? {};
+  const calibrationPolicyDecision = String(calibrationReview.policy_decision ?? 'not_evaluated');
+  const calibrationPolicyReasons = Array.isArray(calibrationReview.policy_reasons)
+    ? calibrationReview.policy_reasons
+    : [];
+  const calibrationPolicyReasonLabels = {
+    no_scored_epoch: 'nenhuma epoch pontuada',
+    no_applied_pairwise_candidates: 'nenhum ajuste pairwise aplicado',
+    invalid_integrity: 'falha de integridade ou validacao',
+    raw_non_improving: 'score bruto igual ou regressivo',
+    score_contract_changed: 'contrato de score alterado',
+    large_batch: 'lote de alto volume',
+    immature_provider: 'provedor ainda sem historico suficiente',
+    control_accuracy_below_threshold: 'acuracia dos controles abaixo do limite',
+    low_confidence_concentration: 'concentracao de baixa confianca',
+    low_confidence_sample: 'amostra de baixa confianca',
+    control_health_not_measured: 'saude dos controles ainda nao medida',
+    periodic_sample_due: 'amostra periodica vencida',
+    existing_pending_review: 'fila atual ainda pendente',
+    already_calibrated_current_epoch: 'calibracao da epoch atual ja concluida',
+    stable_mature_small_batch: 'lote pequeno, maduro e estavel',
+  };
+  const calibrationPolicySummary = calibrationPolicyReasons.length
+    ? calibrationPolicyReasons.map((reason) => calibrationPolicyReasonLabels[reason] ?? reason.replaceAll('_', ' ')).join('; ')
+    : 'politica ainda nao avaliada';
+  const rawCalibrationReviewSegments = Array.isArray(diffReview.calibration_review_segments)
+    ? diffReview.calibration_review_segments
+    : [];
   const rawUnhandledSegments = Array.isArray(diffReview.unhandled_segments) ? diffReview.unhandled_segments : [];
   const scoreValue = (score) => {
     if (score === null || score === undefined || score === '' || score === 'not_measured') return null;
     const parsed = Number(score);
     return Number.isFinite(parsed) ? parsed : null;
   };
-  const segmentNewScore = (item) => scoreValue(item?.effective_new_score ?? item?.new_score ?? item?.model_safe_probability);
-  const segmentOldScore = (item) => scoreValue(item?.old_score ?? item?.old_model_safe_probability);
-  const segmentDelta = (item) => scoreValue(item?.effective_score_delta ?? item?.score_delta);
+  const segmentNewScore = (item) => scoreValue(item?.review_new_score ?? item?.effective_new_score ?? item?.new_score ?? item?.model_safe_probability);
+  const segmentOldScore = (item) => scoreValue(item?.review_old_score ?? item?.old_score ?? item?.old_model_safe_probability);
+  const segmentDelta = (item) => scoreValue(item?.review_score_delta ?? item?.effective_score_delta ?? item?.score_delta);
   const sortSegmentsByScoreDesc = (items) => [...items].sort((a, b) => {
     const bScore = segmentNewScore(b);
     const aScore = segmentNewScore(a);
@@ -3352,6 +3953,11 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     return Number.isFinite(score) && score < 0.5;
   }));
   const scoreRegressionSegments = sortSegmentsByRegressionDelta(rawScoreRegressionSegments);
+  const calibrationReviewSegments = [...rawCalibrationReviewSegments].sort((a, b) => {
+    const priorityDiff = Number(Boolean(b?.is_priority)) - Number(Boolean(a?.is_priority));
+    if (priorityDiff !== 0) return priorityDiff;
+    return Number(a?.display_order ?? 0) - Number(b?.display_order ?? 0);
+  });
   const unhandledSegments = sortSegmentsByScoreDesc(rawUnhandledSegments);
   const scoreTone = (score) => {
     const parsed = scoreValue(score);
@@ -3363,26 +3969,51 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   };
   const scoreLabel = (score) => {
     const parsed = scoreValue(score);
-    return Number.isFinite(parsed) ? pctMetric(parsed) : 'sem score';
+    return Number.isFinite(parsed) ? pctMetric(parsed) : 'N/A';
   };
+  const lowScoreCohortMeta = {
+    explicit_text_issue: { label: 'Defeito explicito', tone: 'red' },
+    structural_block_without_issue: { label: 'Bloqueio estrutural', tone: 'amber' },
+    deterministic_safe_but_low_score: { label: 'Seguro deterministico', tone: 'emerald' },
+    unchanged_or_preserved_text: { label: 'Texto preservado', tone: 'blue' },
+    low_confidence_without_specific_evidence: { label: 'Sem evidencia', tone: 'slate' },
+  };
+  const lowScoreCohort = (item) => lowScoreCohortMeta[item?.low_score_cohort]
+    ?? { label: 'Nao classificado', tone: 'slate' };
   const scoreDeltaLabel = (item) => {
-    const delta = scoreValue(item?.effective_score_delta ?? item?.score_delta);
-    if (!Number.isFinite(delta)) return 'sem delta';
+    const delta = segmentDelta(item);
+    if (!Number.isFinite(delta)) return 'N/A';
     const sign = delta > 0 ? '+' : '';
     return `${sign}${pctMetric(delta)}`;
   };
   const scoreDeltaTone = (item) => {
-    const delta = scoreValue(item?.effective_score_delta ?? item?.score_delta);
+    const delta = segmentDelta(item);
     if (!Number.isFinite(delta)) return 'slate';
     if (delta > 0.0001) return 'emerald';
     if (delta < -0.0001) return 'red';
     return 'amber';
+  };
+  const scorePointDeltaLabel = (delta) => {
+    const parsed = scoreValue(delta);
+    if (!Number.isFinite(parsed)) return 'sem delta';
+    const points = parsed * 100;
+    const sign = points > 0 ? '+' : '';
+    const maximumFractionDigits = Math.abs(points) < 0.01 ? 4 : 2;
+    return `${sign}${points.toLocaleString('pt-BR', { maximumFractionDigits })} p.p.`;
   };
   const scoreCellTitle = (item) => {
     const rawNew = scoreLabel(item?.new_score ?? item?.model_safe_probability);
     const rawOld = scoreLabel(item?.raw_old_score ?? item?.old_model_safe_probability ?? item?.old_score);
     const effectiveNew = scoreLabel(item?.effective_new_score ?? item?.new_score ?? item?.model_safe_probability);
     const rawDelta = scoreDeltaLabel({ score_delta: item?.score_delta });
+    if (item?.score_review_basis === 'raw_model_after_applied_adjustment') {
+      return `Revisao do score bruto apos ajuste aplicado. Old: ${scoreLabel(item?.review_old_score)}; novo: ${scoreLabel(item?.review_new_score)}; delta: ${scoreDeltaLabel(item)}. Score efetivo preservado: ${effectiveNew}.`;
+    }
+    if (item?.score_used_kind === 'pairwise_same_contract') {
+      const pairwiseOld = scoreLabel(item?.pairwise_baseline_score ?? item?.old_score);
+      const pairwiseRaw = scoreLabel(item?.pairwise_candidate_score_raw);
+      return `Evidência pairwise comparável (${item?.pairwise_evidence_type ?? 'tipo não informado'}). Baseline: ${pairwiseOld}; candidato bruto: ${pairwiseRaw}; calibrado: ${effectiveNew}; delta: ${scoreDeltaLabel(item)}.`;
+    }
     if (item?.score_calibration) {
       return `Score calibrado por ${item.score_calibration}. Old bruto: ${rawOld}; novo bruto: ${rawNew}; novo efetivo: ${effectiveNew}; delta bruto: ${rawDelta}.`;
     }
@@ -3432,23 +4063,61 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const packageOldScore = packageScoreComparison.weighted_avg_old_score ?? packageScoreComparison.avg_old_score;
   const packageNewScore = packageScoreComparison.weighted_avg_new_score ?? packageScoreComparison.avg_new_score ?? packageScoreComparison.package_quality_score;
   const packageDelta = packageScoreComparison.weighted_avg_delta ?? packageScoreComparison.avg_delta;
+  const packageCoverage = packageScoreComparison.coverage;
+  const packageMeasuredCount = Number(packageScoreComparison.measured_count ?? 0);
+  const packageTotalCount = Number(packageScoreComparison.total_segment_count ?? 0);
+  const changedCohortOldScore = changedCohortScoreComparison.weighted_avg_old_score ?? changedCohortScoreComparison.avg_old_score;
+  const changedCohortNewScore = changedCohortScoreComparison.weighted_avg_new_score ?? changedCohortScoreComparison.avg_new_score;
+  const changedCohortDelta = changedCohortScoreComparison.weighted_avg_delta ?? changedCohortScoreComparison.avg_delta;
   const packageScoreSummaryLabel = Number(packageScoreComparison.measured_count ?? 0) > 0
-    ? `score old ${scoreLabel(packageOldScore)} -> output ${scoreLabel(packageNewScore)} (${scoreDeltaLabel({ score_delta: packageDelta })})`
+    ? `score global old ${scoreLabel(packageOldScore)} -> output ${scoreLabel(packageNewScore)} (${scorePointDeltaLabel(packageDelta)})`
     : 'score pacote nao medido';
+  const packageCoverageLabel = packageTotalCount > 0
+    ? `cobertura ${scoreLabel(packageCoverage)} (${compact(packageMeasuredCount)}/${compact(packageTotalCount)})`
+    : 'cobertura nao medida';
+  const changedCohortScoreLabel = Number(changedCohortScoreComparison.measured_count ?? 0) > 0
+    ? `${compact(changedCohortScoreComparison.measured_count)} mudancas: ${scoreLabel(changedCohortOldScore)} -> ${scoreLabel(changedCohortNewScore)} (${scorePointDeltaLabel(changedCohortDelta)})`
+    : 'sem mudancas pontuadas';
+  const outputQualityBands = packageScoreComparison.quality_bands?.output ?? {};
+  const qualityBandsLabel = `critico ${compact(outputQualityBands.critical ?? 0)} | baixo ${compact(outputQualityBands.low ?? 0)} | moderado ${compact(outputQualityBands.moderate ?? 0)} | bom ${compact(outputQualityBands.good ?? 0)} | alta ${compact(outputQualityBands.high ?? 0)} | sem score ${compact(outputQualityBands.unmeasured ?? 0)}`;
   const rawOutputDiffCount = diffSummary.raw_output_diff_count ?? diffSummary.changed_vs_old ?? rawChangedSegments.length;
   const packageExcludedCount = diffSummary.package_excluded_count ?? Math.max(0, Number(rawOutputDiffCount ?? 0) - Number(diffSummary.package_diff_count ?? packageSegments.length ?? 0));
+  const hasCompletedCalibrationHistory = Boolean(
+    calibrationReview.run_id
+    && Number(calibrationReview.decided_count ?? 0) > 0
+  );
   const reviewTabs = [
     { id: 'apply', label: 'Apply', count: diffSummary.needs_apply ?? applySegments.length, tone: applySegments.length ? 'amber' : 'slate' },
     { id: 'package', label: 'Pacote', count: diffSummary.package_diff_count ?? packageSegments.length, tone: packageSegments.length ? 'blue' : 'slate' },
     { id: 'new', label: 'Novos', count: diffSummary.new_vs_old ?? newSegments.length, tone: newSegments.length ? 'blue' : 'slate' },
     { id: 'promotions', label: 'Promocoes', count: diffSummary.promotions_vs_old ?? promotionSegments.length, tone: promotionSegments.length ? 'emerald' : 'slate' },
-    { id: 'regressions', label: 'Regressoes', count: diffSummary.score_regressions ?? scoreRegressionSegments.length, tone: scoreRegressionSegments.length ? 'red' : 'slate' },
+    { id: 'regressions', label: 'Score bruto', count: rawScoreRegressionCount, tone: effectiveScoreRegressionCount || unresolvedRawScoreRegressionCount ? 'red' : rawScoreRegressionCount ? 'blue' : 'slate' },
+    { id: 'discovery', label: 'Descobertas', count: actionablePatternCount, tone: actionablePatternCount ? 'amber' : patternFamilies.length ? 'blue' : 'slate' },
+    { id: 'providers', label: 'Provedores', count: providerRows.length, tone: providerHealth.status === 'healthy' ? 'emerald' : providerHealth.instrumented ? 'amber' : 'slate' },
+    { id: 'calibration', label: 'Calibracao', count: calibrationReview.pending_count ?? calibrationReviewSegments.filter((item) => item.review_status === 'pending').length, tone: calibrationPolicyDecision === 'skip' || calibrationReview.consumption_status === 'consumed' ? 'emerald' : calibrationPolicyDecision === 'sample' ? 'blue' : Number(calibrationReview.pending_count ?? 0) ? 'amber' : calibrationReviewSegments.length ? 'blue' : 'slate' },
     { id: 'unhandled', label: 'Pendentes', count: diffSummary.unhandled_by_network ?? unhandledSegments.length, tone: unhandledSegments.length ? 'amber' : 'slate' },
     { id: 'feedback', label: 'Feedbacks', count: feedbackRows.length, tone: feedbackRows.length ? 'blue' : 'slate' },
-    { id: 'low_score', label: 'Baixo score', count: lowScoreSegments.length, tone: lowScoreSegments.length ? 'red' : 'slate' },
+    { id: 'low_score', label: 'Baixo score', count: diffSummary.low_score ?? lowScoreSegments.length, tone: lowScoreActionable ? 'red' : lowScoreUnexplained ? 'amber' : Number(diffSummary.low_score ?? lowScoreSegments.length) ? 'blue' : 'slate' },
   ];
+  const activeReviewTabIndex = Math.max(0, reviewTabs.findIndex((tab) => tab.id === postReleaseView));
+  const previousReviewTab = reviewTabs[(activeReviewTabIndex - 1 + reviewTabs.length) % reviewTabs.length];
+  const nextReviewTab = reviewTabs[(activeReviewTabIndex + 1) % reviewTabs.length];
+  const selectReviewTab = (tabId) => {
+    setPostReleaseView(tabId);
+    requestAnimationFrame(() => {
+      const tabStrip = reviewTabsRef.current;
+      const selectedTab = tabStrip?.querySelector(`[data-review-tab-id="${tabId}"]`);
+      if (!tabStrip || !selectedTab) return;
+      const centeredLeft = selectedTab.offsetLeft - (tabStrip.clientWidth - selectedTab.clientWidth) / 2;
+      tabStrip.scrollTo({ left: Math.max(0, centeredLeft), behavior: 'smooth' });
+    });
+  };
+  const navigateReviewTabs = (direction) => {
+    const nextIndex = (activeReviewTabIndex + direction + reviewTabs.length) % reviewTabs.length;
+    selectReviewTab(reviewTabs[nextIndex].id);
+  };
   const reviewTabClass = (tab, active) => {
-    const base = 'group relative inline-flex min-h-9 min-w-[118px] items-center justify-between gap-2 rounded-xl border px-3 py-2 text-[11px] font-black shadow-sm transition focus:outline-none focus:ring-2 focus:ring-white/35';
+    const base = 'group relative inline-flex h-9 min-w-[108px] shrink-0 snap-start items-center justify-between gap-2 rounded-lg border border-b-2 px-3 py-2 text-[11px] font-black shadow-sm transition focus:outline-none focus:ring-2 focus:ring-cyan-300/70';
     if (!active) {
       const toneClass = tab.tone === 'red'
         ? 'border-red-300/25 bg-red-500/10 text-red-100/75 hover:bg-red-500/18'
@@ -3461,11 +4130,12 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
               : 'border-[var(--dash-border)] bg-[var(--dash-card)] text-[var(--dash-muted)] hover:border-blue-300/35 hover:text-blue-100';
       return cn(base, toneClass, 'hover:-translate-y-0.5');
     }
-    if (tab.tone === 'red') return cn(base, 'border-red-200/45 bg-red-500/25 text-red-50 shadow-red-950/30');
-    if (tab.tone === 'amber') return cn(base, 'border-amber-200/45 bg-amber-500/25 text-amber-50 shadow-amber-950/30');
-    if (tab.tone === 'emerald') return cn(base, 'border-emerald-200/45 bg-emerald-500/25 text-emerald-50 shadow-emerald-950/30');
-    if (tab.tone === 'blue') return cn(base, 'border-blue-200/45 bg-blue-500/25 text-blue-50 shadow-blue-950/30');
-    return cn(base, 'border-slate-200/25 bg-slate-500/15 text-slate-100');
+    const selected = '-translate-y-0.5 border-cyan-200/90 ring-2 ring-cyan-300/80 shadow-[0_0_15px_rgba(34,211,238,0.3)]';
+    if (tab.tone === 'red') return cn(base, selected, 'bg-red-500/30 text-red-50');
+    if (tab.tone === 'amber') return cn(base, selected, 'bg-amber-500/30 text-amber-50');
+    if (tab.tone === 'emerald') return cn(base, selected, 'bg-emerald-500/30 text-emerald-50');
+    if (tab.tone === 'blue') return cn(base, selected, 'bg-blue-500/30 text-blue-50');
+    return cn(base, selected, 'bg-slate-500/20 text-slate-50');
   };
   const comparisonSegments = postReleaseView === 'package' ? packageSegments : promotionSegments;
   const missingReleaseReadiness = [knownOpen, appliedPendingValidation].some((value) => value === null);
@@ -3581,7 +4251,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
           ? evaluationReasons.join(', ')
           : 'not_measured';
   const lastDiagnosticLine = lastDiagnostic
-    ? `Diagnóstico atualizado: ${lastDiagnostic.completedAt} · cache atualizado · sem produção iniciada · output intacto`
+    ? `Diagnóstico atualizado: ${lastDiagnostic.completedAt} · sugestões recalculadas · sem confirmação · output intacto`
     : `Último diagnóstico: cache ${cache.generated_at ? `atualizado em ${cache.generated_at}` : 'pendente'} · sem produção iniciada nesta sessão`;
   const visibleProductionRun = runStatus?.run_id ? runStatus : lastRun;
   const visibleProductionRunId = visibleProductionRun?.run_id ?? productionDelta.last_production_run_id ?? '-';
@@ -3622,8 +4292,9 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       : 'emerald';
   const runSegmentStateId = currentActionRun?.new_segment_state_run_id ?? currentActionRun?.segment_state_run_id ?? null;
   const runSegmentStateLabel = runSegmentStateId ? `segment-state #${runSegmentStateId}` : 'sem novo segment-state';
-  const executionStatus = modeActionNotice?.mode === 'evaluation' || modeActionNotice?.mode === 'publication'
-    ? (currentActionRun?.status ?? modeActionNotice.status)
+  const pipelineRunMode = runActive ? activeRunMode : modeActionNotice?.mode;
+  const executionStatus = pipelineRunMode === 'evaluation' || pipelineRunMode === 'publication'
+    ? (currentActionRun?.status ?? modeActionNotice?.status)
     : modeActionNotice?.status;
   const executionStatusValue = normalizedRunStatus(executionStatus);
   const executionTone = executionStatusValue === 'failed' || executionStatusValue === 'blocked'
@@ -3634,9 +4305,13 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const diagnosticElapsedMs = diagnosticStartedAt
     ? (refreshing ? Date.now() : (diagnosticFinishedAt ?? Date.now())) - diagnosticStartedAt
     : 0;
+  const diagnosticPhases = Array.isArray(diagnosticRunStatus?.phases)
+    ? diagnosticRunStatus.phases
+    : [];
+  const diagnosticStatusValue = normalizedRunStatus(diagnosticRunStatus?.status);
   const diagnosticProgress = refreshing
-    ? clampNumber(18 + Math.floor(diagnosticElapsedMs / 1000) * 2, 18, 96)
-    : executionStatusValue === 'failed'
+    ? clampNumber(Number(diagnosticRunStatus?.progress_pct ?? 1), 1, 99)
+    : executionStatusValue === 'failed' || diagnosticStatusValue === 'failed'
       ? 100
       : modeActionNotice?.mode === 'diagnostic'
         ? 100
@@ -3648,24 +4323,20 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       : 0;
   const diagnosticExecutionActive = refreshing && effectiveSelectedMode === 'diagnostic';
   const diagnosticElapsedLabel = diagnosticStartedAt ? durationLabel(diagnosticElapsedMs) : 'nao medido';
-  const diagnosticCurrentStepLabel = diagnosticProgress < 50
-    ? 'Segment-state'
-    : diagnosticProgress < 68
-      ? 'Cache'
-      : diagnosticProgress < 88
-        ? 'Preflight'
-        : refreshing
-          ? 'Consolidar painel'
-          : 'Concluido';
+  const diagnosticCurrentStepLabel = diagnosticRunStatus?.current_label
+    ?? (refreshing ? 'Preparar diagnóstico' : 'Concluído');
   const diagnosticStepStatus = (stepIndex) => {
+    const measured = diagnosticPhases[stepIndex]?.status;
+    if (measured) return normalizedStageStatus(measured);
     if (startStatus === 'failed') return stepIndex === 0 ? 'failed' : 'pending';
     if (!refreshing) return modeActionNotice?.mode === 'diagnostic' ? 'done' : 'pending';
-    if (stepIndex === 0) return diagnosticProgress < 50 ? 'running' : 'done';
-    if (stepIndex === 1) return diagnosticProgress < 50 ? 'pending' : diagnosticProgress < 68 ? 'running' : 'done';
-    if (stepIndex === 2) return diagnosticProgress < 68 ? 'pending' : diagnosticProgress < 88 ? 'running' : 'done';
-    if (stepIndex === 3) return diagnosticProgress < 88 ? 'pending' : 'running';
-    return 'pending';
+    return stepIndex === 0 ? 'running' : 'pending';
   };
+  const diagnosticStepDetail = (stepIndex, fallback) => (
+    diagnosticPhases[stepIndex]?.current_label
+    ?? diagnosticPhases[stepIndex]?.current_stage
+    ?? fallback
+  );
   const executionTitle = modeActionNotice?.mode === 'diagnostic'
     ? (refreshing ? 'Diagnóstico em execução' : modeActionNotice?.title)
     : modeActionNotice?.mode === 'evaluation'
@@ -3679,7 +4350,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const displayExecutionDetail = modeActionNotice?.mode === 'evaluation' && currentActionStatus === 'completed'
     ? `Run ${currentActionRun.run_id} concluida Â· ${runOutputLabel} Â· ${runSegmentStateLabel}`
     : executionDetail;
-  const runModeUsesPipeline = modeActionNotice?.mode === 'evaluation' || modeActionNotice?.mode === 'publication';
+  const runModeUsesPipeline = pipelineRunMode === 'evaluation' || pipelineRunMode === 'publication';
   const displayExecutionTitle = modeActionNotice?.mode === 'diagnostic'
     ? (refreshing ? 'Diagnostico em execucao' : modeActionNotice?.title)
     : modeActionNotice?.mode === 'evaluation'
@@ -3692,14 +4363,14 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       ? `Run ${currentActionRun?.run_id ?? '-'} concluida - ${runOutputLabel} - ${runSegmentStateLabel}`
       : currentActionStatus === 'failed'
         ? `Run ${currentActionRun?.run_id ?? '-'} - falha em ${failedStageLabel} - ${failureMessage || 'mensagem nao medida'}`
-        : `Modo ${modeActionNotice?.mode === 'publication' ? 'Producao publicavel' : 'Producao de avaliacao'} - ${currentActionRun?.run_id ? `run ${currentActionRun.run_id}` : 'aguardando run'} - etapa ${currentStage?.label ?? currentActionRun?.current_label ?? currentActionRun?.current_stage ?? 'preparando'}`
+        : `Modo ${pipelineRunMode === 'publication' ? 'Producao publicavel' : 'Producao de avaliacao'} - ${currentActionRun?.run_id ? `run ${currentActionRun.run_id}` : 'aguardando run'} - etapa ${currentStage?.label ?? currentActionRun?.current_label ?? currentActionRun?.current_stage ?? 'preparando'}`
     : displayExecutionDetail;
   const selectedModePreviewSteps = {
     diagnostic: [
-      { label: 'Segment-state', status: refreshing ? 'running' : 'pending' },
-      { label: 'Cache', status: 'pending' },
-      { label: 'Preflight', status: 'pending' },
-      { label: 'Consolidar painel', status: 'pending' },
+      { label: 'Estado atual', status: refreshing ? 'running' : 'pending', detail: 'Recalcula fechamento e identifica a superfície elegível sem alterar output.' },
+      { label: 'Descoberta', status: 'pending', detail: 'Analisa famílias conhecidas e gera candidatos shadow de melhoria.' },
+      { label: 'Sugestões', status: 'pending', detail: 'Registra evidências pareadas e promoções sugeridas, sem confirmar apply.' },
+      { label: 'Consolidação', status: 'pending', detail: 'Atualiza cache, preflight, filas e comparativos do painel.' },
     ],
     evaluation: [
       { label: 'Preparacao', status: evaluationAllowed && !diskBlocksProduction ? 'pending' : 'failed', detail: 'Snapshot, arquivo, indice e segment-state antes da escrita.' },
@@ -3751,10 +4422,10 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         ]
     : modeActionNotice?.mode === 'diagnostic' || diagnosticExecutionActive
       ? [
-          { label: 'Segment-state', status: diagnosticStepStatus(0), detail: 'Recalcula fechamentos, pendencias e needs apply sem alterar output.' },
-          { label: 'Cache', status: diagnosticStepStatus(1), detail: 'Atualiza app-state e cache do dashboard.' },
-          { label: 'Preflight', status: diagnosticStepStatus(2), detail: 'Rele estado, gates e disponibilidade operacional.' },
-          { label: 'Consolidar painel', status: diagnosticStepStatus(3), detail: 'Monta metricas, filas e comparativos para atualizar a tela.' },
+          { label: 'Estado atual', status: diagnosticStepStatus(0), detail: diagnosticStepDetail(0, 'Recalcula fechamento e identifica a superfície elegível sem alterar output.') },
+          { label: 'Descoberta', status: diagnosticStepStatus(1), detail: diagnosticStepDetail(1, 'Analisa famílias conhecidas e gera candidatos shadow de melhoria.') },
+          { label: 'Sugestões', status: diagnosticStepStatus(2), detail: diagnosticStepDetail(2, 'Registra evidências pareadas e promoções sugeridas, sem confirmar apply.') },
+          { label: 'Consolidação', status: diagnosticStepStatus(3), detail: diagnosticStepDetail(3, 'Atualiza cache, preflight, filas e comparativos do painel.') },
         ]
       : modeActionNotice?.mode === 'publication'
         ? [
@@ -3798,9 +4469,9 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
           : 'border-[var(--dash-border)] bg-[var(--dash-card)] text-[var(--dash-muted)]'
   );
   const selectedModeTitle = {
-    diagnostic: 'Atualiza cache e preflight.',
-    evaluation: 'Gera output de avaliação.',
-    publication: 'Valida pacote publicavel.',
+    diagnostic: 'Analisa o estado e sugere novas promoções.',
+    evaluation: 'Valida promoções e aprova a fila de apply.',
+    publication: 'Aplica, escreve e fecha o output publicável.',
     hotfix: 'Opera hotfix visual.',
   }[effectiveSelectedMode] ?? selectedModeInfo.description;
   const latestRunFailure = visibleProductionRun?.status === 'failed' ? (visibleProductionRun.failure ?? {}) : {};
@@ -3895,7 +4566,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     : modeActionNotice?.mode === 'publication'
       ? modeActionNotice?.body ?? selectedModeInfo.description
     : effectiveSelectedMode === 'diagnostic'
-      ? refreshing ? 'Atualizando cache e preflight' : modeActionNotice?.title ?? selectedModeInfo.description
+      ? refreshing ? 'Analisando candidatos e atualizando sugestões' : modeActionNotice?.title ?? selectedModeInfo.description
       : selectedModeInfo.description;
 
   return (
@@ -3924,11 +4595,15 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         <div className="mt-2 flex flex-wrap items-center gap-1.5 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] px-2.5 py-2 text-xs font-bold text-[var(--dash-muted)]">
           <span><span className="text-blue-400">{compact(release.total_segments)}</span> segmentos</span>
           <span className="text-[var(--dash-soft)]">·</span>
-          <span><span className="text-emerald-400">{pct(release.closed_rate)}</span> fechados</span>
+          <span>pacote <span className={operationallyClosed ? 'text-emerald-400' : 'text-amber-400'}>{operationallyClosed ? 'fechado' : 'aberto'}</span></span>
           <span className="text-[var(--dash-soft)]">·</span>
           <span><span className={release.pending_count ? 'text-amber-400' : 'text-emerald-400'}>{compact(release.pending_count)}</span> pendentes</span>
           <span className="text-[var(--dash-soft)]">·</span>
           <span>needs apply <span className={release.needs_apply ? 'text-amber-400' : 'text-emerald-400'}>{compact(release.needs_apply)}</span></span>
+          <span className="text-[var(--dash-soft)]">·</span>
+          <span className={qualityDebtActionable ? 'text-amber-400' : qualityDebt.status === 'clear' ? 'text-emerald-400' : 'text-blue-400'}>{qualityDebtHeaderLabel}</span>
+          <span className="text-[var(--dash-soft)]">·</span>
+          <span>provedores <span className={providerHealth.status === 'healthy' ? 'text-emerald-400' : 'text-amber-400'}>{compact(providerHealth.executed_provider_count ?? 0)}/{compact(providerHealth.provider_count ?? 0)}</span></span>
           <span className="text-[var(--dash-soft)]">·</span>
           <span>modo <span className="text-[var(--dash-text)]">{selectedModeInfo.shortLabel}</span></span>
         </div>
@@ -3942,7 +4617,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         </div>
       </Card>
 
-      <div className="grid min-h-0 flex-1 gap-2 xl:grid-cols-[0.58fr_1.42fr]">
+      <div className="grid min-h-0 flex-1 gap-2 xl:grid-cols-[minmax(330px,0.5fr)_minmax(0,1.5fr)]">
         <Card className="dashboard-card-scroll flex min-h-0 flex-col overflow-y-auto p-2">
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -3952,7 +4627,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
             <Badge tone={selectedModeInfo.tone}>{selectedModeInfo.status}</Badge>
           </div>
 
-          <div className="mt-2 grid grid-cols-4 gap-1.5">
+          <div className="mt-2 flex flex-nowrap items-center gap-2.5">
             {releaseModes.map((mode) => (
               <button
                 key={mode.id}
@@ -3962,25 +4637,26 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                   if (!runActive && !runStartPending) setSelectedMode(mode.id);
                 }}
                 className={cn(modeButtonClass(mode, effectiveSelectedMode === mode.id), (runActive || runStartPending) && 'cursor-not-allowed')}
-                title={runActive ? 'Aguarde a execução atual terminar.' : modeTooltip(mode)}
+                data-tooltip-title={runActive ? 'Execução em andamento' : mode.shortLabel}
+                data-tooltip-description={runActive ? 'Aguarde a execução atual terminar.' : [mode.description, mode.warning].filter(Boolean).join(' ')}
+                data-tooltip-meta={`Status: ${mode.status}`}
                 aria-label={runActive ? 'Aguarde a execução atual terminar.' : modeTooltip(mode)}
               >
                 <span
                   className={cn(
-                    'pointer-events-none absolute inset-x-2 top-0 h-1 rounded-b-full bg-white/80 opacity-0 shadow-[0_0_12px_rgba(255,255,255,0.85)] transition',
+                    'pointer-events-none absolute inset-x-2 top-0 h-0.5 rounded-b-full bg-cyan-200 opacity-0 shadow-[0_0_12px_rgba(34,211,238,0.9)] transition',
                     effectiveSelectedMode === mode.id && 'opacity-100'
                   )}
                 />
-                <span className="block truncate text-[11px] font-black leading-4 text-white drop-shadow-sm">{mode.shortLabel}</span>
+                <span className="shrink-0 drop-shadow-sm">{modeIcon(mode)}</span>
                 <span
                   className={cn(
-                    'absolute right-1.5 top-1.5 grid h-4 w-4 place-items-center rounded-full border shadow-sm',
+                    'absolute right-2.5 top-1/2 grid h-4 w-4 -translate-y-1/2 place-items-center rounded-full border shadow-sm',
                     mode.statusKind === 'blocked' ? 'border-red-100/40 bg-red-500 text-white' :
                       mode.statusKind === 'instrumented' ? 'border-amber-100/45 bg-amber-400 text-amber-950' :
                         mode.statusKind === 'unknown' ? 'border-slate-100/35 bg-slate-500 text-white' :
                           'border-emerald-100/45 bg-emerald-400 text-emerald-950'
                   )}
-                  title={`Status: ${mode.status}`}
                 >
                   {modeStatusIcon(mode)}
                 </span>
@@ -3998,7 +4674,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
               !modeButtonDisabled ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20 hover:bg-blue-500' : 'bg-slate-500/10 text-[var(--dash-muted)]'
             )}
           >
-            <Play size={18} /> {runActive ? (activeRunMode === 'publication' ? 'Executando publicavel...' : 'Executando avaliacao...') : refreshing ? 'Atualizando...' : startStatus === 'checking' ? 'Checando...' : publicationCanApply ? 'Aplicar confirmados' : selectedModeInfo.actionLabel}
+            <Play size={18} /> {runActive ? (activeRunMode === 'publication' ? 'Executando publicavel...' : 'Executando avaliacao...') : refreshing ? 'Atualizando...' : startStatus === 'checking' ? 'Checando...' : effectiveSelectedMode === 'publication' && publicationCanApply ? 'Aplicar confirmados' : selectedModeInfo.actionLabel}
           </button>
 
           <div className="mt-2 flex h-[156px] flex-col justify-between overflow-hidden rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
@@ -4009,7 +4685,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                     <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Modo real ativo</p>
                     <p className="line-clamp-1 text-sm font-black text-[var(--dash-text)]">Avaliação em execução</p>
                   </div>
-                  <Badge tone="blue">Running</Badge>
+                  <Badge tone="blue">{statusLabel(runStatus?.status)}</Badge>
                 </div>
                 <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-500/20">
                   <div className="h-full rounded-full bg-blue-500 transition-all duration-500" style={{ width: `${Math.max(0, Math.min(100, runProgress))}%` }} />
@@ -4227,7 +4903,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                   </p>
                 </div>
                 <div className="flex flex-wrap justify-end gap-1.5 text-[10px] font-bold">
-                  <Badge tone="blue">{runStatus?.run_id ? `run ${runStatus.run_id}` : selectedModeInfo.shortLabel}</Badge>
+                  <Badge tone="blue">{currentActionRun?.run_id ? `run ${currentActionRun.run_id}` : selectedModeInfo.shortLabel}</Badge>
                   <Badge tone={runActive ? liveRunStatusTone : executionTone}>{runActive ? statusLabel(runStatus?.status) : statusLabel(executionStatus ?? startStatus ?? 'idle')}</Badge>
                   <Badge tone={runOutputBadgeTone}>{runOutputLabel}</Badge>
                 </div>
@@ -4382,8 +5058,20 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                         ? 'Pacote old vs output'
                       : postReleaseView === 'promotions'
                         ? 'Promocoes'
-                        : postReleaseView === 'regressions'
-                          ? 'Regressoes de score'
+                      : postReleaseView === 'regressions'
+                          ? 'Auditoria do score bruto'
+                      : postReleaseView === 'discovery'
+                          ? 'Familias de qualidade descobertas'
+                      : postReleaseView === 'providers'
+                          ? 'Cobertura e produtividade dos provedores'
+                      : postReleaseView === 'calibration'
+                          ? calibrationPolicyDecision === 'skip' && hasCompletedCalibrationHistory
+                            ? 'Calibracao concluida'
+                            : calibrationPolicyDecision === 'skip'
+                            ? 'Calibracao dispensada pela politica'
+                            : calibrationPolicyDecision === 'sample'
+                              ? 'Amostra pairwise de calibracao'
+                              : 'Revisao pairwise de calibracao'
                           : postReleaseView === 'apply'
                             ? 'Needs apply'
                             : postReleaseView === 'new'
@@ -4396,17 +5084,27 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                     {postReleaseView === 'feedback'
                       ? 'Somente feedback aberto ou aguardando acao. Itens fechados e holds aceitos ficam arquivados.'
                       : postReleaseView === 'package'
-                        ? `Comparativo final fechado entre source\\spanish_old e output\\spanish. ${packageScoreSummaryLabel}. Diferencas brutas: ${compact(rawOutputDiffCount)}; fora do pacote: ${compact(packageExcludedCount)}.`
+                        ? `Comparativo final fechado entre source\\spanish_old e output\\spanish. ${packageScoreSummaryLabel}; ${packageCoverageLabel}. ${changedCohortScoreLabel}. Diferencas brutas: ${compact(rawOutputDiffCount)}; fora do pacote: ${compact(packageExcludedCount)}.`
                       : postReleaseView === 'promotions'
                         ? 'Promocoes contra o old que passaram no gate e podem virar apply confirmado.'
-                        : postReleaseView === 'regressions'
-                          ? 'Regressoes em que o score novo ficou abaixo do score old, ordenadas pelo pior delta.'
+                      : postReleaseView === 'regressions'
+                          ? `${compact(rawScoreRegressionCount)} variacoes brutas auditaveis; ${compact(effectiveScoreRegressionCount)} regressões efetivas no pacote; ${compact(reviewedRawScoreRegressionCount)} ja revisadas/calibradas; ${compact(unresolvedRawScoreRegressionCount)} ainda sem resolucao.`
+                      : postReleaseView === 'discovery'
+                          ? `Mineracao do pacote inteiro na epoch #${patternDiscovery.quality_epoch_id ?? '-'}. ${compact(patternDiscovery.evidence_segment_count ?? 0)} segmentos com evidencia; ${compact(patternDiscovery.ignored_score_only_count ?? 0)} casos de score baixo permaneceram apenas informativos.`
+                      : postReleaseView === 'providers'
+                          ? `Funil persistido no SQLite para a epoch #${providerHealth.quality_epoch_id ?? '-'}. Casos inspecionados viram evidência somente quando passam pelos filtros determinísticos e pelo gate pareado.`
+                      : postReleaseView === 'calibration'
+                          ? calibrationPolicyDecision === 'skip' && hasCompletedCalibrationHistory
+                            ? `A epoch #${calibrationReview.quality_epoch_id ?? '-'} ja foi calibrada. A politica atual dispensou uma nova amostra (${calibrationPolicySummary}), mas a fila #${calibrationReview.run_id} e suas decisoes permanecem visiveis.`
+                            : calibrationPolicyDecision === 'skip'
+                            ? `A epoch #${calibrationReview.quality_epoch_id ?? '-'} nao precisa de revisao manual: ${calibrationPolicySummary}. A decisao ficou registrada sem alterar score ou output.`
+                            : `Politica ${calibrationPolicyDecision === 'sample' ? 'por amostra' : 'obrigatoria'} na epoch #${calibrationReview.quality_epoch_id ?? '-'}. Motivos: ${calibrationPolicySummary}. Prioritarios: ${compact(calibrationReview.priority_count ?? 0)}; controles: ${compact(Number(calibrationReview.positive_control_count ?? 0) + Number(calibrationReview.negative_control_count ?? 0))}.`
                           : postReleaseView === 'apply'
                             ? 'Confirmados cujo output atual ainda difere do texto aprovado e precisa de aplicacao protegida.'
                             : postReleaseView === 'new'
                               ? 'Segmentos sem equivalente no old, ordenados por score novo.'
                       : postReleaseView === 'low_score'
-                                ? 'Fila objetiva de baixa confianca: score novo abaixo de 50%, ordenada do menor para o maior.'
+                                ? `Baixo score nao significa erro automaticamente. ${compact(lowScoreActionable)} acionaveis (${Number(lowScoreCohorts.actionable_share_pct ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })}% da fila); ${compact(lowScoreInformational)} informativos; ${compact(lowScoreUnexplained)} sem evidencia especifica. ${qualityBandsLabel}.`
                                 : 'Pendencias operacionais do segment-state: o que ainda nao fechou e precisa explicar o motivo.'}
                   </p>
                 </div>
@@ -4415,48 +5113,114 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                     ? feedbackRows.length ? `${feedbackRows.length} ativos` : archivedFeedbackItems.length ? 'fila limpa' : 'nao instrumentado'
                     : postReleaseView === 'package'
                       ? packageScoreSummaryLabel
+                    : postReleaseView === 'calibration'
+                      ? calibrationPolicyDecision === 'skip' && hasCompletedCalibrationHistory
+                        ? `fila #${calibrationReview.run_id} - ${compact(calibrationReview.decided_count ?? 0)} decisoes preservadas`
+                        : calibrationPolicyDecision === 'skip'
+                        ? 'dispensada'
+                        : calibrationReview.consumption_status === 'consumed'
+                        ? `fila #${calibrationReview.run_id ?? '-'} - ${compact(calibrationReview.consumed_count ?? 0)} consumidos`
+                        : `fila #${calibrationReview.run_id ?? '-'} - ${compact(calibrationReview.pending_count ?? 0)} pendentes`
+                    : postReleaseView === 'discovery'
+                      ? `fila #${patternDiscovery.run_id ?? '-'} - ${compact(patternDiscovery.family_count ?? 0)} familias`
+                    : postReleaseView === 'providers'
+                      ? `${compact(providerHealth.executed_provider_count ?? 0)}/${compact(providerHealth.provider_count ?? 0)} executados - score #${providerHealth.score_run_id ?? '-'}`
                     : diffReview.old_score_run_id
                       ? `score #${diffReview.old_score_run_id} -> #${diffReview.score_run_id ?? '-'}`
                       : `score #${diffReview.score_run_id ?? '-'}`}
                 </Badge>
               </div>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {reviewTabs.map((tab) => (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setPostReleaseView(tab.id)}
-                    className={reviewTabClass(tab, postReleaseView === tab.id)}
-                  >
-                    {tab.label}
-                    <Badge tone={tab.tone}>{compact(tab.count)}</Badge>
-                  </button>
-                ))}
+              {postReleaseView === 'low_score' ? (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <Badge tone="red">Defeito explicito {compact(lowScoreCohorts.explicit_text_issue ?? 0)}</Badge>
+                  <Badge tone="amber">Bloqueio estrutural {compact(lowScoreCohorts.structural_block_without_issue ?? 0)}</Badge>
+                  <Badge tone="emerald">Seguro deterministico {compact(lowScoreCohorts.deterministic_safe_but_low_score ?? 0)}</Badge>
+                  <Badge tone="blue">Texto preservado {compact(lowScoreCohorts.unchanged_or_preserved_text ?? 0)}</Badge>
+                  <Badge tone="slate">Sem evidencia {compact(lowScoreUnexplained)}</Badge>
+                </div>
+              ) : null}
+              {postReleaseView === 'discovery' ? (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <Badge tone="amber">Novas {compact(patternDiscovery.new_family_count ?? 0)}</Badge>
+                  <Badge tone="blue">Recorrentes {compact(patternDiscovery.recurring_family_count ?? 0)}</Badge>
+                  <Badge tone="emerald">Cobertas {compact(patternDiscovery.covered_family_count ?? 0)}</Badge>
+                  <Badge tone="slate">Em observacao {compact(Number(patternDiscovery.family_count ?? 0) - Number(patternDiscovery.actionable_family_count ?? 0) - Number(patternDiscovery.covered_family_count ?? 0))}</Badge>
+                </div>
+              ) : null}
+              {postReleaseView === 'providers' ? (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <Badge tone={providerHealth.status === 'healthy' ? 'emerald' : 'amber'}>Executados {compact(providerHealth.executed_provider_count ?? 0)}/{compact(providerHealth.provider_count ?? 0)}</Badge>
+                  <Badge tone="blue">Inspecionados {compact(providerHealth.inspected_count ?? 0)}</Badge>
+                  <Badge tone={Number(providerHealth.shadow_eligible_count ?? 0) ? 'amber' : 'emerald'}>Elegíveis {compact(providerHealth.shadow_eligible_count ?? 0)}</Badge>
+                  <Badge tone={Number(providerHealth.promotion_ready_count ?? 0) ? 'blue' : 'slate'}>Promoções {compact(providerHealth.promotion_ready_count ?? 0)}</Badge>
+                  <Badge tone={Number(providerHealth.uncovered_actionable_family_count ?? 0) ? 'amber' : 'emerald'}>Sem provedor {compact(providerHealth.uncovered_actionable_family_count ?? 0)}</Badge>
+                </div>
+              ) : null}
+              <div className="mt-3 flex min-w-0 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => navigateReviewTabs(-1)}
+                  className="grid h-9 w-7 shrink-0 place-items-center rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] text-[var(--dash-muted)] transition hover:-translate-y-0.5 hover:border-cyan-300/50 hover:text-cyan-200 focus:outline-none focus:ring-2 focus:ring-cyan-300/70"
+                  aria-label={`Relatório anterior: ${previousReviewTab.label}`}
+                  title={`Relatório anterior: ${previousReviewTab.label}`}
+                >
+                  <ChevronLeft size={15} />
+                </button>
+                <div
+                  ref={reviewTabsRef}
+                  role="tablist"
+                  aria-label="Relatórios de pós-release"
+                  className="report-tab-strip dashboard-card-scroll flex min-w-0 flex-1 snap-x snap-mandatory flex-nowrap gap-1.5 overflow-x-auto overflow-y-hidden pb-1.5 pt-1.5"
+                >
+                  {reviewTabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      role="tab"
+                      data-review-tab-id={tab.id}
+                      aria-selected={postReleaseView === tab.id}
+                      onClick={() => selectReviewTab(tab.id)}
+                      className={reviewTabClass(tab, postReleaseView === tab.id)}
+                    >
+                      {tab.label}
+                      <Badge tone={tab.tone}>{compact(tab.count)}</Badge>
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => navigateReviewTabs(1)}
+                  className="grid h-9 w-7 shrink-0 place-items-center rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] text-[var(--dash-muted)] transition hover:-translate-y-0.5 hover:border-cyan-300/50 hover:text-cyan-200 focus:outline-none focus:ring-2 focus:ring-cyan-300/70"
+                  aria-label={`Próximo relatório: ${nextReviewTab.label}`}
+                  title={`Próximo relatório: ${nextReviewTab.label}`}
+                >
+                  <ChevronRight size={15} />
+                </button>
               </div>
               <div className="dashboard-card-scroll mt-2 min-h-0 flex-1 overflow-auto rounded-lg border border-[var(--dash-border)]">
                 {postReleaseView === 'feedback' ? (
-                  <table className="w-full min-w-[760px] text-left text-xs">
+                  <table className="w-full min-w-[760px] text-center text-xs">
                     <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
                       <tr>
                         <th className="px-2 py-2">ID</th>
-                        <th className="px-2 py-2">Evidencia</th>
+                        <th className="px-2 py-2 text-left">Evidencia</th>
                         <th className="px-2 py-2">Categoria</th>
                         <th className="px-2 py-2">Segmentos</th>
                         <th className="px-2 py-2">Status</th>
                         <th className="px-2 py-2">Sev.</th>
-                        <th className="px-2 py-2">Proxima acao</th>
+                        <th className="px-2 py-2 text-left">Proxima acao</th>
                       </tr>
                     </thead>
                     <tbody>
                       {feedbackRows.length ? feedbackRows.slice(0, 24).map((item) => (
                         <tr key={item.row_id} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
                           <td className="max-w-[220px] truncate px-2 py-2 font-bold" title={item.id ?? '-'}>{item.id ?? '-'}</td>
-                          <td className="max-w-[360px] truncate px-2 py-2" title={item.observed_text}>{item.observed_text}</td>
+                          <td className="max-w-[360px] truncate px-2 py-2 text-left" title={item.observed_text}>{item.observed_text}</td>
                           <td className="max-w-[140px] truncate px-2 py-2" title={item.category}>{item.category}</td>
                           <td className="px-2 py-2">{item.segment_label}</td>
                           <td className="px-2 py-2"><Badge tone={item.status === 'closed' ? 'emerald' : item.status === 'accepted_hold' || item.status === 'hold' ? 'blue' : 'amber'}>{item.status ?? 'nao medido'}</Badge></td>
                           <td className="px-2 py-2">{item.visual_severity}</td>
-                          <td className="max-w-[220px] truncate px-2 py-2" title={item.next_action}>{item.next_action}</td>
+                          <td className="max-w-[220px] truncate px-2 py-2 text-left" title={item.next_action}>{item.next_action}</td>
                         </tr>
                       )) : (
                         <tr>
@@ -4468,13 +5232,13 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                     </tbody>
                   </table>
                 ) : postReleaseView === 'promotions' || postReleaseView === 'package' ? (
-                  <table className="w-full min-w-[1340px] text-left text-xs">
+                  <table className="w-full min-w-[1340px] text-center text-xs">
                     <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
                       <tr>
                         <th className="px-2 py-2">Segmento</th>
-                        <th className="px-2 py-2">Arquivo / chave</th>
-                        <th className="px-2 py-2">Old</th>
-                        <th className="px-2 py-2">Output</th>
+                        <th className="px-2 py-2 text-left">Arquivo / chave</th>
+                        <th className="px-2 py-2 text-left">Old</th>
+                        <th className="px-2 py-2 text-left">Output</th>
                         <th className="px-2 py-2">Score old</th>
                         <th className="px-2 py-2">Score novo</th>
                         <th className="px-2 py-2">Delta</th>
@@ -4487,9 +5251,9 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                       {comparisonSegments.length ? comparisonSegments.slice(0, 80).map((item) => (
                         <tr key={`${postReleaseView}-${item.segment_id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
                           <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
-                          <td className="max-w-[220px] truncate px-2 py-2" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
-                          <td className="max-w-[260px] truncate px-2 py-2" title={item.old_text ?? ''}>{item.old_text ?? '-'}</td>
-                          <td className="max-w-[260px] truncate px-2 py-2" title={item.output_text ?? ''}>{item.output_text ?? '-'}</td>
+                          <td className="max-w-[220px] truncate px-2 py-2 text-left" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
+                          <td className="max-w-[260px] truncate px-2 py-2 text-left" title={item.old_text ?? ''}>{item.old_text ?? '-'}</td>
+                          <td className="max-w-[260px] truncate px-2 py-2 text-left" title={item.output_text ?? ''}>{item.output_text ?? '-'}</td>
                           <td className="px-2 py-2"><Badge tone={scoreTone(segmentOldScore(item))}>{scoreLabel(segmentOldScore(item))}</Badge></td>
                           <td className="px-2 py-2" title={scoreCellTitle(item)}><Badge tone={scoreTone(segmentNewScore(item))}>{scoreLabel(segmentNewScore(item))}</Badge></td>
                           <td className="px-2 py-2" title={scoreCellTitle(item)}><Badge tone={scoreDeltaTone(item)}>{scoreDeltaLabel(item)}</Badge></td>
@@ -4502,18 +5266,178 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                       )}
                     </tbody>
                   </table>
-                ) : postReleaseView === 'regressions' ? (
-                  <table className="w-full min-w-[1160px] text-left text-xs">
+                ) : postReleaseView === 'providers' ? (
+                  <table className="w-full min-w-[1080px] text-center text-xs">
+                    <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                      <tr>
+                        <th className="px-2 py-2 text-left">Provedor</th>
+                        <th className="px-2 py-2">Estado</th>
+                        <th className="px-2 py-2">Famílias</th>
+                        <th className="px-2 py-2">Inspecionados</th>
+                        <th className="px-2 py-2">Elegíveis</th>
+                        <th className="px-2 py-2">Evidências</th>
+                        <th className="px-2 py-2">Promoções</th>
+                        <th className="px-2 py-2">Última produtividade</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {providerRows.length ? providerRows.map((item) => (
+                        <tr key={`provider-${item.provider_id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
+                          <td className="max-w-[280px] px-2 py-2 text-left" title={item.evidence_type ?? ''}>
+                            <p className="font-black">{item.label ?? String(item.provider_id ?? '').replaceAll('_', ' ')}</p>
+                            <p className="truncate text-[10px] text-[var(--dash-muted)]">{item.provider_id}</p>
+                          </td>
+                          <td className="px-2 py-2"><Badge tone={providerStatusTone(item.status)}>{providerStatusLabels[item.status] ?? String(item.status ?? 'não medido').replaceAll('_', ' ')}</Badge></td>
+                          <td className="px-2 py-2" title={`${compact(item.closed_family_count ?? 0)} famílias históricas fechadas`}>
+                            {compact(item.active_family_count ?? 0)} ativas / {compact(item.observed_family_count ?? 0)} observadas
+                          </td>
+                          <td className="px-2 py-2 font-black">{compact(item.inspected_count ?? 0)}</td>
+                          <td className="px-2 py-2"><Badge tone={Number(item.shadow_eligible_count ?? 0) ? 'amber' : 'emerald'}>{compact(item.shadow_eligible_count ?? 0)}</Badge></td>
+                          <td className="px-2 py-2">{compact(item.evidence_count ?? 0)}</td>
+                          <td className="px-2 py-2"><Badge tone={Number(item.promotion_ready_count ?? 0) ? 'blue' : 'slate'}>{compact(item.promotion_ready_count ?? 0)}</Badge></td>
+                          <td className="max-w-[220px] px-2 py-2" title={item.last_productive_at ?? ''}>
+                            {Number(item.last_productive_count ?? 0) > 0
+                              ? `${compact(item.last_productive_count)} no score #${item.last_productive_score_run_id ?? '-'} · ${compactDateTime(item.last_productive_at)}`
+                              : 'sem promoção histórica'}
+                          </td>
+                        </tr>
+                      )) : (
+                        <tr><td colSpan={8} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">Nenhum provedor habilitado foi instrumentado.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                ) : postReleaseView === 'discovery' ? (
+                  <table className="w-full min-w-[1080px] text-center text-xs">
+                    <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                      <tr>
+                        <th className="px-2 py-2">Prioridade</th>
+                        <th className="px-2 py-2">Familia</th>
+                        <th className="px-2 py-2">Contexto</th>
+                        <th className="px-2 py-2">Area</th>
+                        <th className="px-2 py-2">Segmentos</th>
+                        <th className="px-2 py-2">Score medio</th>
+                        <th className="px-2 py-2">Estado</th>
+                        <th className="px-2 py-2">Provedor</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {patternFamilies.length ? patternFamilies.map((item) => {
+                        const statusLabels = {
+                          new_candidate: 'nova',
+                          recurring_candidate: 'recorrente',
+                          covered_by_provider: 'coberta',
+                          monitoring: 'observacao',
+                          closed_observation: 'historico fechado',
+                        };
+                        const statusTone = item.status === 'covered_by_provider'
+                          ? 'emerald'
+                          : item.status === 'closed_observation'
+                            ? 'slate'
+                          : item.status === 'new_candidate'
+                            ? 'amber'
+                            : item.status === 'recurring_candidate'
+                              ? 'blue'
+                              : 'slate';
+                        const sample = Array.isArray(item.samples) ? item.samples[0] : null;
+                        return (
+                          <tr key={`pattern-${item.family_key}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
+                            <td className="px-2 py-2"><Badge tone={Number(item.priority ?? 0) >= 75 ? 'red' : Number(item.priority ?? 0) >= 60 ? 'amber' : 'blue'}>{Number(item.priority ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</Badge></td>
+                            <td className="max-w-[240px] px-2 py-2 font-bold" title={sample ? `${sample.relative_path} :: ${sample.source_key}\n${sample.candidate_text}` : item.issue_type}>{String(item.issue_type ?? 'nao medido').replaceAll('_', ' ')}</td>
+                            <td className="px-2 py-2">{String(item.token_context ?? '-').replaceAll('_', ' ')}</td>
+                            <td className="px-2 py-2">{item.file_family ?? '-'}</td>
+                            <td className="px-2 py-2 font-black" title={`${compact(item.closed_segment_count ?? 0)} fechados no lifecycle`}>
+                              {item.operational_segment_count === null || item.operational_segment_count === undefined
+                                ? compact(item.segment_count ?? 0)
+                                : `${compact(item.operational_segment_count)} ativos / ${compact(item.segment_count ?? 0)} evidencias`}
+                            </td>
+                            <td className="px-2 py-2"><Badge tone={scoreTone(item.average_score)}>{scoreLabel(item.average_score)}</Badge></td>
+                            <td className="px-2 py-2"><Badge tone={statusTone}>{statusLabels[item.status] ?? String(item.status ?? '-').replaceAll('_', ' ')}</Badge></td>
+                            <td className="max-w-[210px] px-2 py-2" title={item.evidence_type ?? ''}>{item.provider_id ? String(item.provider_id).replaceAll('_', ' ') : '-'}</td>
+                          </tr>
+                        );
+                      }) : (
+                        <tr><td colSpan={8} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">A descoberta ainda nao foi materializada para a epoch atual.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                ) : postReleaseView === 'calibration' ? (
+                  <table className="w-full min-w-[1380px] text-center text-xs">
                     <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
                       <tr>
                         <th className="px-2 py-2">Segmento</th>
-                        <th className="px-2 py-2">Arquivo / chave</th>
-                        <th className="px-2 py-2">Old</th>
-                        <th className="px-2 py-2">Output</th>
+                        <th className="px-2 py-2">Fila</th>
+                        <th className="px-2 py-2 text-left">Arquivo / chave</th>
+                        <th className="px-2 py-2 text-left">Texto A</th>
+                        <th className="px-2 py-2 text-left">Texto B</th>
+                        <th className="px-2 py-2">Score A</th>
+                        <th className="px-2 py-2">Score B</th>
+                        <th className="px-2 py-2">Delta</th>
+                        <th className="px-2 py-2">Decisao humana</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {calibrationReviewSegments.length ? calibrationReviewSegments.map((item) => (
+                        <tr key={`calibration-${item.id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
+                          <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
+                          <td className="px-2 py-2">
+                            <Badge tone={item.is_priority ? 'amber' : item.is_control ? 'blue' : 'slate'}>
+                              {item.is_priority ? 'prioridade' : item.is_control ? 'controle' : 'revisao'}
+                            </Badge>
+                          </td>
+                          <td className="max-w-[220px] truncate px-2 py-2 text-left" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
+                          <td className="max-w-[260px] truncate px-2 py-2 text-left" title={item.baseline_text ?? ''}>{item.baseline_text ?? '-'}</td>
+                          <td className="max-w-[260px] truncate px-2 py-2 text-left" title={item.candidate_text ?? ''}>{item.candidate_text ?? '-'}</td>
+                          <td className="px-2 py-2"><Badge tone={scoreTone(item.baseline_score_raw)}>{scoreLabel(item.baseline_score_raw)}</Badge></td>
+                          <td className="px-2 py-2"><Badge tone={scoreTone(item.candidate_score_raw)}>{scoreLabel(item.candidate_score_raw)}</Badge></td>
+                          <td className="px-2 py-2"><Badge tone={scoreDeltaTone(item)}>{scoreDeltaLabel(item)}</Badge></td>
+                          <td className="px-2 py-2">
+                            {item.review_status === 'decided' ? (
+                              <Badge tone={item.reviewer_label === 'invalid_pair' ? 'red' : 'emerald'}>{item.reviewer_label ?? 'decidido'}</Badge>
+                            ) : (
+                              <div className="flex min-w-[250px] justify-center gap-1">
+                                {[
+                                  ['baseline_preferred', 'A', 'Selecionar o texto A como melhor.'],
+                                  ['candidate_preferred', 'B', 'Selecionar o texto B como melhor.'],
+                                  ['equivalent', 'Equivalentes', 'Marcar os textos A e B como equivalentes.'],
+                                  ['invalid_pair', 'Invalido', 'Marcar este par como invalido.'],
+                                ].map(([label, buttonLabel, description]) => (
+                                  <button
+                                    key={label}
+                                    type="button"
+                                    aria-label={description}
+                                    data-tooltip-title={buttonLabel === 'A' || buttonLabel === 'B' ? `Preferir ${buttonLabel}` : buttonLabel}
+                                    data-tooltip-description={description}
+                                    disabled={calibrationSubmittingItemId === item.id}
+                                    onClick={() => submitCalibrationReview(item.id, label, !item.is_control)}
+                                    className={cn(
+                                      'rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 font-black text-[var(--dash-muted)] transition hover:border-blue-300/45 hover:text-blue-100 disabled:opacity-40',
+                                      (buttonLabel === 'A' || buttonLabel === 'B') && 'min-w-10'
+                                    )}
+                                  >
+                                    {buttonLabel}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )) : (
+                        <tr><td colSpan={9} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">{calibrationPolicyDecision === 'skip' ? `Calibracao dispensada: ${calibrationPolicySummary}.` : 'Nenhuma fila de calibracao materializada para a epoch atual.'}</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                ) : postReleaseView === 'regressions' ? (
+                  <table className="w-full min-w-[1160px] text-center text-xs">
+                    <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                      <tr>
+                        <th className="px-2 py-2">Segmento</th>
+                        <th className="px-2 py-2 text-left">Arquivo / chave</th>
+                        <th className="px-2 py-2 text-left">Old</th>
+                        <th className="px-2 py-2 text-left">Output</th>
                         <th className="px-2 py-2">Score old</th>
                         <th className="px-2 py-2">Score novo</th>
                         <th className="px-2 py-2">Delta</th>
-                        <th className="px-2 py-2">{postReleaseView === 'unhandled' ? 'Estado' : 'Acao'}</th>
+                        <th className="px-2 py-2">Revisao</th>
                         <th className="px-2 py-2">Estado</th>
                       </tr>
                     </thead>
@@ -4521,45 +5445,55 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                       {scoreRegressionSegments.length ? scoreRegressionSegments.slice(0, 80).map((item) => (
                         <tr key={`regression-${item.segment_id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
                           <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
-                          <td className="max-w-[220px] truncate px-2 py-2" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
-                          <td className="max-w-[250px] truncate px-2 py-2" title={item.old_text ?? ''}>{item.old_text ?? '-'}</td>
-                          <td className="max-w-[250px] truncate px-2 py-2" title={item.output_text ?? ''}>{item.output_text ?? '-'}</td>
+                          <td className="max-w-[220px] truncate px-2 py-2 text-left" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
+                          <td className="max-w-[250px] truncate px-2 py-2 text-left" title={item.old_text ?? ''}>{item.old_text ?? '-'}</td>
+                          <td className="max-w-[250px] truncate px-2 py-2 text-left" title={item.output_text ?? ''}>{item.output_text ?? '-'}</td>
                           <td className="px-2 py-2"><Badge tone={scoreTone(segmentOldScore(item))}>{scoreLabel(segmentOldScore(item))}</Badge></td>
                           <td className="px-2 py-2" title={scoreCellTitle(item)}><Badge tone={scoreTone(segmentNewScore(item))}>{scoreLabel(segmentNewScore(item))}</Badge></td>
                           <td className="px-2 py-2" title={scoreCellTitle(item)}><Badge tone={scoreDeltaTone(item)}>{scoreDeltaLabel(item)}</Badge></td>
-                          <td className="max-w-[150px] truncate px-2 py-2">{item.score_action ?? 'nao medido'}</td>
+                          <td className="max-w-[220px] px-2 py-2" title={item.score_review_reason ?? ''}>
+                            <div className="flex items-center justify-center gap-1.5">
+                              <span className="truncate">{item.score_review_kind === 'raw_equal' ? 'score bruto igual' : item.score_review_kind === 'raw_regression' ? 'regressao bruta' : item.score_action ?? 'nao medido'}</span>
+                              {item.calibration_review_item_id ? (
+                                <Badge tone={item.calibration_review_priority ? 'amber' : item.calibration_review_status === 'decided' ? 'emerald' : 'blue'}>
+                                  {item.calibration_review_priority ? 'prioridade' : item.calibration_review_status === 'decided' ? 'revisado' : 'na fila'}
+                                </Badge>
+                              ) : null}
+                            </div>
+                          </td>
                           <td className="max-w-[190px] truncate px-2 py-2" title={item.final_state ?? ''}>{item.final_state ?? 'nao medido'}</td>
                         </tr>
                       )) : (
-                        <tr><td colSpan={9} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">Nenhuma regressao de score medida.</td></tr>
+                        <tr><td colSpan={9} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">Nenhum ajuste com score bruto regressivo ou igual.</td></tr>
                       )}
                     </tbody>
                   </table>
                 ) : postReleaseView === 'apply' ? (
-                  <table className="w-full min-w-[1160px] text-left text-xs">
+                  <table className="w-full min-w-[1160px] text-center text-xs">
                     <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
                       <tr>
                         <th className="px-2 py-2">Segmento</th>
-                        <th className="px-2 py-2">Arquivo / chave</th>
-                        <th className="px-2 py-2">Output atual</th>
-                        <th className="px-2 py-2">Confirmado</th>
+                        <th className="px-2 py-2 text-left">Arquivo / chave</th>
+                        <th className="px-2 py-2 text-left">Output atual</th>
+                        <th className="px-2 py-2 text-left">Confirmado</th>
                         <th className="px-2 py-2">Score novo</th>
+                        {postReleaseView === 'low_score' ? <th className="px-2 py-2">Coorte</th> : null}
                         <th className="px-2 py-2">Acao</th>
                         <th className="px-2 py-2">Estado</th>
-                        <th className="px-2 py-2">Motivo</th>
+                        <th className="px-2 py-2 text-left">Motivo</th>
                       </tr>
                     </thead>
                     <tbody>
                       {applySegments.length ? applySegments.slice(0, 120).map((item) => (
                         <tr key={`apply-${item.segment_id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
                           <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
-                          <td className="max-w-[220px] truncate px-2 py-2" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
-                          <td className="max-w-[250px] truncate px-2 py-2" title={item.output_text ?? ''}>{item.output_text ?? '-'}</td>
-                          <td className="max-w-[250px] truncate px-2 py-2" title={item.confirmed_text ?? ''}>{item.confirmed_text ?? '-'}</td>
+                          <td className="max-w-[220px] truncate px-2 py-2 text-left" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
+                          <td className="max-w-[250px] truncate px-2 py-2 text-left" title={item.output_text ?? ''}>{item.output_text ?? '-'}</td>
+                          <td className="max-w-[250px] truncate px-2 py-2 text-left" title={item.confirmed_text ?? ''}>{item.confirmed_text ?? '-'}</td>
                           <td className="px-2 py-2" title={scoreCellTitle(item)}><Badge tone={scoreTone(segmentNewScore(item))}>{scoreLabel(segmentNewScore(item))}</Badge></td>
                           <td className="max-w-[150px] truncate px-2 py-2" title={item.score_action ?? item.active_action ?? item.candidate_action ?? ''}>{item.score_action ?? item.active_action ?? item.candidate_action ?? 'nao medido'}</td>
                           <td className="max-w-[180px] truncate px-2 py-2" title={item.final_state ?? item.review_state ?? ''}>{item.final_state ?? item.review_state ?? 'nao medido'}</td>
-                          <td className="max-w-[250px] truncate px-2 py-2" title={item.reasons_json ?? item.confirmation_label ?? ''}>{item.confirmation_label ?? item.reasons_json ?? 'nao medido'}</td>
+                          <td className="max-w-[250px] truncate px-2 py-2 text-left" title={item.reasons_json ?? item.confirmation_label ?? ''}>{item.confirmation_label ?? item.reasons_json ?? 'nao medido'}</td>
                         </tr>
                       )) : (
                         <tr><td colSpan={8} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">Nenhum needs apply medido.</td></tr>
@@ -4567,13 +5501,13 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                     </tbody>
                   </table>
                 ) : postReleaseView === 'new' ? (
-                  <table className="w-full min-w-[900px] text-left text-xs">
+                  <table className="w-full min-w-[900px] text-center text-xs">
                     <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
                       <tr>
                         <th className="px-2 py-2">Segmento</th>
-                        <th className="px-2 py-2">Arquivo / chave</th>
-                        <th className="px-2 py-2">Source</th>
-                        <th className="px-2 py-2">Output</th>
+                        <th className="px-2 py-2 text-left">Arquivo / chave</th>
+                        <th className="px-2 py-2 text-left">Source</th>
+                        <th className="px-2 py-2 text-left">Output</th>
                         <th className="px-2 py-2">Score novo</th>
                         <th className="px-2 py-2">Acao</th>
                       </tr>
@@ -4582,9 +5516,9 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                       {newSegments.length ? newSegments.slice(0, 80).map((item) => (
                         <tr key={`new-${item.segment_id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
                           <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
-                          <td className="max-w-[220px] truncate px-2 py-2" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
-                          <td className="max-w-[260px] truncate px-2 py-2" title={item.spanish_text ?? ''}>{item.spanish_text ?? '-'}</td>
-                          <td className="max-w-[260px] truncate px-2 py-2" title={item.output_text ?? ''}>{item.output_text ?? '-'}</td>
+                          <td className="max-w-[220px] truncate px-2 py-2 text-left" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
+                          <td className="max-w-[260px] truncate px-2 py-2 text-left" title={item.spanish_text ?? ''}>{item.spanish_text ?? '-'}</td>
+                          <td className="max-w-[260px] truncate px-2 py-2 text-left" title={item.output_text ?? ''}>{item.output_text ?? '-'}</td>
                           <td className="px-2 py-2"><Badge tone={scoreTone(segmentNewScore(item))}>{scoreLabel(segmentNewScore(item))}</Badge></td>
                           <td className="max-w-[160px] truncate px-2 py-2" title={postReleaseView === 'unhandled' ? item.final_state ?? item.score_action ?? '' : item.score_action ?? item.final_state ?? ''}>
                             {postReleaseView === 'unhandled' ? item.final_state ?? item.score_action ?? 'nao medido' : item.score_action ?? item.final_state ?? 'nao medido'}
@@ -4596,12 +5530,12 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                     </tbody>
                   </table>
                 ) : (
-                  <table className="w-full min-w-[900px] text-left text-xs">
+                  <table className="w-full min-w-[900px] text-center text-xs">
                     <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
                       <tr>
                         <th className="px-2 py-2">Segmento</th>
-                        <th className="px-2 py-2">Arquivo / chave</th>
-                        <th className="px-2 py-2">Output</th>
+                        <th className="px-2 py-2 text-left">Arquivo / chave</th>
+                        <th className="px-2 py-2 text-left">Output</th>
                         <th className="px-2 py-2">Score novo</th>
                         <th className="px-2 py-2">Acao</th>
                         <th className="px-2 py-2">Risco</th>
@@ -4611,14 +5545,19 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                       {(postReleaseView === 'low_score' ? lowScoreSegments : unhandledSegments).length ? (postReleaseView === 'low_score' ? lowScoreSegments : unhandledSegments).slice(0, 80).map((item) => (
                         <tr key={`${postReleaseView}-${item.segment_id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
                           <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
-                          <td className="max-w-[240px] truncate px-2 py-2" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
-                          <td className="max-w-[330px] truncate px-2 py-2" title={item.output_text ?? item.old_text ?? ''}>{item.output_text ?? item.old_text ?? '-'}</td>
+                          <td className="max-w-[240px] truncate px-2 py-2 text-left" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
+                          <td className="max-w-[330px] truncate px-2 py-2 text-left" title={item.output_text ?? item.old_text ?? ''}>{item.output_text ?? item.old_text ?? '-'}</td>
                           <td className="px-2 py-2"><Badge tone={scoreTone(segmentNewScore(item))}>{scoreLabel(segmentNewScore(item))}</Badge></td>
+                          {postReleaseView === 'low_score' ? (
+                            <td className="px-2 py-2">
+                              <Badge tone={lowScoreCohort(item).tone}>{lowScoreCohort(item).label}</Badge>
+                            </td>
+                          ) : null}
                           <td className="max-w-[160px] truncate px-2 py-2">{item.score_action ?? item.final_state ?? 'nao medido'}</td>
                           <td className="max-w-[120px] truncate px-2 py-2">{item.risk_class ?? item.score_tier ?? 'nao medido'}</td>
                         </tr>
                       )) : (
-                        <tr><td colSpan={6} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">Nenhuma fila medida para esta aba.</td></tr>
+                        <tr><td colSpan={postReleaseView === 'low_score' ? 7 : 6} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">Nenhuma fila medida para esta aba.</td></tr>
                       )}
                     </tbody>
                   </table>
@@ -4734,13 +5673,346 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   );
 }
 
+const qualityBandMeta = [
+  { id: 'critical', label: 'Crítico', range: '< 20%', color: '#ef4444' },
+  { id: 'low', label: 'Baixo', range: '20–49%', color: '#f97316' },
+  { id: 'moderate', label: 'Moderado', range: '50–74%', color: '#f59e0b' },
+  { id: 'good', label: 'Bom', range: '75–89%', color: '#3b82f6' },
+  { id: 'high', label: 'Alto', range: '≥ 90%', color: '#10b981' },
+];
+
+const symmetricPercentAxis = (values) => {
+  const finiteValues = values.map(Number).filter(Number.isFinite);
+  if (!finiteValues.length) return { domain: [0, 100], ticks: [0, 25, 50, 75, 100], step: 25 };
+  const min = Math.min(...finiteValues);
+  const max = Math.max(...finiteValues);
+  const midpoint = (min + max) / 2;
+  const requiredHalfSpan = Math.max(1, (max - min) * 0.75);
+  const stepOptions = [0.25, 0.5, 1, 2, 5, 10, 20, 25];
+  let stepIndex = Math.max(0, stepOptions.findIndex((step) => step * 2 >= requiredHalfSpan));
+  if (stepIndex < 0) stepIndex = stepOptions.length - 1;
+  let step = stepOptions[stepIndex];
+  let center = Math.round(midpoint / step) * step;
+  while ((min < center - (2 * step) || max > center + (2 * step)) && stepIndex < stepOptions.length - 1) {
+    step = stepOptions[++stepIndex];
+    center = Math.round(midpoint / step) * step;
+  }
+  const lower = Math.max(0, center - (2 * step));
+  const upper = Math.min(100, center + (2 * step));
+  const ticks = Array.from({ length: 5 }, (_, index) => Number((lower + ((upper - lower) * index / 4)).toFixed(2)));
+  return { domain: [lower, upper], ticks, step: Number(((upper - lower) / 4).toFixed(2)) };
+};
+
+function OverviewKpi({ label, value, detail, tone = 'blue', icon: Icon = Activity }) {
+  const toneClasses = {
+    blue: 'border-blue-400/25 bg-blue-500/10 text-blue-300',
+    emerald: 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300',
+    amber: 'border-amber-400/25 bg-amber-500/10 text-amber-300',
+    red: 'border-red-400/25 bg-red-500/10 text-red-300',
+    violet: 'border-violet-400/25 bg-violet-500/10 text-violet-300',
+  };
+  const toneBars = {
+    blue: 'from-blue-400/90 via-blue-400/30',
+    emerald: 'from-emerald-400/90 via-emerald-400/30',
+    amber: 'from-amber-400/90 via-amber-400/30',
+    red: 'from-red-400/90 via-red-400/30',
+    violet: 'from-violet-400/90 via-violet-400/30',
+  };
+  return (
+    <div className="dashboard-surface quality-overview-kpi relative h-full min-h-[106px] min-w-0 overflow-hidden border p-3.5">
+      <span className={cn('absolute inset-x-0 top-0 h-px bg-gradient-to-r to-transparent', toneBars[tone])} aria-hidden="true" />
+      <div className="flex items-center justify-between gap-3">
+        <p className="truncate text-[0.68rem] font-semibold uppercase tracking-wide text-[var(--dash-muted)]">{label}</p>
+        <span className={cn('grid h-8 w-8 shrink-0 place-items-center rounded-lg border', toneClasses[tone])}>
+          <Icon size={14} />
+        </span>
+      </div>
+      <p className="mt-2 truncate text-[1.35rem] font-black tracking-tight text-[var(--dash-text)]">{value}</p>
+      <p className="mt-1 truncate text-[11px] leading-4 text-[var(--dash-muted)]" title={detail}>{detail}</p>
+    </div>
+  );
+}
+
+const qualityVersionTooltipCopy = (source = {}) => {
+  const bands = source.qualityBands ?? {};
+  const hasBands = qualityBandMeta.some((band) => bands[band.id] != null);
+  const bandLines = hasBands
+    ? qualityBandMeta.map((band) => `${band.label} ${band.range}: ${compact(bands[band.id])}`)
+    : ['Distribuição histórica não materializada.'];
+  if (Number(bands.unmeasured ?? 0) > 0) bandLines.push(`N/A: ${compact(bands.unmeasured)}`);
+  return {
+    title: `${source.version ?? 'Versão'} · score operacional ${pct(source.score)}`,
+    description: [`Cobertura medida: ${pct(source.coverage)}`, ...bandLines, 'Snapshot sensível à baseline; não representa ganho isolado.'].join('\n'),
+    meta: `${source.contract ?? 'contrato não medido'} · use delta pareado para comparar ganho`,
+  };
+};
+
+function QualityVersionDot({ cx, cy, payload }) {
+  if (!Number.isFinite(cx) || !Number.isFinite(cy) || !payload) return null;
+  const tooltip = qualityVersionTooltipCopy(payload);
+  return (
+    <g
+      className="cursor-pointer outline-none"
+      role="img"
+      tabIndex="0"
+      aria-label={`${tooltip.title}. ${tooltip.description.replaceAll('\n', '. ')}`}
+      data-tooltip-title={tooltip.title}
+      data-tooltip-description={tooltip.description}
+      data-tooltip-meta={tooltip.meta}
+    >
+      <circle cx={cx} cy={cy} r="13" fill="transparent" />
+      <circle cx={cx} cy={cy} r="5" fill="var(--dash-card)" stroke="var(--dash-accent)" strokeWidth="3" pointerEvents="none" />
+    </g>
+  );
+}
+
+const qualityBandTooltipCopy = (source = {}) => {
+  const delta = Number(source.outputCount ?? 0) - Number(source.oldCount ?? 0);
+  return {
+    title: `${source.band ?? 'Faixa'} · score ${source.range ?? 'N/A'}`,
+    description: `Quantidade atual: ${fmt(source.outputCount)} segmentos\nParticipação: ${pct(source.outputPct)}\nBase anterior: ${fmt(source.oldCount)} segmentos`,
+    meta: `Variação: ${delta >= 0 ? '+' : ''}${fmt(delta)} segmentos`,
+  };
+};
+
+function ProjectOverviewDashboard({ data }) {
+  const appState = data.appState ?? {};
+  const release = appState.release ?? {};
+  const operationalClosure = release.operational_closure ?? {};
+  const qualityDebt = release.quality_debt ?? {};
+  const providerHealth = release.promotion_provider_health ?? {};
+  const postRelease = release.post_release ?? {};
+  const diffSummary = postRelease.diff_review?.summary ?? {};
+  const lowScoreCohorts = postRelease.diff_review?.low_score_cohorts ?? {};
+  const actionableLowScore = Number(lowScoreCohorts.actionable ?? diffSummary.low_score_actionable ?? 0);
+  const informationalLowScore = Number(lowScoreCohorts.informational ?? diffSummary.low_score_informational ?? 0);
+  const packageScore = diffSummary.package_score_comparison ?? {};
+  const scoreSemantics = packageScore.score_semantics ?? {};
+  const validatedPairwiseGain = packageScore.validated_pairwise_gain ?? {};
+  const qualityBands = packageScore.quality_bands ?? {};
+  const oldBands = qualityBands.old ?? {};
+  const outputBands = qualityBands.output ?? {};
+  const totalSegments = Number(packageScore.total_segment_count ?? release.total_segments ?? 0);
+  const measuredSegments = Number(packageScore.measured_count ?? 0);
+  const oldScore = Number(packageScore.avg_old_score ?? packageScore.weighted_avg_old_score ?? 0);
+  const outputScore = Number(packageScore.avg_new_score ?? packageScore.weighted_avg_new_score ?? 0);
+  const scoreDelta = Number(packageScore.avg_delta ?? packageScore.weighted_avg_delta ?? 0);
+  const coverage = Number(packageScore.coverage ?? 0);
+  const pending = Number(release.pending_count ?? 0);
+  const needsApply = Number(release.needs_apply ?? 0);
+  const regressions = Number(diffSummary.score_regressions ?? packageScore.regressed_count ?? 0);
+  const critical = Number(outputBands.critical ?? 0);
+  const low = Number(outputBands.low ?? 0);
+  const attentionCount = critical + low;
+  const unmeasured = Number(outputBands.unmeasured ?? Math.max(0, totalSegments - measuredSegments));
+  const comparable = packageScore.comparable_score_contract === true;
+  const crossVersionComparable = scoreSemantics.cross_version_comparable === true;
+  const baselineSensitive = scoreSemantics.baseline_sensitive !== false;
+  const scoreContract = packageScore.score_contract ?? {};
+  const packageVersions = Array.isArray(release.package_versions) ? release.package_versions : [];
+  const currentVersionNumber = packageVersions.length
+    ? Math.max(...packageVersions.map((item) => Number(item.version_number ?? 0))) + 1
+    : 3;
+
+  const scoreLabel = (value) => Number.isFinite(value)
+    ? `${(value * 100).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`
+    : 'nao medido';
+  const deltaPoints = scoreDelta * 100;
+  const deltaLabel = `${deltaPoints >= 0 ? '+' : ''}${deltaPoints.toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 })} p.p.`;
+  const pairwiseGainAvailable = validatedPairwiseGain.available === true;
+  const pairwiseDeltaPoints = Number(validatedPairwiseGain.avg_delta ?? 0) * 100;
+  const pairwiseGlobalPoints = Number(validatedPairwiseGain.global_equivalent_delta ?? 0) * 100;
+  const pairwiseDeltaLabel = pairwiseGainAvailable
+    ? `${pairwiseDeltaPoints >= 0 ? '+' : ''}${pairwiseDeltaPoints.toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 })} p.p.`
+    : 'não medido';
+  const pairwiseDetail = pairwiseGainAvailable
+    ? `V${validatedPairwiseGain.version_number} · ${fmt(validatedPairwiseGain.improved_count)}/${fmt(validatedPairwiseGain.paired_count)} melhoraram · impacto global ${pairwiseGlobalPoints >= 0 ? '+' : ''}${pairwiseGlobalPoints.toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 })} p.p.`
+    : 'nenhum delta pareado materializado';
+  const operationallyClosed = operationalClosure.is_closed === true
+    || (!operationalClosure.instrumented && pending === 0 && needsApply === 0);
+  const closureLabel = operationallyClosed ? 'Fechado' : needsApply ? 'Aguardando apply' : 'Aberto';
+  const qualityDebtActionable = qualityDebt.has_actionable_debt === true;
+  const qualityDebtSignals = Number(qualityDebt.actionable_signal_count ?? 0);
+  const qualityDebtLabel = qualityDebt.status === 'clear'
+    ? 'Sem dívida ativa'
+    : qualityDebt.status === 'monitoring'
+      ? 'Em observação'
+      : qualityDebtActionable
+        ? `${compact(qualityDebtSignals)} sinais`
+        : 'Não medido';
+  const qualityDebtDetail = `${compact(qualityDebt.uncovered_actionable_family_count ?? 0)} famílias sem provedor · ${compact(qualityDebt.promotion_ready_count ?? 0)} promoções · ${compact(qualityDebt.closed_family_count ?? 0)} históricas fechadas`;
+  const providerCount = Number(providerHealth.provider_count ?? 0);
+  const executedProviderCount = Number(providerHealth.executed_provider_count ?? 0);
+  const providerCoverageLabel = providerHealth.instrumented
+    ? pct(Number(providerHealth.coverage_rate ?? 0))
+    : 'Não medido';
+  const providerDetail = `${compact(executedProviderCount)}/${compact(providerCount)} executados · ${compact(providerHealth.inspected_count ?? 0)} casos · ${compact(providerHealth.shadow_eligible_count ?? 0)} elegíveis`;
+  const releaseReady = operationallyClosed && regressions === 0;
+  const releaseLabel = releaseReady ? 'Pronto' : 'Atencao';
+  const nextAction = needsApply > 0
+    ? `Aplicar ${fmt(needsApply)} alteracoes validadas`
+    : regressions > 0
+      ? `Auditar ${fmt(regressions)} regressoes`
+      : pending > 0
+        ? `Fechar ${fmt(pending)} pendencias`
+        : qualityDebtActionable
+          ? `Priorizar ${fmt(qualityDebtSignals)} sinais de qualidade`
+          : 'Congelar a proxima versao';
+
+  const bandRows = qualityBandMeta.map((band) => ({
+    band: band.label,
+    range: band.range,
+    color: band.color,
+    oldCount: Number(oldBands[band.id] ?? 0),
+    outputCount: Number(outputBands[band.id] ?? 0),
+    oldPct: measuredSegments ? Number(((Number(oldBands[band.id] ?? 0) / measuredSegments) * 100).toFixed(2)) : 0,
+    outputPct: measuredSegments ? Number(((Number(outputBands[band.id] ?? 0) / measuredSegments) * 100).toFixed(2)) : 0,
+  }));
+
+  // Chart contract: snapshots V3+ conectados visualmente, mesma população de
+  // pacote e escala percentual focada com cinco intervalos simétricos.
+  const storedVersionTrend = packageVersions
+    .filter((item) => Number(item.version_number ?? 0) >= 3 && item.full_average_score != null)
+    .map((item) => ({
+      version: `V${item.version_number}`,
+      score: Number((Number(item.full_average_score) * 100).toFixed(2)),
+      coverage: Number(item.segment_count ?? 0)
+        ? Number(((Number(item.measured_score_count ?? 0) / Number(item.segment_count)) * 100).toFixed(2))
+        : 0,
+      contract: item.score_rule_version ?? 'nao medido',
+      kind: 'snapshot_operacional',
+      qualityBands: item.quality_bands ?? null,
+    }));
+  const versionTrend = storedVersionTrend.length
+    ? [
+        ...storedVersionTrend,
+        {
+          version: `V${currentVersionNumber} candidato`,
+          score: Number((outputScore * 100).toFixed(2)),
+          coverage: Number((coverage * 100).toFixed(2)),
+          contract: scoreContract.output?.rule_version ?? 'contrato atual',
+          kind: 'snapshot_operacional',
+          qualityBands: outputBands,
+        },
+      ]
+    : [
+        { version: 'Baseline', score: Number((oldScore * 100).toFixed(2)), coverage: Number((coverage * 100).toFixed(2)), kind: 'snapshot_operacional', qualityBands: oldBands },
+        { version: 'Output', score: Number((outputScore * 100).toFixed(2)), coverage: Number((coverage * 100).toFixed(2)), kind: 'snapshot_operacional', qualityBands: outputBands },
+      ];
+  const scoreAxis = symmetricPercentAxis(versionTrend.map((item) => item.score));
+
+  return (
+    <div className="quality-overview flex h-full min-h-0 flex-col gap-3 overflow-y-auto pr-1 xl:overflow-hidden">
+      <section className="flex shrink-0 flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-black text-[var(--dash-text)]">Visão Geral da Qualidade</h2>
+          <p className="mt-1 text-xs text-[var(--dash-muted)]">
+            Risco operacional, ganho pareado validado e concentração dos segmentos por faixa.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={operationallyClosed ? 'emerald' : 'amber'}>{operationallyClosed ? 'pacote fechado' : 'pacote aberto'}</Badge>
+          <Badge tone={qualityDebtActionable ? 'amber' : qualityDebt.status === 'clear' ? 'emerald' : 'blue'}>{qualityDebtLabel}</Badge>
+          <Badge tone={comparable ? 'emerald' : 'amber'}>{comparable ? 'contrato interno comparável' : 'contrato divergente'}</Badge>
+          <Badge tone={crossVersionComparable ? 'emerald' : 'amber'}>{crossVersionComparable ? 'versões comparáveis' : baselineSensitive ? 'baseline-sensitive' : 'comparabilidade pendente'}</Badge>
+          <Badge tone="blue">score #{scoreContract.old?.run_id ?? '-'} -&gt; #{scoreContract.output?.run_id ?? '-'}</Badge>
+          <Badge tone={appState.cache?.stale ? 'amber' : 'emerald'}>{appState.cache?.stale ? 'cache defasado' : 'dados atuais'}</Badge>
+        </div>
+      </section>
+
+      <section className="grid shrink-0 grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
+        <OverviewKpi label="Score operacional" value={scoreLabel(outputScore)} detail={`risco na epoch · baseline ${scoreLabel(oldScore)} · ${deltaLabel}`} tone="blue" icon={BarChart3} />
+        <OverviewKpi label="Ganho pareado" value={pairwiseDeltaLabel} detail={pairwiseDetail} tone={pairwiseGainAvailable && Number(validatedPairwiseGain.regressed_count ?? 0) === 0 ? 'emerald' : 'amber'} icon={Scale} />
+        <OverviewKpi label="Fechamento operacional" value={closureLabel} detail={`${fmt(operationalClosure.closed_count ?? release.closed_count ?? 0)} fechados · ${fmt(pending)} pendentes · ${fmt(needsApply)} apply`} tone={operationallyClosed ? 'emerald' : 'amber'} icon={ShieldCheck} />
+        <OverviewKpi label="Dívida de qualidade" value={qualityDebtLabel} detail={qualityDebtDetail} tone={qualityDebtActionable ? 'amber' : qualityDebt.status === 'clear' ? 'emerald' : 'blue'} icon={qualityDebtActionable ? AlertTriangle : CheckCircle2} />
+        <OverviewKpi label="Cobertura de provedores" value={providerCoverageLabel} detail={providerDetail} tone={providerHealth.status === 'healthy' ? 'emerald' : providerHealth.instrumented ? 'amber' : 'slate'} icon={Workflow} />
+        <OverviewKpi label="Gate de publicação" value={releaseLabel} detail={releaseReady ? 'zero pendências, apply e regressões' : nextAction} tone={releaseReady ? 'emerald' : 'amber'} icon={releaseReady ? Rocket : AlertTriangle} />
+      </section>
+
+      <section className="grid min-h-[620px] flex-1 gap-3 xl:min-h-0 xl:grid-cols-[minmax(0,1.65fr)_minmax(340px,0.75fr)]">
+        <Card className="quality-chart-card flex min-h-[360px] flex-col overflow-hidden p-4 xl:min-h-0">
+          <div className="flex shrink-0 items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-black text-[var(--dash-text)]">Snapshots do score operacional por versão</h3>
+                <p className="mt-1 text-xs text-[var(--dash-muted)]">V3 em diante · linha e área mostram a evolução visual; ganho entre versões usa o comparativo pareado.</p>
+              </div>
+              <Badge tone="blue">atual {scoreLabel(outputScore)}</Badge>
+            </div>
+            <div className="mt-4 min-h-[270px] flex-1">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={versionTrend} margin={{ top: 16, right: 20, left: -4, bottom: 4 }}>
+                  <defs>
+                    <linearGradient id="quality-version-score-gradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="var(--dash-accent)" stopOpacity={0.34} />
+                      <stop offset="58%" stopColor="var(--dash-accent)" stopOpacity={0.12} />
+                      <stop offset="100%" stopColor="var(--dash-accent)" stopOpacity={0.015} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 5" stroke="currentColor" opacity={0.09} vertical={false} />
+                  <XAxis dataKey="version" tick={chartText} tickLine={false} axisLine={{ opacity: 0.18 }} />
+                  <YAxis tick={chartText} domain={scoreAxis.domain} ticks={scoreAxis.ticks} tickFormatter={(value) => `${Number(value).toLocaleString('pt-BR', { maximumFractionDigits: 2 })}%`} tickLine={false} axisLine={false} />
+                  <Area
+                    type="monotone"
+                    dataKey="score"
+                    name="Score operacional"
+                    isAnimationActive={false}
+                    stroke="var(--dash-accent)"
+                    strokeWidth={3}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    fill="url(#quality-version-score-gradient)"
+                    dot={<QualityVersionDot />}
+                    activeDot={false}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+          </div>
+        </Card>
+
+        <Card className="quality-chart-card flex min-h-[360px] flex-col overflow-hidden p-4 xl:min-h-0">
+          <div className="flex shrink-0 items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-black text-[var(--dash-text)]">Segmentos por faixa de score</h3>
+                <p className="mt-1 text-xs text-[var(--dash-muted)]">Quantidade atual medida; o comparativo com a baseline fica no tooltip.</p>
+              </div>
+              <Badge tone={attentionCount ? 'red' : 'emerald'}>{compact(attentionCount)}</Badge>
+            </div>
+            <div className="mt-4 min-h-[270px] flex-1">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={bandRows} margin={{ top: 16, right: 8, left: 4, bottom: 4 }} barCategoryGap="24%">
+                  <CartesianGrid strokeDasharray="3 5" stroke="currentColor" opacity={0.09} vertical={false} />
+                  <XAxis dataKey="band" tick={chartText} tickLine={false} axisLine={{ opacity: 0.18 }} />
+                  <YAxis tick={chartText} tickFormatter={(value) => compact(value)} tickLine={false} axisLine={false} />
+                  <Bar dataKey="outputCount" name="Output atual" radius={[7, 7, 2, 2]} maxBarSize={64} isAnimationActive={false} cursor="pointer">
+                    {bandRows.map((row) => {
+                      const tooltip = qualityBandTooltipCopy(row);
+                      return (
+                        <Cell
+                          key={row.band}
+                          fill={row.color}
+                          cursor="pointer"
+                          role="img"
+                          tabIndex="0"
+                          aria-label={`${tooltip.title}. ${tooltip.description.replaceAll('\n', '. ')}`}
+                          data-tooltip-title={tooltip.title}
+                          data-tooltip-description={tooltip.description}
+                          data-tooltip-meta={tooltip.meta}
+                        />
+                      );
+                    })}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+          </div>
+        </Card>
+      </section>
+    </div>
+  );
+}
+
 const dashboardViewItems = [
-  { id: 'overview', label: 'Visao Geral', subtitle: 'Acompanha fechamento, pendencias e estado geral do pacote.' },
-  { id: 'learning', label: 'Aprendizado', subtitle: 'Mostra gate de aprendizado, evidencias e progresso dos ciclos.' },
-  { id: 'pending', label: 'Pendencias', subtitle: 'Prioriza gargalos e grupos que ainda travam fechamento.' },
-  { id: 'release', label: 'Release', subtitle: 'Resume prontidao, execucao recente e checklist de publicacao.' },
-  { id: 'quality', label: 'Qualidade', subtitle: 'Compara modelo ativo, qualidade e riscos do conjunto.' },
-  { id: 'network', label: 'Network', subtitle: 'Visualiza a arquitetura neuro-simbolica, agentes e ligacoes.' },
+  { id: 'overview', label: 'Visão Geral', subtitle: 'Índice global, evolução das versões e prioridades de qualidade.' },
+  { id: 'network', label: 'Rede', subtitle: 'Arquitetura neuro-simbólica, agentes, microagentes e ligações.' },
 ];
 
 const dashboardViewFromHash = () => {
@@ -4780,6 +6052,12 @@ function ProjectIntelligenceDashboard({ data }) {
     window.history.replaceState(null, '', `#${encodeURIComponent(`Dashboard/${nextView}`)}`);
     window.dispatchEvent(new Event('hashchange'));
   };
+
+  if (view === 'network') {
+    return <NeuralArchitecture data={data} />;
+  }
+
+  return <ProjectOverviewDashboard data={data} />;
 
   const latestModel = modelTrend.at(-1) ?? {};
   const previousModel = modelTrend.at(-2) ?? {};
@@ -5633,8 +6911,8 @@ function DashboardTabs({ value, onChange }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--dash-border)] bg-[var(--dash-card)] p-3">
       <div>
-        <h2 className="text-lg font-black text-[var(--dash-text)]">Project Intelligence</h2>
-        <p className="text-xs text-[var(--dash-muted)]">Uma visao unica para progresso, aprendizado, qualidade, release e rede.</p>
+        <h2 className="text-lg font-black text-[var(--dash-text)]">Inteligência do Projeto</h2>
+        <p className="text-xs text-[var(--dash-muted)]">Uma visão única para progresso, aprendizado, qualidade, liberação e rede.</p>
       </div>
       <nav className="inline-flex flex-wrap items-center gap-1 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-1">
         {dashboardViewItems.map((item) => (
@@ -6443,6 +7721,197 @@ const atlasFamilyColumns = {
   release: 94,
 };
 
+const ptIdentifierLabel = (value) => {
+  let text = String(value ?? '').toLowerCase();
+  const phrases = {
+    select_cstring: 'selectcstring',
+    script_value: 'scriptvalue',
+    local_player: 'jogadorlocal',
+    same_token: 'mesmotoken',
+    effect_list: 'listadeefeitos',
+    short_label: 'rotulocurto',
+    long_text: 'textolongo',
+    custom_localization: 'localizacaocustomizada',
+    dry_run: 'simulacao',
+    read_only: 'somenteleitura',
+    whole_segment: 'segmentocompleto',
+    source_segments: 'segmentosfonte',
+  };
+  Object.entries(phrases).forEach(([source, target]) => {
+    text = text.replaceAll(source, target);
+  });
+  const words = {
+    selectcstring: 'Select_CString',
+    scriptvalue: 'ScriptValue',
+    jogadorlocal: 'jogador local',
+    mesmotoken: 'mesmo token',
+    listadeefeitos: 'lista de efeitos',
+    rotulocurto: 'rótulo curto',
+    textolongo: 'texto longo',
+    localizacaocustomizada: 'localização personalizada',
+    simulacao: 'simulação',
+    somenteleitura: 'somente leitura',
+    segmentocompleto: 'segmento completo',
+    segmentosfonte: 'segmentos-fonte',
+    activity: 'atividade',
+    agent: 'agente',
+    alignment: 'alinhamento',
+    allowlist: 'lista de permissão',
+    artifact: 'artefato',
+    audit: 'auditoria',
+    auditor: 'auditor',
+    baseline: 'base',
+    boundary: 'limite',
+    bridge: 'ponte',
+    builder: 'construtor',
+    candidate: 'candidato',
+    catalog: 'catálogo',
+    checkpoint: 'ponto de controle',
+    cleanup: 'limpeza',
+    composition: 'composição',
+    concept: 'conceito',
+    context: 'contexto',
+    controlled: 'controlado',
+    coordinator: 'coordenador',
+    culture: 'cultura',
+    decision: 'decisão',
+    delta: 'variação',
+    domain: 'domínio',
+    dynamic: 'dinâmico',
+    effect: 'efeito',
+    embedded: 'incorporado',
+    entity: 'entidade',
+    evidence: 'evidência',
+    experimental: 'experimental',
+    final: 'final',
+    fragment: 'fragmento',
+    gender: 'gênero',
+    global: 'global',
+    governance: 'governança',
+    governed: 'governado',
+    guard: 'proteção',
+    guarded: 'protegido',
+    hard: 'rígido',
+    heritage: 'herança',
+    lifecycle: 'ciclo de vida',
+    literal: 'literal',
+    manual: 'manual',
+    maturity: 'maturidade',
+    measure: 'medir',
+    model: 'modelo',
+    morphology: 'morfologia',
+    multiline: 'multilinha',
+    narrative: 'narrativa',
+    negative: 'negativo',
+    nickname: 'apelido',
+    observe: 'observar',
+    output: 'saída',
+    overlay: 'camada',
+    partial: 'parcial',
+    phrase: 'frase',
+    policy: 'política',
+    positive: 'positivo',
+    preservation: 'preservação',
+    production: 'produção',
+    profile: 'perfil',
+    pronoun: 'pronome',
+    readiness: 'prontidão',
+    relation: 'relação',
+    release: 'liberação',
+    religion: 'religião',
+    repair: 'reparo',
+    requirement: 'requisito',
+    review: 'revisão',
+    rewrite: 'reescrita',
+    route: 'rota',
+    router: 'roteador',
+    runtime: 'execução',
+    safe: 'seguro',
+    sampler: 'amostrador',
+    sampling: 'amostragem',
+    scope: 'escopo',
+    score: 'pontuação',
+    second: 'segunda',
+    semantic: 'semântico',
+    sentence: 'frase',
+    shadow: 'observação',
+    specialist: 'especialista',
+    split: 'divisão',
+    splitter: 'divisor',
+    subpolicy: 'subpolítica',
+    surface: 'superfície',
+    terminal: 'terminal',
+    title: 'título',
+    token: 'token',
+    trait: 'traço',
+    tradition: 'tradição',
+    triage: 'triagem',
+    unlock: 'desbloqueio',
+    validate: 'validar',
+    activities: 'atividades',
+    agents: 'agentes',
+    artifacts: 'artefatos',
+    blocker: 'bloqueio',
+    blockers: 'bloqueios',
+    candidates: 'candidatos',
+    change: 'alteração',
+    changes: 'alterações',
+    composed: 'composto',
+    decisions: 'decisões',
+    effects: 'efeitos',
+    english: 'inglês',
+    expression: 'expressão',
+    expressions: 'expressões',
+    file: 'arquivo',
+    files: 'arquivos',
+    guards: 'proteções',
+    group: 'grupo',
+    groups: 'grupos',
+    issue: 'problema',
+    issues: 'problemas',
+    label: 'rótulo',
+    labels: 'rótulos',
+    local: 'local',
+    mature: 'maduro',
+    multistage: 'várias etapas',
+    native: 'nativo',
+    network: 'rede',
+    outputs: 'saídas',
+    payload: 'conteúdo',
+    payloads: 'conteúdos',
+    player: 'jogador',
+    policies: 'políticas',
+    possessive: 'possessivo',
+    pronouns: 'pronomes',
+    registry: 'registro',
+    repairs: 'reparos',
+    rows: 'linhas',
+    run: 'execução',
+    requirements: 'requisitos',
+    routes: 'rotas',
+    same: 'mesmo',
+    segment: 'segmento',
+    segments: 'segmentos',
+    source: 'fonte',
+    sources: 'fontes',
+    spanish: 'espanhol',
+    splitters: 'divisores',
+    state: 'estado',
+    status: 'estado',
+    tokens: 'tokens',
+    validation: 'validação',
+    vote: 'voto',
+    weak: 'fraco',
+  };
+  return text
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((word) => words[word] ?? word)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
 const ptFieldLabel = (value) => {
   const labels = {
     accuracy: 'acuracia',
@@ -6585,16 +8054,18 @@ const ptFieldLabel = (value) => {
     weighted_coverage_ratio: 'cobertura ponderada',
     writes_in_this_learning_cycle: 'escritas neste ciclo de aprendizado',
   };
-  return labels[value] ?? String(value).replaceAll('_', ' ');
+  return labels[value] ?? ptIdentifierLabel(value);
 };
 
 const ptStatus = (value) => ({
   active: 'ativo',
-  authoritative: 'autoritario',
+  authoritative: 'com autoridade',
   candidate: 'candidato',
-  dry_run: 'dry-run',
+  checkpoint: 'ponto de controle',
+  dry_run: 'simulação',
+  evidence_validated: 'evidência validada',
   experimental: 'experimental',
-  experimental_watch: 'watch experimental',
+  experimental_watch: 'experimental em observação',
   growing: 'em crescimento',
   guarded: 'protegido',
   learning: 'aprendendo',
@@ -6602,9 +8073,10 @@ const ptStatus = (value) => ({
   planned: 'planejado',
   promising: 'promissor',
   safe: 'seguro',
-  shadow: 'shadow',
-  stable: 'estavel',
-}[value] ?? value);
+  shadow: 'em observação',
+  shadow_audit: 'auditoria em observação',
+  stable: 'estável',
+}[value] ?? ptIdentifierLabel(value));
 
 const ptType = (value) => ({
   composition_coordinator: 'compositor',
@@ -6612,8 +8084,8 @@ const ptType = (value) => ({
   guard: 'guarda',
   input: 'entrada',
   issue_memory: 'memoria de problemas',
-  lifecycle_policy: 'politica lifecycle',
-  lifecycle_state: 'estado lifecycle',
+  lifecycle_policy: 'política do ciclo de vida',
+  lifecycle_state: 'estado do ciclo de vida',
   macro_model: 'modelo macro',
   macro_model_candidate: 'macro candidato',
   memory: 'memoria',
@@ -6631,19 +8103,21 @@ const ptType = (value) => ({
   symbolic_subpolicy: 'subpolitica simbolica',
   governance_auditor: 'auditor de governanca',
   governance_bridge: 'ponte de governanca',
-}[value] ?? String(value).replaceAll('_', ' '));
+  composition_policy: 'política de composição',
+  review_sampler: 'amostrador de revisão',
+}[value] ?? ptIdentifierLabel(value));
 
 const ptFamily = (value) => ({
   coordinator: 'coordenacao',
   guards: 'guardas',
-  lifecycle_policies: 'politicas lifecycle',
+  lifecycle_policies: 'políticas do ciclo de vida',
   macro: 'modelo macro',
-  production_output: 'producao/output',
+  production_output: 'produção e saída',
   specialists: 'especialistas',
   subagents: 'subagentes',
   memory: 'memoria',
   network: 'rede',
-}[value] ?? String(value ?? '').replaceAll('_', ' '));
+}[value] ?? ptIdentifierLabel(value));
 
 const ptRole = (value) => ({
   authoritative_hard_gate: 'Trava estrutural principal.',
@@ -6671,12 +8145,127 @@ const ptRole = (value) => ({
   guarded_release: 'Release protegido por politica.',
   shadow_positive_boundary: 'Boundary positivo em shadow.',
   negative_boundary: 'Boundary negativo de seguranca.',
-}[value] ?? value);
+  audit_bridge_readiness: 'Audita a prontidão da ponte antes de qualquer liberação.',
+  baseline_score: 'Fornece a pontuação de referência.',
+  boundary_only: 'Avalia somente o limite de segurança.',
+  cleanup_gate: 'Controla a etapa final de limpeza.',
+  controlled_production_readiness_audit: 'Audita de forma controlada a prontidão para produção.',
+  custom_localization_flower_lexical_repair: 'Repara vocabulário floral em localizações personalizadas.',
+  custom_localization_native_breed_name_policy: 'Avalia quando nomes nativos de raças devem ser preservados.',
+  custom_localization_runtime_boundary_review: 'Revisa limites de execução da localização personalizada.',
+  custom_localization_short_fragment_specialist: 'Especializa-se em fragmentos curtos de localização personalizada.',
+  dynamic_literal_repair_builder: 'Constrói reparos para literais dinâmicos.',
+  evidence_only: 'Produz evidência, sem autoridade para alterar a saída.',
+  guarded_label_rewrite_checkpoint: 'Ponto de controle protegido para reescrita de rótulos.',
+  guarded_lifecycle_policy: 'Política protegida do ciclo de vida.',
+  guarded_positive_candidate: 'Candidato positivo mantido sob proteção.',
+  guarded_relation_rewrite_checkpoint: 'Ponto de controle protegido para reescrita de relações.',
+  guarded_release_candidate: 'Candidato a liberação protegida.',
+  guarded_rewrite_checkpoint: 'Ponto de controle protegido para reescrita.',
+  guarded_sentence_rewrite_checkpoint: 'Ponto de controle protegido para reescrita de frases.',
+  guarded_shadow_text_policy: 'Política protegida de texto em observação.',
+  guarded_title_semantic_checkpoint: 'Ponto de controle semântico protegido para títulos.',
+  hard_gate: 'Trava rígida de segurança.',
+  learning_only_microagent: 'Aprende padrões sem alterar diretamente a saída.',
+  lifecycle_reopen_triage: 'Faz triagem de reaberturas no ciclo de vida.',
+  literal_boundary_review: 'Revisa limites de literais.',
+  manual_boundary_review: 'Revisão manual dos limites de segurança.',
+  manual_narrative_boundary: 'Revisão manual do limite narrativo.',
+  manual_sampler_review: 'Revisão manual por amostragem.',
+  manual_sampling: 'Amostragem manual.',
+  measure_composed_shadow_release: 'Mede a liberação composta em observação.',
+  measure_final_composed_shadow_release: 'Mede a liberação final composta em observação.',
+  measure_multistage_composed_shadow_release: 'Mede a liberação composta em várias etapas.',
+  mechanical_short_label_residual_repair: 'Repara mecanicamente resíduos em rótulos curtos.',
+  needs_policy_evidence: 'Requer mais evidência antes de definir uma política.',
+  negative_boundary_review: 'Revisa limites negativos de segurança.',
+  partial_existing_policy_router: 'Roteia casos parciais para políticas existentes.',
+  partial_phrase_mapping_guard: 'Protege o mapeamento parcial de frases.',
+  partial_semantic_voter: 'Emite voto semântico parcial.',
+  partial_surface_repair_builder: 'Constrói reparos parciais de superfície.',
+  partial_token_alignment_builder: 'Constrói alinhamentos parciais de tokens.',
+  partial_token_context_guard: 'Protege o contexto de reparos parciais de tokens.',
+  partial_token_repair_builder: 'Constrói reparos parciais de tokens.',
+  positive_boundary: 'Limite positivo de segurança.',
+  positive_sampler_review: 'Revisão positiva por amostragem.',
+  profile_and_sample: 'Cria perfil e seleciona amostras.',
+  propose_governed_bridge_candidates: 'Propõe candidatos para uma ponte governada.',
+  repair_local_player_pronoun_literal: 'Repara literais de pronome do jogador local.',
+  repair_route_checkpoint: 'Ponto de controle da rota de reparo.',
+  route_and_observe: 'Roteia casos e acompanha os resultados.',
+  route_multiagent_segment_closure: 'Coordena o fechamento de segmentos por vários agentes.',
+  route_then_boundary: 'Roteia primeiro e depois avalia o limite.',
+  second_layer_cleanup_checkpoint: 'Ponto de controle da segunda camada de limpeza.',
+  semantic_delta_boundary_review: 'Revisa o limite da variação semântica.',
+  short_ui_policy_sampling: 'Amostra políticas para interfaces curtas.',
+  token_policy_allowlist: 'Lista de permissão da política de tokens.',
+  token_subpolicy_shadow: 'Subpolítica de tokens em observação.',
+  validate_dynamic_literal_payload_delta: 'Valida variações em literais dinâmicos.',
+  vote: 'Emite voto especializado.',
+  weak_auto_sampling_router: 'Roteia automaticamente amostras de evidência fraca.',
+  whole_segment_recheck_gate: 'Reavalia o segmento completo antes do fechamento.',
+}[value] ?? ptIdentifierLabel(value));
 
 const ptSentence = (value) => {
   if (!value) return '';
   const text = String(value);
   const translations = {
+    'Specializes in short custom-localization fragments that are safe only when their key, file lane and fragment role indicate a clean localizable word or tiny phrase.':
+      'Especializa-se em fragmentos curtos de localização personalizada, seguros apenas quando a chave, a faixa do arquivo e a função do fragmento indicam uma palavra ou frase curta claramente localizável.',
+    'Audits whether custom_localization segments with fully covered issue families are mature enough for whole-segment recheck. It measures composition opportunity only and has no output authority.':
+      'Audita se segmentos de localização personalizada, com todas as famílias de problemas cobertas, estão maduros para reavaliação completa. Mede apenas oportunidades de composição e não possui autoridade sobre a saída.',
+    'Learns narrow PT-BR lexical repairs for flower labels discovered by custom_localization composition recheck failures, such as papoila->papoula, aster->áster and peonía->peônia.':
+      'Aprende reparos lexicais PT-BR específicos para nomes de flores encontrados em falhas de reavaliação da composição, como papoila→papoula, aster→áster e peonía→peônia.',
+    'Detects dog type labels where English and Spanish preserve a native breed/name but PT-BR translated or morphologically localized it, requiring a preservation policy before closure.':
+      'Detecta rótulos de raças em que inglês e espanhol preservam o nome nativo, mas o PT-BR o traduziu ou flexionou. Esses casos exigem uma política de preservação antes do fechamento.',
+    'Narrow subagent that repairs CK3 visible markup from #bold No#!/#bold no#!/#BOLD No#! to PT-BR #bold Não#!/#bold não#!/#BOLD Não#! when no other residual blocker remains.':
+      'Subagente específico que corrige a marcação visível do CK3 de #bold No#!/#bold no#!/#BOLD No#! para #bold Não#!/#bold não#!/#BOLD Não#! quando não existe outro bloqueio residual.',
+    'Learns possessive local-player branch shifts such as tus to sus before PT-BR final wording.':
+      'Aprende mudanças de pronomes possessivos nos ramos do jogador local, como tus para sus, antes da redação final em PT-BR.',
+    'Splits token-safe pending items where the model requests autofix but no current specialist explains the issue. Reviewed safe UI surfaces can now pass through a guarded lifecycle bridge, but this agent still does not write production output.':
+      'Separa pendências seguras quanto a tokens quando o modelo solicita correção automática, mas nenhum especialista atual explica o problema. Superfícies de interface revisadas podem seguir por uma ponte protegida do ciclo de vida, mas este agente ainda não escreve na saída de produção.',
+    'domain adjectives can look like ordinary Portuguese words':
+      'Adjetivos de domínio podem parecer palavras comuns em português.',
+    'file-level calibration is not enough for broad promotion':
+      'Calibração apenas por arquivo não é suficiente para uma promoção ampla.',
+    'repair PT-BR flower variants such as papoulas and áster before lifecycle closure':
+      'Reparar variantes florais em PT-BR, como papoulas e áster, antes do fechamento do ciclo de vida.',
+    'create a native dog-breed preservation microagent for cases like asong gubat':
+      'Criar um microagente de preservação de nomes nativos de raças para casos como asong gubat.',
+    'review another strong-candidate slice before considering lifecycle authority':
+      'Revisar outra amostra de candidatos fortes antes de considerar autoridade no ciclo de vida.',
+    'botanical names can be common names, latinized names, or intentionally preserved cultural terms':
+      'Nomes botânicos podem ser nomes populares, formas latinizadas ou termos culturais preservados intencionalmente.',
+    'mojibake-like strings require manual confirmation before repair':
+      'Textos com aparência de codificação corrompida exigem confirmação manual antes do reparo.',
+    'convert checkpointed repairs into a production-flow proposal only after review':
+      'Converter reparos aprovados no ponto de controle em proposta para o fluxo de produção somente após revisão.',
+    'split botanical domain-review cases into a separate preservation/translation policy':
+      'Separar casos botânicos em uma política própria de preservação ou tradução.',
+    'some breed names can have accepted Portuguese forms':
+      'Alguns nomes de raças podem ter formas aceitas em português.',
+    'preserving every English/Spanish identical dog type would be too broad':
+      'Preservar todo nome de raça idêntico em inglês e espanhol seria uma regra ampla demais.',
+    'review asong gubat and telomian as a tiny domain policy':
+      'Revisar asong gubat e telomian em uma política de domínio bem específica.',
+    'decide whether native multiword names and latinized breed names should be preserved or localized':
+      'Decidir se nomes nativos compostos e nomes latinizados de raças devem ser preservados ou localizados.',
+    'does not repair Spanish that remains outside the bold No marker':
+      'Não repara espanhol que permaneça fora do marcador bold No.',
+    'issue coverage is not output application':
+      'Cobrir o problema não significa aplicar a alteração na saída.',
+    'promote only through lifecycle after final production policy review':
+      'Promover somente pelo ciclo de vida e após revisão final da política de produção.',
+    'route the 5 blocked cases to Spanish residual and punctuation repair lanes':
+      'Encaminhar os cinco casos bloqueados para as filas de resíduo espanhol e reparo de pontuação.',
+    'surface clusters can mix real UI with narrative prose containing markup':
+      'Agrupamentos de superfície podem misturar interface real com prosa narrativa que contém marcação.',
+    'safe_surface evidence is not segment-level production authority':
+      'Evidência de superfície segura não concede autoridade de produção sobre o segmento.',
+    'create warning/list/confirmation microagents only after more reviewed evidence':
+      'Criar microagentes de avisos, listas e confirmações somente após ampliar a evidência revisada.',
+    'keep event/building/plain prose as semantic review queues':
+      'Manter eventos, construções e prosa comum nas filas de revisão semântica.',
     'Routes segments and issues to macro, specialists, subagents and lifecycle gates. It organizes evidence rather than allowing each agent to close output alone.':
       'Roteia segmentos e problemas para o macro, especialistas, subagentes e gates de lifecycle. Organiza evidencias sem permitir que um agente feche output sozinho.',
     'Read-only dry-run router for requirement/effect surfaces. It separates terminal guards from shadow splitters without apply or lifecycle authority.':
@@ -6896,6 +8485,29 @@ const ptSentence = (value) => {
   };
   if (translations[text]) return translations[text];
   return text
+    .replace(/^Read-only catalog policy (.+) from (.+)\.$/i, 'Política de catálogo somente leitura $1, derivada de $2.')
+    .replace(/^Read-only allowlist for exact (.+) correction\.$/i, 'Lista de permissão somente leitura para correção exata de $1.')
+    .replace(/^Read-only terminal guard for (.+)$/i, 'Proteção terminal somente leitura para $1')
+    .replace(/^Read-only reuse splitter for (.+)$/i, 'Divisor de reutilização somente leitura para $1')
+    .replace(/^Coordinates /, 'Coordena ')
+    .replace(/^Aggregates /, 'Agrega ')
+    .replace(/^Audits /, 'Audita ')
+    .replace(/^Builds /, 'Constrói ')
+    .replace(/^Classifies /, 'Classifica ')
+    .replace(/^Detects /, 'Detecta ')
+    .replace(/^Extracts /, 'Extrai ')
+    .replace(/^Explains /, 'Explica ')
+    .replace(/^Guards /, 'Protege ')
+    .replace(/^Handles /, 'Trata ')
+    .replace(/^Observes /, 'Observa ')
+    .replace(/^Routes /, 'Roteia ')
+    .replace(/^Splits /, 'Separa ')
+    .replace(/^Validates /, 'Valida ')
+    .replace(/^Votes on /, 'Avalia ')
+    .replaceAll('Composition overlay', 'Camada de composição')
+    .replaceAll('Coordinator overlay', 'Camada coordenadora')
+    .replaceAll('Final Select_CString shadow coordinator', 'Coordenador final Select_CString em observação')
+    .replaceAll('Shadow-only governed bridge proposal', 'Proposta de ponte governada somente em observação')
     .replaceAll('Learns ', 'Aprende ')
     .replaceAll('learns ', 'aprende ')
     .replaceAll('second-person', 'segunda pessoa')
@@ -6906,22 +8518,37 @@ const ptSentence = (value) => {
     .replaceAll('third-person phrase', 'frase em terceira pessoa')
     .replaceAll('before PT-BR rewrite', 'antes da reescrita PT-BR')
     .replaceAll('read-only', 'somente leitura')
-    .replaceAll('dry-run', 'dry-run')
-    .replaceAll('shadow', 'shadow')
-    .replaceAll('terminal guards', 'guards terminais')
-    .replaceAll('terminal guard', 'guard terminal')
-    .replaceAll('splitters', 'splitters')
-    .replaceAll('splitter', 'splitter')
-    .replaceAll('without apply or lifecycle authority', 'sem autoridade de apply ou lifecycle')
-    .replaceAll('evidence', 'evidencia')
+    .replaceAll('dry-run', 'simulação')
+    .replaceAll('shadow', 'observação')
+    .replaceAll('terminal guards', 'proteções terminais')
+    .replaceAll('terminal guard', 'proteção terminal')
+    .replaceAll('splitters', 'divisores')
+    .replaceAll('splitter', 'divisor')
+    .replaceAll('without apply or lifecycle authority', 'sem autoridade de aplicação ou ciclo de vida')
+    .replaceAll('without apply or lifecycle', 'sem aplicação ou ciclo de vida')
+    .replaceAll('evidence', 'evidência')
     .replaceAll('candidates', 'candidatos')
     .replaceAll('candidate', 'candidato')
-    .replaceAll('outputs', 'saidas')
+    .replaceAll('outputs', 'saídas')
     .replaceAll('inputs', 'entradas')
     .replaceAll('routing', 'roteamento')
     .replaceAll('route', 'rotear')
     .replaceAll('checkpoint', 'checkpoint')
-    .replaceAll('lifecycle', 'lifecycle');
+    .replaceAll('lifecycle', 'ciclo de vida')
+    .replaceAll('production', 'produção')
+    .replaceAll('release', 'liberação')
+    .replaceAll('review', 'revisão')
+    .replaceAll('policy', 'política')
+    .replaceAll('policies', 'políticas')
+    .replace(/\bsegments\b/g, 'segmentos')
+    .replace(/\bsegment\b/g, 'segmento')
+    .replaceAll('token changes', 'alterações de token')
+    .replaceAll('token change', 'alteração de token')
+    .replace(/\bblocked\b/g, 'bloqueado')
+    .replace(/\bsafe\b/g, 'seguro')
+    .replace(/\bcurrent\b/g, 'atual')
+    .replace(/\bbefore\b/g, 'antes de')
+    .replace(/\bafter\b/g, 'depois de');
 };
 
 const ptListItem = (value) => {
@@ -6965,6 +8592,15 @@ const ptListItem = (value) => {
     'culture title paths': 'caminhos de titulo cultural',
     'culture-title decisions': 'decisoes de titulos culturais',
     'custom localization helper families': 'familias de helpers custom de localizacao',
+    'custom localization composition review decision run 111': 'decisão de revisão da composição personalizada · execução 111',
+    'regional custom loc dog type labels': 'rótulos regionais de raças em localização personalizada',
+    'english/spanish preservation comparison': 'comparação de preservação entre inglês e espanhol',
+    'native breed/name preservation candidates': 'candidatos à preservação de nomes nativos de raças',
+    'morphology review blockers': 'bloqueios da revisão morfológica',
+    'regional custom loc flower type labels': 'rótulos regionais de flores em localização personalizada',
+    'latest segment confirmations': 'confirmações mais recentes dos segmentos',
+    'high-confidence flower lexical repair checkpoint': 'ponto de controle de reparos florais com alta confiança',
+    'domain-review flower blockers': 'bloqueios florais para revisão de domínio',
     'dashboard groups': 'grupos do dashboard',
     'dataset run 426': 'dataset run 426',
     'deterministic guard features': 'features das travas deterministicas',
@@ -7096,15 +8732,26 @@ const ptListItem = (value) => {
     'watch count': 'contagem em watch',
     'watch states': 'estados em watch',
   };
-  return translations[key] ?? ptSentence(text);
+  return translations[key] ?? ptIdentifierLabel(value);
+};
+
+const ptMetricValue = (value) => {
+  if (typeof value === 'boolean') return value ? 'sim' : 'não';
+  if (typeof value === 'number') return metric(value);
+  if (Array.isArray(value)) return value.map(ptMetricValue).join(', ');
+  const text = String(value ?? '');
+  const status = ptStatus(text);
+  if (status !== text) return status;
+  const sentence = ptSentence(text);
+  return sentence !== text ? sentence : ptIdentifierLabel(text);
 };
 
 const summarizeMetrics = (metrics) => {
   if (!metrics) return [];
-  if (Array.isArray(metrics)) return metrics.slice(0, 6).map(String);
+  if (Array.isArray(metrics)) return metrics.slice(0, 6).map(ptMetricValue);
   return Object.entries(metrics)
     .slice(0, 6)
-    .map(([key, value]) => `${ptFieldLabel(key)}: ${typeof value === 'number' ? metric(value) : value}`);
+    .map(([key, value]) => `${ptFieldLabel(key)}: ${ptMetricValue(value)}`);
 };
 
 const asList = (value) => {
@@ -7116,43 +8763,43 @@ const ATLAS_LAYOUT_STORAGE_KEY = 'ck3_ptbr_neural_atlas_layout_v1';
 const DASHBOARD_THEME_STORAGE_KEY = 'ck3_ptbr_dashboard_theme';
 const ATLAS_DEFAULT_NODE_SIZE = { w: 168, h: 54 };
 
+const ptNodeLabels = {
+  deterministic_guards: 'Proteções determinísticas',
+  translation_memory: 'Memória de tradução',
+  macro_risk_model_active: 'Modelo macro v0038',
+  macro_risk_model_latest: 'Candidato macro v0427',
+  coordinator_ensemble_v1: 'Coordenação v1',
+  agent_registry: 'Registro de agentes',
+  religion_specialist: 'Especialista em religião',
+  titles_specialist_legacy: 'Títulos legados',
+  culture_title_labels: 'Títulos culturais',
+  issue_ledger: 'Registro de problemas',
+  micro_short_label_style: 'Estilo de rótulos curtos',
+  micro_custom_localization_fragment: 'Fragmentos personalizados',
+  custom_localization_composition_auditor: 'Auditoria de composição',
+  micro_ptbr_flower_lexicon: 'Léxico floral PT-BR',
+  micro_native_dog_type_preservation: 'Preservação de raças',
+  micro_short_label_bold_no_repair: 'Reparo de “Não” em negrito',
+  micro_dynamic_ck3_expression: 'Expressões dinâmicas CK3',
+  select_cstring_local_player_preterite_verb_rewrite: 'Select_CString: verbo no pretérito',
+  select_cstring_local_player_reflexive_phrase_rewrite: 'Select_CString: frase reflexiva',
+  select_cstring_local_player_possessive_pronoun_rewrite: 'Select_CString: pronome possessivo',
+  micro_gender_token: 'Tokens de gênero',
+  micro_spanish_residual: 'Resíduo em espanhol',
+  micro_autofix_unknown_router: 'Roteador de correção automática',
+  micro_long_text_composer: 'Compositor de textos longos',
+  micro_semantic_review_router: 'Roteador de revisão semântica',
+  lifecycle_shadow_checkpoint: 'Ciclo de observação e controle',
+  segment_state: 'Estado dos segmentos',
+  production_runner: 'Executor de produção',
+  requirement_effect_router_readonly: 'Roteador de requisitos e efeitos',
+  effect_list_package: 'Pacote de lista de efeitos',
+  artifact_activity_effect_policy: 'Política de artefatos e atividades',
+};
+
 const compactNodeLabel = (node) => {
-  const label = node?.label ?? node?.id ?? '';
-  const aliases = {
-    'Shadow + Checkpoint Lifecycle': 'Shadow Lifecycle',
-    'Select_CString Local Player Pronoun': 'Select_CString Player',
-    'Select_CString Local Player Sentence': 'Select_CString Player',
-    'Select_CString Local Player Composer': 'Select_CString Player',
-    'Dynamic CK3 Expression Microagent': 'Dynamic CK3',
-    'Custom Localization Composer': 'Custom Loc Composer',
-    'Custom Localization Fragment Guard': 'Custom Loc Fragment',
-    'PT-BR Flower Lexicon Microagent': 'Flower Lexicon',
-    'Native Dog Type Preservation': 'Dog Type Guard',
-    'Gender Token Microagent': 'Gender Tokens',
-    'Spanish Residual Microagent': 'Spanish Residual',
-    'Short Label Style Microagent': 'Short Label Style',
-    'Semantic Review Router': 'Semantic Router',
-    'Autofix Unknown Router': 'Autofix Router',
-    'Coordinator Ensemble v1': 'Coordinator v1',
-    'Latest Macro Candidate v0038': 'Macro Candidate',
-    'Macro Risk Model v0038': 'Macro v0038',
-    'Titles Specialist Legacy': 'Titles Legacy',
-    'Religion Specialist': 'Religion Spec.',
-    'Culture Title Labels': 'Culture Titles',
-    'Issue Ledger': 'Issue Ledger',
-    'Requirement/Effect Router': 'Req/Effect Router',
-    'Effect-list Package': 'Effect-list',
-    'Artifact/Activity': 'Artifact/Activity',
-  };
-  if (aliases[label]) return aliases[label];
-  return label
-    .replace(/\bMicroagent\b/g, '')
-    .replace(/\bSpecialist Legacy\b/g, 'Legacy')
-    .replace(/\bSpecialist\b/g, 'Spec.')
-    .replace(/\bLocalization\b/g, 'Loc')
-    .replace(/\bExpression\b/g, 'Expr.')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const localized = ptNodeLabels[node?.id] ?? ptIdentifierLabel(node?.label ?? node?.id ?? '');
+  return localized.charAt(0).toUpperCase() + localized.slice(1);
 };
 
 const fallbackPosition = (node, index, siblingCount) => {
@@ -7165,39 +8812,80 @@ const fallbackPosition = (node, index, siblingCount) => {
 const compactAgentLabel = (agent) => {
   const key = agent?.agent_key ?? '';
   const labels = {
-    requirement_effect_router_readonly: 'Req/Effect Router',
-    not_requirement_effect_global_router: 'Not-Req Router',
-    not_requirement_effect_culture_religion_router: 'Culture/Religion',
-    not_requirement_effect_culture_policy: 'Culture',
-    not_requirement_effect_culture_tradition_heritage_policy: 'Tradition/Heritage',
-    effect_list_multiline_policy: 'Effect-list',
-    effect_list_artifact_activity_policy: 'Artifact/Activity',
-    effect_list_gender_local_player_policy: 'Effect Gender/Player',
-    effect_list_trait_accolade_policy: 'Effect Trait/Accolade',
-    effect_list_script_value_policy: 'Effect ScriptValue',
-    effect_list_concept_policy: 'Effect Concept',
-    artifact_activity_gender_local_player_policy: 'Artifact Gender/Player',
-    artifact_activity_script_value_policy: 'Artifact ScriptValue',
-    artifact_item_effect_policy: 'Artifact Item',
-    artifact_item_scope_getter_policy: 'Artifact Scope',
-    acclaimed_knight_entity_unlock_final_policy: 'Acclaimed Knight Unlock',
-    select_cstring_player_target_direct_policy: 'Select_CString Player/Target',
-    select_cstring_possessive_policy: 'Select_CString Possessive',
-    select_cstring_es_helper_policy: 'Select_CString ES Helper',
-    local_player_requirement_policy: 'Local Player Req.',
-    es_oa_requirement_policy: 'ES_OA Req.',
-    script_value_requirement_policy: 'ScriptValue Req.',
-    concept_requirement_policy: 'Concept Req.',
-    name_nickname_requirement_guard: 'Name/Nickname Guard',
+    requirement_effect_router_readonly: 'Roteador de requisitos e efeitos',
+    not_requirement_effect_global_router: 'Roteador fora de requisito',
+    not_requirement_effect_culture_religion_router: 'Cultura e religião',
+    not_requirement_effect_culture_policy: 'Política de cultura',
+    not_requirement_effect_culture_tradition_heritage_policy: 'Tradição e herança',
+    effect_list_multiline_policy: 'Lista de efeitos multilinha',
+    effect_list_artifact_activity_policy: 'Efeitos de artefatos e atividades',
+    effect_list_gender_local_player_policy: 'Efeitos de gênero do jogador',
+    effect_list_trait_accolade_policy: 'Efeitos de traços e condecorações',
+    effect_list_script_value_policy: 'Efeitos de ScriptValue',
+    effect_list_concept_policy: 'Efeitos de conceitos',
+    artifact_activity_gender_local_player_policy: 'Gênero do jogador em artefatos',
+    artifact_activity_script_value_policy: 'ScriptValue em artefatos',
+    artifact_item_effect_policy: 'Efeitos de itens de artefato',
+    artifact_item_scope_getter_policy: 'Escopo de itens de artefato',
+    acclaimed_knight_entity_unlock_final_policy: 'Desbloqueio de cavaleiro aclamado',
+    select_cstring_player_target_direct_policy: 'Select_CString: jogador e alvo',
+    select_cstring_possessive_policy: 'Select_CString: possessivos',
+    select_cstring_es_helper_policy: 'Select_CString: auxiliares ES',
+    local_player_requirement_policy: 'Requisito do jogador local',
+    es_oa_requirement_policy: 'Requisito ES_OA',
+    script_value_requirement_policy: 'Requisito ScriptValue',
+    concept_requirement_policy: 'Requisito de conceito',
+    name_nickname_requirement_guard: 'Proteção de nomes e apelidos',
+    select_cstring_same_token_lifecycle_policy: 'Ciclo Select_CString com mesmo token',
+    select_cstring_same_token_composition_overlay: 'Composição Select_CString com mesmo token',
+    select_cstring_multistage_composition_overlay: 'Composição Select_CString em várias etapas',
+    select_cstring_final_composition_overlay: 'Composição final Select_CString',
+    select_cstring_final_composition_maturity_auditor: 'Auditoria da composição Select_CString',
+    select_cstring_governed_bridge_proposal: 'Ponte governada Select_CString',
   };
   if (labels[key]) return labels[key];
-  return key
-    .replace(/^micro_/, '')
-    .replace(/_readonly$/, '')
-    .replace(/_policy$/, '')
-    .replace(/_microagent$/, '')
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (char) => char.toUpperCase());
+  const localized = ptIdentifierLabel(
+    key
+      .replace(/^micro_/, '')
+      .replace(/_readonly$/, '')
+      .replace(/_policy$/, '')
+      .replace(/_microagent$/, '')
+  );
+  return localized.charAt(0).toUpperCase() + localized.slice(1);
+};
+
+const ptAgentDescription = (agent) => {
+  const descriptions = {
+    coordinator_ensemble_v1:
+      'Coordena a pontuação geral, os votos dos especialistas, o aprendizado humano e as políticas de segurança.',
+    composition_coordinator_v1:
+      'Coordena segmentos com várias famílias de problemas abertas, mede quando os microagentes existentes podem fechá-los em conjunto e identifica a família que ainda bloqueia o fechamento.',
+    select_cstring_same_token_lifecycle_policy:
+      'Agrega reparos maduros de Select_CString em observação que preservam a estrutura normalizada de tokens do CK3, bloqueia resíduos em espanhol e conteúdos que alteram tokens e mantém desativada a liberação para produção.',
+    select_cstring_same_token_composition_overlay:
+      'Combina liberações de mesmo token do ciclo de vida com pontos de controle da segunda camada de limpeza, medindo o ganho agregado antes de qualquer ponte para produção.',
+    select_cstring_multistage_composition_overlay:
+      'Mede a cobertura conjunta em observação do ciclo de vida de mesmo token, da limpeza de resíduos e da validação de conteúdos literais dinâmicos.',
+    select_cstring_final_composition_overlay:
+      'Coordena a composição final de Select_CString, reunindo ciclo de vida, limpeza de resíduos, conteúdo literal dinâmico e pronomes do jogador local.',
+    select_cstring_final_composition_maturity_auditor:
+      'Audita a composição final de Select_CString em busca de segmentos duplicados, referências de origem inválidas, fontes inesperadas, bloqueios pendentes e prontidão mecânica da ponte.',
+    select_cstring_governed_bridge_proposal:
+      'Propõe uma ponte governada, somente em observação, para a cadeia final de composição Select_CString. Materializa candidatos e proteções necessárias, sem promover confirmações nem escrever na saída.',
+    long_text_repair_router:
+      'Classifica falhas revisadas de composição em textos longos, cria rotas de reparo reutilizáveis e separa reparos seguros de alterações estruturais de tokens.',
+  };
+  if (descriptions[agent?.agent_key]) return descriptions[agent.agent_key];
+
+  const role = String(ptRole(agent?.decision_role ?? agent?.role ?? '')).replace(/[.]$/, '');
+  const type = ptType(agent?.agent_type ?? 'agente');
+  const scopeSource = agent?.scope_group ?? agent?.dashboard_group ?? agent?.parent_agent_key ?? '';
+  const scope = scopeSource ? ptIdentifierLabel(scopeSource) : '';
+  return [
+    role ? `Função: ${role}.` : '',
+    scope ? `Escopo: ${scope}.` : '',
+    type ? `Tipo: ${type}.` : '',
+  ].filter(Boolean).join(' ');
 };
 
 const agentMatchesNode = (agent, node) => {
@@ -7274,7 +8962,7 @@ const summarizeNodeAgents = (agents, node) => {
 };
 
 const normalizeNeuralAtlas = (source) => {
-  const nodes = source?.nodes ?? neuralAtlasBlueprint.nodes;
+  const nodes = Array.isArray(source?.nodes) ? source.nodes : [];
   const groups = nodes.reduce((acc, node) => {
     const key = node.family ?? node.type ?? 'network';
     acc[key] = (acc[key] ?? 0) + 1;
@@ -7290,7 +8978,8 @@ const normalizeNeuralAtlas = (source) => {
     return {
       ...node,
       id: node.id,
-      label: node.label ?? node.id,
+      rawLabel: node.label ?? node.id,
+      label: compactNodeLabel(node),
       displayLabel: compactNodeLabel(node),
       type: node.type ?? 'node',
       family: node.family ?? 'network',
@@ -7310,7 +8999,7 @@ const normalizeNeuralAtlas = (source) => {
       next_steps: asList(node.next_steps ?? node.next).map(ptSentence),
     };
   });
-  const normalizedEdges = (source?.edges ?? neuralAtlasBlueprint.edges).map((edge) => {
+  const normalizedEdges = (Array.isArray(source?.edges) ? source.edges : []).map((edge) => {
     if (Array.isArray(edge)) {
       return { source: edge[0], target: edge[1], label: edge[2] ?? '', kind: edge[3] ?? '', strength: edge[4] ?? '' };
     }
@@ -7339,7 +9028,9 @@ function NeuralArchitecture({ data }) {
   const dashboardSummary = agents.summary ?? {};
   const [networkSource, setNetworkSource] = useState(null);
   const [networkError, setNetworkError] = useState(null);
-  const sourceNetwork = networkSource ?? neuralAtlasBlueprint;
+  const [networkLoading, setNetworkLoading] = useState(true);
+  const [networkLoadAttempt, setNetworkLoadAttempt] = useState(0);
+  const sourceNetwork = networkSource ?? { nodes: [], edges: [], version_info: {} };
   const versionInfo = sourceNetwork.version_info ?? {};
   const inventory = versionInfo.agent_inventory ?? {};
   const classificationCounts = inventory.classification_counts ?? {};
@@ -7363,9 +9054,9 @@ function NeuralArchitecture({ data }) {
           family: 'subagents',
           status: 'operational',
           role: 'route_and_arbitrate',
-          description: 'Roteador read-only para superficies de requisito e efeito. Maturacao requirement/effect chegou a 10.159 segmentos com spec; somado ao not_requirement_effect, a cobertura chega a 11.407/11.725.',
-          inputs: ['issue ledger', 'requirement/effect candidates', 'dynamic CK3 expressions'],
-          outputs: ['terminal dry-run policies', 'shadow splitters', 'auditable routing evidence'],
+          description: 'Roteador somente leitura para superfícies de requisito e efeito. A maturação dessas regras chegou a 10.159 segmentos com especificação; considerando também os demais casos, a cobertura chega a 11.407 de 11.725 segmentos.',
+          inputs: ['registro de problemas', 'candidatos de requisito e efeito', 'expressões dinâmicas do CK3'],
+          outputs: ['políticas terminais em simulação', 'divisores em observação', 'evidência de roteamento auditável'],
           metrics: {
             operational_state: routerComponent.operational_state ?? 'dry_run',
             requirement_effect_agents: routerComponent.requirement_effect_agents ?? 29,
@@ -7378,22 +9069,22 @@ function NeuralArchitecture({ data }) {
             auto_apply_allowed: 0,
             production_release_allowed: 0,
           },
-          risks: ['dry-run only; must not be read as output authority', 'shadow splitters route context but do not close segments'],
-          next_steps: ['monitor terminal policy evidence', 'promote only after governed validation'],
+          risks: ['Opera somente em simulação; não possui autoridade sobre a saída.', 'Os divisores em observação roteiam o contexto, mas não fecham segmentos.'],
+          next_steps: ['Monitorar a evidência das políticas terminais.', 'Promover somente depois da validação governada.'],
         },
       );
       edges.push(
         {
           source: 'issue_ledger',
           target: 'requirement_effect_router_readonly',
-          label: 'requirement/effect backlog route',
+          label: 'rota do backlog de requisitos e efeitos',
           kind: 'issue_route',
           strength: 'medium',
         },
         {
           source: 'requirement_effect_router_readonly',
           target: 'lifecycle_shadow_checkpoint',
-          label: 'dry-run terminal guards and shadow splitters',
+          label: 'proteções terminais em simulação e divisores em observação',
           kind: 'read_only_checkpoint',
           strength: 'medium',
         },
@@ -7408,9 +9099,9 @@ function NeuralArchitecture({ data }) {
           family: 'subagents',
           status: 'operational',
           role: 'route_and_split',
-          description: 'Pacote read-only para effect-list: organiza specs, policies terminais e splitters sem apply ou lifecycle.',
-          inputs: ['Req/Effect Router', 'listas de efeitos', 'Issue Ledger'],
-          outputs: ['10 specs', '6 policies terminais', '4 splitters', '1090 terminais registrados'],
+          description: 'Pacote somente leitura para listas de efeitos: organiza especificações, políticas terminais e divisores sem aplicar alterações nem avançar o ciclo de vida.',
+          inputs: ['roteador de requisitos e efeitos', 'listas de efeitos', 'registro de problemas'],
+          outputs: ['10 especificações', '6 políticas terminais', '4 divisores', '1.090 terminais registrados'],
           metrics: {
             agents: effectListComponent.agents_count ?? 11,
             specs: effectListComponent.specs ?? 10,
@@ -7422,36 +9113,36 @@ function NeuralArchitecture({ data }) {
             coverage_gain: effectListComponent.coverage_gain ?? 1654,
             segments_without_useful_spec: effectListComponent.segments_without_useful_spec ?? 5941,
           },
-          risks: ['ainda ha subrotas sem spec util', 'sem apply/lifecycle; apenas roteamento e evidencia'],
-          next_steps: ['instrumentar artifact/activity', 'instrumentar building modifier', 'promover specs apenas apos validacao governada'],
+          risks: ['Ainda há subrotas sem especificação útil.', 'Não aplica alterações nem avança o ciclo de vida; produz apenas roteamento e evidência.'],
+          next_steps: ['Instrumentar artefatos e atividades.', 'Instrumentar modificadores de construções.', 'Promover especificações somente depois da validação governada.'],
         },
       );
       edges.push(
         {
           source: 'requirement_effect_router_readonly',
           target: 'effect_list_package',
-          label: 'effect-list route',
+          label: 'rota da lista de efeitos',
           kind: 'read_only_route',
           strength: 'strong',
         },
         {
           source: 'effect_list_package',
           target: 'issue_ledger',
-          label: 'spec gaps and blockers',
+          label: 'lacunas de especificação e bloqueios',
           kind: 'evidence_feedback',
           strength: 'medium',
         },
         {
           source: 'effect_list_package',
           target: 'micro_dynamic_ck3_expression',
-          label: 'ScriptValue and concept specs',
+          label: 'especificações de ScriptValue e conceitos',
           kind: 'spec_route',
           strength: 'medium',
         },
         {
           source: 'effect_list_package',
           target: 'select_cstring_local_player_preterite_verb_rewrite',
-          label: 'local-player effect guards',
+          label: 'proteções de efeitos do jogador local',
           kind: 'spec_route',
           strength: 'low',
         },
@@ -7466,9 +9157,9 @@ function NeuralArchitecture({ data }) {
           family: 'subagents',
           status: 'shadow',
           role: 'route_and_split',
-          description: 'Subcoordenador shadow para efeitos de artefato e atividade. Registra o gargalo como arquitetura, mas ainda nao aplica nem fecha lifecycle.',
-          inputs: ['Req/Effect Router', 'artifact/activity effect candidates', 'effect-list catalog'],
-          outputs: ['rotas artifact/activity', 'reuso de policies effect-list', 'evidencia para novos specs'],
+          description: 'Subcoordenador em observação para efeitos de artefatos e atividades. Registra o gargalo na arquitetura, mas ainda não aplica alterações nem fecha o ciclo de vida.',
+          inputs: ['roteador de requisitos e efeitos', 'candidatos de efeitos de artefatos e atividades', 'catálogo de listas de efeitos'],
+          outputs: ['rotas de artefatos e atividades', 'reutilização de políticas da lista de efeitos', 'evidência para novas especificações'],
           metrics: {
             operational_state: artifactActivityComponent.operational_state ?? 'shadow',
             review_total: 240,
@@ -7476,29 +9167,29 @@ function NeuralArchitecture({ data }) {
             auto_apply_allowed: 0,
             lifecycle_allowed: 0,
           },
-          risks: ['shadow: nao contar como operacional', 'ainda precisa medir cobertura pos-registro'],
-          next_steps: ['rodar diagnostico global pos-registro', 'criar specs terminais quando houver evidencia suficiente'],
+          risks: ['Está em observação e não deve ser contabilizado como operacional.', 'Ainda é necessário medir a cobertura após o registro.'],
+          next_steps: ['Executar diagnóstico global após o registro.', 'Criar especificações terminais quando houver evidência suficiente.'],
         },
       );
       edges.push(
         {
           source: 'requirement_effect_router_readonly',
           target: 'artifact_activity_effect_policy',
-          label: 'artifact/activity effect route',
+          label: 'rota de efeitos de artefatos e atividades',
           kind: 'shadow_route',
           strength: 'medium',
         },
         {
           source: 'artifact_activity_effect_policy',
           target: 'effect_list_package',
-          label: 'reuse cataloged policies',
+          label: 'reutilização de políticas catalogadas',
           kind: 'catalog_reuse',
           strength: 'medium',
         },
         {
           source: 'artifact_activity_effect_policy',
           target: 'issue_ledger',
-          label: 'coverage evidence',
+          label: 'evidência de cobertura',
           kind: 'evidence_feedback',
           strength: 'low',
         },
@@ -7589,106 +9280,106 @@ function NeuralArchitecture({ data }) {
     ? compactDateTime(registrySummary.post_architecture_generated_at)
     : registrySummary.diagnostic_generated_at
       ? compactDateTime(registrySummary.diagnostic_generated_at)
-      : 'pending_instrumentation';
-  const networkSourceLine = `Atlas #${atlasSegmentStateId ?? 'pendente'} | Registry run #${networkSegmentStateId ?? 'pendente'} | Ledger #${registrySummary.post_architecture_summary?.ledger_run_id ?? '76'} | diag. ${registryDiagLabel}`;
+      : 'instrumentação pendente';
+  const networkSourceLine = `Atlas #${atlasSegmentStateId ?? 'pendente'} | registro #${networkSegmentStateId ?? 'pendente'} | histórico #${registrySummary.post_architecture_summary?.ledger_run_id ?? '76'} | diagnóstico ${registryDiagLabel}`;
   const atlasMetricCards = [
     {
       title: 'Registrados',
-      value: registeredAgentCount == null ? 'pending_instrumentation' : fmt(registeredAgentCount),
+      value: registeredAgentCount == null ? 'instrumentação pendente' : fmt(registeredAgentCount),
       tone: 'violet',
-      help: 'Total de agentes, subagentes, politicas e componentes catalogados no ml_agent_registry.',
+      help: 'Total de agentes, subagentes, políticas e componentes catalogados no registro interno.',
     },
     {
       title: 'Operacionais',
-      value: operationalRegisteredCount == null ? 'pending_instrumentation' : fmt(operationalRegisteredCount),
+      value: operationalRegisteredCount == null ? 'instrumentação pendente' : fmt(operationalRegisteredCount),
       tone: 'emerald',
-      help: `Agentes ativos com autoridade operacional real. Shadow e dry-run ficam separados. False-safe operacional conhecido: ${fmt(registrySummary.operational_false_safe ?? versionInfo.current_macro_model?.false_safe_count ?? dashboardSummary.operational_false_safe ?? 0)}.`,
+      help: `Agentes ativos com autoridade operacional real. Observação e simulação ficam separadas. Falso-seguro operacional conhecido: ${fmt(registrySummary.operational_false_safe ?? versionInfo.current_macro_model?.false_safe_count ?? dashboardSummary.operational_false_safe ?? 0)}.`,
     },
     {
-      title: 'Shadow',
-      value: shadowAgentCount == null ? 'pending_instrumentation' : fmt(shadowAgentCount),
+      title: 'Observação',
+      value: shadowAgentCount == null ? 'instrumentação pendente' : fmt(shadowAgentCount),
       tone: 'violet',
-      help: 'Agentes shadow/lab/splitter: roteiam, separam filas e acumulam evidencia sem autoridade operacional direta.',
+      help: 'Agentes em observação ou laboratório: roteiam, separam filas e acumulam evidência sem autoridade operacional direta.',
     },
     {
-      title: 'Dry-run',
-      value: dryRunAgentCount == null ? 'pending_instrumentation' : fmt(dryRunAgentCount),
+      title: 'Simulação',
+      value: dryRunAgentCount == null ? 'instrumentação pendente' : fmt(dryRunAgentCount),
       tone: 'blue',
-      help: 'Agentes em ensaio controlado: produzem evidencia e checkpoints, mas ainda nao escrevem nem fecham com autoridade final.',
+      help: 'Agentes em ensaio controlado: produzem evidência e pontos de controle, mas ainda não escrevem nem fecham com autoridade final.',
     },
   ];
   const atlasComposition = [
-    ['Registry', registeredAgentCount],
+    ['Registro', registeredAgentCount],
     ['Op.', operationalRegisteredCount],
-    ['Dry-run', dryRunAgentCount],
-    ['Shadow', shadowAgentCount],
-    ['Req/Effect', requirementEffectAgentCount],
-    ['Effect-list', effectListAgentCount],
+    ['Simulação', dryRunAgentCount],
+    ['Observação', shadowAgentCount],
+    ['Requisito/efeito', requirementEffectAgentCount],
+    ['Lista de efeitos', effectListAgentCount],
   ];
   const routerBadgeText = routerComponent.registered
-    ? `Req/Effect: ${fmt(requirementEffectAgentCount ?? routerComponent.requirement_effect_agents ?? 0)} agentes`
-    : 'Req/Effect Router: pending_instrumentation';
+    ? `Requisito/efeito: ${fmt(requirementEffectAgentCount ?? routerComponent.requirement_effect_agents ?? 0)} agentes`
+    : 'Roteador de requisitos e efeitos: instrumentação pendente';
   const routerBadgeHelp = routerComponent.registered
-    ? `Read-only router. ${fmt(requirementEffectAgentCount ?? routerComponent.requirement_effect_agents ?? 0)} agentes requirement/effect; effect-list package ${effectListComponent.registered ? 'registrado' : 'pendente'}; sem apply/lifecycle. Terminais: ${fmt(routerComponent.terminal_policies ?? 0)}. Splitters: ${fmt(routerComponent.splitters ?? 0)}.`
-    : 'Componente ainda nao encontrado no ml_agent_registry.';
+    ? `Roteador somente leitura. ${fmt(requirementEffectAgentCount ?? routerComponent.requirement_effect_agents ?? 0)} agentes de requisito/efeito; pacote de lista de efeitos ${effectListComponent.registered ? 'registrado' : 'pendente'}; sem aplicação ou autoridade no ciclo de vida. Terminais: ${fmt(routerComponent.terminal_policies ?? 0)}. Divisores: ${fmt(routerComponent.splitters ?? 0)}.`
+    : 'Componente ainda não encontrado no registro interno de agentes.';
   const effectListBadgeHelp = effectListComponent.registered
     ? [
-        `Effect-list package: ${fmt(effectListAgentCount ?? effectListComponent.agents_count ?? 0)} componentes agregados.`,
-        `Specs: ${fmt(effectListComponent.specs ?? 0)}; terminais: ${fmt(effectListComponent.terminal_policies ?? 0)}; splitters: ${fmt(effectListComponent.splitters ?? 0)}.`,
+        `Pacote de lista de efeitos: ${fmt(effectListAgentCount ?? effectListComponent.agents_count ?? 0)} componentes agregados.`,
+        `Especificações: ${fmt(effectListComponent.specs ?? 0)}; terminais: ${fmt(effectListComponent.terminal_policies ?? 0)}; divisores: ${fmt(effectListComponent.splitters ?? 0)}.`,
         `Cobertura: ${fmt(effectListComponent.coverage_before ?? 0)} -> ${fmt(effectListComponent.coverage_after ?? 0)} (+${fmt(effectListComponent.coverage_gain ?? 0)}).`,
-        `Rota effect-list: ${fmt(effectListComponent.route_count ?? 0)}; com spec: ${fmt(effectListComponent.with_spec ?? 0)}; terminais registrados: ${fmt(effectListComponent.terminal_registered ?? 0)}.`,
+        `Rota da lista de efeitos: ${fmt(effectListComponent.route_count ?? 0)}; com especificação: ${fmt(effectListComponent.with_spec ?? 0)}; terminais registrados: ${fmt(effectListComponent.terminal_registered ?? 0)}.`,
       ].join(' ')
-    : 'Pacote effect-list ainda nao carregado no payload.';
+    : 'Pacote de lista de efeitos ainda não carregado nos dados.';
   const semSpecHelp = effectListComponent.top_blockers?.length
-    ? `Sem spec util: ${fmt(withoutUsefulSpecCount ?? 0)}. Proximos gargalos: ${effectListComponent.top_blockers.slice(0, 3).map((item) => `${ptFieldLabel(item.route)} ${fmt(item.segments)}`).join(', ')}.`
-    : `Sem spec util: ${fmt(withoutUsefulSpecCount ?? 0)}.`;
+    ? `Sem especificação útil: ${fmt(withoutUsefulSpecCount ?? 0)}. Próximos gargalos: ${effectListComponent.top_blockers.slice(0, 3).map((item) => `${ptFieldLabel(item.route)} ${fmt(item.segments)}`).join(', ')}.`
+    : `Sem especificação útil: ${fmt(withoutUsefulSpecCount ?? 0)}.`;
   const remainingGaps = registrySummary.remaining_gaps ?? {};
   const remainingGapsText = [
-    ['Domain Context', remainingGaps.domain_context_after_requirement_effect],
-    ['Blocked', remainingGaps.blocked_uncertain],
-    ['ScriptValue residual', remainingGaps.script_value_effect_residual_repair_or_preserved_sublane],
-    ['Accolade residual', remainingGaps.accolade_trait_residual_repair_or_preserved_sublane],
-    ['Residual culture/name', remainingGaps.residual_culture_or_name_policy],
+    ['Contexto de domínio', remainingGaps.domain_context_after_requirement_effect],
+    ['Bloqueados', remainingGaps.blocked_uncertain],
+    ['Resíduo ScriptValue', remainingGaps.script_value_effect_residual_repair_or_preserved_sublane],
+    ['Resíduo de condecoração', remainingGaps.accolade_trait_residual_repair_or_preserved_sublane],
+    ['Resíduo de cultura ou nome', remainingGaps.residual_culture_or_name_policy],
   ]
     .filter(([, value]) => Number(value) > 0)
     .map(([label, value]) => `${label} ${fmt(value)}`)
     .join(', ');
   const specCoverageTooltip = [
-    `Spec: ${fmt(specAssociatedAfterNotReq ?? 0)}/${fmt(registrySummary.post_architecture_summary?.pending_segments ?? 11725)}.`,
-    `Sem spec util: ${fmt(withoutUsefulSpecCount ?? 0)}.`,
-    `Ganho desde effect-list: +${fmt(coverageGainSinceEffectList ?? 0)}.`,
+    `Especificações: ${fmt(specAssociatedAfterNotReq ?? 0)}/${fmt(registrySummary.post_architecture_summary?.pending_segments ?? 11725)}.`,
+    `Sem especificação útil: ${fmt(withoutUsefulSpecCount ?? 0)}.`,
+    `Ganho desde a lista de efeitos: +${fmt(coverageGainSinceEffectList ?? 0)}.`,
     remainingGapsText ? `Restante: ${remainingGapsText}.` : null,
   ].filter(Boolean).join(' ');
   const notReqTooltip = notReqComponent.registered
     ? [
-        `Not-Req Router: not_requirement_effect_global_router.`,
-        `Shadow splitter read-only.`,
+        'Roteador global para casos fora de requisito.',
+        `Divisor em observação e somente leitura.`,
         `Universo: ${fmt(notReqComponent.universe ?? 0)}; reuso: ${fmt(notReqComponent.reuse_existing_policies ?? 0)}/${fmt(notReqComponent.review_total ?? 0)} na amostra.`,
-        `Subarvore validada: Not-Req Router -> Culture/Religion -> Culture -> Tradition/Heritage terminal.`,
-        `Unrouted preservado: ${fmt(notReqComponent.unrouted_or_preserved ?? 0)}.`,
+        `Subárvore validada: fora de requisito → cultura/religião → cultura → tradição/herança.`,
+        `Não roteados preservados: ${fmt(notReqComponent.unrouted_or_preserved ?? 0)}.`,
       ].join(' ')
-    : 'Not-Req Router ainda nao carregado no payload.';
+    : 'Roteador fora de requisito ainda não carregado nos dados.';
   const networkSummaryTooltip = [
-    `Mapa visual: ${fmt(graphNodeCount)} nos.`,
-    `Registry: ${registeredAgentCount == null ? 'pending_instrumentation' : fmt(registeredAgentCount)} agentes.`,
-    `Operacionais: ${operationalRegisteredCount == null ? 'pending_instrumentation' : fmt(operationalRegisteredCount)} pelo criterio active + authoritative/operational/dry_run.`,
-    `Dry-run: ${dryRunAgentCount == null ? 'pending_instrumentation' : fmt(dryRunAgentCount)}.`,
-    `Shadow: ${shadowAgentCount == null ? 'pending_instrumentation' : fmt(shadowAgentCount)}.`,
-    `Terminais: ${terminalGuardAgentCount == null ? 'pending_instrumentation' : fmt(terminalGuardAgentCount)}. Splitters: ${splitterAgentCount == null ? 'pending_instrumentation' : fmt(splitterAgentCount)}.`,
-    `Req/Effect: ${requirementEffectAgentCount == null ? 'pending_instrumentation' : fmt(requirementEffectAgentCount)} agentes.`,
-    `Not-Req: ${notRequirementEffectAgentCount == null ? 'pending_instrumentation' : fmt(notRequirementEffectAgentCount)} agentes.`,
-    `Effect-list: ${effectListAgentCount == null ? 'pending_instrumentation' : fmt(effectListAgentCount)} componentes.`,
+    `Mapa visual: ${fmt(graphNodeCount)} nós.`,
+    `Registro: ${registeredAgentCount == null ? 'instrumentação pendente' : fmt(registeredAgentCount)} agentes.`,
+    `Operacionais: ${operationalRegisteredCount == null ? 'instrumentação pendente' : fmt(operationalRegisteredCount)} pelo critério ativo e com autoridade, operacional ou em simulação.`,
+    `Simulação: ${dryRunAgentCount == null ? 'instrumentação pendente' : fmt(dryRunAgentCount)}.`,
+    `Observação: ${shadowAgentCount == null ? 'instrumentação pendente' : fmt(shadowAgentCount)}.`,
+    `Terminais: ${terminalGuardAgentCount == null ? 'instrumentação pendente' : fmt(terminalGuardAgentCount)}. Divisores: ${splitterAgentCount == null ? 'instrumentação pendente' : fmt(splitterAgentCount)}.`,
+    `Requisito/efeito: ${requirementEffectAgentCount == null ? 'instrumentação pendente' : fmt(requirementEffectAgentCount)} agentes.`,
+    `Fora de requisito: ${notRequirementEffectAgentCount == null ? 'instrumentação pendente' : fmt(notRequirementEffectAgentCount)} agentes.`,
+    `Lista de efeitos: ${effectListAgentCount == null ? 'instrumentação pendente' : fmt(effectListAgentCount)} componentes.`,
     specCoverageTooltip,
     notReqTooltip,
     networkSourceLine,
   ].join('\n');
   const atlasCompositionHelp = {
-    Registry: 'Total atual de agentes no ml_agent_registry.',
-    'Op.': "Operacionais = status active + operational_state authoritative/operational/dry_run. Shadow fica fora.",
-    'Dry-run': 'Agentes ativos em dry-run/read-only; contam como operacionais, mas nao aplicam output.',
-    Shadow: 'Agentes shadow/lab/splitter: roteiam e acumulam evidencia, sem autoridade operacional.',
-    'Req/Effect': routerBadgeHelp,
-    'Effect-list': effectListBadgeHelp,
+    Registro: 'Total atual de agentes no registro ml_agent_registry.',
+    'Op.': 'Operacionais = agentes ativos com autoridade, operacionais ou em simulação. Agentes em observação ficam fora.',
+    'Simulação': 'Agentes ativos em simulação e somente leitura; contam como operacionais, mas não aplicam alterações na saída.',
+    'Observação': 'Agentes em observação ou laboratório: roteiam e acumulam evidência, sem autoridade operacional.',
+    'Requisito/efeito': routerBadgeHelp,
+    'Lista de efeitos': effectListBadgeHelp,
   };
   const atlasSummary = {
     ...dashboardSummary,
@@ -7726,10 +9417,15 @@ function NeuralArchitecture({ data }) {
   useEffect(() => {
     let alive = true;
     const loadNetwork = async () => {
+      setNetworkLoading(true);
+      setNetworkError(null);
       try {
         const response = await fetch(`${API_BASE}/neural-visualization`);
         if (!response.ok) throw new Error(`API ${response.status}`);
         const payload = await response.json();
+        if (!Array.isArray(payload.network?.nodes) || payload.network.nodes.length === 0) {
+          throw new Error('A API não retornou os nós da rede.');
+        }
         if (!alive) return;
         setNetworkSource({
           ...(payload.network ?? {}),
@@ -7741,13 +9437,15 @@ function NeuralArchitecture({ data }) {
       } catch (err) {
         if (!alive) return;
         setNetworkError(err.message);
+      } finally {
+        if (alive) setNetworkLoading(false);
       }
     };
     loadNetwork();
     return () => {
       alive = false;
     };
-  }, []);
+  }, [networkLoadAttempt]);
 
   useEffect(() => {
     let applied = false;
@@ -7914,15 +9612,60 @@ function NeuralArchitecture({ data }) {
     </span>
   );
 
+  if (!networkSource && networkLoading) {
+    return (
+      <div className="neural-atlas-shell h-full min-h-[520px]">
+        <section className="dashboard-surface grid h-full min-h-[520px] place-items-center overflow-hidden border">
+          <div className="max-w-md px-6 text-center" role="status" aria-live="polite">
+            <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl border border-cyan-300/20 bg-cyan-400/10 text-cyan-200 shadow-[0_18px_50px_rgba(34,211,238,0.10)]">
+              <Activity className="animate-pulse" size={25} aria-hidden="true" />
+            </span>
+            <h2 className="mt-5 text-xl font-black text-[var(--dash-text)]">Carregando rede</h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--dash-muted)]">
+              Buscando o atlas e o registro de agentes mais recentes no SQLite.
+            </p>
+            <div className="mx-auto mt-5 h-1.5 w-44 overflow-hidden rounded-full bg-white/8">
+              <span className="block h-full w-2/3 animate-pulse rounded-full bg-cyan-300/70" />
+            </div>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  if (!networkSource && networkError) {
+    return (
+      <div className="neural-atlas-shell h-full min-h-[520px]">
+        <section className="dashboard-surface grid h-full min-h-[520px] place-items-center overflow-hidden border">
+          <div className="max-w-lg px-6 text-center" role="alert">
+            <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl border border-amber-300/20 bg-amber-400/10 text-amber-200">
+              <AlertTriangle size={25} aria-hidden="true" />
+            </span>
+            <h2 className="mt-5 text-xl font-black text-[var(--dash-text)]">Não foi possível carregar a rede</h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--dash-muted)]">{networkError}</p>
+            <button
+              type="button"
+              onClick={() => setNetworkLoadAttempt((attempt) => attempt + 1)}
+              className="dashboard-segmented-button is-active mx-auto mt-5 inline-flex items-center justify-center gap-2 px-4"
+            >
+              <RotateCcw size={15} aria-hidden="true" />
+              Tentar novamente
+            </button>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="neural-atlas-shell h-full min-h-0 pb-0">
       <style>{`
         .neural-atlas-shell {
-          --atlas-bg: #050814;
-          --atlas-panel: rgba(9, 16, 35, 0.78);
-          --atlas-line: rgba(147, 197, 253, 0.30);
-          --atlas-text: #f8fafc;
-          --atlas-muted: #9fb3d1;
+          --atlas-bg: var(--dash-bg);
+          --atlas-panel: var(--dash-card);
+          --atlas-line: color-mix(in srgb, var(--dash-accent) 32%, transparent);
+          --atlas-text: var(--dash-text);
+          --atlas-muted: var(--dash-muted);
           color: var(--atlas-text);
         }
         .atlas-stage {
@@ -7984,15 +9727,6 @@ function NeuralArchitecture({ data }) {
         .atlas-detail-scroll:hover::-webkit-scrollbar-thumb {
           background: rgba(125, 211, 252, 0.28);
         }
-        [data-content-theme='light'] .neural-atlas-shell {
-          --atlas-text: #172033;
-          --atlas-muted: #64748b;
-        }
-        [data-content-theme='light'] .atlas-frame {
-          background: #f1f5f9;
-          border-color: rgba(148, 163, 184, 0.34);
-          box-shadow: 0 24px 80px rgba(15, 23, 42, 0.12);
-        }
         [data-content-theme='light'] .atlas-stage {
           background:
             radial-gradient(circle at 18% 22%, rgba(20, 184, 166, 0.16), transparent 28%),
@@ -8004,24 +9738,6 @@ function NeuralArchitecture({ data }) {
           background-image:
             linear-gradient(rgba(51, 65, 85, 0.055) 1px, transparent 1px),
             linear-gradient(90deg, rgba(51, 65, 85, 0.055) 1px, transparent 1px);
-        }
-        [data-content-theme='light'] .atlas-title-card,
-        [data-content-theme='light'] .atlas-toolbar,
-        [data-content-theme='light'] .atlas-metrics-panel {
-          background: rgba(255, 255, 255, 0.76);
-          border-color: rgba(148, 163, 184, 0.30);
-          color: #172033;
-          box-shadow: 0 14px 42px rgba(15, 23, 42, 0.08);
-        }
-        [data-content-theme='light'] .atlas-title-card h2 {
-          color: #172033;
-        }
-        [data-content-theme='light'] .atlas-toolbar button {
-          color: #334155;
-        }
-        [data-content-theme='light'] .atlas-toolbar button:hover {
-          background: rgba(59, 130, 246, 0.08);
-          color: #111827;
         }
         [data-content-theme='light'] .atlas-node {
           background: var(--node-bg-light) !important;
@@ -8043,11 +9759,6 @@ function NeuralArchitecture({ data }) {
         [data-content-theme='light'] .atlas-node .atlas-resize-mark {
           border-color: rgba(51, 65, 85, 0.70) !important;
         }
-        [data-content-theme='light'] .atlas-detail-scroll {
-          background: rgba(255, 250, 241, 0.94);
-          border-color: rgba(106, 84, 55, 0.18);
-          box-shadow: 0 24px 80px rgba(81, 67, 45, 0.18);
-        }
         [data-content-theme='light'] .atlas-detail-scroll h3,
         [data-content-theme='light'] .atlas-detail-scroll .text-white {
           color: #172033 !important;
@@ -8058,38 +9769,38 @@ function NeuralArchitecture({ data }) {
         }
       `}</style>
 
-      <section className="atlas-frame h-full min-h-0 overflow-hidden rounded-[2rem] border border-white/10 bg-[#050814] shadow-[0_30px_120px_rgba(0,0,0,0.42)]">
+      <section className="atlas-frame h-full min-h-0 overflow-hidden border">
         <div className="relative atlas-stage h-full min-h-[520px] overflow-hidden p-3" ref={canvasRef} onPointerMove={dragNode} onPointerUp={stopDrag} onPointerCancel={stopDrag} onClick={() => setSelectedId(null)}>
             <div className="relative z-10 flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
               <div className="flex items-center gap-2">
                 <div className="atlas-title-card rounded-2xl border border-white/10 bg-black/15 px-3 py-2 backdrop-blur" title={networkSummaryTooltip}>
                   <h2 className="text-lg font-black tracking-tight text-white lg:text-xl">
-                    Network Tradução CKIII
+                    Rede de Tradução CKIII
                   </h2>
                   {networkError && (
                     <p className="mt-1 text-xs font-bold text-amber-100">
-                      fallback: {networkError}
+                      Atualização indisponível: {networkError}
                     </p>
                   )}
                 </div>
                 <div className="atlas-toolbar flex rounded-2xl border border-white/10 bg-black/20 p-1 backdrop-blur">
                   <button
                     type="button"
-                    title="Home: voltar ao ultimo layout favorito salvo"
-                    aria-label="Home: voltar ao ultimo layout favorito salvo"
+                    title="Início: voltar ao último layout favorito salvo"
+                    aria-label="Início: voltar ao último layout favorito salvo"
                     onClick={restoreFavoriteLayout}
-                    className="grid h-9 w-9 place-items-center rounded-xl text-slate-200 transition hover:bg-white/10 hover:text-white"
+                    className="grid h-10 w-10 place-items-center rounded-xl transition"
                   >
                     <Home size={16} />
                   </button>
                   <button
                     type="button"
-                    title={layoutSaved ? 'Favorito: layout atual ja esta salvo' : 'Favorito: salvar layout atual'}
-                    aria-label={layoutSaved ? 'Favorito: layout atual ja esta salvo' : 'Favorito: salvar layout atual'}
+                    title={layoutSaved ? 'Favorito: o layout atual já está salvo' : 'Favorito: salvar o layout atual'}
+                    aria-label={layoutSaved ? 'Favorito: o layout atual já está salvo' : 'Favorito: salvar o layout atual'}
                     onClick={saveAtlasLayout}
                     className={cn(
-                      'grid h-9 w-9 place-items-center rounded-xl transition hover:bg-white/10',
-                      layoutSaved ? 'text-amber-200' : 'text-slate-200 hover:text-white'
+                      'grid h-10 w-10 place-items-center rounded-xl transition',
+                      layoutSaved && 'atlas-toolbar-favorite-saved'
                     )}
                   >
                     <Star size={16} fill={layoutSaved ? 'currentColor' : 'none'} />
@@ -8098,10 +9809,10 @@ function NeuralArchitecture({ data }) {
                 <div className="atlas-toolbar flex rounded-2xl border border-white/10 bg-black/20 p-1 backdrop-blur">
                   <button
                     type="button"
-                    title="Redefinir: voltar ao layout padrao do grafo"
-                    aria-label="Redefinir: voltar ao layout padrao do grafo"
+                    title="Redefinir: voltar ao layout padrão do grafo"
+                    aria-label="Redefinir: voltar ao layout padrão do grafo"
                     onClick={resetAtlasLayout}
-                    className="grid h-9 w-9 place-items-center rounded-xl text-slate-200 transition hover:bg-white/10 hover:text-white"
+                    className="grid h-10 w-10 place-items-center rounded-xl transition"
                   >
                     <RotateCcw size={16} />
                   </button>
@@ -8109,20 +9820,20 @@ function NeuralArchitecture({ data }) {
               </div>
               <div className="atlas-metrics-panel pointer-events-none grid w-full grid-cols-2 gap-1 rounded-2xl border border-white/10 bg-black/20 p-1.5 backdrop-blur sm:grid-cols-4 lg:w-auto lg:min-w-[620px]">
                 <div className="col-span-full flex flex-wrap justify-end gap-1.5 text-[0.64rem] font-black">
-                  <span className="rounded-full border border-white/10 bg-white/[0.05] px-2 py-0.5 text-slate-300" title="Nos renderizados neste mapa macro. O registry real fica agregado em clusters.">
+                  <span className="rounded-full border border-white/10 bg-white/[0.05] px-2 py-0.5 text-slate-300" title="Nós renderizados neste mapa macro. O registro real fica agregado em grupos.">
                     Mapa {fmt(graphNodeCount)}
                   </span>
-                  <span className="rounded-full border border-white/10 bg-white/[0.05] px-2 py-0.5 text-slate-300" title="Data do atlas visual, nao do estado operacional atual.">
+                  <span className="rounded-full border border-white/10 bg-white/[0.05] px-2 py-0.5 text-slate-300" title="Data do atlas visual, não do estado operacional atual.">
                     Atlas {atlasUpdatedLabel}
                   </span>
                   <span className="rounded-full border border-white/10 bg-blue-500/10 px-2 py-0.5 text-blue-200" title={networkSourceLine}>
                     Atlas #{atlasSegmentStateId ?? '-'}
                   </span>
-                  <span className="rounded-full border border-white/10 bg-emerald-500/10 px-2 py-0.5 text-emerald-200" title="Ultimo segment-state operacional conhecido.">
+                  <span className="rounded-full border border-white/10 bg-emerald-500/10 px-2 py-0.5 text-emerald-200" title="Último estado operacional dos segmentos conhecido.">
                     Estado #{networkSegmentStateId ?? '-'}
                   </span>
                   {atlasIsStale && (
-                    <span className="rounded-full border border-amber-300/20 bg-amber-400/10 px-2 py-0.5 text-amber-200" title="O mapa visual esta em uma run antiga; os cards de registry usam dados atuais quando disponiveis.">
+                    <span className="rounded-full border border-amber-300/20 bg-amber-400/10 px-2 py-0.5 text-amber-200" title="O mapa visual está em uma execução anterior; os cartões do registro usam dados atuais quando disponíveis.">
                       atlas antigo
                     </span>
                   )}
@@ -8130,7 +9841,7 @@ function NeuralArchitecture({ data }) {
                 {atlasMetricCards.map((card) => (
                   <div
                     key={card.title}
-                    className="pointer-events-auto cursor-pointer rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] px-2 py-1.5"
+                    className="atlas-metric-card pointer-events-auto cursor-pointer rounded-xl border px-2 py-1.5"
                     title={card.help}
                     aria-label={`${card.title}: ${card.help}`}
                   >
@@ -8193,8 +9904,8 @@ function NeuralArchitecture({ data }) {
                 const nodeTooltip = [
                   node.label,
                   `Tipo: ${ptType(node.type)}`,
-                  `Status: ${ptStatus(node.status)}`,
-                  node.rawRole ? `Papel: ${ptRole(node.rawRole)}` : null,
+                  `Estado: ${ptStatus(node.status)}`,
+                  node.rawRole ? `Função: ${ptRole(node.rawRole)}` : null,
                   node.description ? `Resumo: ${node.description}` : null,
                 ].filter(Boolean).join('\n');
                 const agentCluster = nodeAgentClusters[node.id] ?? { total: 0, operational: 0, shadow: 0 };
@@ -8238,7 +9949,7 @@ function NeuralArchitecture({ data }) {
                         {agentCluster.total > 0 && (
                           <div
                             className="mt-1 flex items-center gap-1 text-[0.55rem] font-black uppercase tracking-wide text-slate-300/90"
-                            title={`${agentCluster.total} neuronios ligados; ${agentCluster.operational} operacionais; ${agentCluster.shadow} shadow.`}
+                            title={`${agentCluster.total} neurônios ligados; ${agentCluster.operational} operacionais; ${agentCluster.shadow} em observação.`}
                           >
                             <span className="flex items-center gap-0.5">
                               {['operational', 'shadow', 'lab'].map((kind, dotIndex) => (
@@ -8251,7 +9962,7 @@ function NeuralArchitecture({ data }) {
                                 />
                               ))}
                             </span>
-                            <span>{fmt(agentCluster.total)} neuronios</span>
+                            <span>{fmt(agentCluster.total)} neurônios</span>
                           </div>
                         )}
                       </div>
@@ -8279,16 +9990,16 @@ function NeuralArchitecture({ data }) {
             </div>
             <p className="mt-4 text-sm leading-6 text-slate-300">{selectedNode.description}</p>
             <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-              <p className="text-xs font-black uppercase tracking-wide text-slate-400">Funcao</p>
+              <p className="text-xs font-black uppercase tracking-wide text-slate-400">Função</p>
               <p className="mt-2 text-sm leading-6 text-white">{selectedNode.role}</p>
             </div>
             {selectedAgentCluster?.total > 0 && (
               <div className="mt-4 rounded-2xl border border-violet-300/20 bg-violet-400/10 p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-xs font-black uppercase tracking-wide text-violet-100">Neuronios ligados</p>
+                    <p className="text-xs font-black uppercase tracking-wide text-violet-100">Neurônios ligados</p>
                     <p className="mt-1 text-xs leading-5 text-violet-100/80">
-                      Agentes reais do registry agregados neste no macro.
+                      Agentes reais do registro agregados neste nó macro.
                     </p>
                   </div>
                   <span className="rounded-full border border-violet-200/20 bg-violet-300/15 px-2 py-1 text-xs font-black text-violet-100">
@@ -8300,7 +10011,7 @@ function NeuralArchitecture({ data }) {
                     operacionais {fmt(selectedAgentCluster.operational)}
                   </span>
                   <span className="rounded-full border border-violet-300/20 bg-violet-400/10 px-2 py-1 text-violet-100">
-                    shadow {fmt(selectedAgentCluster.shadow)}
+                    observação {fmt(selectedAgentCluster.shadow)}
                   </span>
                   {Object.entries(selectedAgentCluster.byType).slice(0, 3).map(([type, total]) => (
                     <span key={type} className="rounded-full border border-white/10 bg-white/[0.055] px-2 py-1 text-slate-200">
@@ -8312,7 +10023,9 @@ function NeuralArchitecture({ data }) {
                   {selectedAgentCluster.agents.slice(0, 12).map((agent) => (
                     <div
                       key={agent.agent_key}
-                      title={`${agent.agent_key}\n${agent.scope_description ?? ''}`}
+                      data-tooltip-title={compactAgentLabel(agent)}
+                      data-tooltip-description={ptAgentDescription(agent)}
+                      data-tooltip-meta={`Estado: ${ptStatus(agent.operational_state)}`}
                       className="rounded-xl border border-white/10 bg-black/15 px-3 py-2"
                     >
                       <div className="flex items-start justify-between gap-2">
@@ -8334,7 +10047,7 @@ function NeuralArchitecture({ data }) {
                   ))}
                   {selectedAgentCluster.total > 12 && (
                     <p className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-bold text-slate-300">
-                      +{fmt(selectedAgentCluster.total - 12)} neuronios agregados neste no.
+                      +{fmt(selectedAgentCluster.total - 12)} neurônios agregados neste nó.
                     </p>
                   )}
                 </div>
@@ -8364,7 +10077,7 @@ function NeuralArchitecture({ data }) {
               )}
               {!!selectedNode.outputs?.length && (
                 <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                  <p className="text-xs font-black uppercase tracking-wide text-slate-400">Saidas</p>
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-400">Saídas</p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {selectedNode.outputs.slice(0, 8).map((item) => (
                       <DetailChip key={item} item={item} tone="cyan" />
@@ -8375,7 +10088,7 @@ function NeuralArchitecture({ data }) {
             </div>
             {!!selectedNode.risks?.length && (
               <div className="mt-5 rounded-2xl border border-red-300/20 bg-red-300/10 p-4">
-                <p className="text-xs font-black uppercase tracking-wide text-red-100">Atencao</p>
+                <p className="text-xs font-black uppercase tracking-wide text-red-100">Atenção</p>
                 <div className="mt-3 space-y-2">
                   {selectedNode.risks.slice(0, 3).map((item) => (
                     <p
@@ -8390,9 +10103,9 @@ function NeuralArchitecture({ data }) {
               </div>
             )}
             <div className="mt-5 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4">
-              <p className="text-xs font-black uppercase tracking-wide text-amber-100">Proximo aprendizado</p>
+              <p className="text-xs font-black uppercase tracking-wide text-amber-100">Próximo aprendizado</p>
               <div className="mt-2 space-y-2 text-sm leading-6 text-amber-50">
-                {(selectedNode.next_steps?.length ? selectedNode.next_steps : ['Aguardando proxima definicao do chat 1.']).slice(0, 4).map((item) => (
+                {(selectedNode.next_steps?.length ? selectedNode.next_steps : ['Aguardando a próxima definição do fluxo.']).slice(0, 4).map((item) => (
                   <p
                     key={item}
                     title={item}
@@ -8434,7 +10147,7 @@ const navLabels = { Production: 'Production', Dashboard: 'Dashboard', Managerial
 const operationalNavItems = navItems;
 const screenMeta = {
   Production: { title: 'Production Control', subtitle: 'Source, output, gate e inicio seguro do fluxo de producao' },
-  Dashboard: { title: 'Project Intelligence', subtitle: 'Visao geral, aprendizado, pendencias, release, qualidade e Network' },
+  Dashboard: { title: 'Inteligência do Projeto', subtitle: 'Qualidade do pacote, evolução das versões e arquitetura da rede' },
   Managerial: { title: 'Managerial Dashboard', subtitle: 'Visao macro de release e pendencias operacionais' },
   Operational: { title: 'Operational Dashboard', subtitle: 'Cockpit analitico do pacote e confianca atual' },
   Cockpit: { title: 'Cockpit Executivo', subtitle: 'O projeto está avançando e está seguro?' },
@@ -8521,8 +10234,8 @@ function App() {
     return response.json();
   };
 
-  const refreshAppStateNow = async () => {
-    const payload = await fetchAppStatePayload();
+  const refreshAppStateNow = async (consolidatedPayload = null) => {
+    const payload = consolidatedPayload ?? await fetchAppStatePayload();
     setAppState(payload);
     setError(null);
     return payload;
@@ -8619,7 +10332,7 @@ function App() {
   const activeDashboardItem = dashboardViewItems.find((item) => item.id === dashboardView) ?? dashboardViewItems[0];
   const headerSubtitle = activeTab === 'Dashboard' ? activeDashboardItem.subtitle : currentScreen.subtitle;
   const showOperationalNav = operationalNavItems.includes(activeTab);
-  const canRenderWithoutApi = activeTab === 'Neural Network' || activeTab === 'Network';
+  const canRenderWithoutApi = activeTab === 'Neural Network' || activeTab === 'Network' || (activeTab === 'Dashboard' && dashboardView === 'network');
   const canRenderWithAppState = activeTab === 'Production' || activeTab === 'Dashboard';
   const screenData = { ...(data ?? { agents: { summary: {} } }), appState: appState ?? {}, _fullDashboardLoaded: Boolean(data) };
   const isWaitingForData = !data && !error && !canRenderWithoutApi && !(canRenderWithAppState && appState);
@@ -8627,35 +10340,12 @@ function App() {
 
   return (
     <div className="h-screen overflow-hidden">
-      <style>{`
-        [data-content-theme='light'] {
-          --dash-bg: rgb(241 245 249);
-          --dash-card: rgba(255, 255, 255, 0.96);
-          --dash-border: rgba(148, 163, 184, 0.32);
-          --dash-text: rgb(15 23 42);
-          --dash-muted: rgb(71 85 105);
-          --dash-soft: rgb(100 116 139);
-          --dash-subtle: rgba(248, 250, 252, 0.92);
-          --dash-shadow: 0 14px 36px rgba(15, 23, 42, 0.08);
-        }
-        [data-content-theme='dark'] {
-          --dash-bg: rgb(5 12 24);
-          --dash-card: rgba(13, 22, 39, 0.78);
-          --dash-border: rgba(255, 255, 255, 0.10);
-          --dash-text: rgb(255 255 255);
-          --dash-muted: rgb(158 179 207);
-          --dash-soft: rgb(105 124 149);
-          --dash-subtle: rgba(255, 255, 255, 0.05);
-          --dash-shadow: 0 18px 60px rgba(0, 0, 0, 0.18);
-        }
-      `}</style>
-
       <div
         data-content-theme={isDarkMode ? 'dark' : 'light'}
-        className={`${isDarkMode ? 'dark ' : ''}h-screen w-full overflow-hidden bg-[var(--dash-bg)] p-4 text-[var(--dash-text)] transition-colors [&_button]:cursor-pointer`}
+        className={`${isDarkMode ? 'dark ' : ''}dashboard-shell h-screen w-full overflow-hidden p-4 [&_button]:cursor-pointer`}
       >
         <main className="mx-auto flex h-full max-w-[1920px] flex-col overflow-hidden">
-          <header className="grid min-h-[64px] shrink-0 grid-cols-12 items-center gap-4 rounded-2xl border border-[var(--dash-border)] bg-[var(--dash-card)] px-4 py-2 shadow-[var(--dash-shadow)]">
+          <header className="dashboard-header grid min-h-[64px] shrink-0 grid-cols-12 items-center gap-4 border px-4 py-2">
             <div className="col-span-12 lg:col-span-5">
               <div className="flex items-center gap-4">
                 <div className="grid h-10 w-10 place-items-center rounded-xl border border-red-500/25 bg-[#070b18] shadow-[0_0_24px_rgba(251,23,75,0.18)]">
@@ -8670,16 +10360,14 @@ function App() {
 
             <div className="col-span-12 flex flex-wrap items-center justify-start gap-2 lg:col-span-7 lg:justify-end">
               {activeTab === 'Dashboard' ? (
-                <nav className="inline-flex w-fit flex-wrap items-center gap-1 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-1">
+                <nav className="dashboard-segmented w-fit flex-wrap">
                   {dashboardViewItems.map((item) => (
                     <button
                       key={item.id}
                       onClick={() => selectDashboardView(item.id)}
                       className={cn(
-                        'h-8 rounded-lg px-3 text-xs font-black transition',
-                        dashboardView === item.id
-                          ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20 dark:bg-blue-500/20 dark:text-blue-200 dark:shadow-none'
-                          : 'text-[var(--dash-muted)] hover:bg-[var(--dash-subtle)] hover:text-[var(--dash-text)]'
+                        'dashboard-segmented-button px-3 text-xs font-black',
+                        dashboardView === item.id && 'is-active'
                       )}
                     >
                       {item.label}
@@ -8687,10 +10375,10 @@ function App() {
                   ))}
                 </nav>
               ) : showOperationalNav && (
-                <nav className="inline-flex w-fit flex-wrap items-center gap-1 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-1">
+                <nav className="dashboard-segmented w-fit flex-wrap">
                   <button
                     onClick={() => openDashboardTab('Dashboard/overview')}
-                    className="grid h-8 w-8 place-items-center rounded-lg bg-blue-600 text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-500 dark:bg-blue-500/20 dark:text-blue-200 dark:shadow-none"
+                    className="dashboard-segmented-button is-active grid w-8 place-items-center"
                     title="Abrir Dashboard em nova guia"
                     aria-label="Abrir Dashboard em nova guia"
                   >
@@ -8700,7 +10388,7 @@ function App() {
               )}
               <button
                 onClick={() => setIsDarkMode((current) => !current)}
-                className="grid h-10 w-10 place-items-center rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] text-[var(--dash-text)] transition hover:bg-blue-500/10"
+                className="dashboard-icon-button"
                 title={isDarkMode ? 'Ativar tema claro' : 'Ativar tema escuro'}
                 aria-label={isDarkMode ? 'Ativar tema claro' : 'Ativar tema escuro'}
               >
@@ -8726,6 +10414,9 @@ function App() {
 
 createRoot(document.getElementById('root')).render(
   <DashboardErrorBoundary>
-    <App />
+    <>
+      <GlobalTooltipLayer />
+      <App />
+    </>
   </DashboardErrorBoundary>
 );
