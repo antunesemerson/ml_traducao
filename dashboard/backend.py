@@ -8364,8 +8364,15 @@ def _resumable_diagnostic_score_run_id(
 def _resumable_diagnostic_segment_state_run_id(
     db_path: Path,
     epoch_payload: dict[str, Any],
+    *,
+    include_attached: bool = False,
 ) -> int | None:
-    """Find a complete, compatible state snapshot not yet attached to this epoch."""
+    """Find a complete, compatible state snapshot for this epoch.
+
+    Fresh scoring must advance beyond the state already attached to the epoch.
+    When the epoch itself is reused without scoring, the attached snapshot is
+    still authoritative and may be reused to avoid an identical full rebuild.
+    """
     epoch_id = _int(epoch_payload.get("epoch_id"))
     if not epoch_id:
         return None
@@ -8373,15 +8380,16 @@ def _resumable_diagnostic_segment_state_run_id(
     try:
         con = sqlite3.connect(db_path)
         con.row_factory = sqlite3.Row
+        attached_operator = ">=" if include_attached else ">"
         row = con.execute(
-            """
+            f"""
             SELECT state.id
             FROM quality_epochs AS epoch
             JOIN segment_state_runs AS state
               ON state.finished_at IS NOT NULL
              AND state.total_segments > 1000
              AND state.total_segments = COALESCE(state.closed_count, 0) + COALESCE(state.pending_count, 0)
-             AND state.id > COALESCE(epoch.segment_state_run_id, 0)
+             AND state.id {attached_operator} COALESCE(epoch.segment_state_run_id, 0)
              AND state.candidate_score_run_id = epoch.output_score_run_id
              AND (
                    state.policy_run_id = epoch.policy_run_id
@@ -8568,7 +8576,12 @@ def _run_diagnostic_segment_state(db_path: Path) -> dict[str, Any]:
             segment_state_recovery = ""
             if stage_id == "segment_state":
                 resumed_segment_state_run_id = (
-                    _resumable_diagnostic_segment_state_run_id(db_path, epoch_payload) or 0
+                    _resumable_diagnostic_segment_state_run_id(
+                        db_path,
+                        epoch_payload,
+                        include_attached=not needs_scoring,
+                    )
+                    or 0
                 )
             if resumed_segment_state_run_id:
                 segment_state_recovery = "compatible_committed_snapshot"
@@ -8593,7 +8606,12 @@ def _run_diagnostic_segment_state(db_path: Path) -> dict[str, Any]:
             stage_exit_code = process.returncode
             if stage_id == "segment_state" and stage_exit_code == 124:
                 recovered_run_id = (
-                    _resumable_diagnostic_segment_state_run_id(db_path, epoch_payload) or 0
+                    _resumable_diagnostic_segment_state_run_id(
+                        db_path,
+                        epoch_payload,
+                        include_attached=not needs_scoring,
+                    )
+                    or 0
                 )
                 if recovered_run_id:
                     resumed_segment_state_run_id = recovered_run_id
@@ -8612,7 +8630,12 @@ def _run_diagnostic_segment_state(db_path: Path) -> dict[str, Any]:
                 epoch_id = _int(epoch_payload.get("epoch_id"))
                 if not resumed_segment_state_run_id:
                     resumed_segment_state_run_id = (
-                        _resumable_diagnostic_segment_state_run_id(db_path, epoch_payload) or 0
+                        _resumable_diagnostic_segment_state_run_id(
+                            db_path,
+                            epoch_payload,
+                            include_attached=not needs_scoring,
+                        )
+                        or 0
                     )
                 attach_command = [
                     sys.executable,
