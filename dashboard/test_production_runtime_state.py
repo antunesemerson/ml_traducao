@@ -8,6 +8,15 @@ from dashboard import backend
 
 
 class ProductionRuntimeStateTest(unittest.TestCase):
+    def test_snapshot_sources_exclude_temporary_and_derived_artifacts(self) -> None:
+        sources = backend._production_snapshot_sources()
+
+        self.assertEqual(list(sources), ["source", "output"])
+        self.assertNotIn("reports", sources)
+        self.assertNotIn("logs", sources)
+        self.assertNotIn("memory_light", sources)
+        self.assertNotIn("models", sources)
+
     def test_live_run_overlays_stale_dashboard_cache_without_mutating_it(self) -> None:
         cached_app_state = {
             "cache": {"generated_at": "old"},
