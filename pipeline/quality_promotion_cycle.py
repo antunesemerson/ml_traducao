@@ -347,6 +347,17 @@ def _promotion_summary(stdout_tail: list[str]) -> dict[str, int]:
     return result
 
 
+def _promotion_counts(stage: dict[str, Any]) -> dict[str, int]:
+    payload = stage.get("payload") or {}
+    if isinstance(payload, dict) and "ready_count" in payload:
+        return {
+            "ready": int(payload.get("ready_count") or 0),
+            "blocked": int(payload.get("blocked_count") or 0),
+            "queued": int(payload.get("queued_confirmation_count") or 0),
+        }
+    return _promotion_summary(stage.get("stdout_tail") or [])
+
+
 def run_evaluation(*, apply: bool = True) -> dict[str, Any]:
     settings = db.load_settings()
     with db.connect(settings) as conn:
@@ -368,7 +379,7 @@ def run_evaluation(*, apply: bool = True) -> dict[str, Any]:
             f"{evidence_type}:promotion_queue",
             command,
         )
-        counts = _promotion_summary(stage["stdout_tail"])
+        counts = _promotion_counts(stage)
         total_ready += counts["ready"]
         total_blocked += counts["blocked"]
         total_queued += counts["queued"]

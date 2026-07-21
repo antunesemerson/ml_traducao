@@ -29,7 +29,7 @@ from quality_missing_space_after_token_shadow import load_context_rows
 from quality_mojibake_lexicon_shadow import issue_codes, latest_full_output_score_run, preview
 
 
-RULE_VERSION = "quality_spanish_dynamic_literal_shadow_v1"
+RULE_VERSION = "quality_spanish_dynamic_literal_shadow_v2"
 ISSUE_CODE = "spanish_residue_in_literal"
 ELIGIBLE_LANE = "pairwise_evidence_eligible"
 
@@ -120,8 +120,11 @@ SAFE_LITERAL_TARGETS = {
 # exact repetition is removed deterministically; different verbs stay in the
 # diagnostic for a later sentence-composition provider.
 FOLLOWING_FINITE_VERBS = {
+    "adquiriu",
     "adora",
     "ama",
+    "arruinou",
+    "assassinou",
     "assistiu",
     "continua",
     "continuou",
@@ -133,26 +136,59 @@ FOLLOWING_FINITE_VERBS = {
     "foi",
     "ganhou",
     "matou",
+    "machucou",
     "mostrou",
     "passou",
     "tem",
     "teve",
     "venceu",
 }
+PRECEDING_INCOMPATIBLE_PREPOSITIONS = {"de", "para", "por", "sem"}
 VISIBLE_CONTEXT_RESIDUAL_PATTERN = re.compile(r"\benojad[oa]?s?\b", re.IGNORECASE)
 
-# Initial production scope: lexical substitutions whose PT-BR meaning does not
-# depend on the surrounding sentence. Other known mappings remain useful for
+# Production scope: lexical substitutions plus past-tense mappings protected by
+# sentence-composition guards. Other known mappings remain useful for
 # investigation, but cannot enter the automatic promotion lifecycle yet.
 PROMOTION_SAFE_LITERAL_SOURCES = {
+    "ayudaste",
+    "ayudó",
+    "conseguiste",
+    "consiguió",
+    "consolaste",
+    "consoló",
+    "decidiste",
+    "decidió",
+    "dejaste",
+    "dejó",
+    "diste",
+    "dio",
     "el señor",
+    "encerraste",
+    "encerró",
+    "encontraste",
+    "encontró",
     "eres",
     "es",
     "estás",
+    "ganaste",
+    "ganó",
     "ganará",
     "ganarás",
+    "hiciste",
+    "hizo",
+    "intentaste",
+    "intentó",
+    "ofreciste",
+    "ofreció",
+    "pasaste",
+    "pasó",
+    "proclamaste",
+    "realizaste",
+    "realizó",
     "ti",
     "tú",
+    "tuviste",
+    "tuvo",
     "vasalla",
     "vasallaje",
     "vasallo",
@@ -226,9 +262,15 @@ def repair_dynamic_literals(text: str) -> tuple[str, list[dict[str, Any]]]:
             return f"{quote}{translated}{quote}"
 
         repaired_token = STRING_LITERAL_PATTERN.sub(replace_literal, token)
+        preceding = text[: token_match.start()].rstrip()
+        preceding_word_match = re.search(r"([^\W\d_]+)$", preceding, re.UNICODE)
+        preceding_word = normalize_literal(preceding_word_match.group(1)) if preceding_word_match else ""
         following = text[token_match.end() :].lstrip()
-        following_word_match = re.match(r"([^\W\d_]+)", following, re.UNICODE)
-        following_word = normalize_literal(following_word_match.group(1)) if following_word_match else ""
+        following_words = [
+            normalize_literal(value)
+            for value in re.findall(r"[^\W\d_]+", following, re.UNICODE)[:2]
+        ]
+        following_word = following_words[0] if following_words else ""
         translated_values = {normalize_literal(item["after"]) for item in token_repairs}
         removed_redundant_token = False
         if token_repairs and not unresolved_literals and len(translated_values) == 1:
@@ -240,7 +282,9 @@ def repair_dynamic_literals(text: str) -> tuple[str, list[dict[str, Any]]]:
                     item["action"] = "remove_redundant_dynamic_literal"
         for item in token_repairs:
             item["unresolved_literals"] = sorted(set(unresolved_literals))
+            item["preceding_word"] = preceding_word
             item["following_word"] = following_word
+            item["following_words"] = following_words
         repairs.extend(token_repairs)
         parts.append(text[position : token_match.start()])
         parts.append(repaired_token)
@@ -255,6 +299,34 @@ def repair_dynamic_literals(text: str) -> tuple[str, list[dict[str, Any]]]:
             position += 1
     parts.append(text[position:])
     return "".join(parts), repairs
+
+
+def requires_sentence_composition(repair: dict[str, Any]) -> bool:
+    if repair.get("action") == "remove_redundant_dynamic_literal":
+        return False
+    preceding_word = normalize_literal(str(repair.get("preceding_word") or ""))
+    following_words = [
+        normalize_literal(str(value))
+        for value in repair.get("following_words") or []
+        if str(value).strip()
+    ]
+    if not following_words:
+        return True
+    if preceding_word in PRECEDING_INCOMPATIBLE_PREPOSITIONS:
+        return True
+    if (
+        preceding_word == "lhe"
+        and normalize_literal(str(repair.get("after") or "")) == "fez"
+        and following_words[0] in {"matar", "morrer"}
+    ):
+        return True
+    if following_words[0] in FOLLOWING_FINITE_VERBS:
+        return True
+    return bool(
+        following_words[0] == "se"
+        and len(following_words) > 1
+        and following_words[1] in FOLLOWING_FINITE_VERBS
+    )
 
 
 def load_score_rows(
@@ -328,11 +400,7 @@ def build_records(
             blockers.append("mapping_requires_context_validation")
         if any(repair.get("unresolved_literals") for repair in repairs):
             blockers.append("partial_dynamic_literal_repair")
-        if any(
-            repair.get("action") == "translate_literal"
-            and repair.get("following_word") in FOLLOWING_FINITE_VERBS
-            for repair in repairs
-        ):
+        if any(requires_sentence_composition(repair) for repair in repairs):
             blockers.append("sentence_composition_required")
         if bool(int(row.get("human_locked") or 0)):
             blockers.append("human_locked_confirmation")
@@ -433,6 +501,36 @@ def build_records(
     return records
 
 
+def summarize_records(
+    score_run: dict[str, Any],
+    threshold: float,
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    eligible = [record for record in records if record["lane"] == ELIGIBLE_LANE]
+    blocker_counts = Counter(blocker for record in records for blocker in record["blockers"])
+    repair_counts = Counter(
+        f"{repair['before']} -> {repair['after']}"
+        for record in eligible
+        for repair in record["repairs"]
+    )
+    return {
+        "schema_version": 1,
+        "source": RULE_VERSION,
+        "score_run_id": int(score_run["id"]),
+        "threshold": threshold,
+        "record_count": len(records),
+        "pairwise_evidence_eligible_count": len(eligible),
+        "blocked_or_context_count": len(records) - len(eligible),
+        "blocker_counts": dict(blocker_counts),
+        "repair_counts": dict(repair_counts),
+        "pairwise_evidence_write_count": 0,
+        "promotion_queue_write_count": 0,
+        "confirmation_write_count": 0,
+        "output_write_count": 0,
+        "artifacts": {},
+    }
+
+
 def write_reports(
     settings: dict[str, Any],
     score_run: dict[str, Any],
@@ -448,31 +546,13 @@ def write_reports(
         "summary": reports_dir / f"{prefix}_summary.json",
     }
     eligible = [record for record in records if record["lane"] == ELIGIBLE_LANE]
-    blocker_counts = Counter(blocker for record in records for blocker in record["blockers"])
-    repair_counts = Counter(
-        f"{repair['before']} -> {repair['after']}"
-        for record in eligible
-        for repair in record["repairs"]
-    )
+    summary = summarize_records(score_run, threshold, records)
+    blocker_counts = Counter(summary["blocker_counts"])
+    repair_counts = Counter(summary["repair_counts"])
     with paths["jsonl"].open("w", encoding="utf-8", newline="\n") as handle:
         for record in records:
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-    summary = {
-        "schema_version": 1,
-        "source": RULE_VERSION,
-        "score_run_id": int(score_run["id"]),
-        "threshold": threshold,
-        "record_count": len(records),
-        "pairwise_evidence_eligible_count": len(eligible),
-        "blocked_or_context_count": len(records) - len(eligible),
-        "blocker_counts": dict(blocker_counts),
-        "repair_counts": dict(repair_counts),
-        "pairwise_evidence_write_count": 0,
-        "promotion_queue_write_count": 0,
-        "confirmation_write_count": 0,
-        "output_write_count": 0,
-        "artifacts": {name: str(path) for name, path in paths.items()},
-    }
+    summary["artifacts"] = {name: str(path) for name, path in paths.items()}
     paths["summary"].write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
@@ -509,6 +589,11 @@ def main() -> int:
     parser.add_argument("--score-run-id", type=int)
     parser.add_argument("--threshold", type=float, default=0.50)
     parser.add_argument("--persist-db", action="store_true")
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="Write optional report artifacts; the database snapshot remains authoritative.",
+    )
     args = parser.parse_args()
     if not 0 < args.threshold <= 1:
         raise ValueError("threshold must be greater than zero and at most one")
@@ -532,7 +617,11 @@ def main() -> int:
                 eligible_lane=ELIGIBLE_LANE,
                 metadata={"threshold": args.threshold},
             )
-    summary = write_reports(settings, score_run, args.threshold, records)
+    summary = (
+        write_reports(settings, score_run, args.threshold, records)
+        if args.report
+        else summarize_records(score_run, args.threshold, records)
+    )
     summary.update(shadow_snapshot)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0

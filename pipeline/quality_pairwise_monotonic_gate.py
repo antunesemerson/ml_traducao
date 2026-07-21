@@ -153,26 +153,16 @@ def persist_decisions(
     return len(ready_ids), len(blocked_ids)
 
 
-def write_reports(
+def summarize_records(
     records: list[dict[str, Any]],
     state_run_id: int,
     evidence_type: str,
     apply: bool,
 ) -> dict[str, Any]:
-    reports_dir = db.project_path(db.load_settings()["reports_dir"])
-    base = reports_dir / f"{stamp()}_quality_pairwise_monotonic_gate"
-    markdown_path = base.with_suffix(".md")
-    jsonl_path = base.with_suffix(".jsonl")
-    summary_path = base.with_name(base.name + "_summary.json")
     ready = [row for row in records if row["ready"]]
     blocked = [row for row in records if not row["ready"]]
     block_counts = Counter(reason for row in blocked for reason in row["block_reasons"])
-
-    with jsonl_path.open("w", encoding="utf-8", newline="\n") as handle:
-        for row in records:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-
-    summary = {
+    return {
         "schema_version": 1,
         "source": RULE_VERSION,
         "evidence_type": evidence_type,
@@ -187,11 +177,35 @@ def write_reports(
         "segment_state_write_count": 0,
         "output_write_count": 0,
         "database_write": apply,
-        "artifacts": {
-            "markdown": str(markdown_path),
-            "jsonl": str(jsonl_path),
-            "summary": str(summary_path),
-        },
+        "artifacts": {},
+    }
+
+
+def write_reports(
+    records: list[dict[str, Any]],
+    state_run_id: int,
+    evidence_type: str,
+    apply: bool,
+) -> dict[str, Any]:
+    reports_dir = db.project_path(db.load_settings()["reports_dir"])
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    base = reports_dir / f"{stamp()}_quality_pairwise_monotonic_gate"
+    markdown_path = base.with_suffix(".md")
+    jsonl_path = base.with_suffix(".jsonl")
+    summary_path = base.with_name(base.name + "_summary.json")
+    ready = [row for row in records if row["ready"]]
+    blocked = [row for row in records if not row["ready"]]
+    block_counts = Counter(reason for row in blocked for reason in row["block_reasons"])
+
+    with jsonl_path.open("w", encoding="utf-8", newline="\n") as handle:
+        for row in records:
+            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+    summary = summarize_records(records, state_run_id, evidence_type, apply)
+    summary["artifacts"] = {
+        "markdown": str(markdown_path),
+        "jsonl": str(jsonl_path),
+        "summary": str(summary_path),
     }
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     lines = [
@@ -232,6 +246,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Gate pairwise evidence as monotonic local promotions.")
     parser.add_argument("--evidence-type", default=DEFAULT_EVIDENCE_TYPE)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="Write optional report artifacts; database decisions remain authoritative.",
+    )
     args = parser.parse_args()
     settings = db.load_settings()
     database_path = db.get_database_path(settings)
@@ -248,7 +267,11 @@ def main() -> int:
             records = evaluate_rows(conn, state_run_id, args.evidence_type)
     if not records:
         raise RuntimeError("No pairwise evidence matched the monotonic gate scope.")
-    summary = write_reports(records, state_run_id, args.evidence_type, args.apply)
+    summary = (
+        write_reports(records, state_run_id, args.evidence_type, args.apply)
+        if args.report
+        else summarize_records(records, state_run_id, args.evidence_type, args.apply)
+    )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 

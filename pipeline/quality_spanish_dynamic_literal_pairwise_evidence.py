@@ -21,7 +21,7 @@ from quality_spanish_dynamic_literal_shadow import (
 )
 
 
-RULE_VERSION = "quality_spanish_dynamic_literal_pairwise_evidence_v1"
+RULE_VERSION = "quality_spanish_dynamic_literal_pairwise_evidence_v2"
 EVIDENCE_TYPE = "deterministic_spanish_dynamic_literal_repair"
 
 
@@ -217,6 +217,11 @@ def main() -> int:
     parser.add_argument("--shadow-jsonl", type=Path)
     parser.add_argument("--shadow-run-id", type=int)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="Write optional report artifacts; database evidence remains authoritative.",
+    )
     args = parser.parse_args()
     settings = db.load_settings()
     run_id = None
@@ -264,14 +269,34 @@ def main() -> int:
                 )
                 source_path = f"db:ml_quality_shadow_runs/{shadow_run['id']}"
             evidence = prepare_evidence(conn, shadow_rows)
-    summary = write_report(
-        source_path,
-        evidence,
-        apply=args.apply,
-        run_id=run_id,
-        inserted=inserted,
-        reused=reused,
-    )
+    if args.report:
+        summary = write_report(
+            source_path,
+            evidence,
+            apply=args.apply,
+            run_id=run_id,
+            inserted=inserted,
+            reused=reused,
+        )
+    else:
+        summary = {
+            "schema_version": 1,
+            "source": RULE_VERSION,
+            "source_shadow": str(source_path),
+            "source_shadow_kind": (
+                "database_snapshot" if str(source_path).startswith("db:") else "legacy_jsonl"
+            ),
+            "evidence_type": EVIDENCE_TYPE,
+            "database_write": args.apply,
+            "pairwise_run_id": run_id,
+            "evidence_count": len(evidence),
+            "inserted_count": inserted,
+            "reused_count": reused,
+            "confirmation_write_count": 0,
+            "segment_state_write_count": 0,
+            "output_write_count": 0,
+            "artifacts": {},
+        }
     if args.apply and run_id is not None:
         with db.connect(settings) as conn:
             conn.execute(
@@ -281,9 +306,9 @@ def main() -> int:
                 WHERE id = ?
                 """,
                 (
-                    summary["artifacts"]["markdown"],
+                    summary["artifacts"].get("markdown"),
                     str(source_path),
-                    summary["artifacts"]["summary"],
+                    summary["artifacts"].get("summary"),
                     db.utc_now(),
                     run_id,
                 ),

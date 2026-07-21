@@ -13,6 +13,11 @@ O fluxo de qualidade nao conhece numeros de versao nem nomes de investigacoes. C
 
 O Diagnostico nunca escreve confirmacoes nem arquivos do output. A Avaliacao nunca escreve arquivos do output.
 
+Shadow, evidencia, gate e fila usam os snapshots e decisoes do SQLite como contrato
+autoritativo. Na trilha `spanish_dynamic_literal` e nos estagios compartilhados de gate/fila,
+artefatos em `reports/` sao opcionais e so sao gerados com `--report`. Excluir a pasta de
+relatorios nao remove evidencia, nao invalida uma run concluida e nao bloqueia o ciclo.
+
 Uma evidencia permanece auditavel depois de aplicada, mas deixa de ser uma fila ativa. O consumidor considera apenas a evidencia mais recente por segmento/tipo cujo output ainda seja igual ao baseline e diferente do candidato. Evidencia ja aplicada ou tornada obsoleta por outra alteracao nao reaparece como bloqueio.
 
 ## Metricas operacionais
@@ -67,7 +72,7 @@ Adicionar esse manifest basta para o padrao entrar no proximo Diagnostico e na A
 
 - `token_punctuation_boundary`: remove apenas espaco indevido entre token protegido e pontuacao.
 - `gender_token_prefix`: remove prefixo duplicado antes de token de genero quando o radical possui suporte confiavel.
-- `spanish_dynamic_literal`: traduz apenas a subfamilia lexical invariavel de literais espanhois dentro de comandos dinamicos (copula/pronome simples, futuro direto e termos de vassalagem). Verbos dependentes da frase, reparos parciais, redundancias estruturais e residuos contextuais continuam no shadow, mas nao recebem promocao automatica.
+- `spanish_dynamic_literal`: traduz a subfamilia lexical invariavel e pares verbais no passado dentro de comandos dinamicos. Os verbos so entram quando guardas contextuais rejeitam preposicao incompatível, verbo finito concorrente, composicao reflexiva/causativa, final vazio, reparo parcial, residuo espanhol, alteracao de token ou conflito humano. Os demais casos continuam no shadow sem promocao automatica.
 - `mojibake_lexicon`: reconstroi palavras com `?` apenas quando existe um unico candidato lexical com suporte no corpus. Casos ambiguos, sem suporte, com outros problemas, bloqueio humano, alteracao de token ou validacao residual permanecem somente no shadow.
 - `dynamic_name_de_prefix`: completa `d [nome dinamico]` para `de [nome dinamico]` somente diante de getters de primeiro nome ou nome completo. Titulos, relacoes e helpers de genero permanecem bloqueados porque podem exigir `de`, `do` ou `da`.
 
