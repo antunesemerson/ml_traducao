@@ -9532,17 +9532,14 @@ def _snapshot_ignore(dir_path: str, names: list[str]) -> set[str]:
 
 
 def _production_snapshot_sources() -> dict[str, Path]:
-    sources = {
+    # Production only mutates or promotes package trees. Reports, logs and the
+    # light-memory directory are derived/runtime artifacts; copying them makes
+    # evaluation depend on temporary files and is especially expensive inside
+    # a synchronized workspace such as OneDrive.
+    return {
         "source": ROOT / "source",
         "output": ROOT / "output",
-        "reports": ROOT / "reports",
-        "logs": ROOT / "logs",
-        "memory_light": ROOT / "memory",
     }
-    optional_models = ROOT / "models"
-    if optional_models.exists():
-        sources["models"] = optional_models
-    return sources
 
 
 def _production_disk_preflight_payload(*, force: bool = False) -> dict[str, Any]:
@@ -9674,6 +9671,7 @@ def _create_production_snapshot(status: dict[str, Any], log_handle) -> None:
     manifest: dict[str, Any] = {
         "run_id": status.get("run_id"),
         "created_at": _now_iso(),
+        "snapshot_policy": "authoritative_package_trees_only_v1",
         "snapshot_root": str(snapshot_root),
         "sqlite_backup": (
             str(snapshot_root / "memory" / "translation_engine.sqlite")
@@ -9687,6 +9685,10 @@ def _create_production_snapshot(status: dict[str, Any], log_handle) -> None:
         "disk_preflight": disk_preflight,
         "copied": [],
         "skipped": [
+            "reports (temporary analytics artifacts; SQLite is authoritative)",
+            "logs (runtime diagnostics)",
+            "models (immutable during evaluation/publication)",
+            "memory/* (runtime/derived state; SQLite metadata recorded separately)",
             "memory/backups",
             "memory/bkp banco",
             "memory/production_snapshots",
@@ -9732,12 +9734,20 @@ def _create_production_snapshot(status: dict[str, Any], log_handle) -> None:
         log_handle.flush()
         _write_production_run_status(status)
 
-    for name, source_path in sources.items():
+    source_items = list(sources.items())
+    source_count = max(1, len(source_items))
+    for index, (name, source_path) in enumerate(source_items, start=1):
         target_name = "memory" if name == "memory_light" else name
         target_path = snapshot_root / target_name
+        start_progress = max(1, round(((index - 1) / source_count) * 90))
+        _update_stage(status, stage_id, updated_at=_now_iso(), progress_pct=start_progress)
+        status["message"] = f"Snapshotting authoritative package: {name}"
+        _write_production_run_status(status)
         _copy_tree_snapshot(source_path, target_path)
         manifest["copied"].append(str(source_path.relative_to(ROOT)))
         _append_run_log(status, f"[snapshot] copied {source_path.relative_to(ROOT)}")
+        end_progress = min(95, round((index / source_count) * 90))
+        _update_stage(status, stage_id, updated_at=_now_iso(), progress_pct=end_progress)
         _write_production_run_status(status)
 
     manifest_path = Path(status["snapshot_manifest_path"])
