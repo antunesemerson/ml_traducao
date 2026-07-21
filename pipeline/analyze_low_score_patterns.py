@@ -50,11 +50,14 @@ def analyze(run_id: int | None = None, threshold: float = 0.5) -> dict[str, Any]
             ORDER BY id DESC LIMIT 1
             """
         ).fetchone()
+        latest_epoch_payload = dict(latest_epoch) if latest_epoch else None
+        segment_state_run_id = int((latest_epoch_payload or {}).get("segment_state_run_id") or 0)
+        lifecycle_params = (segment_state_run_id, run_id, threshold)
         return {
             "score_run_id": run_id,
             "threshold": threshold,
             "score_run": dict(score_run) if score_run else None,
-            "latest_quality_epoch": dict(latest_epoch) if latest_epoch else None,
+            "latest_quality_epoch": latest_epoch_payload,
             "measurement": _rows(
                 conn,
                 """
@@ -232,6 +235,146 @@ def analyze(run_id: int | None = None, threshold: float = 0.5) -> dict[str, Any]
                 GROUP BY cohort ORDER BY segments DESC
                 """,
                 params,
+            ),
+            "actionable_lifecycle_summary": _rows(
+                conn,
+                """
+                WITH classified AS (
+                    SELECT item.segment_id,
+                           CASE
+                             WHEN item.issue_count > 0 THEN 'explicit_text_issue'
+                             WHEN item.token_status = 'mismatch' OR item.final_action = 'blocked_structure'
+                               THEN 'structural_block_without_issue'
+                             ELSE 'not_actionable_by_diagnostic_label'
+                           END AS cohort,
+                           lifecycle.state_group,
+                           COALESCE(lifecycle.is_closed, 0) AS is_closed,
+                           COALESCE(lifecycle.needs_output_apply, 0) AS needs_output_apply,
+                           COALESCE(lifecycle.locked, 0) AS locked,
+                           COALESCE(lifecycle.confirmed_matches_output, 0) AS confirmed_matches_output
+                    FROM ml_score_items AS item
+                    JOIN source_segments AS source
+                      ON source.id = item.segment_id AND source.is_active = 1
+                    LEFT JOIN segment_state_items AS lifecycle
+                      ON lifecycle.segment_id = item.segment_id AND lifecycle.run_id = ?
+                    WHERE item.run_id = ?
+                      AND item.model_safe_probability < ?
+                )
+                SELECT COUNT(*) AS diagnostic_actionable,
+                       SUM(state_group = 'closed' AND needs_output_apply = 0) AS lifecycle_closed,
+                       SUM(state_group IS NULL) AS missing_lifecycle_state,
+                       SUM(COALESCE(state_group, '') <> 'closed' OR needs_output_apply = 1)
+                         AS operationally_open,
+                       SUM(needs_output_apply = 1) AS needs_output_apply,
+                       SUM(locked = 1) AS lifecycle_locked,
+                       SUM(confirmed_matches_output = 1) AS confirmed_matches_output
+                FROM classified
+                WHERE cohort IN ('explicit_text_issue', 'structural_block_without_issue')
+                """,
+                lifecycle_params,
+            )[0],
+            "actionable_lifecycle_cohorts": _rows(
+                conn,
+                """
+                WITH classified AS (
+                    SELECT item.segment_id,
+                           CASE
+                             WHEN item.issue_count > 0 THEN 'explicit_text_issue'
+                             WHEN item.token_status = 'mismatch' OR item.final_action = 'blocked_structure'
+                               THEN 'structural_block_without_issue'
+                             ELSE 'not_actionable_by_diagnostic_label'
+                           END AS cohort,
+                           COALESCE(lifecycle.state_group, 'missing') AS state_group,
+                           COALESCE(lifecycle.needs_output_apply, 0) AS needs_output_apply,
+                           COALESCE(lifecycle.locked, 0) AS locked,
+                           COALESCE(lifecycle.confirmed_matches_output, 0) AS confirmed_matches_output
+                    FROM ml_score_items AS item
+                    JOIN source_segments AS source
+                      ON source.id = item.segment_id AND source.is_active = 1
+                    LEFT JOIN segment_state_items AS lifecycle
+                      ON lifecycle.segment_id = item.segment_id AND lifecycle.run_id = ?
+                    WHERE item.run_id = ?
+                      AND item.model_safe_probability < ?
+                )
+                SELECT cohort, state_group, needs_output_apply, locked,
+                       confirmed_matches_output, COUNT(*) AS segments
+                FROM classified
+                WHERE cohort IN ('explicit_text_issue', 'structural_block_without_issue')
+                GROUP BY cohort, state_group, needs_output_apply, locked, confirmed_matches_output
+                ORDER BY segments DESC, cohort, state_group
+                """,
+                lifecycle_params,
+            ),
+            "actionable_issue_lifecycle": _rows(
+                conn,
+                """
+                WITH issue_segments AS (
+                    SELECT DISTINCT item.segment_id,
+                           COALESCE(json_extract(issue.value, '$.code'),
+                                    json_extract(issue.value, '$.type')) AS issue_type,
+                           COALESCE(json_extract(issue.value, '$.severity'), 'unknown') AS severity,
+                           COALESCE(lifecycle.state_group, 'missing') AS state_group,
+                           COALESCE(lifecycle.needs_output_apply, 0) AS needs_output_apply,
+                           COALESCE(lifecycle.locked, 0) AS locked,
+                           COALESCE(lifecycle.confirmed_matches_output, 0) AS confirmed_matches_output
+                    FROM ml_score_items AS item
+                    JOIN source_segments AS source
+                      ON source.id = item.segment_id AND source.is_active = 1
+                    LEFT JOIN segment_state_items AS lifecycle
+                      ON lifecycle.segment_id = item.segment_id AND lifecycle.run_id = ?
+                    JOIN json_each(
+                        CASE WHEN json_valid(COALESCE(item.issues_json, '[]'))
+                             THEN COALESCE(item.issues_json, '[]') ELSE '[]' END
+                    ) AS issue
+                    WHERE item.run_id = ?
+                      AND item.model_safe_probability < ?
+                )
+                SELECT issue_type, severity, COUNT(*) AS segments,
+                       SUM(state_group = 'closed' AND needs_output_apply = 0) AS lifecycle_closed,
+                       SUM(state_group <> 'closed' OR needs_output_apply = 1) AS operationally_open,
+                       SUM(locked = 1) AS lifecycle_locked,
+                       SUM(confirmed_matches_output = 1) AS confirmed_matches_output
+                FROM issue_segments
+                GROUP BY issue_type, severity
+                ORDER BY segments DESC, issue_type, severity
+                """,
+                lifecycle_params,
+            ),
+            "actionable_path_lifecycle": _rows(
+                conn,
+                """
+                WITH classified AS (
+                    SELECT CASE WHEN instr(item.relative_path, '/') > 0
+                                THEN substr(item.relative_path, 1, instr(item.relative_path, '/') - 1)
+                                ELSE item.relative_path END AS family,
+                           CASE
+                             WHEN item.issue_count > 0 THEN 'explicit_text_issue'
+                             WHEN item.token_status = 'mismatch' OR item.final_action = 'blocked_structure'
+                               THEN 'structural_block_without_issue'
+                             ELSE 'not_actionable_by_diagnostic_label'
+                           END AS cohort,
+                           COALESCE(lifecycle.state_group, 'missing') AS state_group,
+                           COALESCE(lifecycle.needs_output_apply, 0) AS needs_output_apply
+                    FROM ml_score_items AS item
+                    JOIN source_segments AS source
+                      ON source.id = item.segment_id AND source.is_active = 1
+                    LEFT JOIN segment_state_items AS lifecycle
+                      ON lifecycle.segment_id = item.segment_id AND lifecycle.run_id = ?
+                    WHERE item.run_id = ?
+                      AND item.model_safe_probability < ?
+                )
+                SELECT family, COUNT(*) AS segments,
+                       SUM(cohort = 'explicit_text_issue') AS explicit_text_issue,
+                       SUM(cohort = 'structural_block_without_issue') AS structural_block_without_issue,
+                       SUM(state_group = 'closed' AND needs_output_apply = 0) AS lifecycle_closed,
+                       SUM(state_group <> 'closed' OR needs_output_apply = 1) AS operationally_open
+                FROM classified
+                WHERE cohort IN ('explicit_text_issue', 'structural_block_without_issue')
+                GROUP BY family
+                ORDER BY segments DESC
+                LIMIT 30
+                """,
+                lifecycle_params,
             ),
             "issue_samples": _rows(
                 conn,

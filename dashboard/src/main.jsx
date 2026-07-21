@@ -3869,6 +3869,9 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   );
   const lowScoreCohorts = diffReview.low_score_cohorts ?? {};
   const lowScoreActionable = Number(lowScoreCohorts.actionable ?? diffSummary.low_score_actionable ?? 0);
+  const lowScoreEvidenceFlagged = Number(lowScoreCohorts.evidence_flagged ?? lowScoreActionable);
+  const lowScoreLifecycleClosed = Number(lowScoreCohorts.lifecycle_closed ?? 0);
+  const lowScoreLifecycleLocked = Number(lowScoreCohorts.lifecycle_locked ?? 0);
   const lowScoreInformational = Number(lowScoreCohorts.informational ?? diffSummary.low_score_informational ?? 0);
   const lowScoreUnexplained = Number(lowScoreCohorts.low_confidence_without_specific_evidence ?? diffSummary.low_score_unexplained ?? 0);
   const changedScoreComparison = diffSummary.changed_score_comparison ?? {};
@@ -5112,7 +5115,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                             : postReleaseView === 'new'
                               ? 'Segmentos sem equivalente no old, ordenados por score novo.'
                       : postReleaseView === 'low_score'
-                                ? `Baixo score nao significa erro automaticamente. ${compact(lowScoreActionable)} acionaveis (${Number(lowScoreCohorts.actionable_share_pct ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })}% da fila); ${compact(lowScoreInformational)} informativos; ${compact(lowScoreUnexplained)} sem evidencia especifica. ${qualityBandsLabel}.`
+                                ? `Baixo score nao significa erro automaticamente. ${compact(lowScoreEvidenceFlagged)} sinais com evidencia; ${compact(lowScoreLifecycleClosed)} ja estao fechados no lifecycle; ${compact(lowScoreActionable)} permanecem operacionalmente acionaveis; ${compact(lowScoreInformational)} sao informativos. ${qualityBandsLabel}.`
                                 : 'Pendencias operacionais do segment-state: o que ainda nao fechou e precisa explicar o motivo.'}
                   </p>
                 </div>
@@ -5142,6 +5145,9 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
               </div>
               {postReleaseView === 'low_score' ? (
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <Badge tone={lowScoreActionable ? 'red' : 'emerald'}>Abertos operacionais {compact(lowScoreActionable)}</Badge>
+                  <Badge tone="blue">Evidencias fechadas {compact(lowScoreLifecycleClosed)}</Badge>
+                  <Badge tone="violet">Com lock humano {compact(lowScoreLifecycleLocked)}</Badge>
                   <Badge tone="red">Defeito explicito {compact(lowScoreCohorts.explicit_text_issue ?? 0)}</Badge>
                   <Badge tone="amber">Bloqueio estrutural {compact(lowScoreCohorts.structural_block_without_issue ?? 0)}</Badge>
                   <Badge tone="emerald">Seguro deterministico {compact(lowScoreCohorts.deterministic_safe_but_low_score ?? 0)}</Badge>

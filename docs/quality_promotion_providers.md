@@ -28,6 +28,8 @@ Uma execucao com zero elegiveis e saudavel quando todos os provedores terminaram
 
 O fechamento operacional do pacote e a divida de qualidade sao estados independentes. `segment-state` fechado, zero pendencias e zero `needs apply` definem o fechamento operacional. Somente evidencia especifica ainda nao resolvida — familia acionavel sem provedor, promocao pronta, regressao efetiva, feedback aberto ou calibracao pendente — entra na divida de qualidade. Score baixo isolado permanece como sinal de monitoramento porque o classificador atual e sensivel a baseline.
 
+No painel, `evidence_flagged` contabiliza casos de score baixo com issue textual ou bloqueio estrutural. Esse inventario so vira `actionable` quando o lifecycle atual estiver aberto ou exigir apply. Casos fechados continuam disponiveis para descoberta de provedores, mas nao aparecem como fila operacional.
+
 Depois da escrita, o bridge de lifecycle resolve a evidencia pelo `evidence_type` registrado e pela correspondencia exata `baseline -> candidato -> confirmacao/output`; o rótulo da confirmacao nao participa do roteamento. Um ajuste aplicado cujo score bruto regrediu ou permaneceu igual entra na fila de revisao de Regressoes mesmo quando o score efetivo pairwise e favoravel. Isso preserva simultaneamente a decisao aprovada e a evidencia de que o modelo bruto pode precisar de calibracao.
 
 ## Registrar uma nova investigacao
@@ -74,6 +76,7 @@ Adicionar esse manifest basta para o padrao entrar no proximo Diagnostico e na A
 - `gender_token_prefix`: remove prefixo duplicado antes de token de genero quando o radical possui suporte confiavel.
 - `spanish_dynamic_literal`: traduz a subfamilia lexical invariavel e pares verbais no passado dentro de comandos dinamicos. Os verbos so entram quando guardas contextuais rejeitam preposicao incompatível, verbo finito concorrente, composicao reflexiva/causativa, final vazio, reparo parcial, residuo espanhol, alteracao de token ou conflito humano. Os demais casos continuam no shadow sem promocao automatica.
 - `mojibake_lexicon`: reconstroi palavras com `?` apenas quando existe um unico candidato lexical com suporte no corpus. Casos ambiguos, sem suporte, com outros problemas, bloqueio humano, alteracao de token ou validacao residual permanecem somente no shadow.
+- `utf8_mojibake`: normaliza sequencias UTF-8 corrompidas somente quando o mapa e exato, os tokens protegidos permanecem identicos e a validacao posterior fica limpa. Locks humanos nao impedem a coleta da evidencia, mas bloqueiam a promocao ate revisao explicita.
 - `dynamic_name_de_prefix`: completa `d [nome dinamico]` para `de [nome dinamico]` somente diante de getters de primeiro nome ou nome completo. Titulos, relacoes e helpers de genero permanecem bloqueados porque podem exigir `de`, `do` ou `da`.
 
 ## Identidade e versao
