@@ -4493,6 +4493,11 @@ def _empty_low_score_cohorts() -> dict[str, int | float]:
     return {
         "total": 0,
         "actionable": 0,
+        "evidence_flagged": 0,
+        "lifecycle_closed": 0,
+        "operationally_open": 0,
+        "lifecycle_locked": 0,
+        "confirmed_matches_output": 0,
         "informational": 0,
         "explicit_text_issue": 0,
         "structural_block_without_issue": 0,
@@ -4660,6 +4665,9 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
             "raw_not_closed": 0,
             "low_score": 0,
             "low_score_actionable": 0,
+            "low_score_evidence_flagged": 0,
+            "low_score_lifecycle_closed": 0,
+            "low_score_lifecycle_locked": 0,
             "low_score_informational": 0,
             "low_score_explicit_issue": 0,
             "low_score_structural_block": 0,
@@ -4876,6 +4884,54 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
             _int(low_score_cohorts.get("explicit_text_issue"))
             + _int(low_score_cohorts.get("structural_block_without_issue"))
         )
+        low_score_cohorts["evidence_flagged"] = low_score_cohorts["actionable"]
+        if has_state and current_state_run_id:
+            lifecycle_counts = _one(
+                con,
+                """
+                SELECT
+                  COUNT(*) AS evidence_flagged,
+                  SUM(CASE WHEN state.state_group = 'closed'
+                                AND COALESCE(state.needs_output_apply, 0) = 0
+                           THEN 1 ELSE 0 END) AS lifecycle_closed,
+                  SUM(CASE WHEN COALESCE(state.state_group, '') <> 'closed'
+                                OR COALESCE(state.needs_output_apply, 0) = 1
+                           THEN 1 ELSE 0 END) AS operationally_open,
+                  SUM(COALESCE(state.locked, 0)) AS lifecycle_locked,
+                  SUM(COALESCE(state.confirmed_matches_output, 0)) AS confirmed_matches_output
+                FROM ml_score_items score
+                JOIN source_segments source
+                  ON source.id = score.segment_id AND source.is_active = 1
+                LEFT JOIN segment_state_items state
+                  ON state.segment_id = score.segment_id AND state.run_id = ?
+                WHERE score.run_id = ?
+                  AND score.model_safe_probability IS NOT NULL
+                  AND score.model_safe_probability < 0.5
+                  AND (
+                    score.issue_count > 0
+                    OR score.token_status = 'mismatch'
+                    OR score.final_action = 'blocked_structure'
+                  )
+                """,
+                (current_state_run_id, latest_score_run_id),
+            )
+            low_score_cohorts.update(
+                {
+                    key: _int(lifecycle_counts.get(key))
+                    for key in (
+                        "evidence_flagged",
+                        "lifecycle_closed",
+                        "operationally_open",
+                        "lifecycle_locked",
+                        "confirmed_matches_output",
+                    )
+                }
+            )
+            # "Actionable" is an operational term: a closed risk observation is
+            # still useful discovery evidence, but it is not an open work item.
+            low_score_cohorts["actionable"] = _int(
+                low_score_cohorts.get("operationally_open")
+            )
         low_score_cohorts["informational"] = (
             _int(low_score_cohorts.get("deterministic_safe_but_low_score"))
             + _int(low_score_cohorts.get("unchanged_or_preserved_text"))
@@ -5855,6 +5911,9 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
             ) if has_state and current_state_run_id else 0,
             "low_score": low_score_count,
             "low_score_actionable": _int(low_score_cohorts.get("actionable")),
+            "low_score_evidence_flagged": _int(low_score_cohorts.get("evidence_flagged")),
+            "low_score_lifecycle_closed": _int(low_score_cohorts.get("lifecycle_closed")),
+            "low_score_lifecycle_locked": _int(low_score_cohorts.get("lifecycle_locked")),
             "low_score_informational": _int(low_score_cohorts.get("informational")),
             "low_score_explicit_issue": _int(low_score_cohorts.get("explicit_text_issue")),
             "low_score_structural_block": _int(low_score_cohorts.get("structural_block_without_issue")),
@@ -7444,6 +7503,9 @@ def _quality_debt_payload(
         "closed_family_count": _int(provider_health.get("closed_family_count")),
         "risk_watch": {
             "actionable_low_score_count": _int(low_score.get("actionable")),
+            "evidence_flagged_low_score_count": _int(low_score.get("evidence_flagged")),
+            "lifecycle_closed_low_score_count": _int(low_score.get("lifecycle_closed")),
+            "locked_low_score_count": _int(low_score.get("lifecycle_locked")),
             "informational_low_score_count": _int(low_score.get("informational")),
             "ignored_score_only_count": _int(quality_pattern_discovery.get("ignored_score_only_count")),
             "counted_as_quality_debt": False,

@@ -82,6 +82,14 @@ class QualityPromotionCycleTests(unittest.TestCase):
             "deterministic_dynamic_name_de_prefix_repair",
         )
 
+    def test_utf8_mojibake_provider_is_registered(self) -> None:
+        providers = {item.provider_id: item for item in load_providers()}
+
+        self.assertIn("utf8_mojibake", providers)
+        provider = providers["utf8_mojibake"]
+        self.assertEqual(provider.evidence_type, "deterministic_utf8_mojibake_repair")
+        self.assertEqual(provider.discovery_issue_types, ("utf8_mojibake_sequence",))
+
     def test_only_current_unapplied_suggestion_types_are_consumed(self) -> None:
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row

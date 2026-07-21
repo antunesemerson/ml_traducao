@@ -284,7 +284,13 @@ class QualityDebtPayloadTest(unittest.TestCase):
             },
             {
                 "summary": {"effective_score_regressions": 0},
-                "low_score_cohorts": {"actionable": 7, "informational": 393},
+                "low_score_cohorts": {
+                    "actionable": 0,
+                    "evidence_flagged": 7,
+                    "lifecycle_closed": 7,
+                    "lifecycle_locked": 3,
+                    "informational": 393,
+                },
                 "calibration_review": {"policy_decision": "skip", "pending_count": 0},
             },
             {"summary": {"known_open_findings": 0}},
@@ -293,7 +299,10 @@ class QualityDebtPayloadTest(unittest.TestCase):
         self.assertEqual(payload["status"], "clear")
         self.assertFalse(payload["has_actionable_debt"])
         self.assertEqual(payload["actionable_signal_count"], 0)
-        self.assertEqual(payload["risk_watch"]["actionable_low_score_count"], 7)
+        self.assertEqual(payload["risk_watch"]["actionable_low_score_count"], 0)
+        self.assertEqual(payload["risk_watch"]["evidence_flagged_low_score_count"], 7)
+        self.assertEqual(payload["risk_watch"]["lifecycle_closed_low_score_count"], 7)
+        self.assertEqual(payload["risk_watch"]["locked_low_score_count"], 3)
         self.assertFalse(payload["risk_watch"]["counted_as_quality_debt"])
         self.assertFalse(payload["blocks_operational_closure"])
 

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "provider_id": "utf8_mojibake",
+  "label": "Normalizacao deterministica de mojibake UTF-8",
+  "enabled": true,
+  "priority": 350,
+  "evidence_type": "deterministic_utf8_mojibake_repair",
+  "discovery": {
+    "issue_types": ["utf8_mojibake_sequence"]
+  },
+  "shadow_script": "pipeline/quality_utf8_mojibake_shadow.py",
+  "shadow_args": [],
+  "evidence_script": "pipeline/quality_utf8_mojibake_pairwise_evidence.py",
+  "evidence_args": []
+}
