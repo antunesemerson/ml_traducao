@@ -16,11 +16,10 @@ import db
 import local_quality_validator
 import ml_score_segments
 import quality_shadow_store
-from apply_safe_output_updates import protected_tokens
+from apply_safe_output_updates import normalize_protected_token, protected_tokens
+from ck3_dynamic_expression import iter_expression_spans, iter_string_literal_spans
 from issue_dynamic_literal_repair_diagnostic import LITERAL_TRANSLATIONS, residual_hits
 from offline_residual_proposals import (
-    STRING_LITERAL_PATTERN,
-    TOKEN_PATTERN,
     command_base_name,
     is_literal_translatable,
     token_status,
@@ -29,7 +28,7 @@ from quality_missing_space_after_token_shadow import load_context_rows
 from quality_mojibake_lexicon_shadow import issue_codes, latest_full_output_score_run, preview
 
 
-RULE_VERSION = "quality_spanish_dynamic_literal_shadow_v2"
+RULE_VERSION = "quality_spanish_dynamic_literal_shadow_v3"
 ISSUE_CODE = "spanish_residue_in_literal"
 ELIGIBLE_LANE = "pairwise_evidence_eligible"
 
@@ -144,6 +143,16 @@ FOLLOWING_FINITE_VERBS = {
     "venceu",
 }
 PRECEDING_INCOMPATIBLE_PREPOSITIONS = {"de", "para", "por", "sem"}
+SAFE_OBJECT_PRONOUN_PREPOSITIONS = {"contra", "de", "para", "por", "sem"}
+SEMANTIC_ELISION_PRECEDING_BLOCKERS = PRECEDING_INCOMPATIBLE_PREPOSITIONS | {"lhe"}
+SEMANTICALLY_REDUNDANT_FOLLOWERS = {
+    "conseguiu": {"matou"},
+    "deixou": {"arruinou"},
+    "fez": {"deu", "trapaceou"},
+    "ganhou": {"adquiriu"},
+    "realizou": {"fez"},
+    "teve": {"foi", "tem"},
+}
 VISIBLE_CONTEXT_RESIDUAL_PATTERN = re.compile(r"\benojad[oa]?s?\b", re.IGNORECASE)
 
 # Production scope: lexical substitutions plus past-tense mappings protected by
@@ -230,26 +239,29 @@ def repair_dynamic_literals(text: str) -> tuple[str, list[dict[str, Any]]]:
     parts: list[str] = []
     repairs: list[dict[str, Any]] = []
     position = 0
-    for token_match in TOKEN_PATTERN.finditer(text):
+    for token_match in iter_expression_spans(text):
         token = token_match.group(0)
         base_name = command_base_name(token)
         literal_index = 0
         token_repairs: list[dict[str, Any]] = []
         unresolved_literals: list[str] = []
-
-        def replace_literal(match: Any) -> str:
-            nonlocal literal_index
+        literal_parts: list[str] = []
+        literal_position = 0
+        for literal_match in iter_string_literal_spans(token):
             literal_index += 1
-            literal = match.group(1) if match.group(1) is not None else match.group(2)
-            if literal is None or not is_literal_translatable(base_name, literal_index, literal):
-                return match.group(0)
+            literal = literal_match.value
+            literal_parts.append(token[literal_position : literal_match.start_index])
+            literal_position = literal_match.end_index
+            if not is_literal_translatable(base_name, literal_index, literal):
+                literal_parts.append(token[literal_match.start_index : literal_match.end_index])
+                continue
             translated = translated_literal(literal)
             if translated is None:
                 normalized = normalize_literal(literal)
                 if normalized and normalized not in SAFE_LITERAL_TARGETS:
                     unresolved_literals.append(literal)
-                return match.group(0)
-            quote = "'" if match.group(1) is not None else '"'
+                literal_parts.append(token[literal_match.start_index : literal_match.end_index])
+                continue
             token_repairs.append(
                 {
                     "command": base_name,
@@ -259,9 +271,9 @@ def repair_dynamic_literals(text: str) -> tuple[str, list[dict[str, Any]]]:
                     "action": "translate_literal",
                 }
             )
-            return f"{quote}{translated}{quote}"
-
-        repaired_token = STRING_LITERAL_PATTERN.sub(replace_literal, token)
+            literal_parts.append(f"{literal_match.quote}{translated}{literal_match.quote}")
+        literal_parts.append(token[literal_position:])
+        repaired_token = "".join(literal_parts)
         preceding = text[: token_match.start()].rstrip()
         preceding_word_match = re.search(r"([^\W\d_]+)$", preceding, re.UNICODE)
         preceding_word = normalize_literal(preceding_word_match.group(1)) if preceding_word_match else ""
@@ -280,11 +292,22 @@ def repair_dynamic_literals(text: str) -> tuple[str, list[dict[str, Any]]]:
                 removed_redundant_token = True
                 for item in token_repairs:
                     item["action"] = "remove_redundant_dynamic_literal"
+            elif (
+                following_word in SEMANTICALLY_REDUNDANT_FOLLOWERS.get(translated_value, set())
+                and preceding_word not in SEMANTIC_ELISION_PRECEDING_BLOCKERS
+            ):
+                repaired_token = ""
+                removed_redundant_token = True
+                for item in token_repairs:
+                    item["action"] = "remove_semantically_redundant_dynamic_literal"
         for item in token_repairs:
             item["unresolved_literals"] = sorted(set(unresolved_literals))
             item["preceding_word"] = preceding_word
             item["following_word"] = following_word
             item["following_words"] = following_words
+            if removed_redundant_token:
+                item["removed_token"] = token
+                item["removed_token_start"] = token_match.start()
         repairs.extend(token_repairs)
         parts.append(text[position : token_match.start()])
         parts.append(repaired_token)
@@ -302,7 +325,10 @@ def repair_dynamic_literals(text: str) -> tuple[str, list[dict[str, Any]]]:
 
 
 def requires_sentence_composition(repair: dict[str, Any]) -> bool:
-    if repair.get("action") == "remove_redundant_dynamic_literal":
+    if repair.get("action") in {
+        "remove_redundant_dynamic_literal",
+        "remove_semantically_redundant_dynamic_literal",
+    }:
         return False
     preceding_word = normalize_literal(str(repair.get("preceding_word") or ""))
     following_words = [
@@ -310,6 +336,12 @@ def requires_sentence_composition(repair: dict[str, Any]) -> bool:
         for value in repair.get("following_words") or []
         if str(value).strip()
     ]
+    if (
+        normalize_literal(str(repair.get("before") or "")) == "ti"
+        and normalize_literal(str(repair.get("after") or "")) == "você"
+        and preceding_word in SAFE_OBJECT_PRONOUN_PREPOSITIONS
+    ):
+        return False
     if not following_words:
         return True
     if preceding_word in PRECEDING_INCOMPATIBLE_PREPOSITIONS:
@@ -327,6 +359,48 @@ def requires_sentence_composition(repair: dict[str, Any]) -> bool:
         and len(following_words) > 1
         and following_words[1] in FOLLOWING_FINITE_VERBS
     )
+
+
+def intentionally_elided_tokens(repairs: list[dict[str, Any]]) -> Counter:
+    """Return each deliberately removed expression once, not once per literal."""
+
+    removed: Counter = Counter()
+    seen: set[tuple[int, str]] = set()
+    for repair in repairs:
+        token = str(repair.get("removed_token") or "")
+        if not token:
+            continue
+        identity = (int(repair.get("removed_token_start") or 0), token)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        removed[normalize_protected_token(token)] += 1
+    return removed
+
+
+def protected_tokens_after_intentional_elision(
+    original: str,
+    candidate: str,
+    repairs: list[dict[str, Any]],
+) -> bool:
+    expected = protected_tokens(original)
+    removed = intentionally_elided_tokens(repairs)
+    if not removed or any(expected[token] < count for token, count in removed.items()):
+        return False
+    expected.subtract(removed)
+    expected += Counter()
+    return expected == protected_tokens(candidate)
+
+
+def source_token_status_with_intentional_elision(
+    source: str,
+    candidate: str,
+    repairs: list[dict[str, Any]],
+) -> str:
+    if protected_tokens_after_intentional_elision(source, candidate, repairs):
+        return "intentional_elision"
+    status = token_status(source, candidate)
+    return status
 
 
 def load_score_rows(
@@ -381,8 +455,13 @@ def build_records(
                 if item.get("code")
             }
         )
-        token_ok = protected_tokens(original) == protected_tokens(candidate)
-        source_status = token_status(str(row.get("source_spanish_text") or ""), candidate)
+        token_ok = (
+            protected_tokens(original) == protected_tokens(candidate)
+            or protected_tokens_after_intentional_elision(original, candidate, repairs)
+        )
+        source_status = source_token_status_with_intentional_elision(
+            str(row.get("source_spanish_text") or ""), candidate, repairs
+        )
         blockers: list[str] = []
         if not repairs:
             blockers.append("no_trusted_literal_mapping")

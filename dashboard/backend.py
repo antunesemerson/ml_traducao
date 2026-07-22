@@ -9224,6 +9224,15 @@ def _publication_preflight_payload(db_path: Path, *, force: bool = False) -> dic
     return {"ok": True, "publication_preflight": payload, "app_state": app_state}
 
 
+def _compact_publication_preflight_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return only what the preflight UI consumes; app-state refresh is separate."""
+
+    return {
+        "ok": bool(payload.get("ok")),
+        "publication_preflight": payload.get("publication_preflight") or {},
+    }
+
+
 def _publication_apply_segment_ids(preflight_payload: dict[str, Any]) -> list[int]:
     app_state = preflight_payload.get("app_state") if isinstance(preflight_payload, dict) else {}
     release = app_state.get("release") if isinstance(app_state, dict) else {}
@@ -9348,6 +9357,7 @@ def _publication_apply_readiness(
         + int(result_counts.get("ready_preserved_output_token_signature", 0))
         + int(result_counts.get("ready_token_override", 0))
         + int(result_counts.get("ready_token_policy_decision", 0))
+        + int(result_counts.get("ready_pairwise_intentional_elision", 0))
     )
     return {
         "available": True,
@@ -15403,7 +15413,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"ok": False, "error": f"SQLite not found: {self.db_path}"})
                 return
             try:
-                self._send_json(200, _publication_preflight_payload(self.db_path))
+                # Consume an optional JSON body before answering. Some clients send
+                # an empty object for every POST; leaving it unread can reset a
+                # keep-alive connection while the response is being delivered.
+                self._read_json_body()
+                payload = _publication_preflight_payload(self.db_path)
+                self._send_json(200, _compact_publication_preflight_payload(payload))
             except Exception as exc:  # pragma: no cover - server diagnostic path
                 self._send_json(500, {"ok": False, "error": str(exc)})
             return

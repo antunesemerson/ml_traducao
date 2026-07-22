@@ -18,9 +18,16 @@ from ml_train_risk import DEFAULT_FEATURE_SET, candidate_differs_from_output, la
 from ml_train_risk import normalize_compare
 from ml_train_risk import LANGUAGE_BLOCKING_FEATURES
 from ml_train_risk import SPANISH_TITLE_RESIDUE_PATTERN
+from quality_spanish_dynamic_literal_authorization import (
+    PAIRWISE_ELISION_CONFIRMATION_LABEL,
+    PAIRWISE_ELISION_CONFIRMATION_SOURCE,
+    PAIRWISE_ELISION_EVIDENCE_TYPE,
+    evidence_authorizes_intentional_elision,
+)
 
 
-RULE_VERSION = "ml_score_segments_v1"
+RULE_VERSION = "ml_score_segments_v2"
+TOKEN_INTEGRITY_OK_STATUSES = {"ok", "intentional_elision"}
 HARD_STRUCTURE_ISSUES = {
     "mojibake_or_unexpected_script",
 }
@@ -317,10 +324,38 @@ def model_run_by_id(conn, model_run_id: int) -> dict[str, Any]:
     return dict(row)
 
 
-def token_status(spanish_text: str | None, candidate_text: str | None) -> str:
+def token_status(
+    spanish_text: str | None,
+    candidate_text: str | None,
+    *,
+    intentional_elision_authorized: bool = False,
+) -> str:
     if protected_tokens(spanish_text) == protected_tokens(candidate_text):
         return "ok"
+    if intentional_elision_authorized:
+        return "intentional_elision"
     return "mismatch"
+
+
+def pairwise_intentional_elision_authorized(row: dict[str, Any]) -> bool:
+    baseline_text = str(row.get("pairwise_baseline_text") or "")
+    candidate_text = str(row.get("candidate_text") or "")
+    if not baseline_text or not candidate_text:
+        return False
+    if row.get("confirmation_source") != PAIRWISE_ELISION_CONFIRMATION_SOURCE:
+        return False
+    if row.get("confirmation_label") != PAIRWISE_ELISION_CONFIRMATION_LABEL:
+        return False
+    if str(row.get("confirmed_text") or "") != candidate_text:
+        return False
+    if protected_tokens(row.get("spanish_text")) != protected_tokens(baseline_text):
+        return False
+    return evidence_authorizes_intentional_elision(
+        row,
+        baseline_text,
+        candidate_text,
+        require_active_promotion=False,
+    )
 
 
 def path_filter_sql(path_like: str | None) -> tuple[str, tuple[str, ...]]:
@@ -366,13 +401,31 @@ def fetch_segments(
           )
         """
     limit_sql = "LIMIT ? OFFSET ?" if limit else ""
-    params: tuple[Any, ...] = (*path_params, limit, offset) if limit else path_params
+    params: tuple[Any, ...] = (
+        (PAIRWISE_ELISION_EVIDENCE_TYPE, *path_params, limit, offset)
+        if limit
+        else (PAIRWISE_ELISION_EVIDENCE_TYPE, *path_params)
+    )
     rows = conn.execute(
         f"""
         WITH token_counts AS (
             SELECT segment_id, COUNT(*) AS token_count
             FROM protected_tokens
             GROUP BY segment_id
+        ), eligible_pairwise_elision AS (
+            SELECT *
+            FROM (
+                SELECT evidence.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY evidence.segment_id, evidence.candidate_text
+                           ORDER BY evidence.last_run_id DESC, evidence.id DESC
+                       ) AS evidence_rank
+                FROM ml_pairwise_quality_evidence evidence
+                WHERE evidence.evidence_type = ?
+                  AND evidence.token_integrity_ok = 1
+                  AND evidence.post_validation_clean = 1
+            ) ranked_evidence
+            WHERE evidence_rank = 1
         )
         SELECT
             s.id AS segment_id,
@@ -387,13 +440,29 @@ def fetch_segments(
             o.portuguese_text AS output_text,
             {candidate_expression} AS candidate_text,
             sc.confirmation_level,
+            sc.confirmed_text,
+            sc.confirmation_source,
+            sc.confirmation_label,
             coalesce(sc.locked, 0) AS locked,
             sc.confidence_score AS confirmation_confidence,
-            coalesce(tc.token_count, 0) AS token_count
+            coalesce(tc.token_count, 0) AS token_count,
+            pairwise_evidence.id AS pairwise_evidence_id,
+            pairwise_evidence.evidence_type AS pairwise_evidence_type,
+            pairwise_evidence.baseline_text AS pairwise_baseline_text,
+            pairwise_evidence.baseline_hash AS pairwise_baseline_hash,
+            pairwise_evidence.candidate_hash AS pairwise_candidate_hash,
+            pairwise_evidence.token_integrity_ok AS pairwise_token_integrity_ok,
+            pairwise_evidence.post_validation_clean AS pairwise_post_validation_clean,
+            pairwise_evidence.training_eligible AS pairwise_training_eligible,
+            pairwise_evidence.promotion_eligible AS pairwise_promotion_eligible,
+            pairwise_evidence.source_metadata_json AS pairwise_source_metadata_json
         FROM source_segments s
         LEFT JOIN output_segments o ON o.segment_id = s.id
         LEFT JOIN segment_confirmations sc ON sc.segment_id = s.id
         LEFT JOIN token_counts tc ON tc.segment_id = s.id
+        LEFT JOIN eligible_pairwise_elision pairwise_evidence
+          ON pairwise_evidence.segment_id = s.id
+         AND pairwise_evidence.candidate_text = {candidate_expression}
         WHERE s.is_active = 1
           AND {candidate_expression} <> ''
           {path_sql}
@@ -474,7 +543,12 @@ def final_decision(
     validation = local_quality_validator.validate_text(candidate_text)
     language_flags = set(language_features(row))
     validation = relax_contextual_validation(row, validation, language_flags)
-    status = token_status(row.get("spanish_text"), candidate_text)
+    intentional_elision_authorized = pairwise_intentional_elision_authorized(row)
+    status = token_status(
+        row.get("spanish_text"),
+        candidate_text,
+        intentional_elision_authorized=intentional_elision_authorized,
+    )
     issue_codes = {issue["code"] for issue in validation["issues"]}
     reasons = [
         f"model_action:{model_action}",
@@ -523,12 +597,14 @@ def final_decision(
         deterministic_blocked = 1
         reasons.append("deterministic:block_separator_whitespace_loss")
 
-    if status != "ok":
+    if status not in TOKEN_INTEGRITY_OK_STATUSES:
         final_action = "blocked_structure"
         risk_class = "critical"
         deterministic_blocked = 1
         reasons.append("deterministic:block_token_mismatch")
     else:
+        if status == "intentional_elision":
+            reasons.append("deterministic:allow_pairwise_intentional_elision")
         language_blocking_features = language_flags & LANGUAGE_BLOCKING_FEATURES
         if language_blocking_features == {"RISK_STRUCTURAL_EMPTY_VISIBLE_TEXT"} and is_exact_token_only_passthrough(row):
             language_blocking_features = set()

@@ -17,11 +17,12 @@ from quality_spanish_dynamic_literal_shadow import (
     ELIGIBLE_LANE,
     ISSUE_CODE,
     RULE_VERSION as SOURCE_RULE_VERSION,
+    protected_tokens_after_intentional_elision,
     repair_dynamic_literals,
 )
 
 
-RULE_VERSION = "quality_spanish_dynamic_literal_pairwise_evidence_v2"
+RULE_VERSION = "quality_spanish_dynamic_literal_pairwise_evidence_v3"
 EVIDENCE_TYPE = "deterministic_spanish_dynamic_literal_repair"
 
 
@@ -92,7 +93,10 @@ def prepare_evidence(
             raise RuntimeError(f"Evidence has no repair for segment {segment_id}.")
         if shadow.get("blockers") or not bool(shadow.get("token_integrity_ok")):
             raise RuntimeError(f"Blocked row leaked into evidence for segment {segment_id}.")
-        if protected_tokens(baseline) != protected_tokens(candidate):
+        if (
+            protected_tokens(baseline) != protected_tokens(candidate)
+            and not protected_tokens_after_intentional_elision(baseline, candidate, repairs)
+        ):
             raise RuntimeError(f"Token signature changed for segment {segment_id}.")
         post_codes = {
             str(item.get("code"))

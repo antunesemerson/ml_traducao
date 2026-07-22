@@ -1,0 +1,23 @@
+{
+  "ok": true,
+  "apply": true,
+  "rule_version": "materialize_package_version_v1",
+  "version_number": 9,
+  "parent_version_id": 8,
+  "quality_epoch_id": 20,
+  "segment_state_run_id": 765,
+  "changed_count": 22,
+  "old_hash_before": "e7f879d99315d03107f5a0f9420e1d2439595cdb99f152fee68cd903d4aceb3b",
+  "output_hash": "273fb7d7699f682f6295704880e6fdb6c932fbd5562793203007d2c3230699f2",
+  "file_count": 1188,
+  "raw_score_regression_count": 0,
+  "effective_score_regression_count": 0,
+  "eligible": true,
+  "reason": "package_delta_ready",
+  "version_id": 9,
+  "item_count": 288100,
+  "backup_path": "release_candidates/package_version_baselines/v9_previous_spanish_old",
+  "old_hash_after": "273fb7d7699f682f6295704880e6fdb6c932fbd5562793203007d2c3230699f2",
+  "database_remaining_diff_count": 0,
+  "status": "materialized"
+}

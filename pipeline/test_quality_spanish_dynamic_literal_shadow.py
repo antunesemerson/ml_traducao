@@ -12,15 +12,19 @@ if str(PIPELINE_DIR) not in sys.path:
 
 import local_quality_validator  # noqa: E402
 from apply_safe_output_updates import protected_tokens  # noqa: E402
+from ck3_dynamic_expression import iter_expression_spans, iter_string_literal_spans  # noqa: E402
 from quality_promotion_cycle import load_providers  # noqa: E402
 from quality_spanish_dynamic_literal_pairwise_evidence import (  # noqa: E402
     EVIDENCE_TYPE,
+    prepare_evidence,
     reconcile_active_evidence,
 )
 from quality_spanish_dynamic_literal_shadow import (  # noqa: E402
     PROMOTION_SAFE_LITERAL_SOURCES,
+    protected_tokens_after_intentional_elision,
     repair_dynamic_literals,
     requires_sentence_composition,
+    source_token_status_with_intentional_elision,
 )
 
 
@@ -53,6 +57,22 @@ class SpanishDynamicLiteralShadowTests(unittest.TestCase):
         self.assertEqual([item["literal_index"] for item in repairs], [2, 3])
         self.assertEqual(protected_tokens(original), protected_tokens(candidate))
 
+    def test_parser_keeps_nested_brackets_and_quoted_closing_bracket_in_one_expression(self) -> None:
+        original = (
+            "prefix [Concept('vassal]label',Select_CString(actor.HasFlag('[x]'),"
+            "'vasalla','vasallo'))|E] suffix"
+        )
+
+        expressions = list(iter_expression_spans(original))
+        literals = list(iter_string_literal_spans(expressions[0].text))
+
+        self.assertEqual(len(expressions), 1)
+        self.assertEqual(expressions[0].text, original[7:-7])
+        self.assertEqual(
+            [item.value for item in literals],
+            ["vassal]label", "[x]", "vasalla", "vasallo"],
+        )
+
     def test_translates_high_confidence_past_tense_pair(self) -> None:
         original = "[Select_CString( actor.IsLocalPlayer, 'diste', 'dio' )] um presente"
 
@@ -73,6 +93,52 @@ class SpanishDynamicLiteralShadowTests(unittest.TestCase):
         self.assertEqual(
             {item["action"] for item in repairs},
             {"remove_redundant_dynamic_literal"},
+        )
+        self.assertTrue(
+            protected_tokens_after_intentional_elision(original, candidate, repairs)
+        )
+
+    def test_removes_only_allowlisted_semantically_redundant_dynamic_verbs(self) -> None:
+        cases = {
+            "[actor.GetName] [Select_CString(actor.IsLocalPlayer,'ganaste','ganó')] adquiriu ouro": (
+                "[actor.GetName] adquiriu ouro"
+            ),
+            "[actor.GetName] [Select_CString(actor.IsLocalPlayer,'hiciste','hizo')] trapaceou": (
+                "[actor.GetName] trapaceou"
+            ),
+            "[actor.GetName] [Select_CString(actor.IsLocalPlayer,'tuviste','tuvo')] foi obrigado": (
+                "[actor.GetName] foi obrigado"
+            ),
+        }
+
+        for original, expected in cases.items():
+            with self.subTest(original=original):
+                candidate, repairs = repair_dynamic_literals(original)
+                self.assertEqual(candidate, expected)
+                self.assertEqual(
+                    {item["action"] for item in repairs},
+                    {"remove_semantically_redundant_dynamic_literal"},
+                )
+                self.assertTrue(
+                    protected_tokens_after_intentional_elision(original, candidate, repairs)
+                )
+
+    def test_intentional_elision_rejects_any_unrelated_token_loss(self) -> None:
+        original = (
+            "[actor.GetName] [Select_CString(actor.IsLocalPlayer,'ganaste','ganó')] adquiriu ouro"
+        )
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertFalse(
+            protected_tokens_after_intentional_elision(
+                original,
+                candidate.replace("[actor.GetName] ", ""),
+                repairs,
+            )
+        )
+        self.assertEqual(
+            source_token_status_with_intentional_elision(original, candidate, repairs),
+            "intentional_elision",
         )
 
     def test_marks_partial_pair_as_unresolved(self) -> None:
@@ -121,15 +187,24 @@ class SpanishDynamicLiteralShadowTests(unittest.TestCase):
         self.assertIn("'fez','fez'", candidate.replace(" ", ""))
         self.assertFalse(any(requires_sentence_composition(item) for item in repairs))
 
-    def test_blocks_translated_verb_before_existing_finite_verb(self) -> None:
+    def test_composes_allowlisted_translated_verb_before_existing_finite_verb(self) -> None:
         original = (
             "[actor.GetShortUIName|U] "
             "[Select_CString(actor.IsLocalPlayer,'ganaste','ganó')] adquiriu experiência"
         )
 
-        _, repairs = repair_dynamic_literals(original)
+        candidate, repairs = repair_dynamic_literals(original)
 
-        self.assertTrue(any(requires_sentence_composition(item) for item in repairs))
+        self.assertEqual(candidate, "[actor.GetShortUIName|U] adquiriu experiência")
+        self.assertFalse(any(requires_sentence_composition(item) for item in repairs))
+
+    def test_allows_safe_object_pronoun_after_preposition(self) -> None:
+        original = "trapaceou contra [LocalPlayerString('ti',actor.GetName)]"
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(candidate, "trapaceou contra [LocalPlayerString('você',actor.GetName)]")
+        self.assertFalse(any(requires_sentence_composition(item) for item in repairs))
 
     def test_blocks_translated_verb_after_incompatible_preposition(self) -> None:
         original = (
@@ -140,6 +215,24 @@ class SpanishDynamicLiteralShadowTests(unittest.TestCase):
         _, repairs = repair_dynamic_literals(original)
 
         self.assertTrue(any(requires_sentence_composition(item) for item in repairs))
+
+    def test_does_not_semantically_elide_causative_or_prepositional_context(self) -> None:
+        originals = [
+            (
+                "[target.GetName] lhe "
+                "[Select_CString(target.IsLocalPlayer,'hiciste','hizo')] matar de fome"
+            ),
+            (
+                "foi decapitado por "
+                "[Select_CString(actor.IsLocalPlayer,'hiciste','hizo')] deu um presente"
+            ),
+        ]
+
+        for original in originals:
+            with self.subTest(original=original):
+                candidate, repairs = repair_dynamic_literals(original)
+                self.assertIn("Select_CString", candidate)
+                self.assertTrue(any(requires_sentence_composition(item) for item in repairs))
 
     def test_blocks_empty_and_reflexive_finite_complements(self) -> None:
         _, empty_repairs = repair_dynamic_literals(
@@ -196,6 +289,41 @@ class SpanishDynamicLiteralShadowTests(unittest.TestCase):
             (EVIDENCE_TYPE,),
         ).fetchone()[0]
         self.assertEqual(active_count, 0)
+        conn.close()
+
+    def test_pairwise_evidence_accepts_only_the_audited_dynamic_token_elision(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE ml_score_runs (id INTEGER, model_run_id INTEGER)")
+        conn.execute(
+            "CREATE TABLE ml_score_items ("
+            "run_id INTEGER, segment_id INTEGER, candidate_text TEXT, "
+            "model_safe_probability REAL)"
+        )
+        baseline = (
+            "[actor.GetName] "
+            "[Select_CString(actor.IsLocalPlayer,'ganaste','ganó')] adquiriu ouro"
+        )
+        conn.execute("INSERT INTO ml_score_runs VALUES (390, 17)")
+        conn.execute("INSERT INTO ml_score_items VALUES (390, 2733, ?, 0.01)", (baseline,))
+        shadow_rows = [
+            {
+                "score_run_id": 390,
+                "segment_id": 2733,
+                "relative_path": "events/test_l_spanish.yml",
+                "source_key": "test_key",
+                "blockers": [],
+                "token_integrity_ok": True,
+                "calibrated_candidate_score": 0.03,
+                "raw_candidate_score": 0.02,
+            }
+        ]
+
+        evidence = prepare_evidence(conn, shadow_rows)
+
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["candidate_text"], "[actor.GetName] adquiriu ouro")
+        self.assertAlmostEqual(evidence[0]["pairwise_delta"], 0.02)
         conn.close()
 
 
