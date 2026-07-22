@@ -38,6 +38,10 @@ class MlScoreResumeTests(unittest.TestCase):
             INSERT INTO ml_score_items VALUES (379, 1), (379, 2);
             """
         )
+        self.conn.execute(
+            "UPDATE ml_score_runs SET rule_version = ? WHERE id = 379",
+            (ml_score_segments.RULE_VERSION,),
+        )
 
     def tearDown(self) -> None:
         self.conn.close()

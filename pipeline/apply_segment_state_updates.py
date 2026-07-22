@@ -12,12 +12,25 @@ from typing import Any
 
 import db
 from apply_safe_output_updates import escape_localization_value, replace_quoted_text
+from quality_spanish_dynamic_literal_authorization import (
+    PAIRWISE_ELISION_CONFIRMATION_LABEL,
+    PAIRWISE_ELISION_CONFIRMATION_SOURCE,
+    PAIRWISE_ELISION_EVIDENCE_TYPE,
+    evidence_authorizes_intentional_elision,
+)
 
 
-RULE_VERSION = "apply_segment_state_updates_v1"
+RULE_VERSION = "apply_segment_state_updates_v2"
 DEFAULT_REVIEW_STATES = ("human_locked", "human_confirmed")
 TOKEN_PATTERN = re.compile(r"\$[^$\s]+\$|\[[^\]]+\]|#[A-Za-z0-9_]+|#!|@[A-Za-z0-9_]+!|\\n")
 STRING_LITERAL_PATTERN = re.compile(r"'[^']*'|\"[^\"]*\"")
+READY_STATUSES = {
+    "ready",
+    "ready_preserved_output_token_signature",
+    "ready_token_override",
+    "ready_token_policy_decision",
+    "ready_pairwise_intentional_elision",
+}
 
 
 def short(value: str | None, limit: int = 160) -> str:
@@ -168,6 +181,7 @@ def fetch_candidates(
             tpd.confirmed_text_hash AS token_policy_confirmed_text_hash,
             tpd.output_text_hash AS token_policy_output_text_hash,
         """
+    params.append(PAIRWISE_ELISION_EVIDENCE_TYPE)
     params.extend([state_run_id, *review_states])
     path_sql = ""
     if path_like:
@@ -208,6 +222,15 @@ def fetch_candidates(
             sc.confirmation_source,
             sc.confirmation_label,
             sc.locked,
+            pairwise_evidence.id AS pairwise_evidence_id,
+            pairwise_evidence.evidence_type AS pairwise_evidence_type,
+            pairwise_evidence.baseline_hash AS pairwise_baseline_hash,
+            pairwise_evidence.candidate_hash AS pairwise_candidate_hash,
+            pairwise_evidence.token_integrity_ok AS pairwise_token_integrity_ok,
+            pairwise_evidence.post_validation_clean AS pairwise_post_validation_clean,
+            pairwise_evidence.training_eligible AS pairwise_training_eligible,
+            pairwise_evidence.promotion_eligible AS pairwise_promotion_eligible,
+            pairwise_evidence.source_metadata_json AS pairwise_source_metadata_json,
             {decision_select}
             1 AS selected_marker
         FROM segment_state_items i
@@ -215,6 +238,21 @@ def fetch_candidates(
         JOIN segment_confirmations sc ON sc.segment_id = i.segment_id
         LEFT JOIN output_segments o ON o.segment_id = i.segment_id
         {decision_join}
+        LEFT JOIN ml_pairwise_quality_evidence pairwise_evidence
+          ON pairwise_evidence.id = (
+            SELECT evidence.id
+            FROM ml_pairwise_quality_evidence evidence
+            WHERE evidence.segment_id = i.segment_id
+              AND evidence.evidence_type = ?
+              AND evidence.baseline_text = COALESCE(o.portuguese_text, '')
+              AND evidence.candidate_text = COALESCE(sc.confirmed_text, '')
+              AND evidence.token_integrity_ok = 1
+              AND evidence.post_validation_clean = 1
+              AND evidence.training_eligible = 1
+              AND evidence.promotion_eligible = 1
+            ORDER BY evidence.last_run_id DESC, evidence.id DESC
+            LIMIT 1
+          )
         WHERE i.run_id = ?
           AND i.needs_output_apply = 1
           AND i.review_state IN ({placeholders})
@@ -244,6 +282,18 @@ def make_backup(output_root: Path, backup_root: Path, relative_path: str) -> Non
     backup_path = backup_root / Path(relative_path)
     backup_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source_path, backup_path)
+
+
+def pairwise_intentional_elision_authorized(
+    row: dict[str, Any],
+    current_text: str,
+    confirmed_text: str,
+) -> bool:
+    if row.get("confirmation_source") != PAIRWISE_ELISION_CONFIRMATION_SOURCE:
+        return False
+    if row.get("confirmation_label") != PAIRWISE_ELISION_CONFIRMATION_LABEL:
+        return False
+    return evidence_authorizes_intentional_elision(row, current_text, confirmed_text)
 
 
 def validate_candidate(
@@ -281,6 +331,11 @@ def validate_candidate(
     confirmed_tokens = structural_tokens(confirmed_text)
     token_mismatch = spanish_tokens != confirmed_tokens
     preserves_output_token_signature = current_tokens == confirmed_tokens
+    pairwise_elision_authorized = pairwise_intentional_elision_authorized(
+        row,
+        current_text,
+        confirmed_text,
+    )
     locked_override = allow_locked_token_override and row["review_state"] == "human_locked" and int(row["locked"] or 0) == 1
     token_policy_decision = row.get("token_policy_decision_id") is not None
     token_policy_allowed = require_token_policy_decision or allow_token_policy_decision
@@ -293,7 +348,12 @@ def validate_candidate(
             return "stale_token_policy_confirmed_hash", None, None
         if row.get("token_policy_output_text_hash") != sha256_text(current_text):
             return "stale_token_policy_output_hash", None, None
-    elif token_mismatch and not locked_override and not preserves_output_token_signature:
+    elif (
+        token_mismatch
+        and not locked_override
+        and not preserves_output_token_signature
+        and not pairwise_elision_authorized
+    ):
         return "token_mismatch", None, None
 
     lines = output_path.read_text(encoding="utf-8-sig").splitlines()
@@ -319,16 +379,13 @@ def validate_candidate(
         return "ready_token_policy_decision", current_line, new_line
     if token_mismatch and locked_override:
         return "ready_token_override", current_line, new_line
+    if token_mismatch and pairwise_elision_authorized:
+        return "ready_pairwise_intentional_elision", current_line, new_line
     return "ready", current_line, new_line
 
 
 def validation_priority(status: str) -> int:
-    if status in {
-        "ready",
-        "ready_preserved_output_token_signature",
-        "ready_token_override",
-        "ready_token_policy_decision",
-    }:
+    if status in READY_STATUSES:
         return 0
     if status in {"already_matches", "already_matches_line"}:
         return 1
@@ -457,12 +514,7 @@ def insert_apply_items(
         segment_id = int(row["segment_id"])
         result_status = status
         applied = 0
-        if status in {
-            "ready",
-            "ready_preserved_output_token_signature",
-            "ready_token_override",
-            "ready_token_policy_decision",
-        } and apply:
+        if status in READY_STATUSES and apply:
             if segment_id in applied_segment_ids:
                 result_status = "applied"
                 applied = 1
@@ -683,12 +735,7 @@ def main(
         include_intentional_blank=include_intentional_blank,
     )
     for row, status, _current_line, new_line in previews:
-        if status in {
-            "ready",
-            "ready_preserved_output_token_signature",
-            "ready_token_override",
-            "ready_token_policy_decision",
-        } and new_line is not None:
+        if status in READY_STATUSES and new_line is not None:
             file_updates[row["relative_path"]][int(row["output_line_number"])] = new_line
             ready_entries.append((row, new_line))
 
@@ -709,6 +756,7 @@ def main(
         + result_counts["ready_preserved_output_token_signature"]
         + result_counts["ready_token_override"]
         + result_counts["ready_token_policy_decision"]
+        + result_counts["ready_pairwise_intentional_elision"]
     )
     report_lines = [
         "Segment state output apply report",

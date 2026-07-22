@@ -18,9 +18,28 @@ from ml_train_risk import DEFAULT_FEATURE_SET, candidate_differs_from_output, la
 from ml_train_risk import normalize_compare
 from ml_train_risk import LANGUAGE_BLOCKING_FEATURES
 from ml_train_risk import SPANISH_TITLE_RESIDUE_PATTERN
+from quality_spanish_dynamic_literal_authorization import (
+    PAIRWISE_ELISION_CONFIRMATION_LABEL,
+    PAIRWISE_ELISION_CONFIRMATION_SOURCE,
+    PAIRWISE_ELISION_EVIDENCE_TYPE,
+    evidence_authorizes_intentional_elision,
+)
 
 
-RULE_VERSION = "ml_score_segments_v1"
+RULE_VERSION = "ml_score_segments_v2"
+TOKEN_INTEGRITY_OK_STATUSES = {"ok", "intentional_elision"}
+PAIRWISE_ELISION_EMPTY_PAYLOAD = {
+    "pairwise_evidence_id": None,
+    "pairwise_evidence_type": None,
+    "pairwise_baseline_text": None,
+    "pairwise_baseline_hash": None,
+    "pairwise_candidate_hash": None,
+    "pairwise_token_integrity_ok": None,
+    "pairwise_post_validation_clean": None,
+    "pairwise_training_eligible": None,
+    "pairwise_promotion_eligible": None,
+    "pairwise_source_metadata_json": None,
+}
 HARD_STRUCTURE_ISSUES = {
     "mojibake_or_unexpected_script",
 }
@@ -317,10 +336,38 @@ def model_run_by_id(conn, model_run_id: int) -> dict[str, Any]:
     return dict(row)
 
 
-def token_status(spanish_text: str | None, candidate_text: str | None) -> str:
+def token_status(
+    spanish_text: str | None,
+    candidate_text: str | None,
+    *,
+    intentional_elision_authorized: bool = False,
+) -> str:
     if protected_tokens(spanish_text) == protected_tokens(candidate_text):
         return "ok"
+    if intentional_elision_authorized:
+        return "intentional_elision"
     return "mismatch"
+
+
+def pairwise_intentional_elision_authorized(row: dict[str, Any]) -> bool:
+    baseline_text = str(row.get("pairwise_baseline_text") or "")
+    candidate_text = str(row.get("candidate_text") or "")
+    if not baseline_text or not candidate_text:
+        return False
+    if row.get("confirmation_source") != PAIRWISE_ELISION_CONFIRMATION_SOURCE:
+        return False
+    if row.get("confirmation_label") != PAIRWISE_ELISION_CONFIRMATION_LABEL:
+        return False
+    if str(row.get("confirmed_text") or "") != candidate_text:
+        return False
+    if protected_tokens(row.get("spanish_text")) != protected_tokens(baseline_text):
+        return False
+    return evidence_authorizes_intentional_elision(
+        row,
+        baseline_text,
+        candidate_text,
+        require_active_promotion=False,
+    )
 
 
 def path_filter_sql(path_like: str | None) -> tuple[str, tuple[str, ...]]:
@@ -337,6 +384,47 @@ def qualify_trusted_scope_sql(scope_sql: str | None) -> str | None:
     return qualified
 
 
+def load_pairwise_elision_evidence_by_candidate(
+    conn,
+) -> dict[tuple[int, str], dict[str, Any]]:
+    """Load the small evidence set once instead of joining it into every score batch."""
+
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM (
+            SELECT evidence.*,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY evidence.segment_id, evidence.candidate_text
+                       ORDER BY evidence.last_run_id DESC, evidence.id DESC
+                   ) AS evidence_rank
+            FROM ml_pairwise_quality_evidence evidence
+            WHERE evidence.evidence_type = ?
+              AND evidence.token_integrity_ok = 1
+              AND evidence.post_validation_clean = 1
+        ) ranked_evidence
+        WHERE evidence_rank = 1
+        """,
+        (PAIRWISE_ELISION_EVIDENCE_TYPE,),
+    ).fetchall()
+    result: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in rows:
+        evidence = dict(row)
+        result[(int(evidence["segment_id"]), str(evidence["candidate_text"]))] = {
+            "pairwise_evidence_id": evidence["id"],
+            "pairwise_evidence_type": evidence["evidence_type"],
+            "pairwise_baseline_text": evidence["baseline_text"],
+            "pairwise_baseline_hash": evidence["baseline_hash"],
+            "pairwise_candidate_hash": evidence["candidate_hash"],
+            "pairwise_token_integrity_ok": evidence["token_integrity_ok"],
+            "pairwise_post_validation_clean": evidence["post_validation_clean"],
+            "pairwise_training_eligible": evidence["training_eligible"],
+            "pairwise_promotion_eligible": evidence["promotion_eligible"],
+            "pairwise_source_metadata_json": evidence["source_metadata_json"],
+        }
+    return result
+
+
 def fetch_segments(
     conn,
     limit: int | None,
@@ -345,6 +433,7 @@ def fetch_segments(
     candidate_text_source: str = "effective",
     offset: int = 0,
     scope_sql: str | None = None,
+    pairwise_evidence_by_candidate: dict[tuple[int, str], dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     candidate_expressions = {
         "effective": "coalesce(o.portuguese_text, sc.confirmed_text, s.old_text, s.spanish_text, '')",
@@ -366,6 +455,8 @@ def fetch_segments(
           )
         """
     limit_sql = "LIMIT ? OFFSET ?" if limit else ""
+    if pairwise_evidence_by_candidate is None:
+        pairwise_evidence_by_candidate = load_pairwise_elision_evidence_by_candidate(conn)
     params: tuple[Any, ...] = (*path_params, limit, offset) if limit else path_params
     rows = conn.execute(
         f"""
@@ -387,6 +478,9 @@ def fetch_segments(
             o.portuguese_text AS output_text,
             {candidate_expression} AS candidate_text,
             sc.confirmation_level,
+            sc.confirmed_text,
+            sc.confirmation_source,
+            sc.confirmation_label,
             coalesce(sc.locked, 0) AS locked,
             sc.confidence_score AS confirmation_confidence,
             coalesce(tc.token_count, 0) AS token_count
@@ -416,6 +510,13 @@ def fetch_segments(
         data = dict(row)
         data["candidate_text_source"] = candidate_text_source
         data["text_length"] = len(data.get("candidate_text") or "")
+        evidence_key = (int(data["segment_id"]), str(data.get("candidate_text") or ""))
+        data.update(
+            pairwise_evidence_by_candidate.get(
+                evidence_key,
+                PAIRWISE_ELISION_EMPTY_PAYLOAD,
+            )
+        )
         result.append(data)
     return result
 
@@ -474,7 +575,12 @@ def final_decision(
     validation = local_quality_validator.validate_text(candidate_text)
     language_flags = set(language_features(row))
     validation = relax_contextual_validation(row, validation, language_flags)
-    status = token_status(row.get("spanish_text"), candidate_text)
+    intentional_elision_authorized = pairwise_intentional_elision_authorized(row)
+    status = token_status(
+        row.get("spanish_text"),
+        candidate_text,
+        intentional_elision_authorized=intentional_elision_authorized,
+    )
     issue_codes = {issue["code"] for issue in validation["issues"]}
     reasons = [
         f"model_action:{model_action}",
@@ -523,12 +629,14 @@ def final_decision(
         deterministic_blocked = 1
         reasons.append("deterministic:block_separator_whitespace_loss")
 
-    if status != "ok":
+    if status not in TOKEN_INTEGRITY_OK_STATUSES:
         final_action = "blocked_structure"
         risk_class = "critical"
         deterministic_blocked = 1
         reasons.append("deterministic:block_token_mismatch")
     else:
+        if status == "intentional_elision":
+            reasons.append("deterministic:allow_pairwise_intentional_elision")
         language_blocking_features = language_flags & LANGUAGE_BLOCKING_FEATURES
         if language_blocking_features == {"RISK_STRUCTURAL_EMPTY_VISIBLE_TEXT"} and is_exact_token_only_passthrough(row):
             language_blocking_features = set()
@@ -994,6 +1102,12 @@ def main(
         if scope_sql:
             print("[ml_score_segments] Trusted specialist scope enabled")
 
+        pairwise_evidence_by_candidate = load_pairwise_elision_evidence_by_candidate(conn)
+        print(
+            "[ml_score_segments] Pairwise elision evidence loaded: "
+            f"{len(pairwise_evidence_by_candidate)}"
+        )
+
         total_scored = resumed_scored_count
         offset = resumed_scored_count
         effective_batch_size = max(1, batch_size)
@@ -1010,6 +1124,7 @@ def main(
                 candidate_text_source=candidate_text_source,
                 offset=offset,
                 scope_sql=scope_sql,
+                pairwise_evidence_by_candidate=pairwise_evidence_by_candidate,
             )
             if not rows:
                 break

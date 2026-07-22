@@ -60,6 +60,20 @@ class FullDashboardPayloadCacheTest(unittest.TestCase):
         self.assertTrue(payload["analyticsCache"]["stale"])
         self.assertTrue(payload["analyticsCache"]["refreshing"])
 
+    def test_publication_preflight_response_does_not_duplicate_app_state(self) -> None:
+        payload = {
+            "ok": True,
+            "publication_preflight": {"status": "ready"},
+            "app_state": {"large": ["unused"] * 100},
+        }
+
+        compact = backend._compact_publication_preflight_payload(payload)
+
+        self.assertEqual(
+            compact,
+            {"ok": True, "publication_preflight": {"status": "ready"}},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
