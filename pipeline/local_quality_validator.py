@@ -916,6 +916,28 @@ SPANISH_RESIDUE_WORD_PATTERNS = tuple(
     )
     for word in SORTED_SPANISH_RESIDUE_WORDS
 )
+SPANISH_RESIDUE_BOUNDARY_CHAR_PATTERN = re.compile(r"[-A-Za-z\u00C0-\u00FF]")
+SPANISH_RESIDUE_TRIE_OUTPUT = "\0"
+
+
+def _build_spanish_residue_trie() -> dict[str, dict]:
+    root: dict[str, dict] = {}
+    terms = (
+        (("phrase", phrase) for phrase in SORTED_SPANISH_RESIDUE_PHRASES),
+        (("word", word) for word in SORTED_SPANISH_RESIDUE_WORDS),
+    )
+    for group in terms:
+        for kind, label in group:
+            node = root
+            match_text = " ".join(label.split())
+            for character in match_text:
+                node = node.setdefault(character, {})
+            node.setdefault(SPANISH_RESIDUE_TRIE_OUTPUT, []).append((kind, label))
+    return root
+
+
+SPANISH_RESIDUE_TRIE = _build_spanish_residue_trie()
+SPANISH_RESIDUE_TRIE_FIRST_CHARS = frozenset(SPANISH_RESIDUE_TRIE)
 
 ENGLISH_RESIDUE_PATTERNS = (
     ("in_place_itself", re.compile(r"\bin\s+[A-Za-z][A-Za-z' -]{2,}\s+itself\b", re.IGNORECASE)),
@@ -1065,7 +1087,7 @@ def is_technical_literal(value: str) -> bool:
     return False
 
 
-def count_spanish_residue(value: str | None) -> tuple[int, list[str]]:
+def count_spanish_residue_regex(value: str | None) -> tuple[int, list[str]]:
     if not value:
         return 0, []
     visible_value = PROTECTED_TOKEN_PATTERN.sub(" ", value)
@@ -1077,6 +1099,44 @@ def count_spanish_residue(value: str | None) -> tuple[int, list[str]]:
     for word, pattern in SPANISH_RESIDUE_WORD_PATTERNS:
         if pattern.search(normalized):
             found.append(word)
+    return len(found), found
+
+
+def count_spanish_residue(value: str | None) -> tuple[int, list[str]]:
+    if not value:
+        return 0, []
+    visible_value = PROTECTED_TOKEN_PATTERN.sub(" ", value)
+    normalized = normalize(visible_value)
+    boundary_chars = [
+        SPANISH_RESIDUE_BOUNDARY_CHAR_PATTERN.fullmatch(character) is not None
+        for character in normalized
+    ]
+    matched: set[tuple[str, str]] = set()
+    for start, character in enumerate(normalized):
+        if character not in SPANISH_RESIDUE_TRIE_FIRST_CHARS:
+            continue
+        if start > 0 and boundary_chars[start - 1]:
+            continue
+        node = SPANISH_RESIDUE_TRIE.get(character)
+        end = start
+        while node is not None:
+            outputs = node.get(SPANISH_RESIDUE_TRIE_OUTPUT)
+            if outputs and (end + 1 == len(normalized) or not boundary_chars[end + 1]):
+                matched.update(outputs)
+            end += 1
+            if end >= len(normalized):
+                break
+            node = node.get(normalized[end])
+    found = [
+        phrase
+        for phrase in SORTED_SPANISH_RESIDUE_PHRASES
+        if ("phrase", phrase) in matched
+    ]
+    found.extend(
+        word
+        for word in SORTED_SPANISH_RESIDUE_WORDS
+        if ("word", word) in matched
+    )
     return len(found), found
 
 

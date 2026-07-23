@@ -384,6 +384,19 @@ def qualify_trusted_scope_sql(scope_sql: str | None) -> str | None:
     return qualified
 
 
+def load_protected_token_counts(conn) -> dict[int, int]:
+    return {
+        int(row["segment_id"]): int(row["token_count"] or 0)
+        for row in conn.execute(
+            """
+            SELECT segment_id, COUNT(*) AS token_count
+            FROM protected_tokens
+            GROUP BY segment_id
+            """
+        )
+    }
+
+
 def load_pairwise_elision_evidence_by_candidate(
     conn,
 ) -> dict[tuple[int, str], dict[str, Any]]:
@@ -425,16 +438,14 @@ def load_pairwise_elision_evidence_by_candidate(
     return result
 
 
-def fetch_segments(
-    conn,
+def _segment_select_query(
     limit: int | None,
     path_like: str | None,
     include_locked: bool,
     candidate_text_source: str = "effective",
     offset: int = 0,
     scope_sql: str | None = None,
-    pairwise_evidence_by_candidate: dict[tuple[int, str], dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[str, tuple[Any, ...]]:
     candidate_expressions = {
         "effective": "coalesce(o.portuguese_text, sc.confirmed_text, s.old_text, s.spanish_text, '')",
         "old": "coalesce(s.old_text, '')",
@@ -454,17 +465,17 @@ def fetch_segments(
               AND sc.locked = 1
           )
         """
-    limit_sql = "LIMIT ? OFFSET ?" if limit else ""
-    if pairwise_evidence_by_candidate is None:
-        pairwise_evidence_by_candidate = load_pairwise_elision_evidence_by_candidate(conn)
-    params: tuple[Any, ...] = (*path_params, limit, offset) if limit else path_params
-    rows = conn.execute(
+    if limit is not None:
+        pagination_sql = "LIMIT ? OFFSET ?"
+        params: tuple[Any, ...] = (*path_params, limit, offset)
+    elif offset:
+        pagination_sql = "LIMIT -1 OFFSET ?"
+        params = (*path_params, offset)
+    else:
+        pagination_sql = ""
+        params = path_params
+    return (
         f"""
-        WITH token_counts AS (
-            SELECT segment_id, COUNT(*) AS token_count
-            FROM protected_tokens
-            GROUP BY segment_id
-        )
         SELECT
             s.id AS segment_id,
             s.relative_path,
@@ -482,12 +493,10 @@ def fetch_segments(
             sc.confirmation_source,
             sc.confirmation_label,
             coalesce(sc.locked, 0) AS locked,
-            sc.confidence_score AS confirmation_confidence,
-            coalesce(tc.token_count, 0) AS token_count
+            sc.confidence_score AS confirmation_confidence
         FROM source_segments s
         LEFT JOIN output_segments o ON o.segment_id = s.id
         LEFT JOIN segment_confirmations sc ON sc.segment_id = s.id
-        LEFT JOIN token_counts tc ON tc.segment_id = s.id
         WHERE s.is_active = 1
           AND {candidate_expression} <> ''
           {path_sql}
@@ -501,15 +510,25 @@ def fetch_segments(
             END,
             coalesce(sc.confidence_score, 0) ASC,
             s.id ASC
-        {limit_sql}
+        {pagination_sql}
         """,
         params,
-    ).fetchall()
+    )
+
+
+def _enrich_segment_rows(
+    rows,
+    *,
+    candidate_text_source: str,
+    pairwise_evidence_by_candidate: dict[tuple[int, str], dict[str, Any]],
+    protected_token_counts_by_segment: dict[int, int],
+) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for row in rows:
         data = dict(row)
         data["candidate_text_source"] = candidate_text_source
         data["text_length"] = len(data.get("candidate_text") or "")
+        data["token_count"] = protected_token_counts_by_segment.get(int(data["segment_id"]), 0)
         evidence_key = (int(data["segment_id"]), str(data.get("candidate_text") or ""))
         data.update(
             pairwise_evidence_by_candidate.get(
@@ -519,6 +538,77 @@ def fetch_segments(
         )
         result.append(data)
     return result
+
+
+def fetch_segments(
+    conn,
+    limit: int | None,
+    path_like: str | None,
+    include_locked: bool,
+    candidate_text_source: str = "effective",
+    offset: int = 0,
+    scope_sql: str | None = None,
+    pairwise_evidence_by_candidate: dict[tuple[int, str], dict[str, Any]] | None = None,
+    protected_token_counts_by_segment: dict[int, int] | None = None,
+) -> list[dict[str, Any]]:
+    if pairwise_evidence_by_candidate is None:
+        pairwise_evidence_by_candidate = load_pairwise_elision_evidence_by_candidate(conn)
+    if protected_token_counts_by_segment is None:
+        protected_token_counts_by_segment = load_protected_token_counts(conn)
+    query, params = _segment_select_query(
+        limit,
+        path_like,
+        include_locked,
+        candidate_text_source,
+        offset,
+        scope_sql,
+    )
+    rows = conn.execute(query, params).fetchall()
+    return _enrich_segment_rows(
+        rows,
+        candidate_text_source=candidate_text_source,
+        pairwise_evidence_by_candidate=pairwise_evidence_by_candidate,
+        protected_token_counts_by_segment=protected_token_counts_by_segment,
+    )
+
+
+def iter_segment_batches(
+    conn,
+    *,
+    batch_size: int,
+    limit: int | None,
+    path_like: str | None,
+    include_locked: bool,
+    candidate_text_source: str = "effective",
+    offset: int = 0,
+    scope_sql: str | None = None,
+    pairwise_evidence_by_candidate: dict[tuple[int, str], dict[str, Any]] | None = None,
+    protected_token_counts_by_segment: dict[int, int] | None = None,
+):
+    if pairwise_evidence_by_candidate is None:
+        pairwise_evidence_by_candidate = load_pairwise_elision_evidence_by_candidate(conn)
+    if protected_token_counts_by_segment is None:
+        protected_token_counts_by_segment = load_protected_token_counts(conn)
+    query, params = _segment_select_query(
+        limit,
+        path_like,
+        include_locked,
+        candidate_text_source,
+        offset,
+        scope_sql,
+    )
+    cursor = conn.execute(query, params)
+    effective_batch_size = max(1, batch_size)
+    while True:
+        rows = cursor.fetchmany(effective_batch_size)
+        if not rows:
+            break
+        yield _enrich_segment_rows(
+            rows,
+            candidate_text_source=candidate_text_source,
+            pairwise_evidence_by_candidate=pairwise_evidence_by_candidate,
+            protected_token_counts_by_segment=protected_token_counts_by_segment,
+        )
 
 
 def model_prediction(
@@ -942,7 +1032,57 @@ def insert_items(conn, run_id: int, items: list[dict[str, Any]], created_at: str
     )
 
 
-def update_run_summary(conn, run_id: int, finished_at: str | None = None) -> Counter[str]:
+def empty_run_summary() -> dict[str, Any]:
+    return {
+        "final_counts": Counter(),
+        "model_counts": Counter(),
+        "deterministic_blocks": 0,
+        "model_direct_auto_safe_count": 0,
+        "deterministic_promoted_auto_safe_count": 0,
+        "deterministic_demoted_auto_safe_count": 0,
+    }
+
+
+def _accumulate_run_summary_group(
+    summary: dict[str, Any],
+    *,
+    final_action: str,
+    model_action: str,
+    total: int,
+    deterministic_blocks: int,
+) -> None:
+    summary["final_counts"][final_action] += total
+    summary["model_counts"][model_action] += total
+    summary["deterministic_blocks"] += deterministic_blocks
+    if model_action == "auto_safe" and final_action == "auto_safe":
+        summary["model_direct_auto_safe_count"] += total
+    elif model_action != "auto_safe" and final_action == "auto_safe":
+        summary["deterministic_promoted_auto_safe_count"] += total
+    elif model_action == "auto_safe" and final_action != "auto_safe":
+        summary["deterministic_demoted_auto_safe_count"] += total
+
+
+def accumulate_run_summary(summary: dict[str, Any], items: list[dict[str, Any]]) -> None:
+    grouped: Counter[tuple[str, str, int]] = Counter(
+        (
+            str(item["final_action"]),
+            str(item["model_action"]),
+            int(item["deterministic_blocked"] or 0),
+        )
+        for item in items
+    )
+    for (final_action, model_action, deterministic_blocked), total in grouped.items():
+        _accumulate_run_summary_group(
+            summary,
+            final_action=final_action,
+            model_action=model_action,
+            total=total,
+            deterministic_blocks=deterministic_blocked * total,
+        )
+
+
+def load_run_summary(conn, run_id: int) -> dict[str, Any]:
+    summary = empty_run_summary()
     rows = conn.execute(
         """
         SELECT
@@ -956,25 +1096,25 @@ def update_run_summary(conn, run_id: int, finished_at: str | None = None) -> Cou
         """,
         (run_id,),
     ).fetchall()
-    final_counts: Counter[str] = Counter()
-    model_counts: Counter[str] = Counter()
-    deterministic_blocks = 0
-    model_direct_auto_safe_count = 0
-    deterministic_promoted_auto_safe_count = 0
-    deterministic_demoted_auto_safe_count = 0
     for row in rows:
-        total = int(row["total"] or 0)
-        final_action = row["final_action"]
-        model_action = row["model_action"]
-        final_counts[final_action] += total
-        model_counts[model_action] += total
-        deterministic_blocks += int(row["deterministic_blocks"] or 0)
-        if model_action == "auto_safe" and final_action == "auto_safe":
-            model_direct_auto_safe_count += total
-        elif model_action != "auto_safe" and final_action == "auto_safe":
-            deterministic_promoted_auto_safe_count += total
-        elif model_action == "auto_safe" and final_action != "auto_safe":
-            deterministic_demoted_auto_safe_count += total
+        _accumulate_run_summary_group(
+            summary,
+            final_action=str(row["final_action"]),
+            model_action=str(row["model_action"]),
+            total=int(row["total"] or 0),
+            deterministic_blocks=int(row["deterministic_blocks"] or 0),
+        )
+    return summary
+
+
+def write_run_summary(
+    conn,
+    run_id: int,
+    summary: dict[str, Any],
+    finished_at: str | None = None,
+) -> Counter[str]:
+    final_counts: Counter[str] = summary["final_counts"]
+    model_counts: Counter[str] = summary["model_counts"]
     scored_count = sum(final_counts.values())
     finished_sql = "finished_at = ?, updated_at = ?"
     timestamp_params: tuple[Any, ...] = (finished_at, finished_at) if finished_at else (now(),)
@@ -999,19 +1139,28 @@ def update_run_summary(conn, run_id: int, finished_at: str | None = None) -> Cou
         (
             scored_count,
             model_counts["auto_safe"],
-            model_direct_auto_safe_count,
-            deterministic_promoted_auto_safe_count,
-            deterministic_demoted_auto_safe_count,
+            summary["model_direct_auto_safe_count"],
+            summary["deterministic_promoted_auto_safe_count"],
+            summary["deterministic_demoted_auto_safe_count"],
             final_counts["auto_safe"],
             final_counts["needs_human"],
             final_counts["needs_autofix"],
             final_counts["blocked_structure"],
-            deterministic_blocks,
+            summary["deterministic_blocks"],
             *timestamp_params,
             run_id,
         ),
     )
     return final_counts
+
+
+def update_run_summary(conn, run_id: int, finished_at: str | None = None) -> Counter[str]:
+    return write_run_summary(
+        conn,
+        run_id,
+        load_run_summary(conn, run_id),
+        finished_at,
+    )
 
 
 def format_rows(rows) -> list[str]:
@@ -1102,61 +1251,68 @@ def main(
         if scope_sql:
             print("[ml_score_segments] Trusted specialist scope enabled")
 
-        pairwise_evidence_by_candidate = load_pairwise_elision_evidence_by_candidate(conn)
-        print(
-            "[ml_score_segments] Pairwise elision evidence loaded: "
-            f"{len(pairwise_evidence_by_candidate)}"
-        )
-
         total_scored = resumed_scored_count
         offset = resumed_scored_count
         effective_batch_size = max(1, batch_size)
-        while True:
-            remaining = None if limit is None else max(limit - total_scored, 0)
-            if remaining == 0:
-                break
-            current_limit = effective_batch_size if remaining is None else min(effective_batch_size, remaining)
-            rows = fetch_segments(
-                conn,
-                limit=current_limit,
+        run_summary_counts = load_run_summary(conn, score_run_id) if resume_run_id is not None else empty_run_summary()
+        remaining_limit = None if limit is None else max(limit - resumed_scored_count, 0)
+        read_conn = db.connect(settings)
+        try:
+            pairwise_evidence_by_candidate = load_pairwise_elision_evidence_by_candidate(read_conn)
+            protected_token_counts_by_segment = load_protected_token_counts(read_conn)
+            print(
+                "[ml_score_segments] Pairwise elision evidence loaded: "
+                f"{len(pairwise_evidence_by_candidate)}"
+            )
+            print(
+                "[ml_score_segments] Protected token counts loaded: "
+                f"{len(protected_token_counts_by_segment)}"
+            )
+            batches = iter_segment_batches(
+                read_conn,
+                batch_size=effective_batch_size,
+                limit=remaining_limit,
                 path_like=path_like,
                 include_locked=include_locked,
                 candidate_text_source=candidate_text_source,
                 offset=offset,
                 scope_sql=scope_sql,
                 pairwise_evidence_by_candidate=pairwise_evidence_by_candidate,
+                protected_token_counts_by_segment=protected_token_counts_by_segment,
             )
-            if not rows:
-                break
-            print(f"[ml_score_segments] Processing batch: offset={offset}, size={len(rows)}")
-            items: list[dict[str, Any]] = []
-            predictions = model_predictions(model, rows, threshold, feature_set)
-            for row, prediction in zip(rows, predictions):
-                model_action, safe_probability, model_confidence, probabilities = prediction
-                items.append(
-                    final_decision(
-                        row,
-                        model_action,
-                        safe_probability,
-                        model_confidence,
-                        probabilities,
-                        threshold,
+            for rows in batches:
+                print(f"[ml_score_segments] Processing batch: offset={offset}, size={len(rows)}")
+                items: list[dict[str, Any]] = []
+                predictions = model_predictions(model, rows, threshold, feature_set)
+                for row, prediction in zip(rows, predictions):
+                    model_action, safe_probability, model_confidence, probabilities = prediction
+                    items.append(
+                        final_decision(
+                            row,
+                            model_action,
+                            safe_probability,
+                            model_confidence,
+                            probabilities,
+                            threshold,
+                        )
                     )
+                insert_items(conn, score_run_id, items, started_at)
+                accumulate_run_summary(run_summary_counts, items)
+                total_scored += len(items)
+                offset += len(rows)
+                final_counts = write_run_summary(conn, score_run_id, run_summary_counts)
+                conn.commit()
+                print(
+                    "[ml_score_segments] Progress: "
+                    f"{total_scored} scored, final_auto_safe={final_counts['auto_safe']}, "
+                    f"needs_human={final_counts['needs_human']}, needs_autofix={final_counts['needs_autofix']}, "
+                    f"blocked_structure={final_counts['blocked_structure']}"
                 )
-            insert_items(conn, score_run_id, items, started_at)
-            total_scored += len(items)
-            offset += len(rows)
-            final_counts = update_run_summary(conn, score_run_id)
-            conn.commit()
-            print(
-                "[ml_score_segments] Progress: "
-                f"{total_scored} scored, final_auto_safe={final_counts['auto_safe']}, "
-                f"needs_human={final_counts['needs_human']}, needs_autofix={final_counts['needs_autofix']}, "
-                f"blocked_structure={final_counts['blocked_structure']}"
-            )
+        finally:
+            read_conn.close()
 
         finished_at = now()
-        final_counts = update_run_summary(conn, score_run_id, finished_at)
+        final_counts = write_run_summary(conn, score_run_id, run_summary_counts, finished_at)
         conn.commit()
 
         model_action_rows = conn.execute(
