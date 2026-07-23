@@ -72,6 +72,9 @@ QUALITY_HOTSPOTS_CACHE: dict[str, Any] = {"score_run_id": None, "items": []}
 PACKAGE_VERSION_BANDS_LOCK = threading.Lock()
 PACKAGE_VERSION_BANDS_CACHE: dict[str, Any] = {"key": None, "items": {}}
 RELEASE_DIFF_REVIEW_CACHE: dict[str, Any] = {"key": None, "payload": None}
+PRODUCTION_STATUS_CACHE_LOCK = threading.Lock()
+PRODUCTION_STATUS_CACHE: dict[str, Any] = {"key": None, "snapshot": None}
+PRODUCTION_STATUS_CACHE_SCHEMA_VERSION = 1
 DISK_PREFLIGHT_LOCK = threading.Lock()
 DISK_PREFLIGHT_CACHE_TTL_SECONDS = 600
 ACTIVE_DB_PATH = DEFAULT_DB
@@ -7535,6 +7538,7 @@ def _pending_taxonomy_summary_payload(
             "raw_pending": 0,
             "learning_backlog": 0,
             "needs_apply": 0,
+            "select_cstring": {"total": 0, "closed": 0, "pending": 0},
             "distribution": [],
         }
 
@@ -7550,41 +7554,19 @@ def _pending_taxonomy_summary_payload(
         """,
         (run_id,),
     )
-    state_counts = _one(
-        con,
-        """
-        SELECT
-          COALESCE(SUM(CASE
-            WHEN final_state = 'reopen_auto_confirmed_autofix'
-             AND confirmed_matches_output = 1
-             AND output_state = 'output_present'
-            THEN 1 ELSE 0 END), 0) AS model_watch,
-          COALESCE(SUM(CASE
-            WHEN state_group = 'pending'
-             AND (
-               needs_output_apply = 1
-               OR output_state IN ('output_missing', 'confirmation_mismatch')
-               OR final_state IN (
-                 'pending_unknown_open',
-                 'pending_output_missing_real',
-                 'pending_blocked_structure',
-                 'pending_human_review',
-                 'reopen_auto_confirmed'
-               )
-             )
-            THEN 1 ELSE 0 END), 0) AS actionable_pending
-        FROM segment_state_items
-        WHERE run_id = ?
-        """,
-        (run_id,),
-    )
-
-    governed_bridge_pending = 0
-    if _table_exists(con, "ml_issue_select_cstring_governed_bridge_proposal_items"):
-        bridge = _one(
+    bridge_tables_ready = _table_exists(con, "ml_issue_select_cstring_governed_bridge_proposal_items")
+    select_cstring = {"total": 0, "closed": 0, "pending": 0}
+    bridge_membership_sql = "0"
+    if bridge_tables_ready:
+        select_cstring = _one(
             con,
             """
-            SELECT COUNT(*) AS pending
+            SELECT
+              COUNT(*) AS total,
+              COALESCE(SUM(CASE
+                WHEN s.final_state = 'closed_auto_confirmed_select_cstring_governed_bridge'
+                THEN 1 ELSE 0 END), 0) AS closed,
+              COALESCE(SUM(CASE WHEN s.state_group = 'pending' THEN 1 ELSE 0 END), 0) AS pending
             FROM ml_issue_select_cstring_governed_bridge_proposal_items p
             JOIN (
               SELECT MAX(run_id) AS run_id
@@ -7593,19 +7575,78 @@ def _pending_taxonomy_summary_payload(
             JOIN segment_state_items s
               ON s.segment_id = p.segment_id
              AND s.run_id = ?
-            WHERE s.state_group = 'pending'
             """,
             (run_id,),
         )
-        governed_bridge_pending = _int(bridge.get("pending"))
+        bridge_membership_sql = """
+          EXISTS (
+            SELECT 1
+            FROM ml_issue_select_cstring_governed_bridge_proposal_items bridge_item
+            WHERE bridge_item.run_id = (
+              SELECT MAX(latest_bridge.run_id)
+              FROM ml_issue_select_cstring_governed_bridge_proposal_items latest_bridge
+            )
+              AND bridge_item.segment_id = s.segment_id
+          )
+        """
+    high_severity_issue_sql = "0"
+    if _table_exists(con, "issues"):
+        high_severity_issue_sql = """
+          EXISTS (
+            SELECT 1
+            FROM issues issue
+            WHERE issue.segment_id = s.segment_id
+              AND lower(issue.severity) IN ('high', 'error', 'critical')
+          )
+        """
+
+    state_counts = _one(
+        con,
+        f"""
+        SELECT
+          COALESCE(SUM(CASE
+            WHEN s.final_state = 'reopen_auto_confirmed_autofix'
+             AND s.confirmed_matches_output = 1
+             AND s.output_state = 'output_present'
+             AND NOT (s.state_group = 'pending' AND ({bridge_membership_sql}))
+             AND NOT ({high_severity_issue_sql})
+            THEN 1 ELSE 0 END), 0) AS model_watch,
+          COALESCE(SUM(CASE
+            WHEN s.state_group = 'pending'
+             AND (
+               s.needs_output_apply = 1
+               OR s.output_state IN ('output_missing', 'confirmation_mismatch')
+               OR s.final_state IN (
+                 'pending_unknown_open',
+                 'pending_output_missing_real',
+                 'pending_blocked_structure',
+                 'pending_human_review',
+                 'reopen_auto_confirmed'
+               )
+               OR ({high_severity_issue_sql})
+               OR ({bridge_membership_sql})
+             )
+            THEN 1 ELSE 0 END), 0) AS actionable_pending
+        FROM segment_state_items s
+        WHERE s.run_id = ?
+        """,
+        (run_id,),
+    )
 
     closed = _int(summary.get("closed_count"))
     raw_pending = _int(summary.get("pending_count"))
     needs_apply = _int(summary.get("output_apply_pending_count"))
-    actionable_pending = max(_int(state_counts.get("actionable_pending")), governed_bridge_pending)
-    model_watch = max(_int(state_counts.get("model_watch")) - governed_bridge_pending, 0)
+    governed_bridge_pending = _int(select_cstring.get("pending"))
+    actionable_pending = _int(state_counts.get("actionable_pending"))
+    model_watch = _int(state_counts.get("model_watch"))
     actionable_without_bridge = max(actionable_pending - governed_bridge_pending, 0)
     learning_backlog = max(raw_pending - actionable_pending, 0)
+    distribution = [
+        {"name": "Consolidado", "value": closed, "group": "closed_consolidated", "color": "#10b981"},
+        {"name": "Pendencia acionavel", "value": actionable_without_bridge, "group": "actionable_pending", "color": "#f59e0b"},
+        {"name": "Suspeita ML / Watch", "value": model_watch, "group": "model_suspicion_watch", "color": "#8b5cf6"},
+        {"name": "Ponte governada pendente", "value": governed_bridge_pending, "group": "governed_bridge_pending", "color": "#38bdf8"},
+    ]
     return {
         "run_id": run_id,
         "closed_consolidated": closed,
@@ -7616,12 +7657,12 @@ def _pending_taxonomy_summary_payload(
         "raw_pending": raw_pending,
         "learning_backlog": learning_backlog,
         "needs_apply": needs_apply,
-        "distribution": [
-            {"name": "Consolidado", "value": closed, "group": "closed_consolidated", "color": "#10b981"},
-            {"name": "Pendencia acionavel", "value": actionable_without_bridge, "group": "actionable_pending", "color": "#f59e0b"},
-            {"name": "Suspeita ML / Watch", "value": model_watch, "group": "model_suspicion_watch", "color": "#8b5cf6"},
-            {"name": "Ponte governada pendente", "value": governed_bridge_pending, "group": "governed_bridge_pending", "color": "#38bdf8"},
-        ],
+        "select_cstring": {
+            "total": _int(select_cstring.get("total")),
+            "closed": _int(select_cstring.get("closed")),
+            "pending": governed_bridge_pending,
+        },
+        "distribution": [row for row in distribution if row["value"] > 0],
     }
 
 
@@ -11134,15 +11175,201 @@ def _learning_status_payload(con: sqlite3.Connection) -> dict[str, Any]:
     return status
 
 
+def _production_status_cache_key(con: sqlite3.Connection) -> tuple[Any, ...] | None:
+    database = _one(con, "PRAGMA database_list")
+    database_path = str(database.get("file") or "")
+    if not database_path:
+        return None
+    segment_state_run_id = _latest_segment_state_run_id(con)
+    quality_epoch = (
+        _one(
+            con,
+            """
+            SELECT id, status, segment_state_run_id, updated_at
+            FROM quality_epochs
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+        )
+        if _table_exists(con, "quality_epochs")
+        else {}
+    )
+    latest_apply = (
+        _one(
+            con,
+            """
+            SELECT id, updated_at
+            FROM segment_output_apply_runs
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+        )
+        if _table_exists(con, "segment_output_apply_runs")
+        else {}
+    )
+    active_gate = (
+        _one(
+            con,
+            """
+            SELECT registry.active_checkpoint_id, registry.active_guarded_checkpoint_id,
+                   registry.active_overlay_run_id, registry.active_policy_run_id,
+                   registry.updated_at, checkpoint.updated_at AS guarded_checkpoint_updated_at
+            FROM ml_composite_gate_registry registry
+            LEFT JOIN ml_composite_guarded_overlay_checkpoints checkpoint
+              ON checkpoint.id = registry.active_guarded_checkpoint_id
+            WHERE registry.gate_key = 'segment_token_composite_review_gate'
+            LIMIT 1
+            """,
+        )
+        if _table_exists(con, "ml_composite_gate_registry")
+        else {}
+    )
+    return (
+        PRODUCTION_STATUS_CACHE_SCHEMA_VERSION,
+        str(Path(database_path).resolve()),
+        segment_state_run_id,
+        _int(quality_epoch.get("id")),
+        quality_epoch.get("status"),
+        _int(quality_epoch.get("segment_state_run_id")),
+        quality_epoch.get("updated_at"),
+        _int(latest_apply.get("id")),
+        latest_apply.get("updated_at"),
+        _int(active_gate.get("active_checkpoint_id")),
+        _int(active_gate.get("active_guarded_checkpoint_id")),
+        _int(active_gate.get("active_overlay_run_id")),
+        _int(active_gate.get("active_policy_run_id")),
+        active_gate.get("updated_at"),
+        active_gate.get("guarded_checkpoint_updated_at"),
+    )
+
+
+def _build_production_status_snapshot(con: sqlite3.Connection) -> dict[str, Any]:
+    summary = (
+        _one(
+            con,
+            """
+            SELECT
+              id AS run_id,
+              rule_version,
+              active_score_run_id,
+              candidate_score_run_id,
+              policy_run_id,
+              total_segments,
+              closed_count,
+              pending_count,
+              output_apply_pending_count,
+              blank_valid_count,
+              reopen_count,
+              finished_at
+            FROM segment_state_runs
+            WHERE total_segments > 1000
+              AND finished_at IS NOT NULL
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+            """,
+        )
+        if _table_exists(con, "segment_state_runs")
+        else {}
+    )
+    run_id = _int(summary.get("run_id"))
+    taxonomy = _pending_taxonomy_summary_payload(con, run_id)
+    applied_segments = 0
+    if run_id and _table_exists(con, "segment_state_items"):
+        applied_segments = _int(
+            _one(
+                con,
+                """
+                SELECT COUNT(*) AS total
+                FROM segment_state_items
+                WHERE run_id = ?
+                  AND apply_state = 'applied'
+                """,
+                (run_id,),
+            ).get("total")
+        )
+    last_apply = {}
+    if _table_exists(con, "segment_output_apply_runs"):
+        last_apply = _one(
+            con,
+            """
+            WITH recent AS (
+              SELECT
+                id AS apply_run_id,
+                apply,
+                candidates_inspected,
+                applied_count,
+                files_touched_count,
+                report_path,
+                started_at
+              FROM segment_output_apply_runs
+              ORDER BY started_at DESC, id DESC
+              LIMIT 20
+            )
+            SELECT *
+            FROM recent
+            ORDER BY CASE WHEN apply = 1 THEN 0 ELSE 1 END,
+                     started_at DESC,
+                     apply_run_id DESC
+            LIMIT 1
+            """,
+        )
+    active_gate = {}
+    if _table_exists(con, "ml_composite_gate_registry"):
+        guarded_join = (
+            "LEFT JOIN ml_composite_guarded_overlay_checkpoints checkpoint "
+            "ON checkpoint.id = registry.active_guarded_checkpoint_id"
+            if _table_exists(con, "ml_composite_guarded_overlay_checkpoints")
+            else ""
+        )
+        guarded_columns = (
+            "checkpoint.guarded_release_count, checkpoint.invalid_release_count"
+            if guarded_join
+            else "0 AS guarded_release_count, 0 AS invalid_release_count"
+        )
+        active_gate = _one(
+            con,
+            f"""
+            SELECT
+              registry.active_overlay_run_id,
+              registry.auto_apply_allowed,
+              {guarded_columns}
+            FROM ml_composite_gate_registry registry
+            {guarded_join}
+            WHERE registry.gate_key = 'segment_token_composite_review_gate'
+            LIMIT 1
+            """,
+        )
+    return {
+        "summary": summary,
+        "taxonomy": taxonomy,
+        "applied_segments": applied_segments,
+        "last_apply": last_apply,
+        "active_gate": active_gate,
+    }
+
+
+def _production_status_snapshot(con: sqlite3.Connection) -> dict[str, Any]:
+    global PRODUCTION_STATUS_CACHE
+    cache_key = _production_status_cache_key(con)
+    if cache_key is None:
+        return _build_production_status_snapshot(con)
+    with PRODUCTION_STATUS_CACHE_LOCK:
+        if PRODUCTION_STATUS_CACHE.get("key") == cache_key:
+            cached = PRODUCTION_STATUS_CACHE.get("snapshot")
+            if isinstance(cached, dict):
+                return cached
+        snapshot = _build_production_status_snapshot(con)
+        PRODUCTION_STATUS_CACHE = {"key": cache_key, "snapshot": snapshot}
+        return snapshot
+
+
 def _production_payload(con: sqlite3.Connection) -> dict[str, Any]:
-    lifecycle = _lifecycle_payload(con)
-    agents = _agents_payload(con)
-    summary = lifecycle.get("summary") or {}
-    output_application = lifecycle.get("outputApplication") or []
-    output_apply = lifecycle.get("outputApply") or {}
-    active_gate = agents.get("activeGate") or {}
-    latest_apply_runs = output_apply.get("runs") or []
-    last_apply = next((row for row in latest_apply_runs if _int(row.get("apply")) == 1), latest_apply_runs[0] if latest_apply_runs else {})
+    snapshot = _production_status_snapshot(con)
+    summary = snapshot.get("summary") or {}
+    taxonomy = snapshot.get("taxonomy") or {}
+    applied_segments = _int(snapshot.get("applied_segments"))
+    last_apply = snapshot.get("last_apply") or {}
+    active_gate = snapshot.get("active_gate") or {}
     lock = _training_lock_payload(con)
     learning_status = _learning_status_payload(con)
     production_run = _read_production_run_status()
@@ -11152,15 +11379,9 @@ def _production_payload(con: sqlite3.Connection) -> dict[str, Any]:
     closed = _int(summary.get("closed_count"))
     pending = _int(summary.get("pending_count"))
     needs_apply = _int(summary.get("output_apply_pending_count"))
-    taxonomy = _pending_taxonomy_payload(con, _int(summary.get("run_id")))
     actionable_pending = _int(taxonomy.get("actionable_pending"))
     model_watch = _int(taxonomy.get("model_suspicion_watch"))
     governed_bridge_pending = _int(taxonomy.get("governed_bridge_pending"))
-    applied_segments = sum(
-        _int(row.get("total"))
-        for row in output_application
-        if row.get("apply_state") == "applied"
-    )
     blocked_critical = _int(active_gate.get("invalid_release_count"))
     auto_apply_allowed = bool(_int(active_gate.get("auto_apply_allowed")))
     readiness_status = "blocked"
