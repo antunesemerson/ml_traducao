@@ -220,6 +220,7 @@ class QualityProviderProposalsPayloadTest(unittest.TestCase):
             );
             CREATE TABLE ml_quality_provider_proposal_cases (
               id INTEGER PRIMARY KEY,
+              case_key TEXT,
               proposal_id INTEGER,
               case_kind TEXT,
               segment_id INTEGER,
@@ -228,6 +229,17 @@ class QualityProviderProposalsPayloadTest(unittest.TestCase):
               input_text TEXT,
               expected_behavior TEXT,
               assertions_json TEXT
+            );
+            CREATE TABLE source_segments (
+              id INTEGER PRIMARY KEY,
+              english_text TEXT,
+              spanish_text TEXT,
+              old_text TEXT
+            );
+            CREATE TABLE output_segments (
+              id INTEGER PRIMARY KEY,
+              segment_id INTEGER,
+              portuguese_text TEXT
             );
             INSERT INTO ml_quality_provider_proposal_runs VALUES
               (3, 'run-3', 'proposal-v1', 13, 9, 20, 2, 1, 1, 1, 1,
@@ -239,12 +251,18 @@ class QualityProviderProposalsPayloadTest(unittest.TestCase):
                '{"enabled": false}',
                '{"selector": {"file_families": ["dlc"]}}');
             INSERT INTO ml_quality_provider_proposal_cases VALUES
-              (1, 4, 'positive', 10, 'dlc/example.yml', 'key', 'text',
+              (1, 'positive-10', 4, 'positive', 10, 'dlc/example.yml', 'key', 'text',
                'resolve_issue_or_reject_with_explicit_reason', '["issue_removed"]'),
-              (2, 4, 'negative', 11, 'dlc/example.yml', 'clean', 'clean',
+              (2, 'negative-11', 4, 'negative', 11, 'dlc/example.yml', 'clean', 'clean',
                'leave_unchanged', '["candidate_equals_input"]'),
-              (3, 4, 'boundary', 10, 'dlc/example.yml', 'key', 'text',
+              (3, 'boundary-10', 4, 'boundary', 10, 'dlc/example.yml', 'key', 'text',
                'deterministic_and_token_safe_or_explicitly_rejected', '["idempotent"]');
+            INSERT INTO source_segments VALUES
+              (10, 'English', 'Spanish', 'Old'),
+              (11, 'Clean English', 'Clean Spanish', 'Clean old');
+            INSERT INTO output_segments VALUES
+              (1, 10, 'Portuguese'),
+              (2, 11, 'Clean Portuguese');
             """
         )
 
@@ -263,6 +281,11 @@ class QualityProviderProposalsPayloadTest(unittest.TestCase):
         self.assertEqual(proposal["negative_case_count"], 1)
         self.assertEqual(proposal["boundary_case_count"], 1)
         self.assertEqual(len(proposal["sample_cases"]), 3)
+        self.assertEqual(
+            [item["case_kind"] for item in proposal["sample_cases"]],
+            ["positive", "boundary", "negative"],
+        )
+        self.assertEqual(proposal["sample_cases"][0]["output_text"], "Portuguese")
 
 
 class QualityDebtPayloadTest(unittest.TestCase):
@@ -305,6 +328,75 @@ class QualityDebtPayloadTest(unittest.TestCase):
         self.assertEqual(payload["risk_watch"]["locked_low_score_count"], 3)
         self.assertFalse(payload["risk_watch"]["counted_as_quality_debt"])
         self.assertFalse(payload["blocks_operational_closure"])
+
+
+class CriticalLowScoreCohortsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(
+            """
+            CREATE TABLE source_segments (
+              id INTEGER PRIMARY KEY,
+              is_active INTEGER,
+              old_text TEXT,
+              spanish_text TEXT,
+              english_text TEXT
+            );
+            CREATE TABLE ml_score_items (
+              run_id INTEGER,
+              segment_id INTEGER,
+              model_safe_probability REAL,
+              issue_count INTEGER,
+              token_status TEXT,
+              final_action TEXT,
+              candidate_text TEXT
+            );
+            CREATE TABLE segment_state_items (
+              run_id INTEGER,
+              segment_id INTEGER,
+              state_group TEXT,
+              needs_output_apply INTEGER,
+              locked INTEGER,
+              confirmed_matches_output INTEGER
+            );
+            INSERT INTO source_segments VALUES
+              (1, 1, 'old one', 'es one', 'en one'),
+              (2, 1, 'old two', 'es two', 'en two'),
+              (3, 1, 'preserved', 'es three', 'en three'),
+              (4, 1, 'not critical', 'es four', 'en four');
+            INSERT INTO ml_score_items VALUES
+              (20, 1, 0.01, 1, 'ok', 'needs_autofix', 'candidate one'),
+              (20, 2, 0.02, 0, 'mismatch', 'blocked_structure', 'candidate two'),
+              (20, 3, 0.03, 0, 'ok', 'needs_human', 'preserved'),
+              (20, 4, 0.20, 1, 'ok', 'needs_autofix', 'candidate four');
+            INSERT INTO segment_state_items VALUES
+              (30, 1, 'closed', 0, 1, 1),
+              (30, 2, 'open', 0, 0, 0),
+              (30, 3, 'closed', 0, 0, 1);
+            """
+        )
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def test_threshold_queue_separates_evidence_from_model_confidence(self) -> None:
+        payload = backend._low_score_cohorts_for_threshold(
+            self.conn,
+            score_run_id=20,
+            segment_state_run_id=30,
+            threshold=0.10,
+        )
+
+        self.assertEqual(payload["total"], 3)
+        self.assertEqual(payload["explicit_text_issue"], 1)
+        self.assertEqual(payload["structural_block_without_issue"], 1)
+        self.assertEqual(payload["unchanged_or_preserved_text"], 1)
+        self.assertEqual(payload["evidence_flagged"], 2)
+        self.assertEqual(payload["lifecycle_closed"], 1)
+        self.assertEqual(payload["operationally_open"], 1)
+        self.assertEqual(payload["actionable"], 1)
+        self.assertEqual(payload["informational"], 1)
 
 
 if __name__ == "__main__":

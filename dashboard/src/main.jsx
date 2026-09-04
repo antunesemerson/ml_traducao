@@ -10,6 +10,7 @@ import {
   ArrowUpRight,
   BarChart3,
   BrainCircuit,
+  Check,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -18,10 +19,13 @@ import {
   ExternalLink,
   FileWarning,
   GitBranch,
+  Hexagon,
   Home,
   Layers3,
   LayoutDashboard,
   Lock,
+  Maximize2,
+  Minimize2,
   Moon,
   PackageSearch,
   Play,
@@ -37,6 +41,7 @@ import {
   TerminalSquare,
   Unlock,
   Workflow,
+  X,
   XCircle,
 } from 'lucide-react';
 import {
@@ -59,12 +64,56 @@ import {
 } from 'recharts';
 
 const API_BASE = import.meta.env.VITE_DASHBOARD_API ?? 'http://127.0.0.1:8765/api';
+const MOJIBAKE_REVIEW_OUTBOX_STORAGE_KEY = 'ck3.mojibake-review-outbox.v1';
+const HUMAN_REVIEW_OUTBOX_STORAGE_KEY = 'ck3.human-review-outbox.v1';
+const MOJIBAKE_REVIEW_RECONCILE_BATCH_SIZE = 5;
+const MOJIBAKE_REVIEW_RECONCILE_MAX_WAIT_MS = 15000;
+const MOJIBAKE_REVIEW_RECONCILE_SETTLE_MS = 600;
+
+const readMojibakeReviewOutbox = () => {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(MOJIBAKE_REVIEW_OUTBOX_STORAGE_KEY) ?? '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry) => (
+      entry
+      && typeof entry === 'object'
+      && String(entry.id ?? '')
+      && Number(entry.request?.segment_id ?? 0) > 0
+    ));
+  } catch {
+    return [];
+  }
+};
+
+const readHumanReviewOutbox = () => {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(HUMAN_REVIEW_OUTBOX_STORAGE_KEY) ?? '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry) => (
+      entry
+      && typeof entry === 'object'
+      && String(entry.id ?? '')
+      && String(entry.endpoint ?? '').startsWith('/production/')
+      && String(entry.optimistic_key ?? '')
+      && entry.request
+      && typeof entry.request === 'object'
+    ));
+  } catch {
+    return [];
+  }
+};
+
+const mojibakeReviewRequestId = (segmentId) => {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `mojibake-${segmentId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
 
 const fmt = (value) => Number(value ?? 0).toLocaleString('pt-BR');
 const compact = (value) => Intl.NumberFormat('pt-BR', { notation: 'compact', maximumFractionDigits: 1 }).format(Number(value ?? 0));
 const pct = (value) => `${Number(value ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })}%`;
 const metric = (value) => Number(value ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: 4 });
 const pctMetric = (value) => pct(Number(value ?? 0) * 100);
+const ppMetric = (value) => `${Number(value ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} p.p.`;
 const fmtBytes = (value) => {
   const bytes = Number(value);
   if (!Number.isFinite(bytes)) return 'nao medido';
@@ -167,6 +216,7 @@ const colorClasses = {
   emerald: 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400',
   amber: 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400',
   red: 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400',
+  pink: 'bg-pink-50 dark:bg-pink-900/20 text-pink-600 dark:text-pink-300',
   violet: 'bg-violet-50 dark:bg-violet-900/20 text-violet-600 dark:text-violet-400',
   slate: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300',
 };
@@ -175,10 +225,83 @@ const chartText = { fontSize: 12, fill: 'currentColor', opacity: 0.65 };
 
 const cn = (...classes) => classes.filter(Boolean).join(' ');
 
+function SystemMark({ className = '', iconSize = 18 }) {
+  return (
+    <span className={cn('system-mark relative inline-grid place-items-center text-blue-400', className)} aria-hidden="true">
+      <Hexagon className="absolute inset-0 h-full w-full" strokeWidth={1.7} />
+      <Activity size={iconSize} strokeWidth={2.1} />
+    </span>
+  );
+}
+
+const residualTooltipRowsFor = (item) => {
+  const residualSignals = Array.isArray(item?.residual_word_signals)
+    ? item.residual_word_signals.filter(Boolean)
+    : [];
+  const unresolvedSignals = Array.isArray(item?.unresolved_signals)
+    ? item.unresolved_signals.filter((signal) => signal && typeof signal === 'object')
+    : [];
+  const residualFindings = Array.isArray(item?.residual_findings)
+    ? item.residual_findings.filter((finding) => finding && typeof finding === 'object')
+    : [];
+  const count = Math.max(
+    Number(item?.remaining_signal_count ?? 0),
+    residualSignals.length,
+    unresolvedSignals.length,
+  );
+
+  return Array.from({ length: count }, (_, index) => {
+    const unresolved = unresolvedSignals[index] ?? {};
+    const finding = residualFindings[index] ?? {};
+    const token = String(
+      unresolved.token
+      ?? residualSignals[index]
+      ?? finding.observed_text
+      ?? '?'
+    ).trim();
+    const reason = String(
+      unresolved.reason
+      ?? finding.issue_family
+      ?? finding.expected_strategy
+      ?? 'problema residual identificado'
+    ).trim();
+    const expected = String(
+      finding.expected_expression
+      ?? unresolved.expected_expression
+      ?? ''
+    ).trim();
+    return `${index + 1}. ${token}: ${reason}${expected ? ` → esperado: ${expected}` : ''}`;
+  });
+};
+
+const nextReviewItemKey = (items, currentKey, keyFor = (item) => item) => {
+  if (!Array.isArray(items) || items.length <= 1) return null;
+  const currentIndex = items.findIndex((item) => keyFor(item) === currentKey);
+  if (currentIndex < 0) return keyFor(items[0]);
+  return keyFor(items[currentIndex + 1] ?? items[0]);
+};
+
 const GLOBAL_TOOLTIP_ID = 'global-dashboard-tooltip';
-const GLOBAL_TOOLTIP_SELECTOR = '[data-tooltip], [data-tooltip-description], [data-tooltip-title]';
+const GLOBAL_TOOLTIP_SELECTOR = '[data-tooltip], [data-tooltip-description], [data-tooltip-title], [data-disabled-reason], button:disabled, button[aria-disabled="true"]';
 
 const tooltipPayloadFor = (anchor) => {
+  const isButton = Boolean(anchor?.matches?.('button, [role="button"]'));
+  if (isButton) {
+    const disabled = Boolean(anchor?.matches?.(':disabled')) || anchor.getAttribute('aria-disabled') === 'true';
+    if (!disabled) return null;
+
+    const blockedReason = String(
+      anchor.dataset.disabledReason
+      ?? anchor.getAttribute('aria-description')
+      ?? 'A ação permanece bloqueada até a conclusão do processo atual ou a liberação das travas desta etapa.'
+    ).trim();
+    return {
+      title: 'Ação indisponível',
+      description: blockedReason,
+      meta: '',
+    };
+  }
+
   let title = String(anchor.dataset.tooltipTitle ?? '').trim();
   let description = String(anchor.dataset.tooltipDescription ?? anchor.dataset.tooltip ?? '').trim();
   let meta = String(anchor.dataset.tooltipMeta ?? '').trim();
@@ -506,7 +629,7 @@ const ModelSnapshotColumn = ({ model }) => (
 const MetricTile = ({ title, value, tone = 'slate', className = '' }) => (
   <div className={`rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5 ${className}`}>
     <p className="text-[0.68rem] font-semibold uppercase tracking-wide text-[var(--dash-muted)]">{title}</p>
-    <p className={`mt-0.5 text-base font-black ${tone === 'emerald' ? 'text-emerald-400' : tone === 'red' ? 'text-red-400' : tone === 'blue' ? 'text-blue-400' : tone === 'amber' ? 'text-amber-400' : tone === 'violet' ? 'text-violet-400' : 'text-[var(--dash-text)]'}`}>{value}</p>
+    <p className={`mt-0.5 text-base font-black ${tone === 'emerald' ? 'text-emerald-400' : tone === 'red' ? 'text-red-400' : tone === 'blue' ? 'text-blue-400' : tone === 'amber' ? 'text-amber-400' : tone === 'pink' ? 'text-pink-300' : tone === 'violet' ? 'text-violet-400' : 'text-[var(--dash-text)]'}`}>{value}</p>
   </div>
 );
 
@@ -536,8 +659,13 @@ const ChartCard = ({ title, subtitle, children, className = '' }) => (
   </Card>
 );
 
-const Badge = ({ children, tone = 'emerald' }) => (
-  <span className={`dashboard-badge px-3 py-1 text-xs font-bold ${colorClasses[tone] ?? colorClasses.emerald}`}>{children}</span>
+const Badge = ({ children, tone = 'emerald', ...props }) => (
+  <span
+    className={`dashboard-badge px-3 py-1 text-xs font-bold ${colorClasses[tone] ?? colorClasses.emerald}`}
+    {...props}
+  >
+    {children}
+  </span>
 );
 
 const ViewToggle = ({ options, value, onChange }) => (
@@ -2419,6 +2547,9 @@ const publicationStageDetails = {
   apply_confirmed_dry_run: 'Simula a aplicacao exata dos segmentos em needs apply.',
   apply_confirmed_write: 'Escreve somente a fila confirmada que passou no dry-run.',
   pairwise_lifecycle_bridge: 'Consolida reparos pareados ja aplicados usando evidencia exata e idempotente.',
+  segment_state_after_write: 'Confere individualmente quais textos foram escritos antes de fechar o ciclo de vida.',
+  human_lifecycle_dry_run: 'Valida confirmações humanas aplicadas contra texto, tokens e evidências abertas.',
+  human_lifecycle_bridge: 'Fecha somente confirmações humanas íntegras; bloqueios permanecem na fila Apply.',
   segment_state_after: 'Recalcula fechamento apos o apply publicavel.',
   publication_preflight_after: 'Recalcula gates, needs apply e score do pacote depois da escrita.',
   production_report: 'Gera relatorio final do fluxo publicavel.',
@@ -2429,6 +2560,9 @@ const publicationStageBlueprint = [
   ['apply_confirmed_dry_run', 'Dry-run apply confirmado'],
   ['apply_confirmed_write', 'Aplicar fila confirmada'],
   ['pairwise_lifecycle_bridge', 'Consolidar reparos pareados'],
+  ['segment_state_after_write', 'Verificar escrita por segmento'],
+  ['human_lifecycle_dry_run', 'Validar confirmações humanas'],
+  ['human_lifecycle_bridge', 'Consolidar confirmações humanas'],
   ['segment_state_after', 'Segment-state pos-apply'],
   ['publication_preflight_after', 'Preflight pos-apply'],
   ['production_report', 'Relatorio final'],
@@ -2538,6 +2672,9 @@ const publicationPhaseBlueprint = [
       'apply_confirmed_dry_run',
       'apply_confirmed_write',
       'pairwise_lifecycle_bridge',
+      'segment_state_after_write',
+      'human_lifecycle_dry_run',
+      'human_lifecycle_bridge',
     ],
   },
   {
@@ -2862,6 +2999,562 @@ function ProductionControl({ data }) {
   );
 }
 
+function ScoreRecalibrationPanel({
+  value,
+  loading,
+  busy,
+  error,
+  stage,
+  onStageChange,
+  onRefresh,
+  onGenerate,
+  onReview,
+  onPromote,
+  onRestoreVersion,
+  expanded,
+  onToggleExpanded,
+}) {
+  const training = value?.training ?? {};
+  const candidate = value?.candidate ?? null;
+  const summary = candidate?.summary ?? {};
+  const gate = candidate?.gate ?? {};
+  const actions = value?.actions ?? {};
+  const stages = Array.isArray(value?.stages) ? value.stages : [];
+  const discrepancies = Array.isArray(candidate?.discrepancies) ? candidate.discrepancies : [];
+  const [focusedIndex, setFocusedIndex] = useState(null);
+  const focused = focusedIndex === null ? null : discrepancies[focusedIndex] ?? null;
+  const probabilityLabel = (valueToFormat) => Number.isFinite(Number(valueToFormat))
+    ? `${(Number(valueToFormat) * 100).toFixed(2).replace('.', ',')}%`
+    : 'não medido';
+  const decimalLabel = (valueToFormat) => Number.isFinite(Number(valueToFormat))
+    ? Number(valueToFormat).toFixed(4).replace('.', ',')
+    : 'não medido';
+  const signedPoints = (valueToFormat) => {
+    const numeric = Number(valueToFormat ?? 0);
+    return `${numeric > 0 ? '+' : ''}${numeric.toFixed(2).replace('.', ',')} p.p.`;
+  };
+  const factorLabel = (factor) => {
+    if (factor?.key === 'global') return 'Base humana geral';
+    if (factor?.key === 'complexity') return `Complexidade · ${String(factor.label ?? '').replaceAll('_', ' ')}`;
+    if (factor?.key === 'family') return `Família · ${String(factor.label ?? '').replaceAll('_', ' ')}`;
+    if (factor?.key === 'probability_band') return `Faixa antiga · ${factor.label}`;
+    if (factor?.key === 'source') return `Origem · ${String(factor.label ?? '').replaceAll('_', ' ')}`;
+    if (factor?.key === 'issue_family') return `Falha observada · ${String(factor.label ?? '').replaceAll('_', ' ')}`;
+    if (factor?.key === 'issue_severity') return `Severidade · ${String(factor.label ?? '').replaceAll('_', ' ')}`;
+    if (factor?.key === 'blocking_issue_guard') return `Trava da falha · ${String(factor.label ?? '').replaceAll('_', ' ')}`;
+    return String(factor?.label ?? factor?.key ?? 'Evidência');
+  };
+  const reviewLabel = (decision) => ({
+    coherent_change: 'coerente',
+    correct_direction_excessive: 'magnitude excessiva',
+    correct_direction_insufficient: 'magnitude insuficiente',
+    incorrect_direction: 'direção errada',
+    incorrect_change: 'incorreta',
+    needs_review: 'adiada',
+  }[decision] ?? 'pendente');
+  const reviewTone = (decision) => decision === 'coherent_change'
+    ? 'emerald'
+    : decision === 'needs_review'
+      ? 'amber'
+      : decision
+        ? 'red'
+        : 'amber';
+  const metricDelta = Number(summary.mean_delta ?? 0);
+  const gateEntries = Object.entries(gate.reasons ?? {});
+  const highConfidenceAudit = training.candidate_high_confidence_audit ?? {};
+  const stageTone = (status) => status === 'done' ? 'emerald' : status === 'blocked' ? 'red' : 'amber';
+  const activeCandidateId = Number(value?.registry?.active_candidate_run_id ?? 0);
+  const activeSummary = value?.registry?.active_candidate_summary ?? summary;
+  const recommendation = value?.recommendation ?? {};
+  const recommendationReasons = Array.isArray(recommendation.reasons) ? recommendation.reasons : [];
+  const scoreVersions = Array.isArray(value?.score_versions) ? value.score_versions : [];
+  const activeVersion = scoreVersions.find((version) => version.active) ?? null;
+  const calibrationOutsideContext = activeVersion?.kind === 'calibrated' && activeVersion?.compatible === false;
+  const activeMonitoring = ['active_monitoring', 'raw_monitoring'].includes(value?.lifecycle_state) && stage === 'monitoring';
+  const activeVersionLabel = activeVersion?.kind === 'raw' ? 'Score bruto' : `#${activeCandidateId}`;
+  const activeMeanProbability = activeVersion?.mean_probability
+    ?? activeSummary.candidate_mean_probability
+    ?? activeSummary.current_mean_probability;
+  useEffect(() => {
+    if (!focused || typeof document === 'undefined') return undefined;
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setFocusedIndex(null);
+      if (event.key === 'ArrowLeft' && discrepancies.length > 1) {
+        setFocusedIndex((current) => (current - 1 + discrepancies.length) % discrepancies.length);
+      }
+      if (event.key === 'ArrowRight' && discrepancies.length > 1) {
+        setFocusedIndex((current) => (current + 1) % discrepancies.length);
+      }
+    };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [focused, discrepancies.length]);
+  const submitFocusedReview = (decision) => {
+    if (!focused || focusedIndex === null) return;
+    const reviewedItem = focused;
+    setFocusedIndex(discrepancies.length <= 1
+      ? null
+      : focusedIndex >= discrepancies.length - 1
+        ? 0
+        : focusedIndex);
+    void onReview(reviewedItem, decision);
+  };
+  const textPanel = (title, text, tone = 'slate', bodyClassName = 'max-h-40') => (
+    <div className={cn(
+      'min-h-0 rounded-xl border p-3',
+      tone === 'emerald' ? 'border-emerald-400/25 bg-emerald-500/5' :
+        tone === 'amber' ? 'border-amber-400/25 bg-amber-500/5' :
+          tone === 'violet' ? 'border-violet-400/25 bg-violet-500/5' :
+            'border-[var(--dash-border)] bg-[var(--dash-subtle)]'
+    )}>
+      <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">{title}</p>
+      <p className={cn('dashboard-card-scroll mt-2 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-[var(--dash-text)]', bodyClassName)}>
+        {text || 'Sem texto disponível.'}
+      </p>
+    </div>
+  );
+
+  return (
+    <div className="flex min-h-0 w-full flex-col">
+      <div className="score-recalibration-heading mb-4 flex flex-wrap items-start justify-between gap-3 border-b border-[var(--dash-border)] pb-3">
+        <div>
+          <h3 className="text-lg font-black tracking-tight text-[var(--dash-text)]">{activeMonitoring ? 'Governança do score calibrado' : 'Laboratório operacional de recalibração'}</h3>
+          <p className="mt-1 text-sm text-[var(--dash-muted)]">{activeMonitoring ? 'A calibração promovida é preservada no histórico e aplicada somente ao contexto compatível; novas decisões alimentam o próximo ciclo.' : 'Gera uma versão comparável do score sem alterar o bruto; promoção e reversão usam registro versionado.'}</p>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {candidate?.id ? <Badge tone="violet">candidato #{candidate.id}</Badge> : <Badge tone="slate">sem candidato</Badge>}
+          {value?.registry?.active_candidate_run_id ? <Badge tone={calibrationOutsideContext ? 'amber' : 'emerald'}>{calibrationOutsideContext ? 'histórico' : 'ativo'} #{value.registry.active_candidate_run_id}</Badge> : <Badge tone="blue">score atual</Badge>}
+          <button type="button" onClick={onRefresh} disabled={loading || busy} className="grid h-8 w-8 place-items-center rounded-lg border border-[var(--dash-border)] text-[var(--dash-muted)] hover:text-cyan-200 disabled:opacity-40" aria-label="Atualizar recalibração">
+            <RotateCcw size={14} className={loading ? 'animate-spin' : ''} />
+          </button>
+          <button type="button" onClick={onToggleExpanded} className="grid h-8 w-8 place-items-center rounded-lg border border-[var(--dash-border)] text-[var(--dash-muted)] hover:text-cyan-200" aria-label={expanded ? 'Reduzir painel' : 'Ampliar painel'}>
+            {expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          </button>
+        </div>
+      </div>
+
+      {activeMonitoring ? (
+        <div className={cn(
+          'flex shrink-0 flex-wrap items-center justify-between gap-3 border-b pb-4',
+          recommendation.tone === 'red'
+            ? 'border-red-400/30'
+            : recommendation.tone === 'amber'
+              ? 'border-amber-400/30'
+              : 'border-emerald-400/25'
+        )}>
+          <div>
+            <p className={cn(
+              'text-[10px] font-black uppercase tracking-wide',
+              recommendation.tone === 'red'
+                ? 'text-red-300'
+                : recommendation.tone === 'amber'
+                  ? 'text-amber-300'
+                  : 'text-emerald-300'
+            )}>Ciclo concluído · {recommendation.label ?? 'monitoramento ativo'}</p>
+            <p className="mt-1 text-base font-black text-[var(--dash-text)]">{calibrationOutsideContext ? `${activeVersionLabel} preservada no histórico · score bruto em uso no contexto atual` : `${activeVersionLabel} governa a confiança operacional`}</p>
+            {recommendationReasons.length ? (
+              <p className="mt-1 text-xs text-[var(--dash-muted)]">{recommendationReasons.join(' · ')}</p>
+            ) : null}
+          </div>
+          <Badge tone={recommendation.tone === 'red' ? 'red' : recommendation.tone === 'amber' ? 'amber' : 'emerald'}>
+            {compact(recommendation.observation_count ?? 0)} evidências
+          </Badge>
+        </div>
+      ) : (
+        <div className="score-recalibration-stage-rail relative grid shrink-0 grid-cols-2 gap-3 border-b border-[var(--dash-border)] pb-4 xl:grid-cols-4">
+          <div className="pointer-events-none absolute left-[10%] right-[10%] top-4 hidden h-px bg-[var(--dash-border-strong)] xl:block" />
+          {stages.map((item, index) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => onStageChange(item.id)}
+              className={cn(
+                'relative z-10 px-2 py-1 text-left transition focus:outline-none focus:ring-2 focus:ring-blue-400/50',
+                stage === item.id ? 'text-[var(--dash-text)]' : 'text-[var(--dash-muted)] hover:text-[var(--dash-text)]'
+              )}
+            >
+              <div className="flex items-center gap-2">
+                <span className={cn(
+                  'grid h-8 w-8 shrink-0 place-items-center rounded-full border bg-[var(--dash-bg)] text-xs font-black',
+                  item.status === 'done' ? 'border-emerald-400 text-emerald-300' : stage === item.id ? 'border-pink-400 text-pink-300' : 'border-[var(--dash-border-strong)] text-[var(--dash-muted)]'
+                )}>{item.status === 'done' ? <CheckCircle2 size={15} /> : index + 1}</span>
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-black">{index + 1}. {item.label}</p>
+                  <p className={cn('mt-0.5 text-[10px] font-bold', item.status === 'done' ? 'text-emerald-400' : item.status === 'blocked' ? 'text-red-400' : 'text-[var(--dash-soft)]')}>{item.status === 'done' ? 'Pronto' : item.status === 'blocked' ? 'Travado' : 'Pendente'}</p>
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {error ? <div className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 p-2 text-xs font-bold text-red-200">{error}</div> : null}
+
+      <div className="dashboard-card-scroll mt-2 min-h-0 flex-1 overflow-auto pr-1">
+        {activeMonitoring && (
+          <div className="space-y-5">
+            <div className="grid border-b border-[var(--dash-border)] py-4 md:grid-cols-2 xl:grid-cols-4">
+              {[
+                [calibrationOutsideContext ? 'Calibração de contexto anterior' : 'Versão ativa', activeVersionLabel, 'text-emerald-400'],
+                ['Segmentos materializados', compact(activeVersion?.item_count ?? activeSummary.item_count), 'text-blue-400'],
+                ['Score antes desta calibração', probabilityLabel(activeSummary.current_mean_probability ?? activeVersion?.mean_probability), 'text-[var(--dash-text)]'],
+                [calibrationOutsideContext ? 'Score calibrado histórico' : 'Score médio ativo', probabilityLabel(activeMeanProbability), activeVersion?.kind === 'raw' ? 'text-[var(--dash-text)]' : 'text-pink-300'],
+              ].map(([label, metric, tone]) => (
+                <div key={label} className="border-b border-[var(--dash-border)] px-4 py-2 first:pl-0 last:border-b-0 md:border-b-0 md:border-r md:last:border-r-0">
+                  <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">{label}</p>
+                  <p className={cn('mt-1 text-xl font-black', tone)}>{metric}</p>
+                </div>
+              ))}
+            </div>
+            <div className="border-b border-[var(--dash-border)] pb-3">
+              <div className="mb-2 flex items-end justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-black text-[var(--dash-text)]">Versões do score</h4>
+                  <p className="mt-0.5 text-xs text-[var(--dash-muted)]">Compare o score bruto e somente as calibrações que já passaram pela promoção.</p>
+                </div>
+                <span className="text-[10px] font-bold uppercase tracking-wide text-[var(--dash-soft)]">registro versionado</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px] text-left text-xs">
+                  <thead className="border-y border-[var(--dash-border)] text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">
+                    <tr>
+                      <th className="px-3 py-2">Versão</th>
+                      <th className="px-3 py-2" data-tooltip-title="Score médio" data-tooltip-description="Confiança operacional média do pacote. A comparação mostra quanto a calibração reposiciona os segmentos; um valor maior, sozinho, não significa uma versão melhor.">Score médio</th>
+                      <th className="px-3 py-2" data-tooltip-title="ECE" data-tooltip-description="Erro de calibração esperado: mede a distância entre confiança prevista e qualidade observada. Quanto menor, mais fiel é o score usado nas decisões.">ECE</th>
+                      <th className="px-3 py-2" data-tooltip-title="Brier" data-tooltip-description="Erro quadrático das probabilidades. Penaliza confiança distante do resultado humano; valores menores indicam previsões mais precisas.">Brier</th>
+                      <th className="px-3 py-2" data-tooltip-title="Falsos seguros" data-tooltip-description="Segmentos ruins que receberam confiança alta. Essa métrica influencia diretamente as travas de promoção; zero é o estado desejado.">Falsos seguros</th>
+                      <th className="px-3 py-2 text-right">Ação</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scoreVersions.map((version) => (
+                      <tr key={version.kind === 'raw' ? 'raw-score' : `calibrated-${version.candidate_run_id}`} className={cn('border-b border-[var(--dash-border)]', version.active && 'bg-pink-500/5')}>
+                        <td className="px-3 py-2.5">
+                          <div className="flex items-center gap-2">
+                            <span className={cn('font-black', version.active ? 'text-pink-300' : 'text-[var(--dash-text)]')}>{version.label}</span>
+                            {version.active ? <Badge tone={version.compatible ? 'emerald' : 'amber'}>{version.compatible ? 'ativa' : 'promovida no histórico'}</Badge> : null}
+                            {!version.compatible ? <Badge tone="amber">outro contexto</Badge> : null}
+                          </div>
+                          <p className="mt-0.5 text-[10px] text-[var(--dash-soft)]">{version.kind === 'raw' ? 'baseline imutável' : `promovida em ${compactDateTime(version.promoted_at ?? version.created_at)}`}</p>
+                        </td>
+                        <td className="px-3 py-2.5 font-black text-[var(--dash-text)]">{probabilityLabel(version.mean_probability)}</td>
+                        <td className="px-3 py-2.5 font-black text-pink-300">{probabilityLabel(version.ece)}</td>
+                        <td className="px-3 py-2.5 font-black text-blue-300">{decimalLabel(version.brier)}</td>
+                        <td className={cn('px-3 py-2.5 font-black', Number(version.false_safe_count ?? 0) === 0 ? 'text-emerald-400' : 'text-red-400')}>{compact(version.false_safe_count)}</td>
+                        <td className="px-3 py-2.5 text-right">
+                          {version.active ? (
+                            <span className="text-[10px] font-black uppercase tracking-wide text-emerald-400">{version.compatible ? 'em uso' : 'não aplicada neste contexto'}</span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => onRestoreVersion(version)}
+                              disabled={!version.restorable || busy}
+                              data-disabled-reason={busy
+                                ? 'Aguarde a operação de calibração atual terminar.'
+                                : !version.compatible
+                                  ? 'Esta versão pertence a outro contexto de score e não pode ser aplicada ao pacote atual.'
+                                  : !version.restorable
+                                    ? 'Esta versão não está disponível para restauração.'
+                                    : undefined}
+                              className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-pink-400/35 px-3 text-[10px] font-black text-pink-300 transition hover:bg-pink-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                              aria-label={`Restaurar ${version.label}`}
+                            >
+                              <RotateCcw size={13} /> Restaurar
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                    {!scoreVersions.length ? (
+                      <tr><td colSpan="6" className="px-3 py-8 text-center text-[var(--dash-muted)]">Nenhuma versão promovida disponível.</td></tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+        {stage === 'inputs' && (
+          <div className="space-y-2">
+            <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
+              {[
+                ['Observações', compact(training.observation_count), 'blue'],
+                ['Positivas', compact(training.positive_count), 'emerald'],
+                ['Negativas', compact(training.negative_count), 'amber'],
+                ['ECE atual → shadow', `${probabilityLabel(training.current_ece)} → ${probabilityLabel(training.candidate_ece)}`, 'violet'],
+                ['Brier atual → shadow', `${Number(training.current_brier ?? 0).toFixed(4)} → ${Number(training.candidate_brier ?? 0).toFixed(4)}`, 'blue'],
+                [
+                  'Cobertura ≥ 86%',
+                  training.safe_threshold_measurable
+                    ? `${compact(training.candidate_safe_count)} · ${probabilityLabel(training.candidate_safe_coverage)}`
+                    : 'não mensurável',
+                  training.safe_threshold_measurable ? 'blue' : 'amber',
+                ],
+              ].map(([label, metric, tone]) => (
+                <MetricTile key={label} title={label} value={metric} tone={tone} />
+              ))}
+            </div>
+            <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h4 className="text-sm font-black text-[var(--dash-text)]">Contrato dos insumos</h4>
+                  <p className="mt-1 text-xs text-[var(--dash-muted)]">Shadow #{training.shadow_run_id || '-'} · modelo #{training.model_run_id || '-'} · score #{training.score_run_id || '-'} · {compact(training.fold_count)} folds.</p>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <Badge tone={Number(highConfidenceAudit.false_count ?? 0) === 0 ? 'emerald' : 'red'}>
+                    topo {compact(highConfidenceAudit.count)} · {compact(highConfidenceAudit.false_count)} falsos
+                  </Badge>
+                  <Badge tone={training.shadow_qualified ? 'emerald' : 'red'}>{training.shadow_qualified ? 'qualificado' : 'bloqueado'}</Badge>
+                </div>
+              </div>
+              <p className="mt-2 text-xs text-[var(--dash-muted)]">Watermark das decisões: <span className="font-bold text-[var(--dash-text)]">{training.review_watermark || 'não medido'}</span>. A geração usa apenas decisões humanas com hash compatível e mantém o score bruto imutável.</p>
+            </div>
+          </div>
+        )}
+
+        {stage === 'candidate' && (
+          <div className="space-y-2">
+            {!candidate ? (
+              <div className="grid min-h-64 place-items-center rounded-xl border border-dashed border-[var(--dash-border)] bg-[var(--dash-subtle)] p-8 text-center">
+                <div>
+                  <BrainCircuit className="mx-auto text-violet-300" size={30} />
+                  <h4 className="mt-3 text-base font-black text-[var(--dash-text)]">Materialize o score calibrado v1</h4>
+                  <p className="mx-auto mt-1 max-w-xl text-xs text-[var(--dash-muted)]">O calibrador qualificado será aplicado ao pacote inteiro. Nenhum score atual ou bruto será sobrescrito.</p>
+                  <button type="button" onClick={onGenerate} disabled={!actions.can_generate || busy} className="mt-4 rounded-xl bg-violet-600 px-4 py-2 text-sm font-black text-white hover:bg-violet-500 disabled:opacity-40">
+                    {busy ? 'Gerando candidato...' : 'Gerar candidato comparável'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
+                  {[
+                    ['Segmentos', compact(summary.item_count), 'blue'],
+                    ['Score atual', probabilityLabel(summary.current_mean_probability), 'slate'],
+                    ['Score candidato', probabilityLabel(summary.candidate_mean_probability), 'violet'],
+                    ['Saldo médio', `${metricDelta >= 0 ? '+' : ''}${(metricDelta * 100).toFixed(2).replace('.', ',')} p.p.`, metricDelta >= 0 ? 'emerald' : 'red'],
+                    ['Melhoraram', compact(summary.improved_count), 'emerald'],
+                    ['Pioraram', compact(summary.degraded_count), summary.degraded_count ? 'amber' : 'emerald'],
+                  ].map(([label, metric, tone]) => <MetricTile key={label} title={label} value={metric} tone={tone} />)}
+                </div>
+                <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h4 className="text-sm font-black text-[var(--dash-text)]">Versão candidata #{candidate.id}</h4>
+                      <p className="mt-1 text-xs text-[var(--dash-muted)]">{compact(summary.band_change_count)} mudanças de faixa · {compact(summary.unchanged_count)} sem alteração · criada em {compactDateTime(candidate.created_at)}.</p>
+                    </div>
+                    {actions.can_generate ? (
+                      <button type="button" onClick={onGenerate} disabled={busy} className="rounded-lg border border-violet-300/30 bg-violet-500/10 px-3 py-1.5 text-xs font-black text-violet-200 disabled:opacity-40">
+                        {actions.generation_mode === 'discrepancy_feedback'
+                          ? `Materializar candidato #${Number(candidate.id ?? 0) + 1} com as ${compact(gate.reviewed_count)} decisões`
+                          : 'Gerar candidato no novo contexto'}
+                      </button>
+                    ) : gate.reasons?.discrepancies_reviewed && Number(gate.incorrect_count ?? 0) > 0 ? (
+                      <Badge tone="red">candidato rejeitado</Badge>
+                    ) : null}
+                  </div>
+                  {gate.reasons?.discrepancies_reviewed && Number(gate.incorrect_count ?? 0) > 0 && actions.generation_mode === 'discrepancy_feedback' && (
+                    <p className="mt-2 text-xs text-emerald-200">
+                      Aprendizado pronto: as {compact(gate.reviewed_count)} decisões serão usadas para reduzir movimentos excessivos e neutralizar direções rejeitadas, sem extrapolar além do score atual e do candidato.
+                    </p>
+                  )}
+                  {gate.reasons?.discrepancies_reviewed && Number(gate.incorrect_count ?? 0) > 0 && actions.generation_mode !== 'discrepancy_feedback' && (
+                    <p className="mt-2 text-xs text-amber-200">
+                      As {compact(gate.incorrect_count)} divergências já foram classificadas; não formam uma nova fila. O candidato #{Number(candidate.id ?? 0) + 1} deve ser gerado somente depois que esse feedback ordinal for incorporado ao calibrador.
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {stage === 'review' && (
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-3">
+              <div>
+                <h4 className="text-sm font-black text-[var(--dash-text)]">Maiores discrepâncias</h4>
+                <p className="mt-1 text-xs text-[var(--dash-muted)]">Valide altas e quedas extremas antes da promoção. Clique em qualquer linha para abrir os quatro textos.</p>
+              </div>
+              <div className="flex gap-1.5">
+                <Badge tone="blue">{compact(gate.reviewed_count)}/{compact(gate.required_review_count)} revisadas</Badge>
+                {Number(gate.direction_error_count ?? 0) > 0 ? <Badge tone="red">{compact(gate.direction_error_count)} direção errada</Badge> : null}
+                {Number(gate.magnitude_issue_count ?? 0) > 0 ? <Badge tone="amber">{compact(gate.magnitude_issue_count)} magnitude</Badge> : null}
+                <Badge tone={gate.incorrect_count ? 'red' : gate.pending_review_count ? 'amber' : 'emerald'}>{compact(gate.pending_review_count)} pendentes</Badge>
+              </div>
+            </div>
+            <div className="overflow-hidden rounded-xl border border-[var(--dash-border)]">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-[var(--dash-subtle)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                  <tr><th className="px-3 py-2">Segmento</th><th className="px-3 py-2">Recorte</th><th className="px-3 py-2">Atual</th><th className="px-3 py-2">Candidato</th><th className="px-3 py-2">Delta</th><th className="px-3 py-2">Estado</th></tr>
+                </thead>
+                <tbody>
+                  {discrepancies.map((item, index) => (
+                    <tr key={`${item.segment_id}-${item.text_hash}`} onClick={() => setFocusedIndex(index)} className="cursor-pointer border-t border-[var(--dash-border)] hover:bg-cyan-400/5">
+                      <td className="px-3 py-2 font-black text-blue-300">#{item.segment_id}</td>
+                      <td className="max-w-72 truncate px-3 py-2" title={`${item.relative_path} :: ${item.source_key}`}>{item.complexity} · {item.family}</td>
+                      <td className="px-3 py-2">{probabilityLabel(item.current_probability)}</td>
+                      <td className="px-3 py-2 font-black text-violet-200">{probabilityLabel(item.candidate_probability)}</td>
+                      <td className={cn('px-3 py-2 font-black', Number(item.delta) >= 0 ? 'text-emerald-300' : 'text-red-300')}>{Number(item.delta) >= 0 ? '+' : ''}{(Number(item.delta) * 100).toFixed(2).replace('.', ',')} p.p.</td>
+                      <td className="px-3 py-2"><Badge tone={reviewTone(item.review_decision)}>{reviewLabel(item.review_decision)}</Badge></td>
+                    </tr>
+                  ))}
+                  {!discrepancies.length && (
+                    <tr>
+                      <td colSpan="6" className="px-3 py-10 text-center text-[var(--dash-muted)]">
+                        <div className="flex flex-col items-center gap-3">
+                          <p>
+                            {gate.reasons?.discrepancies_reviewed
+                              ? Number(gate.incorrect_count ?? 0) > 0
+                                ? `Amostra concluída. ${compact(gate.incorrect_count)} divergências foram classificadas e estão prontas para alimentar a próxima versão.`
+                                : 'Amostra concluída sem divergências pendentes.'
+                              : 'Gere um candidato para criar a amostra de discrepâncias.'}
+                          </p>
+                          {actions.can_generate && actions.generation_mode === 'discrepancy_feedback' ? (
+                            <button
+                              type="button"
+                              onClick={onGenerate}
+                              disabled={busy}
+                              className="rounded-xl bg-pink-600 px-4 py-2 text-xs font-black text-white hover:bg-pink-500 disabled:opacity-40"
+                            >
+                              {busy
+                                ? 'Materializando próxima versão...'
+                                : `Materializar candidato #${Number(candidate?.id ?? 0) + 1} com o aprendizado`}
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {stage === 'promotion' && (
+          <div className="space-y-2">
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {gateEntries.map(([key, passed]) => (
+                <div key={key} className="flex items-center justify-between rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-3">
+                  <span className="text-xs font-bold text-[var(--dash-muted)]">{key.replaceAll('_', ' ')}</span>
+                  <Badge tone={passed ? 'emerald' : 'red'}>{passed ? 'ok' : 'bloqueio'}</Badge>
+                </div>
+              ))}
+            </div>
+            <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-base font-black text-[var(--dash-text)]">Registro do score operacional</h4>
+                  <p className="mt-1 max-w-2xl text-xs text-[var(--dash-muted)]">Promover aponta o registro ativo para esta versão. Scores brutos e históricos não são reescritos; reverter retorna ao registro anterior.</p>
+                </div>
+                <div className="flex gap-2">
+                  <button type="button" onClick={onPromote} disabled={!actions.can_promote || busy} className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-black text-white hover:bg-emerald-500 disabled:opacity-40">Promover score calibrado</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {typeof document !== 'undefined' && focused ? createPortal(
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="score-recalibration-focused-title"
+          data-content-theme={document.querySelector('[data-content-theme]')?.getAttribute('data-content-theme') ?? 'dark'}
+          className="dashboard-shell fixed inset-0 z-[10020] flex h-[100dvh] w-screen flex-col overflow-hidden bg-[var(--dash-bg)] p-4 text-[var(--dash-text)]"
+        >
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-card)] p-3">
+            <div>
+              <div className="flex flex-wrap gap-1.5"><Badge tone="violet">segmento #{focused.segment_id}</Badge><Badge tone={Number(focused.delta) >= 0 ? 'emerald' : 'red'}>{Number(focused.delta) >= 0 ? 'melhora' : 'queda'} {(Number(focused.delta) * 100).toFixed(2).replace('.', ',')} p.p.</Badge><Badge tone="blue">{focusedIndex + 1} de {discrepancies.length}</Badge></div>
+              <h3 id="score-recalibration-focused-title" className="mt-2 text-base font-black text-[var(--dash-text)]">Revisão da discrepância de score</h3>
+              <p className="mt-1 text-xs text-[var(--dash-muted)]">{focused.relative_path} :: {focused.source_key}</p>
+            </div>
+            <div className="flex gap-1.5">
+              <button type="button" onClick={() => setFocusedIndex((focusedIndex - 1 + discrepancies.length) % discrepancies.length)} className="grid h-9 w-9 place-items-center rounded-lg border border-[var(--dash-border)]"><ChevronLeft size={16} /></button>
+              <button type="button" onClick={() => setFocusedIndex((focusedIndex + 1) % discrepancies.length)} className="grid h-9 w-9 place-items-center rounded-lg border border-[var(--dash-border)]"><ChevronRight size={16} /></button>
+              <button type="button" onClick={() => setFocusedIndex(null)} className="grid h-9 w-9 place-items-center rounded-lg border border-red-300/30 text-red-200"><X size={16} /></button>
+            </div>
+          </div>
+          <div className="mt-2 grid shrink-0 gap-2 md:grid-cols-[1fr_auto_1fr]">
+            <div className="rounded-xl border border-blue-300/25 bg-blue-500/5 p-3">
+              <p className="text-[10px] font-black uppercase tracking-wide text-blue-300">Score anterior</p>
+              <p className="mt-1 text-2xl font-black text-[var(--dash-text)]">{probabilityLabel(focused.current_probability)}</p>
+              {Math.abs(Number(focused.raw_probability) - Number(focused.current_probability)) > 0.000001 ? <p className="mt-1 text-[10px] text-[var(--dash-muted)]">Bruto imutável: {probabilityLabel(focused.raw_probability)}</p> : <p className="mt-1 text-[10px] text-[var(--dash-muted)]">Igual ao score bruto desta versão</p>}
+            </div>
+            <div className="grid min-w-32 place-items-center rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] px-4 py-2 text-center">
+              <p className="text-[9px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Movimento</p>
+              <p className={cn('text-lg font-black', Number(focused.delta) >= 0 ? 'text-emerald-300' : 'text-red-300')}>{signedPoints(Number(focused.delta) * 100)}</p>
+            </div>
+            <div className="rounded-xl border border-violet-300/25 bg-violet-500/5 p-3">
+              <p className="text-[10px] font-black uppercase tracking-wide text-violet-300">Novo score candidato</p>
+              <p className="mt-1 text-2xl font-black text-[var(--dash-text)]">{probabilityLabel(focused.candidate_probability)}</p>
+              <p className="mt-1 truncate text-[10px] text-[var(--dash-muted)]" title={`${focused.complexity} · ${focused.family}`}>{focused.complexity?.replaceAll('_', ' ')} · {focused.family?.replaceAll('_', ' ')}</p>
+            </div>
+          </div>
+
+          <div className="mt-2 shrink-0 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-card)] p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h4 className="text-xs font-black text-[var(--dash-text)]">O que influenciou o novo score</h4>
+                <p className="mt-0.5 text-[10px] text-[var(--dash-muted)]">Cada efeito mostra quanto aquela evidência afastou o candidato do score bruto; a soma reproduz o movimento calibrado.</p>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {focused.calibration_explanation?.blocking_issue ? <Badge tone="red">falha explícita limita o ganho</Badge> : null}
+                {Math.abs(Number(focused.calibration_explanation?.cap_adjustment_pp ?? 0)) > 0.005 ? <Badge tone="amber">teto de segurança {signedPoints(focused.calibration_explanation.cap_adjustment_pp)}</Badge> : null}
+              </div>
+            </div>
+            <div className="mt-2 grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
+              {(focused.calibration_explanation?.factors ?? []).map((factor) => (
+                <div key={`${factor.key}-${factor.label}`} className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-subtle)] px-2.5 py-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="truncate text-[10px] font-black text-[var(--dash-text)]" title={factorLabel(factor)}>{factorLabel(factor)}</p>
+                    <span className={cn('shrink-0 text-[10px] font-black', Number(factor.effect_pp) >= 0 ? 'text-emerald-300' : 'text-red-300')}>{signedPoints(factor.effect_pp)}</span>
+                  </div>
+                  <p className="mt-1 text-[10px] text-[var(--dash-muted)]">{factor.detail ?? `Qualidade observada ${probabilityLabel(factor.rate)}${factor.count ? ` · ${compact(factor.positive_count)}/${compact(factor.count)} positivas` : ''}`}</p>
+                </div>
+              ))}
+              {!(focused.calibration_explanation?.factors ?? []).length ? <p className="col-span-full text-xs text-[var(--dash-muted)]">Explicação indisponível para este candidato antigo. Atualize o painel após reiniciar o backend.</p> : null}
+            </div>
+          </div>
+
+          <div className="mt-2 min-h-0 flex-1 overflow-hidden">
+            <div className="grid h-full min-h-0 gap-2 grid-rows-[minmax(8rem,1.35fr)_minmax(7rem,1fr)]">
+              {textPanel('Texto atual avaliado', focused.output_text || focused.candidate_text, 'emerald', 'h-full max-h-full')}
+              <div className="grid min-h-0 gap-2 md:grid-cols-3">
+                {textPanel('English', focused.english_text, 'slate', 'h-full max-h-full')}
+                {textPanel('Spanish · referência', focused.spanish_text, 'amber', 'h-full max-h-full')}
+                {textPanel('Old · baseline anterior', focused.old_text, 'violet', 'h-full max-h-full')}
+              </div>
+            </div>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-card)] p-3">
+            <div>
+              <p className="text-xs font-black text-[var(--dash-text)]">Julgue o movimento do score, não a perfeição absoluta do texto.</p>
+              <p className="mt-0.5 text-[10px] text-[var(--dash-muted)]">O segmento pode ainda ter problemas e a variação ser coerente, se direção e magnitude ficaram mais fiéis à qualidade observada.</p>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2">
+              <button type="button" disabled={busy} onClick={() => submitFocusedReview('needs_review')} className="rounded-xl border border-amber-300/30 px-3 py-2 text-xs font-black text-amber-200 disabled:opacity-40">Adiar</button>
+              <button type="button" disabled={busy} onClick={() => submitFocusedReview('correct_direction_excessive')} className="rounded-xl border border-orange-300/30 px-3 py-2 text-xs font-black text-orange-200 disabled:opacity-40">{Number(focused.delta) >= 0 ? 'Aumento excessivo' : 'Queda excessiva'}</button>
+              <button type="button" disabled={busy} onClick={() => submitFocusedReview('correct_direction_insufficient')} className="rounded-xl border border-blue-300/30 px-3 py-2 text-xs font-black text-blue-200 disabled:opacity-40">{Number(focused.delta) >= 0 ? 'Aumento insuficiente' : 'Queda insuficiente'}</button>
+              <button type="button" disabled={busy} onClick={() => submitFocusedReview('incorrect_direction')} className="rounded-xl border border-red-300/30 px-3 py-2 text-xs font-black text-red-200 disabled:opacity-40">Direção errada</button>
+              <button type="button" disabled={busy} onClick={() => submitFocusedReview('coherent_change')} className="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-black text-white disabled:opacity-40">{Number(focused.delta) >= 0 ? 'Aumento coerente' : 'Queda coerente'}</button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      ) : null}
+    </div>
+  );
+}
+
+
 function ProductionControlCompact({ data, onRefreshAppState }) {
   const appState = data.appState ?? {};
   const release = appState.release ?? {};
@@ -2893,15 +3586,79 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const visualLocks = release.visual_locks ?? safety.visual_locks ?? {};
   const releaseCandidate = release.release_candidate ?? safety.release_candidate ?? {};
   const gameUpdate = release.game_update ?? release.source_output_update ?? safety.source_output_update ?? {};
+  const discoveryOverview = postRelease.quality_pattern_discovery ?? {};
+  const discoveryReadyFamilyCount = Number(discoveryOverview.routing_summary?.ready_family_count ?? 0);
+  const discoveryPendingReviewCount = Number(discoveryOverview.review_pending_count ?? 0);
   const compactStages = productionState.stages_compact ?? [];
   const initialDiskPreflight = productionState.disk_preflight ?? release.disk_preflight ?? safety.disk_preflight ?? null;
   const [startStatus, setStartStatus] = useState(null);
   const [startError, setStartError] = useState(null);
   const [runStatus, setRunStatus] = useState(lastRun?.run_id ? lastRun : null);
   const [refreshing, setRefreshing] = useState(false);
-  const [selectedMode, setSelectedMode] = useState('diagnostic');
-  const [postReleaseView, setPostReleaseView] = useState('apply');
+  const [sourceInspectBusy, setSourceInspectBusy] = useState(false);
+  const [selectedMode, setSelectedMode] = useState('evaluation');
+  const [scoreRecalibration, setScoreRecalibration] = useState(null);
+  const [scoreRecalibrationLoading, setScoreRecalibrationLoading] = useState(false);
+  const [scoreRecalibrationBusy, setScoreRecalibrationBusy] = useState(false);
+  const [scoreRecalibrationError, setScoreRecalibrationError] = useState(null);
+  const [scoreRecalibrationStage, setScoreRecalibrationStage] = useState('inputs');
+  const [postReleaseArea, setPostReleaseArea] = useState('review');
+  const [postReleaseView, setPostReleaseView] = useState('audit');
+  const [lowScoreFocus, setLowScoreFocus] = useState('critical');
+  const [calibrationMode, setCalibrationMode] = useState('unified');
+  const [unifiedQueueFilter, setUnifiedQueueFilter] = useState('all');
+  const [unifiedSearchFilter, setUnifiedSearchFilter] = useState('');
+  const [unifiedFocusedItemKey, setUnifiedFocusedItemKey] = useState(null);
+  const [unifiedFocusedPrimaryView, setUnifiedFocusedPrimaryView] = useState('candidate');
+  const [unifiedReviewSubmittingKey, setUnifiedReviewSubmittingKey] = useState(null);
+  const [unifiedReviewBatch, setUnifiedReviewBatch] = useState(() => {
+    if (typeof window === 'undefined') return { id: '', keys: [], size: 0 };
+    try {
+      const stored = JSON.parse(window.sessionStorage.getItem('ml-ck3-human-review-batch-v2') ?? '{}');
+      return {
+        id: String(stored.id ?? ''),
+        keys: Array.isArray(stored.keys) ? stored.keys.map(String) : [],
+        size: Number(stored.size ?? 0),
+      };
+    } catch {
+      return { id: '', keys: [], size: 0 };
+    }
+  });
+  const [lowScoreCalibrationView, setLowScoreCalibrationView] = useState('dynamic');
+  const [dynamicHoldoutLaneFilter, setDynamicHoldoutLaneFilter] = useState('all');
+  const [dynamicHoldoutBandFilter, setDynamicHoldoutBandFilter] = useState('all');
+  const [dynamicHoldoutStatusFilter, setDynamicHoldoutStatusFilter] = useState('pending');
+  const [calibrationLaneFilter, setCalibrationLaneFilter] = useState('all');
+  const [calibrationGroupFilter, setCalibrationGroupFilter] = useState('all');
+  const [calibrationPatternFilter, setCalibrationPatternFilter] = useState('all');
+  const [calibrationReviewStatusFilter, setCalibrationReviewStatusFilter] = useState('all');
+  const [calibrationShadowFilter, setCalibrationShadowFilter] = useState('all');
+  const [glossaryCaseStatusFilter, setGlossaryCaseStatusFilter] = useState('pending');
+  const [glossaryCaseKeyFilter, setGlossaryCaseKeyFilter] = useState('');
+  const [mojibakeStatusFilter, setMojibakeStatusFilter] = useState('pending');
+  const [mojibakeFamilyFilter, setMojibakeFamilyFilter] = useState('all');
+  const [mojibakeSupportFilter, setMojibakeSupportFilter] = useState('all');
+  const [mojibakePatternFilter, setMojibakePatternFilter] = useState('all');
+  const [mojibakeSearchFilter, setMojibakeSearchFilter] = useState('');
+  const [mojibakeReviewView, setMojibakeReviewView] = useState('segments');
+  const [mojibakeBoundaryStatusFilter, setMojibakeBoundaryStatusFilter] = useState('pending');
+  const [mojibakeBoundarySearchFilter, setMojibakeBoundarySearchFilter] = useState('');
+  const [esHelperRepairHelperFilter, setEsHelperRepairHelperFilter] = useState('all');
+  const [esHelperRepairRouteFilter, setEsHelperRepairRouteFilter] = useState('all');
   const [calibrationSubmittingItemId, setCalibrationSubmittingItemId] = useState(null);
+  const [lowScoreCalibrationSubmittingSegmentId, setLowScoreCalibrationSubmittingSegmentId] = useState(null);
+  const [glossaryCaseSubmittingKey, setGlossaryCaseSubmittingKey] = useState(null);
+  const [mojibakeSubmittingSegmentId, setMojibakeSubmittingSegmentId] = useState(null);
+  const [mojibakeSubmittingPattern, setMojibakeSubmittingPattern] = useState(null);
+  const [mojibakeFocusedSegmentId, setMojibakeFocusedSegmentId] = useState(null);
+  const [mojibakeFocusedSequenceIds, setMojibakeFocusedSequenceIds] = useState([]);
+  const [mojibakeFocusedDetail, setMojibakeFocusedDetail] = useState(null);
+  const [mojibakeFocusedLoading, setMojibakeFocusedLoading] = useState(false);
+  const [mojibakeFocusedError, setMojibakeFocusedError] = useState(null);
+  const [mojibakeFocusedPrimaryView, setMojibakeFocusedPrimaryView] = useState('candidate');
+  const [mojibakeFocusedValidSignalIndexes, setMojibakeFocusedValidSignalIndexes] = useState([]);
+  const [postReleaseExpanded, setPostReleaseExpanded] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const [lastDiagnostic, setLastDiagnostic] = useState(null);
   const [actionNotice, setActionNotice] = useState(null);
   const [diskPreflight, setDiskPreflight] = useState(initialDiskPreflight);
@@ -2909,9 +3666,347 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const [diagnosticStartedAt, setDiagnosticStartedAt] = useState(null);
   const [diagnosticFinishedAt, setDiagnosticFinishedAt] = useState(null);
   const [diagnosticRunStatus, setDiagnosticRunStatus] = useState(null);
+  const [evaluationCyclePhase, setEvaluationCyclePhase] = useState(() => (
+    ['starting', 'running'].includes(normalizedRunStatus(lastRun?.status))
+    && (lastRun?.run_mode === 'evaluation' || lastRun?.mode === 'evaluation_full_production')
+      ? 'pipeline'
+      : 'idle'
+  ));
+  const initialMojibakeReviewOutboxRef = useRef(null);
+  if (initialMojibakeReviewOutboxRef.current === null) {
+    initialMojibakeReviewOutboxRef.current = readMojibakeReviewOutbox();
+  }
+  const [mojibakeReviewOutbox, setMojibakeReviewOutbox] = useState(
+    initialMojibakeReviewOutboxRef.current
+  );
+  const [mojibakeReviewProcessingId, setMojibakeReviewProcessingId] = useState(null);
+  const [mojibakeOptimisticHiddenSegmentIds, setMojibakeOptimisticHiddenSegmentIds] = useState(
+    () => initialMojibakeReviewOutboxRef.current
+      .filter((entry) => entry.status !== 'failed')
+      .map((entry) => Number(entry.request.segment_id))
+  );
+  const [mojibakeAcknowledgedSegmentIds, setMojibakeAcknowledgedSegmentIds] = useState([]);
+  const [mojibakeRequeueTailSegmentIds, setMojibakeRequeueTailSegmentIds] = useState([]);
+  const initialHumanReviewOutboxRef = useRef(null);
+  if (initialHumanReviewOutboxRef.current === null) {
+    initialHumanReviewOutboxRef.current = readHumanReviewOutbox();
+  }
+  const [humanReviewOutbox, setHumanReviewOutbox] = useState(
+    initialHumanReviewOutboxRef.current
+  );
+  const [humanReviewProcessingId, setHumanReviewProcessingId] = useState(null);
+  const [humanReviewOptimisticHiddenKeys, setHumanReviewOptimisticHiddenKeys] = useState(
+    () => initialHumanReviewOutboxRef.current
+      .filter((entry) => entry.status !== 'failed')
+      .map((entry) => String(entry.optimistic_key))
+  );
+  const [humanReviewAcknowledgedKeys, setHumanReviewAcknowledgedKeys] = useState([]);
+  const [mojibakeReconcileRetryTick, setMojibakeReconcileRetryTick] = useState(0);
+  const mojibakeReconcileBatchStartedAtRef = useRef(null);
   const terminalRefreshRef = useRef('');
+  const refreshAppStateRef = useRef(onRefreshAppState);
   const runStartBaselineIdRef = useRef(lastRun?.run_id ?? null);
   const reviewTabsRef = useRef(null);
+  const reviewContentRef = useRef(null);
+  const mojibakeFocusedCloseRef = useRef(null);
+  const unifiedFocusedCloseRef = useRef(null);
+  const mojibakeReviewSyncPendingCount = mojibakeReviewOutbox.filter(
+    (entry) => entry.status !== 'failed'
+  ).length;
+  const mojibakeReviewSyncFailedCount = mojibakeReviewOutbox.filter(
+    (entry) => entry.status === 'failed'
+  ).length;
+  const mojibakeReviewSyncBlockingCount = mojibakeReviewOutbox.length;
+  const humanReviewSyncPendingCount = humanReviewOutbox.filter(
+    (entry) => entry.status !== 'failed'
+  ).length;
+  const humanReviewSyncFailedCount = humanReviewOutbox.filter(
+    (entry) => entry.status === 'failed'
+  ).length;
+  const humanReviewSyncBlockingCount = humanReviewOutbox.length;
+  const reviewSyncPendingCount = mojibakeReviewSyncPendingCount + humanReviewSyncPendingCount;
+  const reviewSyncFailedCount = mojibakeReviewSyncFailedCount + humanReviewSyncFailedCount;
+  const reviewSyncBlockingCount = mojibakeReviewSyncBlockingCount + humanReviewSyncBlockingCount;
+  const reviewAcknowledgedCount = mojibakeAcknowledgedSegmentIds.length + humanReviewAcknowledgedKeys.length;
+  const mojibakeOptimisticHiddenSegmentIdSet = new Set(mojibakeOptimisticHiddenSegmentIds);
+  const mojibakeRequeueTailSegmentIdSet = new Set(mojibakeRequeueTailSegmentIds);
+  const humanReviewOptimisticHiddenKeySet = new Set(humanReviewOptimisticHiddenKeys);
+
+  useEffect(() => {
+    refreshAppStateRef.current = onRefreshAppState;
+  }, [onRefreshAppState]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        MOJIBAKE_REVIEW_OUTBOX_STORAGE_KEY,
+        JSON.stringify(mojibakeReviewOutbox)
+      );
+    } catch {
+      // A fila continua válida em memória mesmo quando o armazenamento local está indisponível.
+    }
+  }, [mojibakeReviewOutbox]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        HUMAN_REVIEW_OUTBOX_STORAGE_KEY,
+        JSON.stringify(humanReviewOutbox)
+      );
+    } catch {
+      // A fila continua válida em memória mesmo quando o armazenamento local está indisponível.
+    }
+  }, [humanReviewOutbox]);
+
+  useEffect(() => {
+    if (mojibakeReviewProcessingId || humanReviewProcessingId) return;
+    const nextEntry = mojibakeReviewOutbox.find((entry) => entry.status !== 'failed');
+    if (!nextEntry) return;
+
+    setMojibakeReviewProcessingId(nextEntry.id);
+    setMojibakeSubmittingSegmentId(Number(nextEntry.request.segment_id));
+    fetch(`${API_BASE}/production/mojibake-lexicon/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...nextEntry.request,
+        client_request_id: nextEntry.id,
+      }),
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error ?? `API ${response.status}`);
+        const segmentId = Number(nextEntry.request.segment_id);
+        const remainingSignalCount = Number(
+          payload.queue_delta?.remaining_signal_count
+          ?? payload.remaining_signal_count
+          ?? 0
+        );
+        setMojibakeReviewOutbox((current) => current.filter((entry) => entry.id !== nextEntry.id));
+        setMojibakeAcknowledgedSegmentIds((current) => (
+          current.includes(segmentId) ? current : [...current, segmentId]
+        ));
+        if (nextEntry.request.decision === 'valid_question_mark' && remainingSignalCount > 0) {
+          setMojibakeRequeueTailSegmentIds((current) => (
+            current.includes(segmentId) ? current : [...current, segmentId]
+          ));
+          setMojibakeFocusedSequenceIds((current) => [
+            ...current.filter((candidateId) => Number(candidateId) !== segmentId),
+            segmentId,
+          ]);
+        }
+        setActionNotice({
+          mode: 'diagnostic',
+          status: 'completed',
+          tone: 'emerald',
+          title: 'Decisão Unicode sincronizada',
+          body: remainingSignalCount > 0
+            ? `Segmento #${segmentId} sincronizado; ${remainingSignalCount} resíduo(s) permanecem e voltarão ao fim da fila.`
+            : `Segmento #${segmentId} sincronizado e retirado da fila humana.`,
+          outputChanged: false,
+          runId: null,
+        });
+      })
+      .catch((error) => {
+        const segmentId = Number(nextEntry.request.segment_id);
+        setMojibakeReviewOutbox((current) => current.map((entry) => (
+          entry.id === nextEntry.id
+            ? { ...entry, status: 'failed', error: error.message, failed_at: new Date().toISOString() }
+            : entry
+        )));
+        setMojibakeOptimisticHiddenSegmentIds((current) => (
+          current.filter((candidateId) => Number(candidateId) !== segmentId)
+        ));
+        setStartError(`A decisão do segmento #${segmentId} não sincronizou: ${error.message}`);
+        setActionNotice({
+          mode: 'diagnostic',
+          status: 'failed',
+          tone: 'red',
+          title: 'Decisão Unicode não sincronizada',
+          body: `O segmento #${segmentId} voltou à fila. Corrija a falha e tente sincronizar novamente.`,
+          outputChanged: false,
+          runId: null,
+        });
+      })
+      .finally(() => {
+        setMojibakeReviewProcessingId(null);
+        setMojibakeSubmittingSegmentId(null);
+      });
+  }, [humanReviewProcessingId, mojibakeReviewOutbox, mojibakeReviewProcessingId]);
+
+  useEffect(() => {
+    if (
+      humanReviewProcessingId
+      || mojibakeReviewProcessingId
+      || mojibakeReviewSyncPendingCount > 0
+    ) return;
+    const nextEntry = humanReviewOutbox.find((entry) => entry.status !== 'failed');
+    if (!nextEntry) return;
+
+    setHumanReviewProcessingId(nextEntry.id);
+    fetch(`${API_BASE}${nextEntry.endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...nextEntry.request,
+        client_request_id: nextEntry.id,
+      }),
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error ?? `API ${response.status}`);
+        setHumanReviewOutbox((current) => current.filter((entry) => entry.id !== nextEntry.id));
+        setHumanReviewAcknowledgedKeys((current) => (
+          current.includes(nextEntry.optimistic_key)
+            ? current
+            : [...current, nextEntry.optimistic_key]
+        ));
+        setActionNotice({
+          mode: 'diagnostic',
+          status: 'completed',
+          tone: 'emerald',
+          title: nextEntry.success_title ?? 'Decisão humana sincronizada',
+          body: nextEntry.success_body ?? 'A decisão foi gravada e será reconciliada com a fila canônica em lote.',
+          outputChanged: false,
+          runId: null,
+        });
+      })
+      .catch((error) => {
+        setHumanReviewOutbox((current) => current.map((entry) => (
+          entry.id === nextEntry.id
+            ? { ...entry, status: 'failed', error: error.message, failed_at: new Date().toISOString() }
+            : entry
+        )));
+        setHumanReviewOptimisticHiddenKeys((current) => (
+          current.filter((key) => key !== nextEntry.optimistic_key)
+        ));
+        setStartError(`A decisão de ${nextEntry.item_label ?? nextEntry.optimistic_key} não sincronizou: ${error.message}`);
+        setActionNotice({
+          mode: 'diagnostic',
+          status: 'failed',
+          tone: 'red',
+          title: 'Decisão humana não sincronizada',
+          body: `${nextEntry.item_label ?? nextEntry.optimistic_key} voltou à fila. Corrija a falha e tente novamente.`,
+          outputChanged: false,
+          runId: null,
+        });
+      })
+      .finally(() => {
+        setHumanReviewProcessingId(null);
+      });
+  }, [
+    humanReviewOutbox,
+    humanReviewProcessingId,
+    mojibakeReviewProcessingId,
+    mojibakeReviewSyncPendingCount,
+  ]);
+
+  useEffect(() => {
+    if (reviewAcknowledgedCount) {
+      if (mojibakeReconcileBatchStartedAtRef.current === null) {
+        mojibakeReconcileBatchStartedAtRef.current = Date.now();
+      }
+    } else {
+      mojibakeReconcileBatchStartedAtRef.current = null;
+    }
+  }, [reviewAcknowledgedCount]);
+
+  useEffect(() => {
+    if (!reviewAcknowledgedCount || reviewSyncPendingCount > 0) return undefined;
+    const batchStartedAt = mojibakeReconcileBatchStartedAtRef.current ?? Date.now();
+    const batchAgeMs = Math.max(0, Date.now() - batchStartedAt);
+    const reconcileDelayMs = reviewAcknowledgedCount >= MOJIBAKE_REVIEW_RECONCILE_BATCH_SIZE
+      ? MOJIBAKE_REVIEW_RECONCILE_SETTLE_MS
+      : Math.max(
+        MOJIBAKE_REVIEW_RECONCILE_SETTLE_MS,
+        MOJIBAKE_REVIEW_RECONCILE_MAX_WAIT_MS - batchAgeMs
+      );
+    const timer = window.setTimeout(async () => {
+      try {
+        await refreshAppStateRef.current?.(null, { force: true });
+        const acknowledgedIds = new Set(mojibakeAcknowledgedSegmentIds.map(Number));
+        const acknowledgedKeys = new Set(humanReviewAcknowledgedKeys);
+        setMojibakeOptimisticHiddenSegmentIds((current) => (
+          current.filter((segmentId) => !acknowledgedIds.has(Number(segmentId)))
+        ));
+        setHumanReviewOptimisticHiddenKeys((current) => (
+          current.filter((key) => !acknowledgedKeys.has(key))
+        ));
+        mojibakeReconcileBatchStartedAtRef.current = null;
+        setMojibakeAcknowledgedSegmentIds([]);
+        setHumanReviewAcknowledgedKeys([]);
+      } catch (error) {
+        setStartError(`As decisões foram gravadas, mas a fila ainda não foi reconciliada: ${error.message}`);
+        window.setTimeout(() => setMojibakeReconcileRetryTick((current) => current + 1), 5000);
+      }
+    }, reconcileDelayMs);
+    return () => window.clearTimeout(timer);
+  }, [
+    humanReviewAcknowledgedKeys,
+    mojibakeAcknowledgedSegmentIds,
+    mojibakeReconcileRetryTick,
+    reviewAcknowledgedCount,
+    reviewSyncPendingCount,
+  ]);
+
+  const retryFailedMojibakeReviews = () => {
+    const failedSegmentIds = mojibakeReviewOutbox
+      .filter((entry) => entry.status === 'failed')
+      .map((entry) => Number(entry.request.segment_id));
+    setMojibakeOptimisticHiddenSegmentIds((current) => (
+      [...new Set([...current, ...failedSegmentIds])]
+    ));
+    setMojibakeReviewOutbox((current) => current.map((entry) => (
+      entry.status === 'failed'
+        ? { ...entry, status: 'queued', error: null, retried_at: new Date().toISOString() }
+        : entry
+    )));
+    setStartError(null);
+  };
+
+  const retryFailedHumanReviews = () => {
+    const failedKeys = humanReviewOutbox
+      .filter((entry) => entry.status === 'failed')
+      .map((entry) => String(entry.optimistic_key));
+    setHumanReviewOptimisticHiddenKeys((current) => (
+      [...new Set([...current, ...failedKeys])]
+    ));
+    setHumanReviewOutbox((current) => current.map((entry) => (
+      entry.status === 'failed'
+        ? { ...entry, status: 'queued', error: null, retried_at: new Date().toISOString() }
+        : entry
+    )));
+    setStartError(null);
+  };
+
+  const retryFailedReviewSync = () => {
+    retryFailedMojibakeReviews();
+    retryFailedHumanReviews();
+  };
+  useEffect(() => {
+    if (!postReleaseExpanded) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setPostReleaseExpanded(false);
+    };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [postReleaseExpanded]);
+  useEffect(() => {
+    if (postReleaseView !== 'audit' || !reviewContentRef.current) return;
+    reviewContentRef.current.scrollLeft = 0;
+    reviewContentRef.current.scrollTop = 0;
+  }, [
+    postReleaseView,
+    calibrationMode,
+    lowScoreCalibrationView,
+    calibrationShadowFilter,
+    postReleaseExpanded,
+  ]);
   const runStatusValue = normalizedRunStatus(runStatus?.status);
   const actionNoticeStatus = normalizedRunStatus(actionNotice?.status);
   const startStatusValue = normalizedRunStatus(startStatus);
@@ -2976,6 +4071,17 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const diskBlocksProduction = diskPreflight?.ok === false;
   const evaluationReasons = Array.isArray(evaluationGate.blocking_reasons) ? evaluationGate.blocking_reasons : [];
   const publicationReasons = Array.isArray(publicationGate.blocking_reasons) ? publicationGate.blocking_reasons : [];
+  const gateReasonLabels = {
+    quality_epoch_not_scored: 'O ciclo de qualidade ainda não calculou os scores.',
+    quality_epoch_not_evaluated: 'O ciclo de qualidade ainda não concluiu a avaliação.',
+    quality_epoch_model_not_active: 'O modelo da epoch atual não é o modelo ativo.',
+    needs_output_apply: 'Existem segmentos confirmados aguardando aplicação no output.',
+    output_not_restored: 'O output ainda não foi sincronizado com a baseline protegida.',
+    source_update_pending: 'As novas fontes ainda precisam ser sincronizadas.',
+  };
+  const evaluationBlockedDetail = evaluationReasons.length
+    ? evaluationReasons.map((reason) => gateReasonLabels[reason] ?? String(reason)).join(' ')
+    : 'As travas de entrada da avaliação ainda não foram atendidas.';
   const qualityEpoch = release.quality_epoch ?? {};
   const evaluatedDiffSummary = postRelease.diff_review?.summary && typeof postRelease.diff_review.summary === 'object'
     ? postRelease.diff_review.summary
@@ -2993,27 +4099,22 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       ?? Math.max(0, rawScoreRegressionCount - reviewedRawScoreRegressionCount)
   );
   const hasVerifiedApplyQueue = evaluatedApplyCount > 0;
+  const productionQueueCount = evaluatedApplyCount;
   const publicationActionAllowed = publicationAllowed && hasVerifiedApplyQueue;
-  const publicationModeStatus = publicationActionAllowed
-    ? 'liberada'
-    : publicationAllowed
-      ? 'sem apply'
-      : 'bloqueada';
-  const publicationModeTone = publicationActionAllowed ? 'emerald' : publicationAllowed ? 'blue' : 'red';
-  const publicationModeStatusKind = publicationActionAllowed ? 'open' : 'blocked';
-  const publicationModeWarning = publicationActionAllowed
-    ? `${compact(evaluatedApplyCount)} apply verificado pela avaliacao.`
-    : publicationAllowed
-      ? 'Bloqueada para execucao: avaliacao nao tem apply verificado para aplicar.'
-      : 'Bloqueada pelos gates de publicacao.';
   const packageDeltaKeys = ['raw_output_diff_count', 'changed_vs_old', 'package_diff_count'];
   const packageDeltaMeasured = packageDeltaKeys.some((key) => Object.prototype.hasOwnProperty.call(evaluatedDiffSummary, key));
   const packageChangeCount = Number(
-    evaluatedDiffSummary.raw_output_diff_count
+    evaluatedDiffSummary.package_diff_count
+      ?? evaluatedDiffSummary.raw_output_diff_count
       ?? evaluatedDiffSummary.changed_vs_old
-      ?? evaluatedDiffSummary.package_diff_count
       ?? 0
   );
+  const hasPackageQueue = packageChangeCount > 0;
+  const productionActionKind = hasVerifiedApplyQueue
+    ? 'apply'
+    : hasPackageQueue
+      ? 'materialize'
+      : 'idle';
   const materializedPackageVersions = (Array.isArray(release.package_versions) ? release.package_versions : [])
     .filter((version) => version.status === 'materialized');
   const latestMaterializedPackageVersion = materializedPackageVersions.reduce(
@@ -3030,79 +4131,183 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const versionHasPackageDelta = !packageDeltaMeasured || packageChangeCount > 0;
   const versionNoPackageDelta = versionBaseGatesReady && packageDeltaMeasured && packageChangeCount === 0;
   const versionMaterializationEligible = versionBaseGatesReady && versionHasPackageDelta;
+  const scoreRecalibrationNextStageFor = (recalibration) => {
+    if (['active_monitoring', 'raw_monitoring'].includes(recalibration?.lifecycle_state)) return 'monitoring';
+    const recalibrationTraining = recalibration?.training ?? {};
+    const recalibrationCandidate = recalibration?.candidate ?? null;
+    const recalibrationGate = recalibrationCandidate?.gate ?? {};
+    const pendingReviews = Number(recalibrationGate.pending_review_count ?? 0);
+    const incorrectReviews = Number(recalibrationGate.incorrect_count ?? 0);
+    if (recalibrationTraining.shadow_qualified === false) return 'inputs';
+    if (!recalibrationCandidate) return 'candidate';
+    if (pendingReviews > 0) return 'review';
+    if (incorrectReviews > 0) {
+      return recalibration?.actions?.can_generate ? 'candidate' : 'review';
+    }
+    return 'promotion';
+  };
+  const scoreRecalibrationNextStage = scoreRecalibrationNextStageFor(scoreRecalibration);
+  const scoreRecalibrationPendingReviews = Number(scoreRecalibration?.candidate?.gate?.pending_review_count ?? 0);
+  const scoreRecalibrationIncorrectReviews = Number(scoreRecalibration?.candidate?.gate?.incorrect_count ?? 0);
+  const scoreRecalibrationActionLabel = scoreRecalibrationNextStage === 'inputs'
+    ? 'Ver insumos e travas'
+    : scoreRecalibrationNextStage === 'candidate'
+      ? scoreRecalibration?.actions?.generation_mode === 'discrepancy_feedback'
+        ? `Materializar candidato #${Number(scoreRecalibration?.candidate?.id ?? 0) + 1} com aprendizado`
+        : 'Gerar candidato'
+      : scoreRecalibrationNextStage === 'review'
+        ? scoreRecalibrationPendingReviews > 0
+          ? `Validar ${compact(scoreRecalibrationPendingReviews)} discrepâncias`
+          : `Ver resultado · ${compact(scoreRecalibrationIncorrectReviews)} divergências`
+        : scoreRecalibrationNextStage === 'monitoring'
+          ? 'Ver score ativo'
+        : scoreRecalibration?.actions?.can_promote
+          ? 'Revisar e promover score'
+          : 'Ver estado da promoção';
   const releaseModes = [
     {
-      id: 'diagnostic',
-      label: 'Diagnóstico',
-      shortLabel: 'Diagnóstico',
-      status: 'liberado',
-      tone: 'blue',
-      color: 'blue',
-      statusKind: 'open',
-      button: 'Atualizar diagnóstico',
-      actionLabel: 'Atualizar',
-      description: 'Analisa o estado, gera evidências e sugere promoções. Não confirma apply nem altera output.',
-      warning: 'Descoberta segura: propostas continuam sujeitas à Avaliação.',
-    },
-    {
       id: 'evaluation',
-      label: 'Produção de avaliação',
+      label: 'Avaliação e melhoria de segmentos',
       shortLabel: 'Avaliação',
       status: evaluationAllowed && !diskBlocksProduction ? 'liberada' : 'bloqueada',
       tone: evaluationAllowed && !diskBlocksProduction ? 'emerald' : 'red',
       color: 'emerald',
       statusKind: evaluationAllowed && !diskBlocksProduction ? 'open' : 'blocked',
-      button: 'Rodar produção de avaliação',
-      actionLabel: 'Rodar',
-      description: 'Reavalia scores, valida promoções e aprova somente as seguras para Apply.',
-      warning: diskBlocksProduction ? 'Bloqueada por espaço em disco insuficiente.' : 'Não escreve output. Produz a fila de Apply verificada.',
+      button: 'Atualizar diagnóstico e avaliação',
+      actionLabel: 'Atualizar avaliação',
+      description: 'Identifica falhas, renova descobertas, avalia correções contra o registro anterior e prepara promoções seguras.',
+      warning: diskBlocksProduction ? 'Bloqueada por espaço em disco insuficiente.' : 'Diagnóstico e avaliação rodam no mesmo ciclo; nenhuma promoção é escrita no output.',
+    },
+    {
+      id: 'recalibration',
+      label: 'Recalibrar score',
+      shortLabel: 'Recalibração',
+      status: scoreRecalibration?.training?.shadow_qualified === false ? 'bloqueada' : 'instrumentada',
+      tone: scoreRecalibration?.training?.shadow_qualified === false ? 'red' : 'pink',
+      color: 'pink',
+      statusKind: scoreRecalibration?.training?.shadow_qualified === false ? 'blocked' : 'instrumented',
+      button: `${scoreRecalibrationActionLabel} no laboratório de recalibração`,
+      actionLabel: scoreRecalibrationActionLabel,
+      description: 'Materializa, compara e governa uma versão calibrada do score para todo o pacote.',
+      warning: 'Mantém o score bruto imutável e exige revisão das maiores discrepâncias antes da promoção.',
     },
     {
       id: 'publication',
-      label: 'Produção publicável',
-      shortLabel: 'Publicável',
-      status: publicationModeStatus,
-      tone: publicationModeTone,
-      color: 'violet',
-      statusKind: publicationModeStatusKind,
-      button: 'Aplicar confirmados',
-      actionLabel: 'Aplicar',
-      description: 'Aplica a fila verificada, escreve output e exige fechamento completo no lifecycle.',
-      warning: publicationModeWarning,
-    },
-    {
-      id: 'hotfix',
-      label: 'Hotfix visual',
-      shortLabel: 'Hotfix',
-      status: releaseCandidate.current_candidate_path ? 'instrumentado' : 'não instrumentado',
-      tone: releaseCandidate.current_candidate_path ? 'amber' : 'slate',
-      color: 'amber',
-      statusKind: releaseCandidate.current_candidate_path ? 'instrumented' : 'unknown',
-      button: releaseCandidate.current_candidate_path ? 'Abrir fila de hotfix' : 'Gerar pacote de hotfix visual',
-      actionLabel: releaseCandidate.current_candidate_path ? 'Abrir' : 'Preparar',
-      description: 'Opera sobre release candidate pequeno baseado em feedback visual.',
-      warning: 'Não substitui uma produção full ampla.',
-    },
-    {
-      id: 'version',
-      label: 'Materializar nova versão',
-      shortLabel: 'Nova versão',
-      status: versionNoPackageDelta ? 'sem alterações' : versionMaterializationEligible ? 'liberada' : 'bloqueada',
-      tone: versionNoPackageDelta ? 'blue' : versionMaterializationEligible ? 'emerald' : 'red',
-      color: 'slate',
-      statusKind: versionMaterializationEligible ? 'open' : 'blocked',
-      button: 'Materializar nova versão',
-      actionLabel: 'Materializar',
-      description: 'Congela a versão no banco e promove output/spanish para source/spanish_old.',
-      warning: versionNoPackageDelta
-        ? `${latestMaterializedVersionLabel} já representa integralmente o output atual. Uma nova versão exige alterações reais no pacote.`
-        : versionMaterializationEligible
-        ? `Cria backup da baseline atual, verifica hashes e reindexa o banco.${rawScoreRegressionCount > 0 ? ` ${compact(rawScoreRegressionCount)} observações brutas já foram resolvidas pela calibração.` : ''}`
-        : `Exige epoch pontuada, zero regressões efetivas, zero pendências e zero apply. Epoch atual: ${qualityEpoch.status ?? 'ausente'}.`,
+      label: 'Produção e nova versão',
+      shortLabel: 'Produção',
+      status: productionActionKind === 'apply'
+        ? `${compact(evaluatedApplyCount)} para aplicar`
+        : productionActionKind === 'materialize'
+          ? 'versão pronta'
+          : 'aguardando apply',
+      tone: productionActionKind === 'idle' ? 'blue' : 'emerald',
+      color: 'blue',
+      statusKind: productionActionKind === 'idle' ? 'blocked' : 'open',
+      button: productionActionKind === 'materialize' ? 'Materializar nova versão do pacote' : 'Executar produção do pacote',
+      actionLabel: productionActionKind === 'apply' ? 'Aplicar confirmados' : productionActionKind === 'materialize' ? 'Materializar versão' : 'Aguardando novos applys',
+      description: 'Aplica promoções confirmadas, valida o output e materializa uma nova versão.',
+      warning: productionActionKind === 'apply'
+        ? `${compact(evaluatedApplyCount)} segmento(s) aguardam aplicação protegida.`
+        : productionActionKind === 'materialize'
+          ? `O Pacote possui ${compact(packageChangeCount)} segmento(s) aplicados e está pronto para validar a materialização.`
+          : 'Apply e Pacote estão vazios. A produção aguarda novas promoções confirmadas.',
     },
   ];
   const effectiveSelectedMode = runActive ? activeRunMode : selectedMode;
   const selectedModeInfo = releaseModes.find((mode) => mode.id === effectiveSelectedMode) ?? releaseModes[0];
+  const scoreCalibrationActive = scoreRecalibration?.lifecycle_state === 'active_monitoring'
+    && Number(scoreRecalibration?.registry?.active_candidate_run_id ?? 0) > 0;
+  const scoreCalibrationRecommendation = scoreRecalibration?.recommendation ?? {};
+  const scoreCalibrationHasNewEvidence = Boolean(
+    scoreCalibrationRecommendation.can_recalibrate
+    ?? scoreRecalibration?.actions?.can_start_new_cycle
+  );
+  const scoreCalibrationStronglyRecommended = scoreCalibrationRecommendation.level === 'recommended';
+  const scoreCalibrationHighFidelity = scoreCalibrationActive
+    && scoreRecalibration?.training?.shadow_qualified === true
+    && Number(scoreRecalibration?.training?.candidate_false_safe_count ?? 0) === 0
+    && Number(scoreRecalibration?.candidate?.gate?.pending_review_count ?? 0) === 0
+    && Number(scoreRecalibration?.candidate?.gate?.incorrect_count ?? 0) === 0;
+  const scoreCalibrationModuleStatus = scoreCalibrationStronglyRecommended
+    ? 'recomendada'
+    : scoreCalibrationHasNewEvidence
+    ? 'disponível'
+    : scoreCalibrationHighFidelity
+      ? 'alta fidelidade'
+      : scoreCalibrationActive
+        ? 'monitorando'
+        : releaseModes.find((mode) => mode.id === 'recalibration')?.status ?? 'instrumentada';
+  const scoreCalibrationModuleTone = scoreCalibrationStronglyRecommended
+    ? 'red'
+    : scoreCalibrationHasNewEvidence
+    ? 'amber'
+    : scoreCalibrationHighFidelity
+      ? 'emerald'
+      : scoreRecalibration?.training?.shadow_qualified === false
+        ? 'red'
+        : 'pink';
+  const architectureModules = [
+    {
+      id: 'improvement',
+      label: 'Avaliar segmentos',
+      shortLabel: 'Avaliação',
+      defaultMode: 'evaluation',
+      modeIds: ['evaluation'],
+      defaultArea: 'review',
+      defaultView: 'audit',
+      status: evaluationAllowed && !diskBlocksProduction ? 'liberada' : 'bloqueada',
+      tone: 'emerald',
+      color: 'emerald',
+      statusKind: evaluationAllowed && !diskBlocksProduction ? 'open' : 'blocked',
+      description: 'Descobre problemas, propõe correções e compara cada novo registro com a baseline anterior.',
+      warning: 'Diagnóstico, avaliação e renovação das filas são um único ciclo.',
+    },
+    {
+      id: 'calibration_module',
+      label: 'Calibração do score',
+      shortLabel: 'Calibração',
+      defaultMode: 'recalibration',
+      modeIds: ['recalibration'],
+      defaultArea: null,
+      defaultView: null,
+      status: scoreCalibrationModuleStatus,
+      tone: scoreCalibrationModuleTone,
+      color: 'pink',
+      statusKind: scoreCalibrationStronglyRecommended
+        ? 'blocked'
+        : scoreCalibrationHasNewEvidence
+        ? 'attention'
+        : scoreCalibrationHighFidelity
+          ? 'confirmed'
+          : scoreRecalibration?.training?.shadow_qualified === false
+            ? 'blocked'
+            : 'instrumented',
+      description: 'Audita a confiança, materializa candidatos e governa versões calibradas.',
+      warning: 'O score bruto permanece imutável.',
+    },
+    {
+      id: 'production_module',
+      label: 'Produzir pacote',
+      shortLabel: 'Produção',
+      defaultMode: 'publication',
+      modeIds: ['publication'],
+      defaultArea: 'review',
+      defaultView: 'apply',
+      status: productionActionKind === 'apply'
+        ? `${compact(productionQueueCount)} promoções prontas`
+        : productionActionKind === 'materialize'
+          ? 'versão pronta'
+          : 'aguardando apply',
+      tone: productionActionKind === 'idle' ? 'blue' : 'emerald',
+      color: 'blue',
+      statusKind: productionActionKind === 'idle' ? 'blocked' : 'open',
+      description: 'Aplica somente promoções confirmadas, fecha os gates e materializa a próxima versão do pacote.',
+      warning: 'A escrita no output e a nova baseline continuam protegidas por preflight e confirmação.',
+    },
+  ];
+  const effectiveModuleId = architectureModules.find((module) => module.modeIds.includes(effectiveSelectedMode))?.id ?? 'improvement';
+  const selectedArchitectureModule = architectureModules.find((module) => module.id === effectiveModuleId) ?? architectureModules[0];
+  const selectedArchitectureModes = releaseModes.filter((mode) => selectedArchitectureModule.modeIds.includes(mode.id));
   const modeActionNotice = actionNotice?.mode === effectiveSelectedMode ? actionNotice : null;
   const latestPublicationPreflight = modeActionNotice?.publicationPreflight
     ?? productionState.publication_preflight
@@ -3110,8 +4315,10 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     ?? null;
   const publicationCanApply = effectiveSelectedMode === 'publication'
     && !runActive
-    && hasVerifiedApplyQueue
-    && latestPublicationPreflight?.can_apply_pending === true;
+    && productionActionKind === 'apply';
+  const publicationCanMaterialize = effectiveSelectedMode === 'publication'
+    && !runActive
+    && productionActionKind === 'materialize';
   const actionRunId = modeActionNotice?.runId ?? null;
   const actionRunMatches = Boolean(actionRunId && runStatus?.run_id === actionRunId);
   const actionWaitingForRun = (modeActionNotice?.mode === 'evaluation' || modeActionNotice?.mode === 'publication')
@@ -3199,7 +4406,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         status: runStatus.status,
         tone: activeRunMode === 'publication' ? 'violet' : 'blue',
         title: activeRunMode === 'publication'
-          ? 'Produção publicável em execução'
+          ? 'Produção do pacote em execução'
           : 'Produção de avaliação em execução',
         body: `Run ${runStatus.run_id} · etapa ${runStatus.current_label ?? runStatus.current_stage ?? 'preparando'}.`,
         outputChanged: Boolean(runStatus.output_changed),
@@ -3287,13 +4494,14 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       }
       if (runStatus.status === 'completed' || runStatus.status === 'failed') {
         setStartStatus(runStatus.status);
+        setEvaluationCyclePhase('idle');
         refreshDiskPreflight();
       }
     };
     refreshTerminal();
   }, [runStatus?.run_id, runStatus?.status, onRefreshAppState]);
 
-  const refreshCache = async () => {
+  const refreshCache = async ({ noticeMode = 'diagnostic', continueToEvaluation = false } = {}) => {
     setRefreshing(true);
     setStartError(null);
     setStartStatus('refreshing');
@@ -3309,6 +4517,17 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         { id: 'suggestions', label: 'Sugestões', status: 'pending' },
         { id: 'consolidation', label: 'Consolidação', status: 'pending' },
       ],
+    });
+    setActionNotice({
+      mode: noticeMode,
+      status: 'running',
+      tone: 'blue',
+      title: noticeMode === 'evaluation' ? 'Execução iniciada · preparando avaliação' : 'Diagnóstico em execução',
+      body: noticeMode === 'evaluation'
+        ? 'Sincronizando índice, banco e evidências antes de avançar para a análise dos segmentos.'
+        : 'Recalculando o estado atual, as descobertas e as sugestões sem alterar o output.',
+      outputChanged: false,
+      runId: null,
     });
     try {
       const response = await fetch(`${API_BASE}/cache/refresh`, { method: 'POST' });
@@ -3326,13 +4545,15 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         stages: payload.diagnostic_segment_state?.stages ?? [],
       };
       setLastDiagnostic(diagnostic);
-      setStartStatus('refresh_completed');
+      setStartStatus(continueToEvaluation ? 'starting' : 'refresh_completed');
       setActionNotice({
-        mode: 'diagnostic',
-        status: 'completed',
-        tone: 'emerald',
-        title: 'Diagnóstico atualizado',
-        body: `Análise concluída às ${completedAt}. Segment-state ${payload.diagnostic_segment_state?.new_segment_state_run_id ? `#${payload.diagnostic_segment_state.new_segment_state_run_id}` : 'recalculado'}, evidências e sugestões atualizadas, sem confirmar candidatos nem alterar output.`,
+        mode: noticeMode,
+        status: continueToEvaluation ? 'starting' : 'completed',
+        tone: continueToEvaluation ? 'blue' : 'emerald',
+        title: continueToEvaluation ? 'Preparação concluída · iniciando análise' : 'Diagnóstico atualizado',
+        body: continueToEvaluation
+          ? `Diagnóstico incorporado ao mesmo ciclo às ${completedAt}. Preparando o processamento completo sem reiniciar o progresso.`
+          : `Análise concluída às ${completedAt}. Segment-state ${payload.diagnostic_segment_state?.new_segment_state_run_id ? `#${payload.diagnostic_segment_state.new_segment_state_run_id}` : 'recalculado'}, evidências e sugestões atualizadas, sem confirmar candidatos nem alterar output.`,
         outputChanged: false,
         runId: null,
       });
@@ -3343,11 +4564,12 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         ?? payload.app_state?.release?.safety?.disk_preflight;
       if (consolidatedDiskPreflight) setDiskPreflight(consolidatedDiskPreflight);
       else await refreshDiskPreflight();
+      return true;
     } catch (err) {
       setStartError(err.message);
       setStartStatus('failed');
       setActionNotice({
-        mode: 'diagnostic',
+        mode: noticeMode,
         status: 'failed',
         tone: 'red',
         title: 'Falha ao atualizar diagnóstico',
@@ -3356,27 +4578,293 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         runId: null,
       });
       setDiagnosticFinishedAt(Date.now());
+      return false;
     } finally {
       setRefreshing(false);
     }
   };
 
-  const submitCalibrationReview = async (itemId, reviewLabel, requireReason = false) => {
+  const enqueueHumanReviewDecision = ({
+    kind,
+    optimisticKey,
+    endpoint,
+    request,
+    itemLabel,
+    successTitle,
+    successBody,
+  }) => {
+    const requestId = mojibakeReviewRequestId(optimisticKey);
+    const queuedEntry = {
+      id: requestId,
+      kind,
+      optimistic_key: optimisticKey,
+      endpoint,
+      request,
+      item_label: itemLabel,
+      success_title: successTitle,
+      success_body: successBody,
+      status: 'queued',
+      queued_at: new Date().toISOString(),
+    };
+    setStartError(null);
+    setHumanReviewOptimisticHiddenKeys((current) => (
+      current.includes(optimisticKey) ? current : [...current, optimisticKey]
+    ));
+    setHumanReviewOutbox((current) => {
+      const existing = current.find((entry) => entry.optimistic_key === optimisticKey);
+      if (existing && existing.status !== 'failed') return current;
+      if (existing?.status === 'failed') {
+        return current.map((entry) => entry.id === existing.id ? queuedEntry : entry);
+      }
+      return [...current, queuedEntry];
+    });
+    setActionNotice({
+      mode: 'diagnostic',
+      status: 'running',
+      tone: 'blue',
+      title: 'Decisão humana na fila de sincronização',
+      body: `${itemLabel} saiu da fila visual. Você já pode revisar o próximo item.`,
+      outputChanged: false,
+      runId: null,
+    });
+    return true;
+  };
+
+  const submitCalibrationReview = (itemId, reviewLabel, requireReason = false) => {
     const reviewReason = requireReason
       ? window.prompt('Registre o motivo desta preferencia para a analise de calibracao:')
       : null;
     if (requireReason && !String(reviewReason ?? '').trim()) return;
-    setCalibrationSubmittingItemId(itemId);
-    setStartError(null);
-    try {
-      const response = await fetch(`${API_BASE}/production/pairwise-calibration/review`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+    return enqueueHumanReviewDecision({
+      kind: 'pairwise',
+      optimisticKey: `pairwise:${itemId}`,
+      endpoint: '/production/pairwise-calibration/review',
+      request: {
           item_id: itemId,
           review_label: reviewLabel,
           review_reason: reviewReason,
           reviewer: 'dashboard_human_review',
+      },
+      itemLabel: `Comparação A/B #${itemId}`,
+      successTitle: 'Revisão de calibração registrada',
+      successBody: `Item #${itemId}: ${reviewLabel}. Nenhum score, apply ou output foi alterado.`,
+    });
+  };
+
+  const submitLowScoreCalibrationReview = (segmentId, reviewLabel) => {
+    const reviewReason = reviewLabel === 'correct'
+      ? 'Saída atual confirmada como correta na auditoria de score.'
+      : window.prompt(
+        'Descreva brevemente qual defeito real ainda existe ou por que este caso é uma exceção:'
+      );
+    if (!String(reviewReason ?? '').trim()) return;
+    return enqueueHumanReviewDecision({
+      kind: 'low_score',
+      optimisticKey: `score_calibration:${segmentId}`,
+      endpoint: '/production/low-score-calibration/review',
+      request: {
+          segment_id: segmentId,
+          review_label: reviewLabel,
+          review_reason: reviewReason,
+          reviewer: 'dashboard_human_review',
+      },
+      itemLabel: `Segmento de calibração #${segmentId}`,
+      successTitle: 'Exemplo de calibração registrado',
+      successBody: `Segmento #${segmentId}: ${reviewLabel}. Apenas a memória de treino foi atualizada; output, apply e lifecycle permaneceram intactos.`,
+    });
+  };
+
+  const submitRegenerativeReview = (item, decision) => {
+    const contract = item?.raw?.review_contract;
+    if (!contract?.available) return false;
+    const option = (contract.decisions ?? []).find((candidate) => candidate.value === decision);
+    return enqueueHumanReviewDecision({
+      kind: 'regenerative',
+      optimisticKey: item.key,
+      endpoint: '/production/regenerative-review',
+      request: {
+          queue_type: contract.queue_type,
+          item_key: contract.item_key,
+          segment_id: item.segmentId,
+          snapshot_id: contract.snapshot_id,
+          evidence_hash: contract.evidence_hash,
+          evidence: contract.evidence,
+          decision,
+          reason: null,
+          reviewer: 'dashboard_human_review',
+      },
+      itemLabel: `${item.queueMeta.label} · ${item.segmentId ? `segmento #${item.segmentId}` : contract.item_key}`,
+      successTitle: 'Evidência supervisionada registrada',
+      successBody: `${item.queueMeta.label}: ${option?.label ?? decision}. A decisão foi vinculada à memória supervisionada; correções aprovadas seguem para as travas de promoção sem escrever o output nesta etapa.`,
+    });
+  };
+
+  const submitGlossaryDisplayCaseReview = async (glossaryKey, policy) => {
+    const policyLabel = policy === 'case_sensitive'
+      ? 'maiúscula canônica'
+      : 'variação contextual válida';
+    const reason = window.prompt(
+      `Explique por que ${glossaryKey} deve usar ${policyLabel}:`
+    );
+    if (!String(reason ?? '').trim()) return;
+    setGlossaryCaseSubmittingKey(glossaryKey);
+    setStartError(null);
+    try {
+      const response = await fetch(`${API_BASE}/production/glossary-display-case/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          glossary_key: glossaryKey,
+          policy,
+          reason,
+          reviewer: 'dashboard_human_review',
+          shadow_run_id: glossaryDisplayCase.shadow_run_id,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message ?? payload.error ?? `API ${response.status}`);
+      setActionNotice({
+        mode: 'diagnostic',
+        status: 'completed',
+        tone: 'emerald',
+        title: 'Política de Glossary registrada',
+        body: `${glossaryKey}: ${policyLabel} para ${payload.evidence_segment_count ?? 0} segmentos. Output, apply e lifecycle permaneceram intactos.`,
+        outputChanged: false,
+        runId: null,
+      });
+      await onRefreshAppState?.(payload.app_state);
+    } catch (err) {
+      setStartError(err.message);
+    } finally {
+      setGlossaryCaseSubmittingKey(null);
+    }
+  };
+
+  const submitMojibakeLexiconReview = (item, decision, validPunctuationSignals = []) => {
+    const decisionLabels = {
+      accept_suggestion: 'aceitar a proposta Unicode',
+      partial_correction: 'registrar que o foco foi corrigido, mas existe outro erro',
+      valid_question_mark: 'confirmar que o ponto de interrogação é válido',
+      manual_review: 'encaminhar para revisão manual',
+    };
+    const residualSignals = Array.isArray(item.residual_word_signals)
+      ? item.residual_word_signals.filter(Boolean)
+      : [];
+    const unresolvedSignals = Array.isArray(item.unresolved_signals)
+      ? item.unresolved_signals.filter((signal) => signal && typeof signal === 'object')
+      : [];
+    const mappedResidualCount = Math.max(
+      Number(item.remaining_signal_count ?? 0),
+      residualSignals.length,
+      unresolvedSignals.length,
+    );
+    const confirmsMappedResiduals = decision === 'partial_correction' && mappedResidualCount > 0;
+    const hasAutomaticCandidate = Boolean(item.candidate_available);
+    const focusedSubmission = Number(mojibakeFocusedSegmentId) === Number(item.segment_id);
+    const nextFocusedSegmentId = nextReviewItemKey(
+      mojibakeFocusedItems,
+      Number(item.segment_id),
+      (candidate) => Number(candidate.segment_id)
+    );
+    if (decision === 'valid_question_mark' && !validPunctuationSignals.length) {
+      setStartError('Selecione no painel os resíduos de pontuação que são válidos antes de confirmar.');
+      return;
+    }
+    const reason = decision === 'accept_suggestion'
+      ? hasAutomaticCandidate
+        ? `Proposta Unicode integral validada no shadow #${mojibakeLexiconReview.shadow_run_id}; nenhum resíduo detectado.`
+        : `Texto atual validado no shadow #${mojibakeLexiconReview.shadow_run_id}; nenhum resíduo detectado e nenhuma substituição automática necessária.`
+      : decision === 'valid_question_mark'
+        ? `Pontuação válida confirmada em ${validPunctuationSignals.length} ocorrência(s) no shadow #${mojibakeLexiconReview.shadow_run_id}; os demais resíduos permanecem pendentes.`
+      : confirmsMappedResiduals
+        ? hasAutomaticCandidate
+          ? `Foco Unicode corrigido; confirmação de ${mappedResidualCount} resíduo(s) estruturado(s) pelo shadow #${mojibakeLexiconReview.shadow_run_id}.`
+          : `Confirmação de ${mappedResidualCount} resíduo(s) estruturado(s) pelo shadow #${mojibakeLexiconReview.shadow_run_id}; nenhuma substituição automática foi aplicada.`
+      : window.prompt(
+        `Explique por que o segmento #${item.segment_id} deve ${decisionLabels[decision] ?? decision}:`
+      );
+    if (!String(reason ?? '').trim()) return;
+    const segmentId = Number(item.segment_id);
+    const requestId = mojibakeReviewRequestId(segmentId);
+    const request = {
+      segment_id: segmentId,
+      decision,
+      reason,
+      reviewer: 'dashboard_human_review',
+      shadow_run_id: mojibakeLexiconReview.shadow_run_id,
+      valid_punctuation_signals: validPunctuationSignals,
+    };
+    setStartError(null);
+    setMojibakeOptimisticHiddenSegmentIds((current) => (
+      current.includes(segmentId) ? current : [...current, segmentId]
+    ));
+    setMojibakeReviewOutbox((current) => {
+      const existing = current.find((entry) => Number(entry.request?.segment_id) === segmentId);
+      if (existing && existing.status !== 'failed') return current;
+      if (existing?.status === 'failed') {
+        return current.map((entry) => entry.id === existing.id
+          ? {
+            id: requestId,
+            status: 'queued',
+            queued_at: new Date().toISOString(),
+            request,
+          }
+          : entry);
+      }
+      return [...current, {
+        id: requestId,
+        status: 'queued',
+        queued_at: new Date().toISOString(),
+        request,
+      }];
+    });
+    setActionNotice({
+      mode: 'diagnostic',
+      status: 'running',
+      tone: 'blue',
+      title: 'Decisão Unicode na fila de sincronização',
+      body: `Segmento #${segmentId}: ${decisionLabels[decision] ?? decision}. Você já pode revisar o próximo item.`,
+      outputChanged: false,
+      runId: null,
+    });
+    if (focusedSubmission) {
+      setMojibakeFocusedSequenceIds((current) => (
+        current.filter((candidateId) => Number(candidateId) !== segmentId)
+      ));
+      setMojibakeFocusedSegmentId(nextFocusedSegmentId);
+      setMojibakeFocusedValidSignalIndexes([]);
+      if (!nextFocusedSegmentId) {
+        setActionNotice((notice) => ({
+          ...notice,
+          body: `${notice.body} A fila visível foi concluída; a revisão focada foi fechada.`,
+        }));
+      }
+    }
+  };
+
+  const submitMojibakeBoundaryPatternReview = async (group, decision, replacement = '') => {
+    const actionLabel = decision === 'canonical_replacement'
+      ? `mapear ${group.display_pattern} para ${replacement}`
+      : decision === 'valid_punctuation'
+        ? 'classificar como pontuação válida'
+        : 'manter dependente de contexto';
+    const reason = window.prompt(
+      `Explique por que o padrão "${group.display_pattern}" deve ${actionLabel}:`
+    );
+    if (!String(reason ?? '').trim()) return;
+    setMojibakeSubmittingPattern(group.normalized_pattern);
+    setStartError(null);
+    try {
+      const response = await fetch(`${API_BASE}/production/mojibake-boundary-pattern/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pattern: group.display_pattern,
+          decision,
+          canonical_replacement: replacement,
+          reason,
+          reviewer: 'dashboard_human_review',
+          shadow_run_id: mojibakeLexiconReview.shadow_run_id,
         }),
       });
       const payload = await response.json().catch(() => ({}));
@@ -3385,8 +4873,8 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         mode: 'diagnostic',
         status: 'completed',
         tone: 'emerald',
-        title: 'Revisao de calibracao registrada',
-        body: `Item #${itemId}: ${reviewLabel}. Nenhum score, apply ou output foi alterado.`,
+        title: 'Padrão de fronteira registrado',
+        body: `${group.display_pattern}: ${actionLabel}. A regra alimentará o próximo shadow v4; output, apply e lifecycle permaneceram intactos.`,
         outputChanged: false,
         runId: null,
       });
@@ -3394,11 +4882,219 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     } catch (err) {
       setStartError(err.message);
     } finally {
-      setCalibrationSubmittingItemId(null);
+      setMojibakeSubmittingPattern(null);
     }
   };
 
-  const startProduction = async () => {
+  const loadScoreRecalibration = async () => {
+    setScoreRecalibrationLoading(true);
+    setScoreRecalibrationError(null);
+    try {
+      const response = await fetch(`${API_BASE}/production/score-recalibration`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error ?? `API ${response.status}`);
+      const nextRecalibration = payload.recalibration ?? null;
+      setScoreRecalibration(nextRecalibration);
+      if (['active_monitoring', 'raw_monitoring'].includes(nextRecalibration?.lifecycle_state)) {
+        setScoreRecalibrationStage('monitoring');
+      }
+      return nextRecalibration;
+    } catch (err) {
+      setScoreRecalibrationError(err.message);
+      return null;
+    } finally {
+      setScoreRecalibrationLoading(false);
+    }
+  };
+
+  const runScoreRecalibrationAction = async (action, body = {}) => {
+    setScoreRecalibrationBusy(true);
+    setScoreRecalibrationError(null);
+    try {
+      const response = await fetch(`${API_BASE}/production/score-recalibration/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error ?? `API ${response.status}`);
+      setScoreRecalibration(payload.recalibration ?? null);
+      return payload.recalibration ?? null;
+    } catch (err) {
+      setScoreRecalibrationError(err.message);
+      return null;
+    } finally {
+      setScoreRecalibrationBusy(false);
+    }
+  };
+
+  const generateScoreRecalibration = async () => {
+    const result = await runScoreRecalibrationAction('generate');
+    if (result?.candidate) setScoreRecalibrationStage('review');
+  };
+
+  const reviewScoreRecalibrationDiscrepancy = async (item, decision) => {
+    const movement = Number(item?.delta ?? 0) >= 0 ? 'aumento' : 'queda';
+    const reason = ({
+      coherent_change: `${movement} coerente em direção e magnitude.`,
+      correct_direction_excessive: `${movement} na direção correta, mas com magnitude excessiva.`,
+      correct_direction_insufficient: `${movement} na direção correta, mas com magnitude insuficiente.`,
+      incorrect_direction: `${movement} na direção incorreta para a qualidade observada.`,
+      needs_review: 'Revisão adiada pelo avaliador.',
+    })[decision] ?? 'Classificação estruturada da variação de score.';
+    const identityMatches = (candidate) => Number(candidate.segment_id) === Number(item.segment_id)
+      && String(candidate.text_hash ?? '') === String(item.text_hash ?? '');
+    const previousDecision = item.review_decision ?? null;
+    const previousReason = item.review_reason ?? null;
+    setScoreRecalibrationError(null);
+    setScoreRecalibration((current) => current ? ({
+      ...current,
+      candidate: current.candidate ? {
+        ...current.candidate,
+        discrepancies: (current.candidate.discrepancies ?? []).filter((candidate) => !identityMatches(candidate)),
+      } : current.candidate,
+    }) : current);
+    try {
+      const response = await fetch(`${API_BASE}/production/score-recalibration/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          candidate_run_id: Number(item.candidate_run_id),
+          segment_id: Number(item.segment_id),
+          decision,
+          reason: String(reason ?? '').trim(),
+          reviewer: 'dashboard_human_review',
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error ?? `API ${response.status}`);
+      const returnedGate = payload.review?.gate ?? null;
+      const reviewCompleted = returnedGate && Number(returnedGate.pending_review_count ?? 0) === 0;
+      const hasDivergences = returnedGate && Number(returnedGate.incorrect_count ?? 0) > 0;
+      setScoreRecalibration((current) => current ? ({
+        ...current,
+        actions: reviewCompleted && hasDivergences
+          ? {
+              ...(current.actions ?? {}),
+              can_generate: true,
+              generation_mode: 'discrepancy_feedback',
+            }
+          : current.actions,
+        candidate: current.candidate ? {
+          ...current.candidate,
+          status: payload.review?.candidate_status ?? current.candidate.status,
+          gate: returnedGate ?? current.candidate.gate,
+        } : current.candidate,
+      }) : current);
+      if (reviewCompleted) void loadScoreRecalibration();
+      return true;
+    } catch (err) {
+      setScoreRecalibrationError(`A decisão não foi confirmada: ${err.message}`);
+      setScoreRecalibration((current) => current ? ({
+        ...current,
+        candidate: current.candidate ? {
+          ...current.candidate,
+          discrepancies: [
+            ...(current.candidate.discrepancies ?? []),
+            { ...item, review_decision: previousDecision, review_reason: previousReason },
+          ].sort((left, right) => Number(left.review_rank ?? 0) - Number(right.review_rank ?? 0)),
+        } : current.candidate,
+      }) : current);
+      return false;
+    }
+  };
+
+  const promoteScoreRecalibration = async () => {
+    const reason = window.prompt('Registre por que este score calibrado é mais fiel à qualidade observada:');
+    if (!String(reason ?? '').trim()) return;
+    const result = await runScoreRecalibrationAction('promote', {
+      candidate_run_id: Number(scoreRecalibration?.candidate?.id),
+      reason: String(reason).trim(),
+      actor: 'dashboard_human_review',
+    });
+    if (result?.registry?.active_candidate_run_id) setScoreRecalibrationStage('monitoring');
+  };
+
+  const restoreScoreRecalibrationVersion = async (version) => {
+    if (!version?.restorable) return;
+    const reason = window.prompt(`Registre por que deseja restaurar ${version.label}:`);
+    if (!String(reason ?? '').trim()) return;
+    const result = await runScoreRecalibrationAction('restore', {
+      candidate_run_id: version.kind === 'raw' ? null : Number(version.candidate_run_id),
+      reason: String(reason).trim(),
+      actor: 'dashboard_human_review',
+    });
+    if (!result) return;
+    setScoreRecalibrationStage('monitoring');
+    await onRefreshAppState?.(null, { force: true });
+  };
+
+  const startNewScoreRecalibrationCycle = async () => {
+    if (!scoreRecalibration?.actions?.can_start_new_cycle) return;
+    await generateScoreRecalibration();
+  };
+
+  const inspectSourceUpdate = async ({ announce = true } = {}) => {
+    if (sourceInspectBusy) return null;
+    setSourceInspectBusy(true);
+    setStartError(null);
+    try {
+      const response = await fetch(`${API_BASE}/production/source-update/inspect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sync: true, force: announce }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error ?? `API ${response.status}`);
+      const readiness = payload.readiness ?? {};
+      const totalChanged = Number(readiness.file_delta?.total_changed ?? 0);
+      if (announce) {
+        setActionNotice({
+          mode: 'diagnostic',
+          status: 'completed',
+          tone: readiness.pending_source_evaluation ? 'amber' : 'emerald',
+          title: readiness.pending_source_evaluation
+            ? 'Source atualizado; avaliação necessária'
+            : totalChanged
+              ? 'Atualização já avaliada'
+              : 'Source permanece estável',
+          body: readiness.pending_source_evaluation
+            ? `${compact(totalChanged)} arquivo(s) mudaram. O índice foi atualizado; execute Avaliação antes de calibrar ou produzir.`
+            : totalChanged
+              ? `${compact(totalChanged)} arquivo(s) da atualização já foram incorporados e avaliados.`
+              : 'Índice e snapshot estão sincronizados; o estado validado pode ser reutilizado.',
+          outputChanged: false,
+          runId: null,
+        });
+      }
+      await onRefreshAppState?.(null, { force: true });
+      return payload;
+    } catch (error) {
+      setStartError(`Não foi possível sincronizar o source: ${error.message}`);
+      if (!announce) {
+        setActionNotice({
+          mode: effectiveSelectedMode,
+          status: 'blocked',
+          tone: 'red',
+          title: 'Falha ao validar arquivos de origem',
+          body: error.message,
+          outputChanged: false,
+          runId: null,
+        });
+      }
+      return null;
+    } finally {
+      setSourceInspectBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!scoreRecalibration && !scoreRecalibrationLoading) {
+      loadScoreRecalibration();
+    }
+  }, [selectedMode]);
+
+  const startProduction = async ({ continueEvaluationCycle = false } = {}) => {
     setStartStatus('checking');
     setStartError(null);
     runStartBaselineIdRef.current = runStatus?.run_id ?? lastRun?.run_id ?? null;
@@ -3407,8 +5103,10 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       mode: 'evaluation',
       status: 'checking',
       tone: 'blue',
-      title: 'Preparando producao de avaliacao',
-      body: 'Validando preflight e preparando a primeira fase da nova run.',
+      title: continueEvaluationCycle ? 'Continuando avaliação' : 'Preparando produção de avaliação',
+      body: continueEvaluationCycle
+        ? 'Preparação concluída; validando o preflight antes de continuar para a análise.'
+        : 'Validando preflight e preparando a primeira fase da execução.',
       outputChanged: false,
       runId: null,
     });
@@ -3427,14 +5125,16 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         runId: null,
         diskPreflight: disk,
       });
-      return;
+      return false;
     }
     setActionNotice({
       mode: 'evaluation',
       status: 'starting',
       tone: 'blue',
-      title: 'Iniciando produção de avaliação',
-      body: 'Solicitando novo run em modo evaluation/full production.',
+      title: continueEvaluationCycle ? 'Preparação concluída · iniciando análise' : 'Iniciando produção de avaliação',
+      body: continueEvaluationCycle
+        ? 'O mesmo ciclo está avançando para o processamento completo.'
+        : 'Solicitando a execução completa da avaliação.',
       outputChanged: true,
       runId: null,
     });
@@ -3444,19 +5144,19 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       if (!response.ok) {
         if (payload.disk_preflight) setDiskPreflight(payload.disk_preflight);
         setStartStatus(payload.status ?? 'blocked');
-        setStartError(payload.lock?.message ?? payload.error ?? `API ${response.status}`);
+        setStartError(payload.lock?.message ?? payload.message ?? payload.error ?? `API ${response.status}`);
         if (payload.run) setRunStatus(payload.run);
         setActionNotice({
           mode: 'evaluation',
           status: 'blocked',
           tone: 'red',
           title: 'Produção de avaliação bloqueada',
-          body: payload.lock?.message ?? payload.error ?? `API ${response.status}`,
+          body: payload.lock?.message ?? payload.message ?? payload.error ?? `API ${response.status}`,
           outputChanged: false,
           runId: payload.run?.run_id ?? null,
           diskPreflight: payload.disk_preflight ?? disk,
         });
-        return;
+        return false;
       }
       setStartStatus(payload.status ?? 'running');
       setStartError(payload.message ?? null);
@@ -3470,6 +5170,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         outputChanged: true,
         runId: payload.run?.run_id ?? null,
       });
+      return true;
     } catch (err) {
       setStartStatus('failed');
       setStartError(err.message);
@@ -3482,6 +5183,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         outputChanged: false,
         runId: null,
       });
+      return false;
     }
   };
 
@@ -3613,11 +5315,11 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     }
   };
 
-  const materializeVersion = async () => {
+  const materializeVersion = async (noticeMode = 'publication') => {
     setStartStatus('checking');
     setStartError(null);
     setActionNotice({
-      mode: 'version', status: 'checking', tone: 'blue', title: 'Validando nova versão',
+      mode: noticeMode, status: 'checking', tone: 'blue', title: 'Validando nova versão',
       body: 'Checando epoch, regressões, pendências, apply e integridade dos pacotes.',
       outputChanged: false, runId: null,
     });
@@ -3629,7 +5331,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         const currentVersion = preflight.current_version_number ? `V${preflight.current_version_number}` : latestMaterializedVersionLabel;
         setStartStatus('completed');
         setActionNotice({
-          mode: 'version', status: 'completed', tone: 'blue',
+          mode: noticeMode, status: 'completed', tone: 'blue',
           title: 'Nenhuma nova versão necessária',
           body: `${currentVersion} já representa integralmente output/spanish. O próximo checkpoint será liberado somente depois de alterações reais no pacote.`,
           outputChanged: false, runId: null,
@@ -3650,7 +5352,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       }
       setStartStatus('running');
       setActionNotice({
-        mode: 'version', status: 'running', tone: 'blue',
+        mode: noticeMode, status: 'running', tone: 'blue',
         title: `Materializando v${preflight.version_number}`,
         body: 'Congelando banco, copiando baseline, verificando hashes e reindexando fontes.',
         outputChanged: false, runId: null,
@@ -3660,9 +5362,9 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       if (!response.ok) throw new Error(payload.error ?? `API ${response.status}`);
       setStartStatus('completed');
       setActionNotice({
-        mode: 'version', status: 'completed', tone: 'emerald',
+        mode: noticeMode, status: 'completed', tone: 'emerald',
         title: `Versão v${payload.version_number} materializada`,
-        body: `${payload.item_count ?? 0} segmentos congelados. spanish_old sincronizado com output; backup preservado. Rode Diagnóstico para abrir a próxima epoch.`,
+        body: `${payload.item_count ?? 0} segmentos congelados. spanish_old sincronizado com output; backup preservado. Inicie uma nova avaliação para abrir a próxima epoch.`,
         outputChanged: false, runId: null,
       });
       await onRefreshAppState?.(payload.app_state);
@@ -3670,31 +5372,80 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       setStartStatus('failed');
       setStartError(err.message);
       setActionNotice({
-        mode: 'version', status: 'failed', tone: 'red', title: 'Materialização bloqueada',
+        mode: noticeMode, status: 'failed', tone: 'red', title: 'Materialização bloqueada',
         body: err.message, outputChanged: false, runId: null,
       });
     }
   };
 
-  const runSelectedModeAction = () => {
-    if (effectiveSelectedMode === 'diagnostic') {
-      refreshCache();
+  const runUnifiedEvaluationCycle = async () => {
+    setEvaluationCyclePhase('diagnostic');
+    const diagnosticReady = await refreshCache({ noticeMode: 'evaluation', continueToEvaluation: true });
+    if (!diagnosticReady) {
+      setEvaluationCyclePhase('idle');
+      return;
+    }
+    setEvaluationCyclePhase('handoff');
+    const productionStarted = await startProduction({ continueEvaluationCycle: true });
+    setEvaluationCyclePhase(productionStarted ? 'pipeline' : 'idle');
+  };
+
+  const runSelectedModeAction = async () => {
+    if (reviewSyncBlockingCount > 0) {
+      setStartError('Aguarde a sincronização das decisões humanas antes de iniciar uma nova execução.');
+      setActionNotice({
+        mode: effectiveSelectedMode,
+        status: 'blocked',
+        tone: 'amber',
+        title: 'Execução aguardando decisões locais',
+        body: `${reviewSyncPendingCount} decisão(ões) sincronizando e ${reviewSyncFailedCount} com falha.`,
+        outputChanged: false,
+        runId: null,
+      });
+      return;
+    }
+    const sourceCheck = await inspectSourceUpdate({ announce: false });
+    if (!sourceCheck) return;
+    const sourceReadiness = sourceCheck.readiness ?? {};
+    if (effectiveSelectedMode !== 'evaluation' && sourceReadiness.pending_source_evaluation) {
+      const changedFiles = Number(sourceReadiness.file_delta?.total_changed ?? 0);
+      setSelectedMode('evaluation');
+      setStartStatus('blocked');
+      setStartError('A atualização foi incorporada ao índice, mas precisa passar pela Avaliação antes desta operação.');
+      setActionNotice({
+        mode: 'evaluation',
+        status: 'blocked',
+        tone: 'amber',
+        title: 'Nova fonte pronta para avaliação',
+        body: `${compact(changedFiles)} arquivo(s) mudaram. O sistema abriu Avaliação; execute o ciclo para recalcular o novo snapshot antes de calibrar ou produzir.`,
+        outputChanged: false,
+        runId: null,
+      });
       return;
     }
     if (effectiveSelectedMode === 'evaluation') {
-      startProduction();
+      await runUnifiedEvaluationCycle();
+      return;
+    }
+    if (effectiveSelectedMode === 'recalibration') {
+      const recalibration = scoreRecalibration ?? await loadScoreRecalibration();
+      if (recalibration) {
+        const nextStage = scoreRecalibrationNextStageFor(recalibration);
+        if (nextStage === 'candidate' && recalibration?.actions?.can_generate) {
+          await generateScoreRecalibration();
+        } else {
+          setScoreRecalibrationStage(nextStage);
+        }
+      }
       return;
     }
     if (effectiveSelectedMode === 'publication') {
       if (publicationCanApply) {
-        startPublicationApplyConfirmed();
-      } else {
-        startPublicationPreflight();
+        await startPublicationApplyConfirmed();
+      } else if (publicationCanMaterialize) {
+        await materializeVersion('publication');
       }
       return;
-    }
-    if (effectiveSelectedMode === 'version') {
-      materializeVersion();
     }
   };
 
@@ -3716,38 +5467,56 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
           ? 'Seguro para rodar producao'
           : 'Monitorar estado atual';
   const modeButtonDisabled =
-    runActive || runStartPending
+    runActive || runStartPending || reviewSyncBlockingCount > 0
       ? true
-      : effectiveSelectedMode === 'diagnostic'
-      ? refreshing
       : effectiveSelectedMode === 'evaluation'
-        ? (!evaluationAllowed || diskBlocksProduction || runActive || startStatus === 'checking')
+        ? (!evaluationAllowed || diskBlocksProduction || refreshing || runActive || startStatus === 'checking')
+        : effectiveSelectedMode === 'recalibration'
+          ? (scoreRecalibrationLoading || scoreRecalibrationBusy)
         : effectiveSelectedMode === 'publication'
-          ? (refreshing || startStatus === 'checking' || (!publicationActionAllowed && !publicationCanApply))
-        : effectiveSelectedMode === 'version'
-          ? (!versionMaterializationEligible || refreshing || ['checking', 'running'].includes(startStatus))
+          ? (refreshing || ['checking', 'running'].includes(startStatus) || productionActionKind === 'idle')
         : true;
+  const modeButtonBlockedReason = !modeButtonDisabled
+    ? null
+    : runActive
+      ? 'Aguarde a execução atual terminar.'
+      : runStartPending || startStatus === 'checking'
+        ? 'Aguarde a verificação de preflight terminar.'
+        : refreshing || scoreRecalibrationLoading || scoreRecalibrationBusy
+          ? 'Aguarde a atualização dos dados e do estado operacional.'
+          : reviewSyncBlockingCount > 0
+            ? `${compact(reviewSyncBlockingCount)} decisões humanas ainda precisam ser sincronizadas.`
+            : diskBlocksProduction
+              ? 'A ação está bloqueada por espaço em disco insuficiente.'
+              : effectiveSelectedMode === 'evaluation' && !evaluationAllowed
+                ? evaluationBlockedDetail
+                : effectiveSelectedMode === 'publication' && productionActionKind === 'idle'
+                  ? 'Apply e Pacote estão vazios. A produção aguarda novas promoções confirmadas.'
+                  : selectedModeInfo.warning || 'As travas desta etapa ainda não foram atendidas.';
   const modeButtonClass = (mode, active) => {
-    const base = 'group relative flex h-9 min-w-0 flex-1 items-center justify-start overflow-visible rounded-xl border px-3 pr-8 text-white shadow-lg transition hover:-translate-y-0.5 hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-cyan-300/70';
+    const base = 'group relative flex h-14 w-full min-w-0 items-center justify-start overflow-visible border-0 border-l-2 bg-transparent px-3 pr-8 text-[var(--dash-muted)] transition hover:bg-[var(--dash-hover)] hover:text-[var(--dash-text)] focus:outline-none focus-visible:bg-[var(--dash-hover)] focus-visible:text-[var(--dash-text)]';
     const palette =
-      mode.color === 'emerald' ? 'border-emerald-200/35 bg-emerald-600 shadow-emerald-950/35 hover:bg-emerald-500' :
-        mode.color === 'violet' ? 'border-violet-200/35 bg-violet-600 shadow-violet-950/35 hover:bg-violet-500' :
-          mode.color === 'amber' ? 'border-amber-200/35 bg-amber-600 shadow-amber-950/35 hover:bg-amber-500' :
-            mode.color === 'blue' ? 'border-blue-200/35 bg-blue-600 shadow-blue-950/35 hover:bg-blue-500' :
-              'border-slate-200/25 bg-slate-600 shadow-slate-950/25 hover:bg-slate-500';
+      mode.color === 'emerald' ? 'border-emerald-400' :
+        mode.color === 'pink' ? 'border-pink-500' :
+          mode.color === 'violet' ? 'border-violet-400' :
+            mode.color === 'amber' ? 'border-amber-400' :
+              mode.color === 'blue' ? 'border-blue-400' :
+                'border-slate-400';
     return cn(
       base,
-      palette,
-      active ? 'z-10 -translate-y-0.5 border-cyan-200/90 opacity-100 ring-2 ring-cyan-300/90 brightness-115 shadow-[0_0_18px_rgba(34,211,238,0.42)]' : 'opacity-70 saturate-[0.78] hover:opacity-95'
+      active ? palette : 'border-transparent',
+      active ? 'bg-[var(--dash-hover)] font-black text-[var(--dash-text)]' : 'font-bold'
     );
   };
   const modeIcon = (mode) => {
     const icons = {
       diagnostic: SearchCheck,
       evaluation: Scale,
+      recalibration: BrainCircuit,
       publication: Rocket,
-      hotfix: ShieldAlert,
-      version: Layers3,
+      improvement: SearchCheck,
+      calibration_module: BrainCircuit,
+      production_module: Rocket,
     };
     const Icon = icons[mode.id] ?? Workflow;
     return <Icon size={18} strokeWidth={2.2} />;
@@ -3759,7 +5528,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     return <Unlock size={10} />;
   };
   const modeTooltip = (mode) => `${mode.label}: ${mode.description} ${mode.warning} Status: ${mode.status}.`;
-  // Campos de feedback/hotfix ainda sao opcionais. Quando o backend nao medir,
+  // Campos de feedback ainda sao opcionais. Quando o backend nao medir,
   // a tela mostra "nao medido" em vez de inferir estado operacional.
   const valueOrPending = (value) => {
     if (value === null || value === undefined || value === '' || value === 'pending_instrumentation') return 'nao medido';
@@ -3844,6 +5613,13 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const diffSummary = diffReview.summary ?? {};
   const patternDiscovery = postRelease.quality_pattern_discovery ?? {};
   const patternFamilies = Array.isArray(patternDiscovery.families) ? patternDiscovery.families : [];
+  const patternRouting = patternDiscovery.routing_summary ?? {};
+  const correctionLanes = Array.isArray(patternDiscovery.correction_lanes)
+    ? patternDiscovery.correction_lanes
+    : [];
+  const activeCorrectionLanes = correctionLanes.filter(
+    (lane) => Number(lane.ready_family_count ?? 0) > 0 || Number(lane.boundary_family_count ?? 0) > 0
+  );
   const actionablePatternCount = Number(patternDiscovery.actionable_family_count ?? 0);
   const providerProposals = release.provider_proposals ?? {};
   const proposalRows = Array.isArray(providerProposals.proposals) ? providerProposals.proposals : [];
@@ -3874,6 +5650,12 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const lowScoreLifecycleLocked = Number(lowScoreCohorts.lifecycle_locked ?? 0);
   const lowScoreInformational = Number(lowScoreCohorts.informational ?? diffSummary.low_score_informational ?? 0);
   const lowScoreUnexplained = Number(lowScoreCohorts.low_confidence_without_specific_evidence ?? diffSummary.low_score_unexplained ?? 0);
+  const criticalLowScoreCohorts = diffReview.critical_low_score_cohorts ?? {};
+  const criticalLowScoreTotal = Number(criticalLowScoreCohorts.total ?? diffSummary.critical_low_score ?? 0);
+  const criticalLowScoreEvidenceFlagged = Number(criticalLowScoreCohorts.evidence_flagged ?? diffSummary.critical_low_score_evidence_flagged ?? 0);
+  const criticalLowScoreLifecycleClosed = Number(criticalLowScoreCohorts.lifecycle_closed ?? diffSummary.critical_low_score_lifecycle_closed ?? 0);
+  const criticalLowScoreLifecycleLocked = Number(criticalLowScoreCohorts.lifecycle_locked ?? diffSummary.critical_low_score_lifecycle_locked ?? 0);
+  const criticalLowScoreInformational = Number(criticalLowScoreCohorts.informational ?? diffSummary.critical_low_score_informational ?? 0);
   const changedScoreComparison = diffSummary.changed_score_comparison ?? {};
   const packageScoreComparison = diffSummary.package_score_comparison ?? {};
   const changedCohortScoreComparison = diffSummary.changed_cohort_score_comparison ?? {};
@@ -3887,8 +5669,310 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const rawNewSegments = Array.isArray(diffReview.new_segments) ? diffReview.new_segments : [];
   const rawApplySegments = Array.isArray(diffReview.apply_segments) ? diffReview.apply_segments : [];
   const rawLowScoreSegments = Array.isArray(diffReview.low_score_segments) ? diffReview.low_score_segments : [];
+  const rawCriticalLowScoreSegments = Array.isArray(diffReview.critical_low_score_segments)
+    ? diffReview.critical_low_score_segments
+    : rawLowScoreSegments.filter((item) => Number(item?.model_safe_probability ?? item?.new_score) < 0.10);
   const rawScoreRegressionSegments = Array.isArray(diffReview.score_regression_segments) ? diffReview.score_regression_segments : [];
   const calibrationReview = diffReview.calibration_review ?? {};
+  const manualLowScoreCalibration = diffReview.manual_low_score_calibration ?? {};
+  const dynamicScoreHoldout = manualLowScoreCalibration.dynamic_holdout ?? {};
+  const dynamicScoreHoldoutItems = Array.isArray(dynamicScoreHoldout.items)
+    ? dynamicScoreHoldout.items
+    : [];
+  const segmentedCalibrationShadow = manualLowScoreCalibration.segmented_shadow ?? {};
+  const segmentedCalibrationShadows = Array.isArray(manualLowScoreCalibration.segmented_shadows)
+    ? manualLowScoreCalibration.segmented_shadows
+    : segmentedCalibrationShadow.available
+      ? [segmentedCalibrationShadow]
+      : [];
+  const latestSegmentedCalibrationShadows = segmentedCalibrationShadows.reduce(
+    (latest, shadow) => (
+      latest.some((item) => item.pattern === shadow.pattern)
+        ? latest
+        : [...latest, shadow]
+    ),
+    []
+  );
+  const segmentedCalibrationPatternLabels = manualLowScoreCalibration.training_pattern_labels ?? {
+    exact_shared_glossary_token: 'Glossary isolado',
+    contract_es_helper: 'Contratos com helper ES',
+  };
+  const esHelperRepair = manualLowScoreCalibration.es_helper_repair ?? {};
+  const esHelperRepairItems = Array.isArray(esHelperRepair.items)
+    ? [...esHelperRepair.items].sort((a, b) => {
+      const priorityDiff = Number(b?.repair_priority === 'high') - Number(a?.repair_priority === 'high');
+      if (priorityDiff !== 0) return priorityDiff;
+      const scoreDiff = Number(a?.model_safe_probability ?? 1) - Number(b?.model_safe_probability ?? 1);
+      if (scoreDiff !== 0) return scoreDiff;
+      return Number(a?.segment_id ?? 0) - Number(b?.segment_id ?? 0);
+    })
+    : [];
+  const esHelperRepairRouteLabels = esHelperRepair.route_labels ?? {};
+  const esHelperRepairIssueLabels = esHelperRepair.issue_labels ?? {};
+  const esHelperRepairDryRun = esHelperRepair.repair_dry_run ?? esHelperRepair.literal_dry_run ?? {};
+  const esHelperRepairDryRunBlockerLabels = esHelperRepairDryRun.blocker_labels ?? {};
+  const visibleEsHelperRepairItems = esHelperRepairItems.filter((item) => (
+    !humanReviewOptimisticHiddenKeySet.has(`repair:${item.segment_id}`)
+    &&
+    (
+      esHelperRepairHelperFilter === 'all'
+      || (Array.isArray(item.repair_helpers) && item.repair_helpers.includes(esHelperRepairHelperFilter))
+    )
+    && (
+      esHelperRepairRouteFilter === 'all'
+      || item.repair_route === esHelperRepairRouteFilter
+    )
+  ));
+  const glossaryDisplayCase = manualLowScoreCalibration.glossary_display_case ?? {};
+  const glossaryDisplayCaseGroups = Array.isArray(glossaryDisplayCase.groups)
+    ? glossaryDisplayCase.groups
+    : [];
+  const glossaryCasePolicyMeta = {
+    unknown: { label: 'Aguardando revisão', tone: 'amber' },
+    case_sensitive: { label: 'Maiúscula canônica', tone: 'emerald' },
+    case_flexible: { label: 'Variação contextual', tone: 'blue' },
+    policy_conflict: { label: 'Política conflitante', tone: 'red' },
+  };
+  const normalizedGlossaryCaseKeyFilter = glossaryCaseKeyFilter.trim().toLocaleUpperCase('pt-BR');
+  const visibleGlossaryDisplayCaseGroups = glossaryDisplayCaseGroups.filter((group) => (
+    (
+      glossaryCaseStatusFilter === 'all'
+      || (
+        glossaryCaseStatusFilter === 'pending'
+        && group.review_status !== 'reviewed'
+      )
+      || (
+        glossaryCaseStatusFilter === 'reviewed'
+        && group.review_status === 'reviewed'
+      )
+    )
+    && (
+      !normalizedGlossaryCaseKeyFilter
+      || String(group.glossary_key ?? '').toLocaleUpperCase('pt-BR').includes(
+        normalizedGlossaryCaseKeyFilter
+      )
+    )
+  ));
+  const mojibakeLexiconReview = manualLowScoreCalibration.mojibake_lexicon_review ?? {};
+  const rawMojibakeLexiconItems = Array.isArray(mojibakeLexiconReview.items)
+    ? mojibakeLexiconReview.items
+    : [];
+  const mojibakeLexiconItems = rawMojibakeLexiconItems.filter((item) => (
+    !mojibakeOptimisticHiddenSegmentIdSet.has(Number(item.segment_id))
+  ));
+  const pendingMojibakeLexiconCount = mojibakeLexiconItems.filter(
+    (item) => item.review_status !== 'reviewed'
+  ).length;
+  const mojibakeFamilyMeta = {
+    complete_suggestion: { label: 'Correção completa', tone: 'emerald', priority: 0 },
+    partial_suggestion: { label: 'Correção parcial', tone: 'amber', priority: 1 },
+    internal_word_suggestion: { label: 'Proposta interna (legado)', tone: 'emerald', priority: 0 },
+    contextual_suggestion: { label: 'Proposta contextual (legado)', tone: 'amber', priority: 1 },
+    unresolved_signal: { label: 'Sem proposta segura', tone: 'blue', priority: 2 },
+    stale_snapshot: { label: 'Snapshot desatualizado', tone: 'red', priority: 3 },
+  };
+  const mojibakeDecisionMeta = {
+    accept_suggestion: { label: 'Proposta aceita', tone: 'emerald' },
+    partial_correction: { label: 'Correção parcial registrada', tone: 'amber' },
+    valid_question_mark: { label: "'?' válido", tone: 'blue' },
+    manual_review: { label: 'Revisão manual', tone: 'amber' },
+  };
+  const compareMojibakeLexiconItems = (a, b) => {
+    const statusDiff = Number(a.review_status === 'reviewed') - Number(b.review_status === 'reviewed');
+    if (statusDiff !== 0) return statusDiff;
+    const tailDiff = Number(mojibakeRequeueTailSegmentIdSet.has(Number(a.segment_id)))
+      - Number(mojibakeRequeueTailSegmentIdSet.has(Number(b.segment_id)));
+    if (tailDiff !== 0) return tailDiff;
+    const familyDiff = Number(mojibakeFamilyMeta[a.family]?.priority ?? 9)
+      - Number(mojibakeFamilyMeta[b.family]?.priority ?? 9);
+    if (familyDiff !== 0) return familyDiff;
+    const scoreDiff = Number(a.model_safe_probability ?? 1) - Number(b.model_safe_probability ?? 1);
+    if (scoreDiff !== 0) return scoreDiff;
+    return Number(a.segment_id ?? 0) - Number(b.segment_id ?? 0);
+  };
+  const normalizedMojibakeSearch = mojibakeSearchFilter.trim().toLocaleLowerCase('pt-BR');
+  const visibleMojibakeLexiconItems = mojibakeLexiconItems
+    .filter((item) => (
+      (
+        mojibakeStatusFilter === 'all'
+        || item.review_status === mojibakeStatusFilter
+      )
+      && (
+        mojibakeFamilyFilter === 'all'
+        || item.family === mojibakeFamilyFilter
+      )
+      && (
+        mojibakePatternFilter === 'all'
+        || (Array.isArray(item.patterns) && item.patterns.includes(mojibakePatternFilter))
+      )
+      && (
+        mojibakeSupportFilter === 'all'
+        || (mojibakeSupportFilter === 'memory' && item.memory_supported)
+        || (mojibakeSupportFilter === 'heuristic' && item.candidate_available && !item.memory_supported)
+      )
+      && (
+        !normalizedMojibakeSearch
+        || [
+          item.segment_id,
+          item.relative_path,
+          item.source_key,
+          item.english_preview,
+          item.spanish_preview,
+          item.output_preview,
+          item.candidate_preview,
+          ...(Array.isArray(item.patterns) ? item.patterns : []),
+        ].some((value) => String(value ?? '').toLocaleLowerCase('pt-BR').includes(normalizedMojibakeSearch))
+      )
+    ))
+    .sort(compareMojibakeLexiconItems);
+  const visibleMojibakeLexiconItemById = new Map(
+    visibleMojibakeLexiconItems.map((item) => [Number(item.segment_id), item])
+  );
+  const mojibakeFocusedItems = mojibakeFocusedSequenceIds.length
+    ? mojibakeFocusedSequenceIds
+      .map((segmentId) => visibleMojibakeLexiconItemById.get(Number(segmentId)))
+      .filter(Boolean)
+    : visibleMojibakeLexiconItems;
+  const openMojibakeFocusedReview = (segmentId, sequence = visibleMojibakeLexiconItems) => {
+    setMojibakeFocusedSequenceIds(sequence.map((item) => Number(item.segment_id)));
+    setMojibakeFocusedSegmentId(segmentId);
+  };
+  const closeMojibakeFocusedReview = () => {
+    setMojibakeFocusedSegmentId(null);
+    setMojibakeFocusedSequenceIds([]);
+  };
+  const mojibakeFocusedIndex = mojibakeFocusedItems.findIndex(
+    (item) => Number(item.segment_id) === Number(mojibakeFocusedSegmentId)
+  );
+  const mojibakeFocusedItem = mojibakeFocusedIndex >= 0
+    ? mojibakeFocusedItems[mojibakeFocusedIndex]
+    : null;
+  const moveMojibakeFocus = (direction) => {
+    if (mojibakeFocusedIndex < 0 || mojibakeFocusedItems.length <= 1) return;
+    const nextIndex = (
+      mojibakeFocusedIndex + direction + mojibakeFocusedItems.length
+    ) % mojibakeFocusedItems.length;
+    setMojibakeFocusedSegmentId(mojibakeFocusedItems[nextIndex].segment_id);
+  };
+  const mojibakeFocusedPatterns = Array.isArray(mojibakeFocusedItem?.patterns)
+    ? mojibakeFocusedItem.patterns
+    : [];
+  const mojibakeFocusedBlockers = Array.isArray(mojibakeFocusedItem?.blockers)
+    ? mojibakeFocusedItem.blockers
+    : [];
+  const mojibakeFocusedResidualSignals = Array.isArray(mojibakeFocusedItem?.residual_word_signals)
+    ? mojibakeFocusedItem.residual_word_signals
+    : [];
+  const mojibakeFocusedUnresolvedSignals = Array.isArray(mojibakeFocusedItem?.unresolved_signals)
+    ? mojibakeFocusedItem.unresolved_signals
+    : [];
+  const mojibakeFocusedQuestionSignals = mojibakeFocusedUnresolvedSignals.filter((signal) => (
+    String(signal?.token ?? '').includes('?')
+  ));
+  const mojibakeFocusedSelectedQuestionSignals = mojibakeFocusedQuestionSignals.filter((signal) => (
+    mojibakeFocusedValidSignalIndexes.includes(Number(signal?.signal_index))
+  ));
+  const mojibakeFocusedResidualFindings = Array.isArray(mojibakeFocusedItem?.residual_findings)
+    ? mojibakeFocusedItem.residual_findings
+    : [];
+  const mojibakeFocusedRemainingCount = Math.max(
+    Number(mojibakeFocusedItem?.remaining_signal_count ?? 0),
+    mojibakeFocusedResidualSignals.length,
+    mojibakeFocusedUnresolvedSignals.length,
+  );
+  const mojibakeFocusedResidualTooltipRows = residualTooltipRowsFor(mojibakeFocusedItem);
+  useEffect(() => {
+    if (!mojibakeFocusedSegmentId || !mojibakeLexiconReview.shadow_run_id) {
+      setMojibakeFocusedDetail(null);
+      setMojibakeFocusedError(null);
+      return undefined;
+    }
+    const controller = new AbortController();
+    setMojibakeFocusedLoading(true);
+    setMojibakeFocusedError(null);
+    setMojibakeFocusedDetail(null);
+    setMojibakeFocusedPrimaryView('candidate');
+    setMojibakeFocusedValidSignalIndexes([]);
+    fetch(
+      `${API_BASE}/production/mojibake-lexicon/segment?segment_id=${encodeURIComponent(mojibakeFocusedSegmentId)}&shadow_run_id=${encodeURIComponent(mojibakeLexiconReview.shadow_run_id)}`,
+      { signal: controller.signal }
+    )
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error ?? `API ${response.status}`);
+        return payload.item;
+      })
+      .then((detail) => setMojibakeFocusedDetail(detail))
+      .catch((error) => {
+        if (error.name !== 'AbortError') setMojibakeFocusedError(error.message);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setMojibakeFocusedLoading(false);
+      });
+    return () => controller.abort();
+  }, [mojibakeFocusedSegmentId, mojibakeLexiconReview.shadow_run_id]);
+  useEffect(() => {
+    if (!mojibakeFocusedSegmentId) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    const handleFocusedKeyboard = (event) => {
+      if (event.key === 'Escape') {
+        closeMojibakeFocusedReview();
+        return;
+      }
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      if (event.key === 'ArrowLeft') {
+        moveMojibakeFocus(-1);
+      }
+      if (event.key === 'ArrowRight') {
+        moveMojibakeFocus(1);
+      }
+    };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleFocusedKeyboard);
+    window.requestAnimationFrame(() => mojibakeFocusedCloseRef.current?.focus());
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleFocusedKeyboard);
+    };
+  }, [mojibakeFocusedSegmentId, mojibakeFocusedIndex, mojibakeFocusedItems]);
+  const mojibakeBoundaryPatterns = Array.isArray(mojibakeLexiconReview.boundary_patterns)
+    ? mojibakeLexiconReview.boundary_patterns
+    : [];
+  const normalizedMojibakeBoundarySearch = mojibakeBoundarySearchFilter
+    .trim()
+    .toLocaleLowerCase('pt-BR');
+  const visibleMojibakeBoundaryPatterns = mojibakeBoundaryPatterns.filter((group) => (
+    (
+      mojibakeBoundaryStatusFilter === 'all'
+      || group.review_status === mojibakeBoundaryStatusFilter
+    )
+    && (
+      !normalizedMojibakeBoundarySearch
+      || [
+        group.display_pattern,
+        group.normalized_pattern,
+        group.canonical_replacement,
+        group.decision_reason,
+        ...(Array.isArray(group.alternatives)
+          ? group.alternatives.map((alternative) => alternative.text)
+          : []),
+      ].some((value) => String(value ?? '').toLocaleLowerCase('pt-BR').includes(
+        normalizedMojibakeBoundarySearch
+      ))
+    )
+  ));
+  const mojibakeBoundaryDecisionMeta = {
+    canonical_replacement: { label: 'Forma canônica confirmada', tone: 'emerald' },
+    valid_punctuation: { label: 'Pontuação válida', tone: 'blue' },
+    context_required: { label: 'Depende de contexto', tone: 'amber' },
+  };
+  const mojibakeContextFamilyLabels = {
+    lexical_accent_loss: 'perda de acento lexical',
+    inline_singleton: 'caractere isolado no texto',
+    newline_sentence_start: 'início de frase após \\n',
+    format_token_punctuation: 'pontuação após estrutura CK3',
+    unclassified: 'contexto não classificado',
+  };
   const calibrationPolicyDecision = String(calibrationReview.policy_decision ?? 'not_evaluated');
   const calibrationPolicyReasons = Array.isArray(calibrationReview.policy_reasons)
     ? calibrationReview.policy_reasons
@@ -3922,7 +6006,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     const parsed = Number(score);
     return Number.isFinite(parsed) ? parsed : null;
   };
-  const segmentNewScore = (item) => scoreValue(item?.review_new_score ?? item?.effective_new_score ?? item?.new_score ?? item?.model_safe_probability);
+  const segmentNewScore = (item) => scoreValue(item?.review_new_score ?? item?.effective_score ?? item?.operational_effective_score ?? item?.effective_new_score ?? item?.new_score ?? item?.model_safe_probability);
   const segmentOldScore = (item) => scoreValue(item?.review_old_score ?? item?.old_score ?? item?.old_model_safe_probability);
   const segmentDelta = (item) => scoreValue(item?.review_score_delta ?? item?.effective_score_delta ?? item?.score_delta);
   const sortSegmentsByScoreDesc = (items) => [...items].sort((a, b) => {
@@ -3958,12 +6042,653 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     const score = segmentNewScore(item);
     return Number.isFinite(score) && score < 0.5;
   }));
+  const criticalLowScoreSegments = sortSegmentsByScoreAsc(rawCriticalLowScoreSegments.filter((item) => {
+    const score = segmentNewScore(item);
+    return Number.isFinite(score) && score < 0.10;
+  }));
+  const visibleLowScoreSegments = lowScoreFocus === 'critical'
+    ? criticalLowScoreSegments
+    : lowScoreSegments;
   const scoreRegressionSegments = sortSegmentsByRegressionDelta(rawScoreRegressionSegments);
-  const calibrationReviewSegments = [...rawCalibrationReviewSegments].sort((a, b) => {
-    const priorityDiff = Number(Boolean(b?.is_priority)) - Number(Boolean(a?.is_priority));
-    if (priorityDiff !== 0) return priorityDiff;
-    return Number(a?.display_order ?? 0) - Number(b?.display_order ?? 0);
+  const calibrationReviewSegments = [...rawCalibrationReviewSegments]
+    .sort((a, b) => {
+      const priorityDiff = Number(Boolean(b?.is_priority)) - Number(Boolean(a?.is_priority));
+      if (priorityDiff !== 0) return priorityDiff;
+      return Number(a?.display_order ?? 0) - Number(b?.display_order ?? 0);
+    })
+    .filter((item) => (
+      item.review_status === 'decided'
+      || !humanReviewOptimisticHiddenKeySet.has(`pairwise:${item.id}`)
+    ));
+  const manualLowScoreCalibrationItems = Array.isArray(manualLowScoreCalibration.items)
+    ? [...manualLowScoreCalibration.items]
+      .sort((a, b) => {
+        const scoreDiff = Number(a?.model_safe_probability ?? 1) - Number(b?.model_safe_probability ?? 1);
+        if (scoreDiff !== 0) return scoreDiff;
+        return Number(a?.segment_id ?? 0) - Number(b?.segment_id ?? 0);
+      })
+      .filter((item) => (
+        item.review_status === 'decided'
+        || !humanReviewOptimisticHiddenKeySet.has(`score_calibration:${item.segment_id}`)
+      ))
+    : [];
+  const lowScoreCalibrationLaneMeta = {
+    human_confirmed_low_score: { label: 'Confirmado por humano', tone: 'blue' },
+    deterministic_safe_low_score: { label: 'Seguro determinístico', tone: 'emerald' },
+    preserved_text_low_score: { label: 'Texto preservado', tone: 'slate' },
+  };
+  const lowScoreCalibrationDecisionMeta = {
+    correct: { label: 'Bom', tone: 'emerald', description: 'Texto correto e natural; o score é um falso negativo.' },
+    contextual_exception: { label: 'Exceção válida', tone: 'blue', description: 'Construção válida neste contexto ou grupo específico.' },
+    semantic_error: { label: 'Semântica', tone: 'red', description: 'Há erro de sentido apesar dos gates limpos.' },
+    residual_spanish: { label: 'Espanhol', tone: 'red', description: 'Ainda existe conteúdo espanhol residual.' },
+    spanish_angular_quotes: { label: 'Aspas PT-BR', tone: 'amber', description: 'Aspas angulares devem ser normalizadas para aspas duplas sem alterar o conteúdo.' },
+    spanish_punctuation: { label: 'Pontuação PT-BR', tone: 'amber', description: 'Pontuação de origem espanhola deve ser normalizada sem alterar tokens CK3.' },
+    structure_error: { label: 'Estrutura', tone: 'amber', description: 'Há defeito estrutural ou de token não capturado.' },
+  };
+  const countedManualLowScoreCalibrationLaneSamples = manualLowScoreCalibrationItems.reduce(
+    (counts, item) => ({
+      ...counts,
+      [item.calibration_lane]: Number(counts[item.calibration_lane] ?? 0) + 1,
+    }),
+    {}
+  );
+  const countedManualLowScoreCalibrationLanePending = manualLowScoreCalibrationItems.reduce(
+    (counts, item) => (
+      item.review_status === 'decided'
+        ? counts
+        : {
+          ...counts,
+          [item.calibration_lane]: Number(counts[item.calibration_lane] ?? 0) + 1,
+        }
+    ),
+    {}
+  );
+  const manualLowScoreCalibrationEligibleLaneCounts = manualLowScoreCalibration.eligible_lane_counts
+    ?? manualLowScoreCalibration.lane_counts
+    ?? {};
+  const manualLowScoreCalibrationLaneSampleCounts = Object.keys(
+    manualLowScoreCalibration.lane_sample_counts ?? {}
+  ).length
+    ? manualLowScoreCalibration.lane_sample_counts
+    : countedManualLowScoreCalibrationLaneSamples;
+  const manualLowScoreCalibrationLanePendingCounts = Object.keys(
+    manualLowScoreCalibration.lane_pending_counts ?? {}
+  ).length
+    ? manualLowScoreCalibration.lane_pending_counts
+    : countedManualLowScoreCalibrationLanePending;
+  const laneFilteredManualLowScoreCalibrationItems = manualLowScoreCalibrationItems.filter((item) => (
+    calibrationLaneFilter === 'all' || item.calibration_lane === calibrationLaneFilter
+  ));
+  const laneFilteredManualLowScorePendingCount = laneFilteredManualLowScoreCalibrationItems.filter(
+    (item) => item.review_status !== 'decided'
+  ).length;
+  const manualLowScoreCalibrationGroupCounts = laneFilteredManualLowScoreCalibrationItems.reduce(
+    (counts, item) => ({
+      ...counts,
+      [item.calibration_group]: Number(counts[item.calibration_group] ?? 0) + 1,
+    }),
+    {}
+  );
+  const manualLowScoreCalibrationGroupPendingCounts = laneFilteredManualLowScoreCalibrationItems.reduce(
+    (counts, item) => (
+      item.review_status === 'decided'
+        ? counts
+        : {
+          ...counts,
+          [item.calibration_group]: Number(counts[item.calibration_group] ?? 0) + 1,
+        }
+    ),
+    {}
+  );
+  const manualLowScoreCalibrationGroups = Object.entries(manualLowScoreCalibrationGroupCounts)
+    .sort((a, b) => Number(b[1]) - Number(a[1]) || String(a[0]).localeCompare(String(b[0])));
+  const groupFilteredManualLowScoreCalibrationItems = laneFilteredManualLowScoreCalibrationItems.filter((item) => (
+    calibrationGroupFilter === 'all' || item.calibration_group === calibrationGroupFilter
+  ));
+  const groupFilteredManualLowScorePendingCount = groupFilteredManualLowScoreCalibrationItems.filter(
+    (item) => item.review_status !== 'decided'
+  ).length;
+  const manualLowScoreCalibrationPatternCounts = groupFilteredManualLowScoreCalibrationItems.reduce(
+    (counts, item) => {
+      const patterns = Array.isArray(item.training_patterns) ? item.training_patterns : [];
+      return patterns.reduce((nextCounts, pattern) => ({
+        ...nextCounts,
+        [pattern]: Number(nextCounts[pattern] ?? 0) + 1,
+      }), counts);
+    },
+    {}
+  );
+  const manualLowScoreCalibrationPatternPendingCounts = groupFilteredManualLowScoreCalibrationItems.reduce(
+    (counts, item) => {
+      if (item.review_status === 'decided') return counts;
+      const patterns = Array.isArray(item.training_patterns) ? item.training_patterns : [];
+      return patterns.reduce((nextCounts, pattern) => ({
+        ...nextCounts,
+        [pattern]: Number(nextCounts[pattern] ?? 0) + 1,
+      }), counts);
+    },
+    {}
+  );
+  const manualLowScoreCalibrationPatternLabels = manualLowScoreCalibration.training_pattern_labels ?? {};
+  const dimensionFilteredManualLowScoreCalibrationItems = groupFilteredManualLowScoreCalibrationItems.filter((item) => (
+    calibrationPatternFilter === 'all'
+      || (Array.isArray(item.training_patterns) && item.training_patterns.includes(calibrationPatternFilter))
+  ));
+  const visibleManualLowScoreCalibrationItems = dimensionFilteredManualLowScoreCalibrationItems.filter((item) => (
+    calibrationReviewStatusFilter === 'all'
+      || (calibrationReviewStatusFilter === 'pending' && item.review_status !== 'decided')
+      || (calibrationReviewStatusFilter === 'reviewed' && item.review_status === 'decided')
+  ));
+  const visibleManualLowScorePendingCount = visibleManualLowScoreCalibrationItems.filter(
+    (item) => item.review_status !== 'decided'
+  ).length;
+  const pendingManualLowScoreCalibrationItems = manualLowScoreCalibrationItems.filter(
+    (item) => item.review_status !== 'decided'
+  );
+  const shadowPatternKeys = new Set(
+    latestSegmentedCalibrationShadows.map((shadow) => shadow.pattern).filter(Boolean)
+  );
+  const shadowPendingCounts = pendingManualLowScoreCalibrationItems.reduce((counts, item) => {
+    const patterns = Array.isArray(item.training_patterns) ? item.training_patterns : [];
+    return patterns.reduce((nextCounts, pattern) => (
+      shadowPatternKeys.has(pattern)
+        ? {
+          ...nextCounts,
+          [pattern]: Number(nextCounts[pattern] ?? 0) + 1,
+        }
+        : nextCounts
+    ), counts);
+  }, {});
+  const pendingWithoutShadowCount = pendingManualLowScoreCalibrationItems.filter((item) => {
+    const patterns = Array.isArray(item.training_patterns) ? item.training_patterns : [];
+    return !patterns.some((pattern) => shadowPatternKeys.has(pattern));
+  }).length;
+  const shadowFilteredPendingCalibrationItems = pendingManualLowScoreCalibrationItems.filter((item) => {
+    const patterns = Array.isArray(item.training_patterns) ? item.training_patterns : [];
+    if (calibrationShadowFilter === 'all') return true;
+    if (calibrationShadowFilter === 'without_shadow') {
+      return !patterns.some((pattern) => shadowPatternKeys.has(pattern));
+    }
+    return patterns.includes(calibrationShadowFilter);
   });
+  const visibleDynamicScoreHoldoutItems = dynamicScoreHoldoutItems.filter((item) => (
+    !humanReviewOptimisticHiddenKeySet.has(`score_calibration:${item.segment_id}`)
+    &&
+    (dynamicHoldoutLaneFilter === 'all' || item.calibration_lane === dynamicHoldoutLaneFilter)
+    && (dynamicHoldoutBandFilter === 'all' || item.probability_band === dynamicHoldoutBandFilter)
+    && (
+      dynamicHoldoutStatusFilter === 'all'
+      || (dynamicHoldoutStatusFilter === 'pending' && item.review_status !== 'decided')
+      || (dynamicHoldoutStatusFilter === 'reviewed' && item.review_status === 'decided')
+    )
+  ));
+  const visibleDynamicScoreHoldoutPendingCount = visibleDynamicScoreHoldoutItems.filter(
+    (item) => item.review_status !== 'decided'
+  ).length;
+  const displayedManualLowScoreCalibrationItems = lowScoreCalibrationView === 'dynamic'
+    ? visibleDynamicScoreHoldoutItems
+    : lowScoreCalibrationView === 'pending'
+      ? shadowFilteredPendingCalibrationItems
+      : visibleManualLowScoreCalibrationItems;
+  const manualLowScorePendingCount = manualLowScoreCalibrationItems.filter(
+    (item) => item.review_status !== 'decided'
+  ).length;
+  const manualLowScoreSampleCount = Number(
+    manualLowScoreCalibration.sample_count ?? manualLowScoreCalibrationItems.length
+  );
+  const manualLowScoreReviewedCount = Number(
+    manualLowScoreCalibration.reviewed_count
+      ?? Math.max(0, manualLowScoreSampleCount - manualLowScorePendingCount)
+  );
+  const unifiedQueueMeta = {
+    score_calibration: { label: 'Calibração de score', shortLabel: 'Score', tone: 'blue' },
+    unicode: { label: 'Unicode / mojibake', shortLabel: 'Unicode', tone: 'emerald' },
+    pairwise: { label: 'Comparação A/B', shortLabel: 'A/B', tone: 'violet' },
+    repair: { label: 'Reparo ES helpers', shortLabel: 'Reparo', tone: 'amber' },
+    promotion: { label: 'Promoções', shortLabel: 'Promoção', tone: 'emerald' },
+    discovery: { label: 'Descobertas', shortLabel: 'Descoberta', tone: 'blue' },
+    proposal: { label: 'Propostas', shortLabel: 'Proposta', tone: 'amber' },
+  };
+  const normalizeUnifiedReviewItem = (queue, item, overrides = {}) => ({
+    key: `${queue}:${overrides.key ?? item.segment_id ?? item.id ?? item.source_key ?? 'item'}`,
+    queue,
+    queueMeta: unifiedQueueMeta[queue] ?? { label: queue, shortLabel: queue, tone: 'slate' },
+    segmentId: item.segment_id ?? null,
+    relativePath: item.relative_path ?? '',
+    sourceKey: item.source_key ?? '',
+    englishText: item.english_text ?? item.english_preview ?? '',
+    spanishText: item.spanish_text ?? item.spanish_preview ?? '',
+    oldText: item.old_text ?? item.baseline_text ?? '',
+    outputText: item.output_text ?? item.output_preview ?? item.baseline_text ?? '',
+    candidateText: item.candidate_text || item.candidate_preview || item.output_text || item.output_preview || '',
+    score: item.effective_score ?? item.operational_effective_score ?? item.effective_new_score
+      ?? item.model_safe_probability ?? item.new_score ?? item.average_score ?? item.candidate_score_raw ?? null,
+    rawScore: item.raw_score ?? item.raw_new_score ?? item.model_safe_probability ?? item.new_score ?? null,
+    scoreSource: item.effective_score_source ?? item.score_used_kind ?? 'raw_model',
+    risk: item.risk_class ?? item.repair_priority ?? item.calibration_lane ?? item.review_lane ?? 'não medido',
+    patterns: Array.isArray(item.patterns)
+      ? item.patterns
+      : Array.isArray(item.training_patterns)
+        ? item.training_patterns
+        : [],
+    evidence: [],
+    patternGuidance: item.pattern_guidance ?? null,
+    reviewStatus: item.review_status === 'decided' || item.review_status === 'reviewed' ? 'reviewed' : 'pending',
+    decisionType: 'read_only',
+    canDecide: false,
+    raw: item,
+    ...overrides,
+  });
+  const regenerativeReviewOverrides = (item) => ({
+    decisionType: 'regenerative',
+    canDecide: Boolean(item.review_contract?.available) && item.review_status !== 'reviewed',
+    reviewStatus: item.review_status === 'reviewed' ? 'reviewed' : 'pending',
+  });
+  const unifiedCalibrationItems = [
+    ...dynamicScoreHoldoutItems.map((item) => normalizeUnifiedReviewItem('score_calibration', item, {
+      key: item.segment_id,
+      decisionType: 'low_score',
+      canDecide: true,
+      evidence: [item.probability_band, item.calibration_group, item.calibration_lane].filter(Boolean),
+      reviewStatus: item.review_status === 'decided' ? 'reviewed' : 'pending',
+    })),
+    ...[...mojibakeLexiconItems].sort(compareMojibakeLexiconItems).map((item) => normalizeUnifiedReviewItem('unicode', item, {
+      key: item.segment_id,
+      decisionType: 'mojibake',
+      canDecide: true,
+      evidence: [item.family, ...(Array.isArray(item.blockers) ? item.blockers.slice(0, 2) : [])].filter(Boolean),
+      reviewStatus: item.review_status === 'reviewed' ? 'reviewed' : 'pending',
+    })),
+    ...calibrationReviewSegments.map((item) => normalizeUnifiedReviewItem('pairwise', item, {
+      key: item.id,
+      decisionType: 'pairwise',
+      canDecide: item.review_status !== 'decided',
+      evidence: [item.is_priority ? 'prioridade' : item.is_control ? 'controle cego' : item.review_lane].filter(Boolean),
+      reviewStatus: item.review_status === 'decided' ? 'reviewed' : 'pending',
+    })),
+    ...esHelperRepairItems.map((item) => {
+      const repairDryRun = item.repair_dry_run ?? item.literal_dry_run ?? {};
+      return normalizeUnifiedReviewItem('repair', item, {
+        key: item.segment_id,
+        candidateText: repairDryRun.candidate_text ?? item.output_text ?? '',
+        evidence: [item.repair_route_label ?? item.repair_route, ...(Array.isArray(item.repair_helpers) ? item.repair_helpers : [])].filter(Boolean),
+        ...regenerativeReviewOverrides(item),
+      });
+    }),
+    ...promotionSegments.map((item) => normalizeUnifiedReviewItem('promotion', item, {
+      key: item.segment_id,
+      candidateText: item.output_text ?? item.candidate_text ?? '',
+      evidence: [item.score_action, item.final_state].filter(Boolean),
+    })),
+    ...patternFamilies
+      .flatMap((family) => (Array.isArray(family.samples) ? family.samples : []).map((sample, sampleIndex) => normalizeUnifiedReviewItem('discovery', sample, {
+        key: `${family.family_key}:${sample.segment_id ?? sampleIndex}`,
+        candidateText: sample.candidate_text ?? '',
+        outputText: sample.output_text ?? sample.candidate_text ?? '',
+        score: sample.score ?? family.average_score ?? null,
+        risk: family.issue_type ?? 'descoberta',
+        evidence: [family.issue_type, family.token_context, family.file_family].filter(Boolean),
+        patternGuidance: sample.pattern_guidance ?? family.pattern_guidance ?? null,
+        familySegmentCount: family.segment_count ?? null,
+        familyConfidence: family.confidence ?? null,
+        ...regenerativeReviewOverrides(sample),
+      }))),
+    ...proposalRows.flatMap((proposal) => (Array.isArray(proposal.sample_cases) ? proposal.sample_cases : []).map((sample, sampleIndex) => normalizeUnifiedReviewItem('proposal', sample, {
+      key: `${proposal.proposal_key}:${sample.segment_id ?? sampleIndex}`,
+      candidateText: sample.candidate_text ?? sample.output_text ?? sample.input_text ?? '',
+      outputText: sample.output_text ?? sample.input_text ?? '',
+      score: sample.score ?? null,
+      risk: proposal.issue_type ?? 'proposta',
+      evidence: [proposal.label, proposal.token_context, proposal.provider_id].filter(Boolean),
+      ...regenerativeReviewOverrides(sample),
+    }))),
+  ];
+  const humanLearningQueueTypes = new Set(['score_calibration', 'discovery', 'repair']);
+  const allPendingUnifiedCalibrationItems = unifiedCalibrationItems.filter((item) => (
+    humanLearningQueueTypes.has(item.queue)
+    &&
+    item.reviewStatus === 'pending'
+    && item.canDecide
+    && !humanReviewOptimisticHiddenKeySet.has(item.key)
+  ));
+  const humanAuditQueueOrder = ['score_calibration', 'discovery', 'repair'];
+  const humanAuditGroups = humanAuditQueueOrder.reduce((groups, queue) => ({
+    ...groups,
+    [queue]: allPendingUnifiedCalibrationItems.filter((item) => item.queue === queue),
+  }), {});
+  const unclassifiedHumanAuditItems = allPendingUnifiedCalibrationItems.filter((item) => (
+    !humanAuditQueueOrder.includes(item.queue)
+  ));
+  const humanAuditPendingItems = [];
+  const longestHumanAuditGroup = Math.max(
+    0,
+    ...Object.values(humanAuditGroups).map((items) => items.length),
+  );
+  for (let index = 0; index < longestHumanAuditGroup; index += 1) {
+    humanAuditQueueOrder.forEach((queue) => {
+      const item = humanAuditGroups[queue][index];
+      if (item) humanAuditPendingItems.push(item);
+    });
+  }
+  humanAuditPendingItems.push(...unclassifiedHumanAuditItems);
+  const humanReviewPendingTotal = humanAuditPendingItems.length;
+  const unifiedOperationalItemsWithDuplicates = [...humanAuditPendingItems];
+  // Uma mesma evidência pode chegar repetida no payload (por exemplo, por
+  // amostras sobrepostas da mesma família). O lote humano representa itens
+  // de decisão, então cada chave operacional deve aparecer apenas uma vez.
+  const unifiedOperationalItems = Array.from(
+    new Map(unifiedOperationalItemsWithDuplicates.map((item) => [item.key, item])).values()
+  );
+  const unifiedOperationalTotal = unifiedOperationalItems.length;
+  const unifiedReviewBatchId = [
+    qualityEpoch.id ?? 0,
+    qualityEpoch.evaluated_at ?? qualityEpoch.updated_at ?? '',
+    diffSummary.score_run_id ?? 0,
+    dynamicScoreHoldout.run_id ?? 0,
+    esHelperRepairDryRun.run_id ?? 0,
+    patternDiscovery.run_id ?? 0,
+  ].join(':');
+  const unifiedOperationalKeySignature = unifiedOperationalItems.map((item) => item.key).join('|');
+  useEffect(() => {
+    if (unifiedReviewBatch.id === unifiedReviewBatchId) return;
+    const keys = unifiedOperationalItems.slice(0, 50).map((item) => item.key);
+    const nextBatch = { id: unifiedReviewBatchId, keys, size: keys.length };
+    setUnifiedReviewBatch(nextBatch);
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem('ml-ck3-human-review-batch-v2', JSON.stringify(nextBatch));
+    }
+  }, [unifiedReviewBatch.id, unifiedReviewBatchId, unifiedOperationalKeySignature]);
+  const activeUnifiedBatchKeys = new Set(
+    unifiedReviewBatch.id === unifiedReviewBatchId
+      ? unifiedReviewBatch.keys
+      : unifiedOperationalItems.slice(0, 50).map((item) => item.key)
+  );
+  const pendingUnifiedCalibrationItems = unifiedOperationalItems.filter(
+    (item) => activeUnifiedBatchKeys.has(item.key)
+  );
+  const unifiedBatchSize = unifiedReviewBatch.id === unifiedReviewBatchId
+    ? unifiedReviewBatch.size
+    : Math.min(50, unifiedOperationalTotal);
+  const unifiedBatchRemaining = pendingUnifiedCalibrationItems.length;
+  const unifiedBatchReviewed = Math.max(0, unifiedBatchSize - unifiedBatchRemaining);
+  const unifiedQueueCounts = unifiedOperationalItems.reduce((counts, item) => ({
+    ...counts,
+    [item.queue]: Number(counts[item.queue] ?? 0) + 1,
+  }), {});
+  const availableUnifiedQueues = Object.entries(unifiedQueueMeta)
+    .filter(([queue]) => Number(unifiedQueueCounts[queue] ?? 0) > 0);
+  const availableUnifiedQueueKey = availableUnifiedQueues.map(([queue]) => queue).join('|');
+  useEffect(() => {
+    if (
+      unifiedQueueFilter !== 'all'
+      && !availableUnifiedQueues.some(([queue]) => queue === unifiedQueueFilter)
+    ) {
+      setUnifiedQueueFilter('all');
+    }
+  }, [availableUnifiedQueueKey, unifiedQueueFilter]);
+  const normalizedUnifiedSearch = unifiedSearchFilter.trim().toLocaleLowerCase('pt-BR');
+  const visibleUnifiedCalibrationItems = pendingUnifiedCalibrationItems.filter((item) => (
+    (unifiedQueueFilter === 'all' || item.queue === unifiedQueueFilter)
+    && (
+      !normalizedUnifiedSearch
+      || [item.segmentId, item.relativePath, item.sourceKey, item.outputText, item.candidateText, ...item.evidence]
+        .some((value) => String(value ?? '').toLocaleLowerCase('pt-BR').includes(normalizedUnifiedSearch))
+    )
+  ));
+  const specializedCalibrationViews = [
+    {
+      value: 'low_score',
+      label: 'Auditoria estratificada',
+      count: manualLowScorePendingCount,
+    },
+    {
+      value: 'repair',
+      label: 'Reparo ES helpers',
+      count: esHelperRepairItems.filter((item) => (
+        item.review_status !== 'reviewed'
+        && !humanReviewOptimisticHiddenKeySet.has(`repair:${item.segment_id}`)
+      )).length,
+    },
+    {
+      value: 'glossary_case',
+      label: 'Glossary case',
+      count: Number(glossaryDisplayCase.pending_segment_count ?? 0),
+    },
+    {
+      value: 'mojibake',
+      label: 'Unicode / mojibake',
+      count: pendingMojibakeLexiconCount,
+    },
+    {
+      value: 'pairwise',
+      label: 'Comparação A/B',
+      count: calibrationReviewSegments.filter((item) => item.review_status !== 'decided').length,
+    },
+  ].filter((view) => view.count > 0);
+  const specializedCalibrationViewKey = specializedCalibrationViews
+    .map((view) => view.value)
+    .join('|');
+  useEffect(() => {
+    if (
+      calibrationMode !== 'unified'
+      && !specializedCalibrationViews.some((view) => view.value === calibrationMode)
+    ) {
+      setCalibrationMode('unified');
+    }
+  }, [calibrationMode, specializedCalibrationViewKey]);
+  const unifiedFocusedIndex = visibleUnifiedCalibrationItems.findIndex((item) => item.key === unifiedFocusedItemKey);
+  const unifiedFocusedItem = unifiedFocusedIndex >= 0 ? visibleUnifiedCalibrationItems[unifiedFocusedIndex] : null;
+  const unifiedFocusedSubmitting = Boolean(
+    unifiedFocusedItem
+    && (
+      (unifiedFocusedItem.decisionType === 'low_score' && lowScoreCalibrationSubmittingSegmentId === unifiedFocusedItem.segmentId)
+      || (unifiedFocusedItem.decisionType === 'pairwise' && calibrationSubmittingItemId === unifiedFocusedItem.raw.id)
+      || (unifiedFocusedItem.decisionType === 'regenerative' && unifiedReviewSubmittingKey === unifiedFocusedItem.key)
+    )
+  );
+  const unifiedFocusedPrimaryText = unifiedFocusedPrimaryView === 'output'
+    ? unifiedFocusedItem?.outputText
+    : unifiedFocusedItem?.candidateText;
+  const unifiedFocusedIsPairwise = unifiedFocusedItem?.decisionType === 'pairwise';
+  const unifiedFocusedCandidateDiffers = Boolean(
+    unifiedFocusedItem
+    && String(unifiedFocusedItem.candidateText ?? '') !== String(unifiedFocusedItem.outputText ?? '')
+  );
+  const unifiedFocusedIsSignalClassification = Boolean(
+    unifiedFocusedItem
+    && !unifiedFocusedIsPairwise
+    && !unifiedFocusedCandidateDiffers
+  );
+  const unifiedFocusedDryRun = unifiedFocusedItem?.raw?.repair_dry_run
+    ?? unifiedFocusedItem?.raw?.literal_dry_run
+    ?? {};
+  const unifiedFocusedDetectedIssues = Array.isArray(unifiedFocusedItem?.raw?.detected_issues)
+    ? unifiedFocusedItem.raw.detected_issues
+    : [];
+  const unifiedFocusedTaskTitle = unifiedFocusedIsPairwise
+    ? 'Escolha a melhor versão'
+    : unifiedFocusedIsSignalClassification
+      ? 'Classifique o sinal detectado'
+      : 'Valide a correção proposta';
+  const unifiedFocusedTaskDescription = unifiedFocusedIsPairwise
+    ? 'Compare A e B pelo significado, naturalidade e integridade dos tokens. Os scores ficam ocultos para não influenciar sua decisão.'
+    : unifiedFocusedIsSignalClassification
+      ? 'Não existe uma correção candidata diferente. Avalie somente se o sinal apontado representa um defeito real, um falso positivo ou exige contexto.'
+      : 'Compare a correção com a saída atual e confirme apenas quando a mudança melhorar o texto sem danificar tokens CK3.';
+  const unifiedFocusedUsesLearningDecision = ['low_score', 'regenerative'].includes(
+    unifiedFocusedItem?.decisionType
+  );
+  const unifiedLearningDecisionOptions = [
+    {
+      value: 'quality_ok',
+      label: 'Está bom / corrigido',
+      description: 'O texto exibido está correto, natural e preserva a estrutura CK3.',
+      tone: 'emerald',
+    },
+    {
+      value: 'quality_issue',
+      label: 'Ainda há problema',
+      description: 'Existe um defeito real de tradução, sentido, estrutura ou formatação.',
+      tone: 'red',
+    },
+    {
+      value: 'needs_context',
+      label: 'Precisa de contexto',
+      description: 'Não é possível decidir com segurança apenas com as referências disponíveis.',
+      tone: 'amber',
+    },
+  ];
+  const inferLowScoreIssueLabel = (item) => {
+    const signal = [item?.risk, ...(item?.evidence ?? [])].join(' ').toLocaleLowerCase('pt-BR');
+    if (signal.includes('angular') || signal.includes('aspas')) return 'spanish_angular_quotes';
+    if (signal.includes('punctuation') || signal.includes('pontuação')) return 'spanish_punctuation';
+    if (signal.includes('spanish') || signal.includes('espanhol')) return 'residual_spanish';
+    if (signal.includes('structure') || signal.includes('estrutura') || signal.includes('token')) return 'structure_error';
+    return 'semantic_error';
+  };
+  const mapUnifiedLearningDecision = (item, decision) => {
+    if (item?.decisionType === 'low_score') {
+      if (decision === 'quality_ok') return 'correct';
+      if (decision === 'needs_context') return 'needs_context';
+      return inferLowScoreIssueLabel(item);
+    }
+    if (item?.queue === 'discovery') {
+      if (decision === 'quality_ok') return 'contradicts_pattern';
+      if (decision === 'needs_context') return 'boundary_case';
+      return 'supports_pattern';
+    }
+    if (item?.queue === 'repair') {
+      if (decision === 'quality_ok') return unifiedFocusedCandidateDiffers ? 'candidate_valid' : 'false_positive';
+      if (decision === 'needs_context') return 'needs_context';
+      return 'issue_confirmed';
+    }
+    return decision;
+  };
+  const unifiedFocusedHasDecisionContract = Boolean(
+    unifiedFocusedItem
+    && unifiedFocusedItem.decisionType !== 'read_only'
+  );
+  const unifiedFocusedPatternGuidance = unifiedFocusedItem?.queue === 'discovery'
+    ? unifiedFocusedItem.patternGuidance
+    : null;
+  const learningDestinationLabels = {
+    correction_validation: 'validação da correção',
+    promotion_gate: 'trava de promoção',
+    score_calibration_positive: 'calibração positiva',
+    score_calibration_negative: 'calibração negativa',
+    discovery_family: 'família de descoberta',
+    correction_planning: 'planejamento de correção',
+    protected_boundary: 'fronteira protegida',
+    detector_suppression: 'redução de falso positivo',
+    internal_observation: 'observação interna',
+    correction_lane: 'fila de correção',
+    provider_learning: 'aprendizado do provedor',
+    regression_test: 'teste de regressão',
+    provider_contract: 'contrato do provedor',
+    provider_contract_exclusion: 'exclusão do provedor',
+    provider_boundary_test: 'fronteira do provedor',
+  };
+  const unifiedFocusedLearningDestinations = unifiedFocusedItem?.decisionType === 'low_score'
+    ? ['calibração do score', 'ponto cego da descoberta quando houver defeito']
+    : unifiedFocusedItem?.decisionType === 'pairwise'
+      ? ['calibração pareada', 'trava de promoção']
+      : [...new Set(
+          (unifiedFocusedItem?.raw?.review_contract?.decisions ?? [])
+            .flatMap((decision) => decision.learning_destinations ?? [])
+            .map((destination) => learningDestinationLabels[destination] ?? String(destination).replaceAll('_', ' '))
+        )];
+  const moveUnifiedFocus = (direction) => {
+    const nextIndex = unifiedFocusedIndex + direction;
+    const nextItem = visibleUnifiedCalibrationItems[nextIndex];
+    if (!nextItem) return;
+    setUnifiedFocusedItemKey(nextItem.key);
+    setUnifiedFocusedPrimaryView('candidate');
+  };
+  const submitUnifiedFocusedDecision = async (decision) => {
+    if (!unifiedFocusedItem) return;
+    const nextKey = nextReviewItemKey(
+      visibleUnifiedCalibrationItems,
+      unifiedFocusedItem.key,
+      (item) => item.key
+    );
+    let completed = false;
+    const mappedDecision = unifiedFocusedUsesLearningDecision
+      ? mapUnifiedLearningDecision(unifiedFocusedItem, decision)
+      : decision;
+    if (unifiedFocusedItem.decisionType === 'low_score') {
+      completed = await submitLowScoreCalibrationReview(unifiedFocusedItem.segmentId, mappedDecision);
+    } else if (unifiedFocusedItem.decisionType === 'pairwise') {
+      completed = await submitCalibrationReview(
+        unifiedFocusedItem.raw.id,
+        decision,
+        !unifiedFocusedItem.raw.is_control
+      );
+    } else if (unifiedFocusedItem.decisionType === 'regenerative') {
+      completed = await submitRegenerativeReview(unifiedFocusedItem, mappedDecision);
+    }
+    if (completed) {
+      setUnifiedFocusedItemKey(nextKey);
+      setUnifiedFocusedPrimaryView('candidate');
+    }
+  };
+  const openUnifiedSpecializedView = (item) => {
+    if (!item) return;
+    setUnifiedFocusedItemKey(null);
+    if (item.queue === 'unicode') {
+      setCalibrationMode('mojibake');
+      openMojibakeFocusedReview(
+        item.segmentId,
+        visibleUnifiedCalibrationItems.filter((candidate) => candidate.queue === 'unicode').map((candidate) => candidate.raw)
+      );
+      return;
+    }
+    if (item.queue === 'score_calibration') setCalibrationMode('low_score');
+    if (item.queue === 'pairwise') setCalibrationMode('pairwise');
+    if (item.queue === 'repair') setCalibrationMode('repair');
+    if (item.queue === 'promotion') {
+      setPostReleaseArea('review');
+      setPostReleaseView('promotions');
+    }
+    if (item.queue === 'discovery' || item.queue === 'proposal') {
+      setPostReleaseArea('cycle');
+      setPostReleaseView(item.queue === 'discovery' ? 'discovery' : 'proposals');
+    }
+  };
+  const openUnifiedFocusedReview = (item) => {
+    if (!item) return;
+    if (item.queue === 'unicode') {
+      setUnifiedFocusedItemKey(null);
+      setMojibakeStatusFilter('pending');
+      setMojibakeFamilyFilter('all');
+      setMojibakeSupportFilter('all');
+      setMojibakePatternFilter('all');
+      setMojibakeSearchFilter('');
+      openMojibakeFocusedReview(
+        item.segmentId,
+        visibleUnifiedCalibrationItems.filter((candidate) => candidate.queue === 'unicode').map((candidate) => candidate.raw)
+      );
+      return;
+    }
+    setUnifiedFocusedItemKey(item.key);
+    setUnifiedFocusedPrimaryView('candidate');
+  };
+  useEffect(() => {
+    if (!unifiedFocusedItemKey) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') setUnifiedFocusedItemKey(null);
+      if (event.key === 'ArrowLeft' && unifiedFocusedIndex > 0) moveUnifiedFocus(-1);
+      if (event.key === 'ArrowRight' && unifiedFocusedIndex >= 0 && unifiedFocusedIndex < visibleUnifiedCalibrationItems.length - 1) moveUnifiedFocus(1);
+    };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', onKeyDown);
+    window.requestAnimationFrame(() => unifiedFocusedCloseRef.current?.focus());
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [unifiedFocusedItemKey, unifiedFocusedIndex, visibleUnifiedCalibrationItems.length]);
   const unhandledSegments = sortSegmentsByScoreDesc(rawUnhandledSegments);
   const scoreTone = (score) => {
     const parsed = scoreValue(score);
@@ -4093,23 +6818,110 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     && Number(calibrationReview.decided_count ?? 0) > 0
   );
   const reviewTabs = [
-    { id: 'apply', label: 'Apply', count: diffSummary.needs_apply ?? applySegments.length, tone: applySegments.length ? 'amber' : 'slate' },
-    { id: 'package', label: 'Pacote', count: diffSummary.package_diff_count ?? packageSegments.length, tone: packageSegments.length ? 'blue' : 'slate' },
-    { id: 'new', label: 'Novos', count: diffSummary.new_vs_old ?? newSegments.length, tone: newSegments.length ? 'blue' : 'slate' },
-    { id: 'promotions', label: 'Promocoes', count: diffSummary.promotions_vs_old ?? promotionSegments.length, tone: promotionSegments.length ? 'emerald' : 'slate' },
-    { id: 'regressions', label: 'Score bruto', count: rawScoreRegressionCount, tone: effectiveScoreRegressionCount || unresolvedRawScoreRegressionCount ? 'red' : rawScoreRegressionCount ? 'blue' : 'slate' },
-    { id: 'discovery', label: 'Descobertas', count: actionablePatternCount, tone: actionablePatternCount ? 'amber' : patternFamilies.length ? 'blue' : 'slate' },
-    { id: 'proposals', label: 'Propostas', count: proposalDraftCount, tone: proposalDraftCount ? 'amber' : providerProposals.instrumented ? 'emerald' : 'slate' },
-    { id: 'providers', label: 'Provedores', count: providerRows.length, tone: providerHealth.status === 'healthy' ? 'emerald' : providerHealth.instrumented ? 'amber' : 'slate' },
-    { id: 'calibration', label: 'Calibracao', count: calibrationReview.pending_count ?? calibrationReviewSegments.filter((item) => item.review_status === 'pending').length, tone: calibrationPolicyDecision === 'skip' || calibrationReview.consumption_status === 'consumed' ? 'emerald' : calibrationPolicyDecision === 'sample' ? 'blue' : Number(calibrationReview.pending_count ?? 0) ? 'amber' : calibrationReviewSegments.length ? 'blue' : 'slate' },
-    { id: 'unhandled', label: 'Pendentes', count: diffSummary.unhandled_by_network ?? unhandledSegments.length, tone: unhandledSegments.length ? 'amber' : 'slate' },
-    { id: 'feedback', label: 'Feedbacks', count: feedbackRows.length, tone: feedbackRows.length ? 'blue' : 'slate' },
-    { id: 'low_score', label: 'Baixo score', count: diffSummary.low_score ?? lowScoreSegments.length, tone: lowScoreActionable ? 'red' : lowScoreUnexplained ? 'amber' : Number(diffSummary.low_score ?? lowScoreSegments.length) ? 'blue' : 'slate' },
+    {
+      id: 'audit',
+      label: 'Aprendizado humano',
+      area: 'review',
+      count: unifiedBatchRemaining,
+      tone: humanReviewPendingTotal
+        ? 'amber'
+        : calibrationPolicyDecision === 'skip' || calibrationReview.consumption_status === 'consumed'
+          ? 'emerald'
+          : calibrationReviewSegments.length
+            ? 'blue'
+            : 'slate',
+    },
+    { id: 'promotions', label: 'Promoções', area: 'review', count: diffSummary.promotions_vs_old ?? promotionSegments.length, tone: promotionSegments.length ? 'emerald' : 'slate' },
+    { id: 'feedback', label: 'Feedbacks', area: 'review', count: feedbackRows.length, tone: feedbackRows.length ? 'blue' : 'slate' },
+    { id: 'apply', label: 'Apply', area: 'review', count: diffSummary.needs_apply ?? applySegments.length, tone: applySegments.length ? 'amber' : 'slate' },
+    { id: 'unhandled', label: 'Pendentes', area: 'review', count: diffSummary.unhandled_by_network ?? unhandledSegments.length, tone: unhandledSegments.length ? 'amber' : 'slate' },
+    { id: 'providers', label: 'Provedores', area: 'cycle', count: providerRows.length, tone: providerHealth.status === 'healthy' ? 'emerald' : providerHealth.instrumented ? 'amber' : 'slate' },
+    { id: 'discovery', label: 'Descobertas', area: 'cycle', count: Number(patternDiscovery.review_pending_count ?? 0), tone: Number(patternDiscovery.review_pending_count ?? 0) ? 'amber' : patternFamilies.length ? 'blue' : 'slate' },
+    { id: 'proposals', label: 'Propostas', area: 'cycle', count: Number(providerProposals.review_pending_count ?? 0), tone: Number(providerProposals.review_pending_count ?? 0) ? 'amber' : providerProposals.instrumented ? 'emerald' : 'slate' },
+    { id: 'low_score', label: 'Baixo score', area: 'explore', count: diffSummary.low_score ?? lowScoreSegments.length, tone: lowScoreActionable ? 'red' : lowScoreUnexplained ? 'amber' : Number(diffSummary.low_score ?? lowScoreSegments.length) ? 'blue' : 'slate' },
+    { id: 'regressions', label: 'Score bruto', area: 'explore', count: rawScoreRegressionCount, tone: effectiveScoreRegressionCount || unresolvedRawScoreRegressionCount ? 'red' : rawScoreRegressionCount ? 'blue' : 'slate' },
+    { id: 'package', label: 'Pacote', area: 'history', count: diffSummary.package_diff_count ?? packageSegments.length, tone: packageSegments.length ? 'blue' : 'slate' },
+    { id: 'new', label: 'Novos segmentos', area: 'history', count: diffSummary.new_vs_old ?? newSegments.length, tone: newSegments.length ? 'blue' : 'slate' },
   ];
-  const activeReviewTabIndex = Math.max(0, reviewTabs.findIndex((tab) => tab.id === postReleaseView));
-  const previousReviewTab = reviewTabs[(activeReviewTabIndex - 1 + reviewTabs.length) % reviewTabs.length];
-  const nextReviewTab = reviewTabs[(activeReviewTabIndex + 1) % reviewTabs.length];
+  const reviewAreaDefinitions = [
+    {
+      id: 'review',
+      label: 'Revisar',
+      description: 'Decisoes humanas',
+      metric: `${compact(humanReviewPendingTotal)} em uma fila humana`,
+      icon: SearchCheck,
+      tone: 'emerald',
+    },
+    {
+      id: 'cycle',
+      label: 'Ciclo vivo',
+      description: 'Filas regeneraveis',
+      metric: `${compact(providerHealth.executed_provider_count ?? 0)}/${compact(providerHealth.provider_count ?? providerRows.length)} provedores`,
+      icon: Workflow,
+      tone: 'blue',
+    },
+    {
+      id: 'explore',
+      label: 'Explorar',
+      description: 'Risco e calibracao do score',
+      metric: `${compact(diffSummary.low_score ?? lowScoreSegments.length)} baixo score`,
+      icon: BarChart3,
+      tone: 'violet',
+    },
+    {
+      id: 'history',
+      label: 'Historico',
+      description: 'Decisoes e efeito entre runs',
+      metric: `${compact(diffSummary.package_diff_count ?? packageSegments.length)} mudancas no pacote`,
+      icon: Route,
+      tone: 'amber',
+    },
+  ];
+  const visibleReviewAreaDefinitions = reviewAreaDefinitions.filter((area) => (
+    reviewTabs.some((tab) => tab.area === area.id && Number(tab.count ?? 0) > 0)
+  ));
+  const moduleReviewTabIds = effectiveModuleId === 'improvement'
+    ? ['audit']
+    : effectiveModuleId === 'production_module'
+      ? ['apply', 'promotions', 'package', 'new']
+      : [];
+  const moduleReviewTabs = moduleReviewTabIds
+    .map((tabId) => reviewTabs.find((tab) => tab.id === tabId))
+    .filter(Boolean);
+  const activeReviewTabs = effectiveModuleId === 'improvement'
+    ? moduleReviewTabs
+    : moduleReviewTabs.filter((tab) => Number(tab.count ?? 0) > 0);
+  const activeReviewTabKey = activeReviewTabs.map((tab) => tab.id).join('|');
+  const fallbackReviewTab = activeReviewTabs[0] ?? moduleReviewTabs[0] ?? reviewTabs[0];
+  useEffect(() => {
+    if (fallbackReviewTab && !moduleReviewTabIds.includes(postReleaseView)) {
+      setPostReleaseArea(fallbackReviewTab.area);
+      setPostReleaseView(fallbackReviewTab.id);
+      return;
+    }
+    if (
+      activeReviewTabs.length
+      && !activeReviewTabs.some((tab) => tab.id === postReleaseView)
+    ) {
+      setPostReleaseView(activeReviewTabs[0].id);
+    }
+  }, [activeReviewTabKey, effectiveModuleId, postReleaseArea, postReleaseView]);
+  const activeReviewTabIndex = Math.max(0, activeReviewTabs.findIndex((tab) => tab.id === postReleaseView));
+  const previousReviewTab = activeReviewTabs.length
+    ? activeReviewTabs[(activeReviewTabIndex - 1 + activeReviewTabs.length) % activeReviewTabs.length]
+    : fallbackReviewTab;
+  const nextReviewTab = activeReviewTabs.length
+    ? activeReviewTabs[(activeReviewTabIndex + 1) % activeReviewTabs.length]
+    : fallbackReviewTab;
   const selectReviewTab = (tabId) => {
+    const targetTab = reviewTabs.find((tab) => tab.id === tabId);
+    if (targetTab?.area && targetTab.area !== postReleaseArea) setPostReleaseArea(targetTab.area);
+    if (tabId === 'audit' && effectiveModuleId === 'improvement') {
+      setCalibrationMode('unified');
+      setUnifiedQueueFilter('all');
+      setUnifiedSearchFilter('');
+      setUnifiedFocusedItemKey(null);
+    }
     setPostReleaseView(tabId);
     requestAnimationFrame(() => {
       const tabStrip = reviewTabsRef.current;
@@ -4119,37 +6931,50 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
       tabStrip.scrollTo({ left: Math.max(0, centeredLeft), behavior: 'smooth' });
     });
   };
+  const selectReviewArea = (areaId) => {
+    const areaTabs = moduleReviewTabs.filter((tab) => (
+      tab.area === areaId && Number(tab.count ?? 0) > 0
+    ));
+    if (!areaTabs.length) return;
+    const currentBelongsToArea = areaTabs.some((tab) => tab.id === postReleaseView);
+    setPostReleaseArea(areaId);
+    selectReviewTab(currentBelongsToArea ? postReleaseView : areaTabs[0].id);
+  };
   const navigateReviewTabs = (direction) => {
-    const nextIndex = (activeReviewTabIndex + direction + reviewTabs.length) % reviewTabs.length;
-    selectReviewTab(reviewTabs[nextIndex].id);
+    if (!activeReviewTabs.length) return;
+    const nextIndex = (activeReviewTabIndex + direction + activeReviewTabs.length) % activeReviewTabs.length;
+    selectReviewTab(activeReviewTabs[nextIndex].id);
+  };
+  const reviewAreaClass = (area, active) => {
+    const toneClass = area.tone === 'emerald'
+      ? 'border-emerald-300/35 text-emerald-100'
+      : area.tone === 'blue'
+        ? 'border-blue-300/35 text-blue-100'
+        : area.tone === 'violet'
+          ? 'border-violet-300/35 text-violet-100'
+          : 'border-amber-300/35 text-amber-100';
+    return cn(
+      'group flex min-w-0 items-center gap-2 rounded-xl border px-2.5 py-1.5 text-left transition focus:outline-none focus:ring-2 focus:ring-cyan-300/70',
+      toneClass,
+      active
+        ? 'bg-white/[0.08] shadow-[0_0_0_1px_rgba(103,232,249,0.25)]'
+        : 'bg-[var(--dash-card)] opacity-75 hover:-translate-y-0.5 hover:bg-white/[0.055] hover:opacity-100',
+    );
   };
   const reviewTabClass = (tab, active) => {
-    const base = 'group relative inline-flex h-9 min-w-[108px] shrink-0 snap-start items-center justify-between gap-2 rounded-lg border border-b-2 px-3 py-2 text-[11px] font-black shadow-sm transition focus:outline-none focus:ring-2 focus:ring-cyan-300/70';
-    if (!active) {
-      const toneClass = tab.tone === 'red'
-        ? 'border-red-300/25 bg-red-500/10 text-red-100/75 hover:bg-red-500/18'
-        : tab.tone === 'amber'
-          ? 'border-amber-300/25 bg-amber-500/10 text-amber-100/75 hover:bg-amber-500/18'
-          : tab.tone === 'emerald'
-            ? 'border-emerald-300/25 bg-emerald-500/10 text-emerald-100/75 hover:bg-emerald-500/18'
-            : tab.tone === 'blue'
-              ? 'border-blue-300/25 bg-blue-500/10 text-blue-100/75 hover:bg-blue-500/18'
-              : 'border-[var(--dash-border)] bg-[var(--dash-card)] text-[var(--dash-muted)] hover:border-blue-300/35 hover:text-blue-100';
-      return cn(base, toneClass, 'hover:-translate-y-0.5');
-    }
-    const selected = '-translate-y-0.5 border-cyan-200/90 ring-2 ring-cyan-300/80 shadow-[0_0_15px_rgba(34,211,238,0.3)]';
-    if (tab.tone === 'red') return cn(base, selected, 'bg-red-500/30 text-red-50');
-    if (tab.tone === 'amber') return cn(base, selected, 'bg-amber-500/30 text-amber-50');
-    if (tab.tone === 'emerald') return cn(base, selected, 'bg-emerald-500/30 text-emerald-50');
-    if (tab.tone === 'blue') return cn(base, selected, 'bg-blue-500/30 text-blue-50');
-    return cn(base, selected, 'bg-slate-500/20 text-slate-50');
+    return cn(
+      'group relative inline-flex h-10 min-w-[112px] shrink-0 snap-start items-center justify-between gap-2 border-b-2 px-3 py-2 text-[11px] font-black transition focus:outline-none focus-visible:bg-[var(--dash-hover)]',
+      active
+        ? 'border-cyan-300 text-[var(--dash-text)]'
+        : 'border-transparent text-[var(--dash-muted)] hover:border-[var(--dash-border-strong)] hover:text-[var(--dash-text)]',
+    );
   };
   const comparisonSegments = postReleaseView === 'package' ? packageSegments : promotionSegments;
   const missingReleaseReadiness = [knownOpen, appliedPendingValidation].some((value) => value === null);
   const publishStatus = publicationAllowed ? 'Liberada' : publicationGate.status === 'not_measured' ? 'Não medida' : 'Bloqueada';
   const publishTone = publicationAllowed ? 'emerald' : publicationGate.status === 'not_measured' ? 'slate' : 'red';
   const productionPublicationStatus = publicationActionAllowed
-    ? 'Publicável'
+    ? 'Produção'
     : publicationAllowed
       ? 'Sem apply'
       : publishStatus;
@@ -4230,7 +7055,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   const sourceOutputChecklist = [
     { label: 'Baseline', value: baselineControl.stable_baseline_path ?? 'source\\spanish_old', tone: 'blue' },
     { label: 'Output atual', value: outputCurrentLabel, tone: outputCurrentTone },
-    { label: 'Candidate', value: releaseCandidate.current_candidate_path ? 'hotfix candidate' : 'nao medido', tone: releaseCandidate.current_candidate_path ? 'amber' : 'slate' },
+    { label: 'Candidato', value: releaseCandidate.current_candidate_path ? 'candidato preparado' : 'não medido', tone: releaseCandidate.current_candidate_path ? 'amber' : 'slate' },
     { label: 'Último preflight', value: compactDateTime(gameUpdate.latest_preflight ?? safety.preflight?.generated_at), tone: gameUpdate.latest_preflight || safety.preflight?.generated_at ? 'blue' : 'slate' },
   ];
   const updateChecklist = [
@@ -4246,7 +7071,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     { label: 'Preflight', value: compactDateTime(gameUpdate.latest_preflight ?? safety.preflight?.generated_at), tone: gameUpdate.latest_preflight || safety.preflight?.generated_at ? 'blue' : 'slate' },
     { label: 'Apply verificado', value: hasVerifiedApplyQueue ? compact(evaluatedApplyCount) : '0', tone: hasVerifiedApplyQueue ? 'amber' : 'blue' },
     { label: 'Avaliação', value: evaluationAllowed ? 'liberada' : 'bloqueada', tone: evaluationAllowed ? 'emerald' : 'red' },
-    { label: 'Publicável', value: productionPublicationStatus.toLowerCase(), tone: productionPublicationTone },
+    { label: 'Produção', value: productionPublicationStatus.toLowerCase(), tone: productionPublicationTone },
   ];
   const blockingSummary = publicationActionAllowed
     ? `${compact(evaluatedApplyCount)} apply verificado pela avaliação`
@@ -4316,19 +7141,48 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     ? diagnosticRunStatus.phases
     : [];
   const diagnosticStatusValue = normalizedRunStatus(diagnosticRunStatus?.status);
+  const terminalMeasuredProgress = clampNumber(
+    Number(currentActionRun?.progress_pct ?? diagnosticRunStatus?.progress_pct ?? 0),
+    0,
+    99,
+  );
   const diagnosticProgress = refreshing
     ? clampNumber(Number(diagnosticRunStatus?.progress_pct ?? 1), 1, 99)
     : executionStatusValue === 'failed' || diagnosticStatusValue === 'failed'
-      ? 100
+      ? terminalMeasuredProgress
       : modeActionNotice?.mode === 'diagnostic'
         ? 100
         : 0;
-  const executionProgress = modeActionNotice?.mode === 'diagnostic' || (refreshing && effectiveSelectedMode === 'diagnostic')
-    ? diagnosticProgress
-    : modeActionNotice?.mode === 'evaluation' || modeActionNotice?.mode === 'publication'
-      ? (runActive ? Math.max(8, runProgress) : currentActionStatus === 'completed' ? 100 : currentActionStatus === 'failed' ? 100 : runStartPending ? 8 : ['completed', 'blocked', 'failed'].includes(executionStatusValue) ? 100 : executionStatusValue === 'starting' ? 8 : 0)
+  const evaluationPreparationWeight = 15;
+  const evaluationPreparationActive = modeActionNotice?.mode === 'evaluation'
+    && (refreshing || evaluationCyclePhase === 'diagnostic' || evaluationCyclePhase === 'handoff');
+  const evaluationPipelineProgress = currentActionStatus === 'completed' || executionStatusValue === 'completed'
+    ? 100
+    : clampNumber(
+        evaluationPreparationWeight
+          + Math.round((clampNumber(runActive ? runProgress : terminalMeasuredProgress, 0, 100) * (100 - evaluationPreparationWeight)) / 100),
+        evaluationPreparationWeight,
+        99,
+      );
+  const displayRunProgress = activeRunMode === 'evaluation' ? evaluationPipelineProgress : runProgress;
+  const executionProgress = evaluationPreparationActive
+    ? (refreshing
+        ? Math.max(1, Math.round((diagnosticProgress * evaluationPreparationWeight) / 100))
+        : evaluationPreparationWeight)
+    : modeActionNotice?.mode === 'diagnostic'
+      ? diagnosticProgress
+    : runActive || modeActionNotice?.mode === 'evaluation' || modeActionNotice?.mode === 'publication'
+      ? (runActive
+          ? (activeRunMode === 'evaluation' ? evaluationPipelineProgress : Math.max(8, runProgress))
+          : currentActionStatus === 'completed' || executionStatusValue === 'completed'
+            ? 100
+            : currentActionStatus === 'failed' || ['blocked', 'failed'].includes(executionStatusValue)
+              ? (modeActionNotice?.mode === 'evaluation' ? evaluationPipelineProgress : terminalMeasuredProgress)
+              : runStartPending || executionStatusValue === 'starting'
+                ? (modeActionNotice?.mode === 'evaluation' ? evaluationPreparationWeight : 8)
+                : 0)
       : 0;
-  const diagnosticExecutionActive = refreshing && effectiveSelectedMode === 'diagnostic';
+  const diagnosticExecutionActive = refreshing;
   const diagnosticElapsedLabel = diagnosticStartedAt ? durationLabel(diagnosticElapsedMs) : 'nao medido';
   const diagnosticCurrentStepLabel = diagnosticRunStatus?.current_label
     ?? (refreshing ? 'Preparar diagnóstico' : 'Concluído');
@@ -4373,29 +7227,23 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         : `Modo ${pipelineRunMode === 'publication' ? 'Producao publicavel' : 'Producao de avaliacao'} - ${currentActionRun?.run_id ? `run ${currentActionRun.run_id}` : 'aguardando run'} - etapa ${currentStage?.label ?? currentActionRun?.current_label ?? currentActionRun?.current_stage ?? 'preparando'}`
     : displayExecutionDetail;
   const selectedModePreviewSteps = {
-    diagnostic: [
-      { label: 'Estado atual', status: refreshing ? 'running' : 'pending', detail: 'Recalcula fechamento e identifica a superfície elegível sem alterar output.' },
-      { label: 'Descoberta', status: 'pending', detail: 'Analisa famílias conhecidas e gera candidatos shadow de melhoria.' },
-      { label: 'Sugestões', status: 'pending', detail: 'Registra evidências pareadas e promoções sugeridas, sem confirmar apply.' },
-      { label: 'Consolidação', status: 'pending', detail: 'Atualiza cache, preflight, filas e comparativos do painel.' },
-    ],
     evaluation: [
-      { label: 'Preparacao', status: evaluationAllowed && !diskBlocksProduction ? 'pending' : 'failed', detail: 'Snapshot, arquivo, indice e segment-state antes da escrita.' },
-      { label: 'Analise', status: 'pending', detail: 'Dry-runs e politicas medem o que pode ser promovido com seguranca.' },
-      { label: 'Escrita', status: 'pending', detail: 'Gera output de avaliacao para medir score, diff e regressao.' },
-      { label: 'Validacao', status: 'pending', detail: 'Recalcula estado, reaudita e emite relatorio final.' },
+      { label: 'Descobertas', status: refreshing ? 'running' : evaluationAllowed && !diskBlocksProduction ? 'pending' : 'failed', detail: 'Recalcula o estado e identifica falhas, famílias e sinais novos.' },
+      { label: 'Avaliação', status: 'pending', detail: 'Executa os validadores e compara cada proposta com o registro anterior.' },
+      { label: 'Decisões', status: 'pending', detail: 'Mantém somente os casos que exigem confirmação humana.' },
+      { label: 'Consolidação', status: 'pending', detail: 'Renova filas, score, propostas e promoções seguras sem escrever output.' },
+    ],
+    recalibration: [
+      { label: 'Insumos e travas', status: scoreRecalibration?.training?.shadow_qualified ? 'done' : 'pending', detail: 'Confere holdout supervisionado, ECE, Brier, classes e falso seguro.' },
+      { label: 'Candidato', status: scoreRecalibration?.candidate ? 'done' : 'pending', detail: 'Materializa score calibrado para todo o pacote sem sobrescrever o bruto.' },
+      { label: 'Discrepâncias', status: scoreRecalibration?.candidate?.gate?.reasons?.discrepancies_reviewed ? 'done' : 'pending', detail: 'Amostra maiores altas e quedas para validação humana.' },
+      { label: 'Promoção', status: scoreRecalibration?.registry?.active_candidate_run_id ? 'done' : scoreRecalibration?.candidate?.gate?.passed ? 'pending' : 'failed', detail: 'Promove por registro versionado, com reversão imediata.' },
     ],
     publication: [
       { label: 'Gates', status: publicationAllowed ? 'pending' : 'failed', detail: 'Confere bloqueios, feedback ativo e estado de publicacao.' },
-      { label: 'Apply confirmado', status: 'pending', detail: 'Valida correcoes ja confirmadas antes de escrever no output.' },
-      { label: 'Promocoes', status: 'pending', detail: 'Revisa candidatos melhores que o old antes de virarem apply.' },
-      { label: 'Relatorio final', status: 'pending', detail: 'Compara old vs output final, score do pacote e motivos de bloqueio.' },
-    ],
-    hotfix: [
-      { label: 'Fila', status: releaseCandidate.current_candidate_path ? 'pending' : 'failed' },
-      { label: 'Pacote', status: 'pending' },
-      { label: 'Validar', status: 'pending' },
-      { label: 'Handoff', status: 'pending' },
+      { label: 'Aplicar', status: 'pending', detail: 'Escreve somente promoções confirmadas e preserva tokens e contratos.' },
+      { label: 'Validar output', status: 'pending', detail: 'Recalcula score, integridade e fechamento do pacote produzido.' },
+      { label: 'Nova versão', status: versionMaterializationEligible ? 'pending' : 'pending', detail: 'Congela banco e baseline somente depois de todos os gates aprovados.' },
     ],
   }[effectiveSelectedMode] ?? [];
   const executionTerminalProblem = executionStatusValue === 'failed' || executionStatusValue === 'blocked';
@@ -4420,12 +7268,27 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
         status: phase.status,
         detail: phase.currentStage?.label ?? phase.currentStage?.id ?? '',
       }))
+    : evaluationPreparationActive
+      ? [
+          {
+            label: 'Preparação',
+            status: refreshing ? 'running' : 'done',
+            detail: refreshing ? diagnosticCurrentStepLabel : 'Diagnóstico incorporado ao ciclo.',
+          },
+          {
+            label: 'Análise',
+            status: evaluationCyclePhase === 'handoff' ? 'running' : 'pending',
+            detail: evaluationCyclePhase === 'handoff' ? 'Iniciando o processamento completo.' : 'Aguardando a preparação.',
+          },
+          { label: 'Fila e score', status: 'pending', detail: 'Aguardando a análise dos segmentos.' },
+          { label: 'Relatório', status: 'pending', detail: 'Aguardando a consolidação do ciclo.' },
+        ]
     : runModeUsesPipeline && ['failed', 'blocked'].includes(executionStatusValue)
       ? [
-          { label: 'Preparacao', status: executionTerminalProblem ? 'failed' : 'done', detail: failureMessage || 'Nao foi possivel iniciar a producao de avaliacao.' },
-          { label: 'Analise', status: 'pending' },
-          { label: 'Escrita', status: 'pending' },
-          { label: 'Validacao', status: 'pending' },
+          { label: 'Descobertas', status: executionTerminalProblem ? 'failed' : 'done', detail: failureMessage || 'Não foi possível iniciar o ciclo de avaliação.' },
+          { label: 'Avaliação', status: 'pending' },
+          { label: 'Decisões', status: 'pending' },
+          { label: 'Consolidação', status: 'pending' },
         ]
     : modeActionNotice?.mode === 'diagnostic' || diagnosticExecutionActive
       ? [
@@ -4444,7 +7307,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                 : 'Sem bloqueios de publicacao.',
             },
             {
-              label: 'Apply',
+              label: 'Aplicar',
               status: publicationPreflightApply > 0
                 ? publicationPreflightApplyReady === publicationPreflightApply ? 'done' : 'failed'
                 : 'done',
@@ -4453,17 +7316,27 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                 : 'Sem correcoes confirmadas aguardando escrita.',
             },
             {
-              label: 'Promocoes',
-              status: publicationPreflightPromotions > 0 ? 'done' : 'pending',
-              detail: `${compact(publicationPreflightPromotions)} promocoes medidas contra baseline.`,
+              label: 'Validar output',
+              status: publicationPreflightRegressions === 0 && publicationPreflightUnhandled === 0 ? 'done' : 'failed',
+              detail: `${publicationPackageScoreLabel}. ${compact(publicationPreflightPromotions)} promoções medidas; ${compact(publicationPreflightRegressions)} regressões e ${compact(publicationPreflightUnhandled)} pendências.`,
             },
             {
-              label: 'Relatorio',
-              status: executionStatusValue === 'failed' ? 'failed' : 'done',
-              detail: `${publicationPackageScoreLabel}. Regressoes ${compact(publicationPreflightRegressions)} - Pendentes ${compact(publicationPreflightUnhandled)} - Proximo: ${publicationPreflight.next_action ?? 'revisar'}.`,
+              label: 'Nova versão',
+              status: versionMaterializationEligible ? 'pending' : executionStatusValue === 'failed' ? 'failed' : 'done',
+              detail: versionMaterializationEligible
+                ? 'Output validado e pronto para ser congelado como nova versão.'
+                : `Próximo: ${publicationPreflight.next_action ?? 'revisar o estado do pacote'}.`,
             },
           ]
         : selectedModePreviewSteps;
+  const processSteps = executionSteps.length ? executionSteps : selectedModePreviewSteps;
+  const firstActiveProcessStep = processSteps.findIndex((step) => step.status === 'running');
+  const firstPendingProcessStep = processSteps.findIndex((step) => step.status !== 'done');
+  const activeProcessStepIndex = firstActiveProcessStep >= 0
+    ? firstActiveProcessStep
+    : firstPendingProcessStep >= 0
+      ? firstPendingProcessStep
+      : Math.max(0, processSteps.length - 1);
   const executionStepClass = (status) => (
     status === 'done'
       ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300'
@@ -4476,10 +7349,8 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
           : 'border-[var(--dash-border)] bg-[var(--dash-card)] text-[var(--dash-muted)]'
   );
   const selectedModeTitle = {
-    diagnostic: 'Analisa o estado e sugere novas promoções.',
-    evaluation: 'Valida promoções e aprova a fila de apply.',
-    publication: 'Aplica, escreve e fecha o output publicável.',
-    hotfix: 'Opera hotfix visual.',
+    evaluation: 'Descobre, avalia e melhora segmentos.',
+    publication: 'Aplica promoções e materializa a próxima versão.',
   }[effectiveSelectedMode] ?? selectedModeInfo.description;
   const latestRunFailure = visibleProductionRun?.status === 'failed' ? (visibleProductionRun.failure ?? {}) : {};
   const latestRunFailureMessage = latestRunFailure.message ?? visibleProductionRun?.message ?? '';
@@ -4555,18 +7426,20 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
   ];
   const terminalProblem = executionTerminalProblem;
   const executionPanelActive = runActive || refreshing || Boolean(modeActionNotice?.mode === effectiveSelectedMode && (terminalProblem || ['starting', 'running'].includes(executionStatusValue)));
-  const executionPanelTitle = runActive
-    ? 'Execucao em andamento'
-    : refreshing
-      ? 'Diagnostico em execucao'
+  const executionPanelTitle = refreshing
+    ? (modeActionNotice?.mode === 'evaluation' ? 'Execução em andamento' : 'Diagnóstico em execução')
+    : runActive
+      ? 'Execução em andamento'
     : executionStatusValue === 'failed' || executionStatusValue === 'blocked'
       ? 'Execucao interrompida'
       : executionStatusValue === 'completed' || executionStatusValue === 'refresh_completed'
         ? 'Execucao concluida'
         : displayExecutionTitle || 'Execucao preparada';
-  const executionPanelCurrent = runActive
-    ? currentStageLabel
-    : modeActionNotice?.mode === 'evaluation' && currentActionStatus === 'completed'
+  const executionPanelCurrent = refreshing
+    ? diagnosticCurrentStepLabel
+    : runActive
+      ? currentStageLabel
+      : modeActionNotice?.mode === 'evaluation' && currentActionStatus === 'completed'
       ? (runOutputChanged ? 'Concluida com alteracoes' : 'Concluida sem alteracoes')
       : modeActionNotice?.mode === 'evaluation' && currentActionStatus === 'failed'
         ? `Falha em ${failedStageLabel}`
@@ -4575,19 +7448,94 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
     : effectiveSelectedMode === 'diagnostic'
       ? refreshing ? 'Analisando candidatos e atualizando sugestões' : modeActionNotice?.title ?? selectedModeInfo.description
       : selectedModeInfo.description;
+  const executionProgressPct = Math.round(Math.max(0, Math.min(100, executionProgress)));
+  const diagnosticPhaseProgress = (phase, phaseIndex) => {
+    const status = normalizedStageStatus(phase?.status);
+    if (status === 'done') return 100;
+    if (status === 'failed') return 100;
+    if (status !== 'running') return 0;
+    const phaseId = phase?.id;
+    const runningStage = [...(diagnosticRunStatus?.stages ?? [])]
+      .reverse()
+      .find((stage) => stage.phase === phaseId && normalizedStageStatus(stage.status) === 'running');
+    return clampNumber(Number(runningStage?.progress_pct ?? (phaseIndex === 0 ? 1 : 0)), 1, 99);
+  };
+  const executionTimelineRows = evaluationPipelineVisible
+    ? displayPhases.map((phase) => ({
+        ...phase,
+        label: phase.title,
+        detail: phase.currentStage?.description ?? phase.purpose,
+        activity: phase.currentStage?.label ?? phase.currentStage?.id ?? 'Aguardando etapa',
+        progress: phase.progress,
+        completedUnits: phase.done,
+        totalUnits: phase.total,
+      }))
+    : executionSteps.map((step, index) => ({
+        ...step,
+        id: `${effectiveSelectedMode}-${index}`,
+        progress: step.status === 'done'
+          ? 100
+          : step.status === 'running'
+            ? evaluationPreparationActive && index === 0
+              ? diagnosticProgress
+              : diagnosticPhaseProgress(diagnosticPhases[index], index)
+            : step.status === 'failed'
+              ? 100
+              : 0,
+        activity: step.status === 'running' ? step.detail : step.status === 'done' ? 'Etapa concluída' : 'Aguardando execução',
+        completedUnits: step.status === 'done' ? 1 : 0,
+        totalUnits: 1,
+      }));
+  const executionActiveTimelineIndex = executionTimelineRows.findIndex((step) => step.status === 'running');
+  const executionCurrentTimeline = executionTimelineRows[
+    executionActiveTimelineIndex >= 0
+      ? executionActiveTimelineIndex
+      : executionTerminalProblem
+        ? Math.max(0, executionTimelineRows.findIndex((step) => step.status === 'failed'))
+        : Math.max(0, executionTimelineRows.findLastIndex((step) => step.status === 'done'))
+  ] ?? null;
+  const executionActivityDescription = executionCurrentTimeline?.detail
+    ?? displayExecutionDetailText
+    ?? selectedModeInfo.description;
+  const executionRunIdentity = evaluationPreparationActive
+    ? diagnosticRunStatus?.run_id ? `ciclo ${diagnosticRunStatus.run_id}` : 'ciclo de avaliação'
+    : refreshing
+      ? diagnosticRunStatus?.run_id ? `diagnóstico ${diagnosticRunStatus.run_id}` : 'diagnóstico'
+    : currentActionRun?.run_id ? `run ${currentActionRun.run_id}` : selectedModeInfo.shortLabel;
+  const executionModeDisplay = evaluationPreparationActive
+    ? 'Avaliação e melhoria de segmentos'
+    : refreshing
+      ? 'Diagnóstico e atualização da avaliação'
+    : runActive ? liveModeLabel : selectedModeInfo.label;
+  const executionStatusDisplay = evaluationPreparationActive
+    ? (refreshing ? 'Em execução' : 'Iniciando análise')
+    : refreshing
+      ? statusLabel(diagnosticRunStatus?.status ?? 'running')
+    : runActive ? statusLabel(runStatus?.status) : statusLabel(executionStatus ?? startStatus ?? 'idle');
+  const executionOutputDisplay = refreshing ? 'sem escrita no output' : runOutputLabel;
+  const mojibakeFocusedFamilyMeta = mojibakeFamilyMeta[mojibakeFocusedItem?.family]
+    ?? { label: mojibakeFocusedItem?.family ?? 'sinal', tone: 'slate' };
+  const mojibakeFocusedDecisionMeta = mojibakeFocusedItem?.review_status === 'reviewed'
+    ? mojibakeDecisionMeta[mojibakeFocusedItem?.decision]
+    : null;
+  const mojibakeFocusedSubmitting = Boolean(
+    mojibakeFocusedItem
+    && mojibakeSubmittingSegmentId === mojibakeFocusedItem.segment_id
+  );
+  const mojibakeFocusedPrimaryText = mojibakeFocusedPrimaryView === 'output'
+    ? mojibakeFocusedDetail?.output_text
+    : mojibakeFocusedDetail?.candidate_text;
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-2 pb-0">
-      <Card className="p-3">
+    <>
+    <div className="production-workspace flex h-full min-h-0 flex-col pb-0">
+      <section className="production-package-context shrink-0 border-b border-[var(--dash-border)] px-4 pb-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="grid h-9 w-9 place-items-center rounded-xl border border-emerald-400/25 bg-emerald-400/10 text-emerald-300">
-              <Activity size={17} />
-            </div>
             <div className="min-w-0">
               <h2 className="truncate text-lg font-black text-[var(--dash-text)]">CK3 PT-BR Release Control</h2>
               <p className="truncate text-xs text-[var(--dash-muted)]">
-                Pos-release QA e hotfix seguro · Cache {cache.generated_at ? `atualizado em ${cache.generated_at}` : 'pendente'} · SQLite {cache.stale ? 'mudou desde o cache' : 'sincronizado'}
+                Pós-release QA e produção segura · Cache {cache.generated_at ? `atualizado em ${cache.generated_at}` : 'pendente'} · SQLite {cache.stale ? 'mudou desde o cache' : 'sincronizado'}
               </p>
             </div>
           </div>
@@ -4599,7 +7547,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
           </div>
         </div>
 
-        <div className="mt-2 flex flex-wrap items-center gap-1.5 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] px-2.5 py-2 text-xs font-bold text-[var(--dash-muted)]">
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-[var(--dash-border)] pt-2 text-xs font-bold text-[var(--dash-muted)]">
           <span><span className="text-blue-400">{compact(release.total_segments)}</span> segmentos</span>
           <span className="text-[var(--dash-soft)]">·</span>
           <span>pacote <span className={operationallyClosed ? 'text-emerald-400' : 'text-amber-400'}>{operationallyClosed ? 'fechado' : 'aberto'}</span></span>
@@ -4612,7 +7560,9 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
           <span className="text-[var(--dash-soft)]">·</span>
           <span>provedores <span className={providerHealth.status === 'healthy' ? 'text-emerald-400' : 'text-amber-400'}>{compact(providerHealth.executed_provider_count ?? 0)}/{compact(providerHealth.provider_count ?? 0)}</span></span>
           <span className="text-[var(--dash-soft)]">·</span>
-          <span>modo <span className="text-[var(--dash-text)]">{selectedModeInfo.shortLabel}</span></span>
+          <span>módulo <span className="text-[var(--dash-text)]">{selectedArchitectureModule.shortLabel}</span></span>
+          <span className="text-[var(--dash-soft)]">·</span>
+          <span>etapa <span className="text-[var(--dash-text)]">{selectedModeInfo.shortLabel}</span></span>
         </div>
 
         <div className="hidden">
@@ -4622,69 +7572,118 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
           <MetricTile title="Needs Apply" value={compact(release.needs_apply)} tone={release.needs_apply ? 'amber' : 'emerald'} />
           <MetricTile title="Modo atual" value={selectedModeInfo.label} tone={selectedModeInfo.tone} />
         </div>
-      </Card>
+      </section>
 
-      <div className="grid min-h-0 flex-1 gap-2 xl:grid-cols-[minmax(330px,0.5fr)_minmax(0,1.5fr)]">
-        <Card className="dashboard-card-scroll flex min-h-0 flex-col overflow-y-auto p-2">
+      <div className={cn('production-workspace-grid grid min-h-0 flex-1', sidebarCollapsed && 'is-sidebar-collapsed')}>
+        <aside className={cn('production-module-sidebar dashboard-card-scroll flex min-h-0 flex-col overflow-y-auto border-r border-[var(--dash-border)]', sidebarCollapsed && 'is-collapsed')}>
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h3 className="text-sm font-black text-[var(--dash-text)]">Production Control</h3>
-              <p className="mt-1 text-xs text-[var(--dash-muted)]">Escolha o tipo de execução antes de iniciar qualquer etapa.</p>
+              <h3 className="text-xs font-black uppercase tracking-[0.12em] text-[var(--dash-muted)]">Módulos</h3>
+              <p className="mt-1 text-xs text-[var(--dash-soft)]">Escolha a jornada operacional.</p>
             </div>
-            <Badge tone={selectedModeInfo.tone}>{selectedModeInfo.status}</Badge>
+            <Badge tone={selectedArchitectureModule.tone}>{selectedArchitectureModule.status}</Badge>
           </div>
 
-          <div className="mt-2 flex flex-nowrap items-center gap-2.5">
-            {releaseModes.map((mode) => (
+          <nav className="production-module-primary-nav flex flex-col" aria-label="Módulos operacionais">
+            {architectureModules.map((module) => (
               <button
-                key={mode.id}
+                key={module.id}
                 type="button"
                 aria-disabled={runActive || runStartPending}
                 onClick={() => {
-                  if (!runActive && !runStartPending) setSelectedMode(mode.id);
+                  if (!runActive && !runStartPending) {
+                    setSelectedMode(module.defaultMode);
+                    if (module.defaultArea && module.defaultView) {
+                      setPostReleaseArea(module.defaultArea);
+                      setPostReleaseView(module.defaultView);
+                    }
+                  }
                 }}
-                className={cn(modeButtonClass(mode, effectiveSelectedMode === mode.id), (runActive || runStartPending) && 'cursor-not-allowed')}
-                data-tooltip-title={runActive ? 'Execução em andamento' : mode.shortLabel}
-                data-tooltip-description={runActive ? 'Aguarde a execução atual terminar.' : [mode.description, mode.warning].filter(Boolean).join(' ')}
-                data-tooltip-meta={`Status: ${mode.status}`}
-                aria-label={runActive ? 'Aguarde a execução atual terminar.' : modeTooltip(mode)}
+                className={cn(modeButtonClass(module, effectiveModuleId === module.id), (runActive || runStartPending) && 'cursor-not-allowed')}
+                data-disabled-reason={runActive || runStartPending ? 'Aguarde a execução atual terminar antes de trocar de módulo.' : undefined}
+                aria-label={runActive ? 'Aguarde a execução atual terminar.' : modeTooltip(module)}
               >
                 <span
                   className={cn(
-                    'pointer-events-none absolute inset-x-2 top-0 h-0.5 rounded-b-full bg-cyan-200 opacity-0 shadow-[0_0_12px_rgba(34,211,238,0.9)] transition',
-                    effectiveSelectedMode === mode.id && 'opacity-100'
+                    'pointer-events-none absolute inset-y-2 left-0 w-0.5 rounded-r-full bg-current opacity-0 transition',
+                    effectiveModuleId === module.id && 'opacity-100'
                   )}
                 />
-                <span className="shrink-0 drop-shadow-sm">{modeIcon(mode)}</span>
-                <span
-                  className={cn(
-                    'absolute right-2.5 top-1/2 grid h-4 w-4 -translate-y-1/2 place-items-center rounded-full border shadow-sm',
-                    mode.statusKind === 'blocked' ? 'border-red-100/40 bg-red-500 text-white' :
-                      mode.statusKind === 'instrumented' ? 'border-amber-100/45 bg-amber-400 text-amber-950' :
-                        mode.statusKind === 'unknown' ? 'border-slate-100/35 bg-slate-500 text-white' :
-                          'border-emerald-100/45 bg-emerald-400 text-emerald-950'
-                  )}
-                >
-                  {modeStatusIcon(mode)}
+                <span className="shrink-0 drop-shadow-sm">{modeIcon(module)}</span>
+                <span className="production-module-label ml-3 min-w-0 text-left">
+                  <span className="block truncate text-sm font-black">{module.shortLabel}</span>
+                  <span className={cn(
+                    'mt-1 block whitespace-normal break-words text-xs font-bold leading-tight',
+                    effectiveModuleId === module.id
+                      ? module.tone === 'red'
+                        ? 'text-red-400'
+                        : module.tone === 'amber'
+                          ? 'text-amber-400'
+                          : module.tone === 'pink'
+                            ? 'text-pink-400'
+                            : module.tone === 'blue'
+                              ? 'text-blue-400'
+                              : 'text-emerald-400'
+                      : 'text-[var(--dash-soft)]'
+                  )}>{module.status}</span>
                 </span>
               </button>
             ))}
-          </div>
+          </nav>
+
+          <button
+            type="button"
+            onClick={() => setSidebarCollapsed((current) => !current)}
+            className="production-sidebar-collapse mt-auto inline-flex items-center gap-3 border-t border-[var(--dash-border)] px-5 py-5 text-sm font-bold text-[var(--dash-muted)] transition hover:text-[var(--dash-text)]"
+            aria-label={sidebarCollapsed ? 'Expandir menu lateral' : 'Recolher menu lateral'}
+          >
+            {sidebarCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+            <span className="production-module-label">{sidebarCollapsed ? 'Expandir' : 'Recolher'}</span>
+          </button>
+
+          {selectedArchitectureModes.length > 1 ? (
+            <div className="mt-3 grid gap-1 border-y border-[var(--dash-border)] py-2" style={{ gridTemplateColumns: `repeat(${selectedArchitectureModes.length}, minmax(0, 1fr))` }}>
+              {selectedArchitectureModes.map((mode) => (
+                <button
+                  key={mode.id}
+                  type="button"
+                  onClick={() => {
+                    if (!runActive && !runStartPending) setSelectedMode(mode.id);
+                  }}
+                  disabled={runActive || runStartPending}
+                  data-disabled-reason={runActive || runStartPending ? 'Aguarde a execução atual terminar antes de trocar de etapa.' : undefined}
+                  className={cn(
+                    'rounded-lg px-2 py-1.5 text-[10px] font-black transition',
+                    effectiveSelectedMode === mode.id
+                      ? 'bg-[var(--dash-card)] text-cyan-200 shadow-sm ring-1 ring-cyan-300/30'
+                      : 'text-[var(--dash-muted)] hover:text-[var(--dash-text)]',
+                    (runActive || runStartPending) && 'cursor-not-allowed opacity-50'
+                  )}
+                >
+                  {mode.shortLabel}
+                </button>
+              ))}
+            </div>
+          ) : null}
 
           <button
             onClick={runSelectedModeAction}
             disabled={modeButtonDisabled}
-            title={`${selectedModeInfo.button}: ${selectedModeInfo.description} ${selectedModeInfo.warning}`}
+            data-disabled-reason={modeButtonBlockedReason ?? undefined}
             aria-label={selectedModeInfo.button}
             className={cn(
               'mt-2 inline-flex h-9 w-full items-center justify-center gap-2 rounded-xl px-4 text-sm font-black transition',
-              !modeButtonDisabled ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20 hover:bg-blue-500' : 'bg-slate-500/10 text-[var(--dash-muted)]'
+              !modeButtonDisabled
+                ? effectiveSelectedMode === 'recalibration'
+                  ? 'bg-pink-600 text-white shadow-lg shadow-pink-600/20 hover:bg-pink-500'
+                  : 'bg-blue-600 text-white shadow-lg shadow-blue-600/20 hover:bg-blue-500'
+                : 'bg-slate-500/10 text-[var(--dash-muted)]'
             )}
           >
-            <Play size={18} /> {runActive ? (activeRunMode === 'publication' ? 'Executando publicavel...' : 'Executando avaliacao...') : refreshing ? 'Atualizando...' : startStatus === 'checking' ? 'Checando...' : effectiveSelectedMode === 'publication' && publicationCanApply ? 'Aplicar confirmados' : selectedModeInfo.actionLabel}
+            <Play size={18} /> {runActive ? (activeRunMode === 'publication' ? 'Executando produção...' : 'Executando avaliação...') : refreshing ? (effectiveSelectedMode === 'evaluation' ? 'Executando avaliação...' : 'Atualizando...') : startStatus === 'checking' ? 'Checando...' : effectiveSelectedMode === 'publication' && publicationCanApply ? 'Aplicar confirmados' : effectiveSelectedMode === 'publication' && publicationCanMaterialize ? 'Materializar versão' : selectedModeInfo.actionLabel}
           </button>
 
-          <div className="mt-2 flex h-[156px] flex-col justify-between overflow-hidden rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
+          <div className="mt-3 flex min-h-[132px] flex-col justify-between overflow-hidden border-b border-[var(--dash-border)] pb-3">
             {runActive ? (
               <>
                 <div className="flex items-start justify-between gap-3">
@@ -4695,12 +7694,12 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                   <Badge tone="blue">{statusLabel(runStatus?.status)}</Badge>
                 </div>
                 <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-500/20">
-                  <div className="h-full rounded-full bg-blue-500 transition-all duration-500" style={{ width: `${Math.max(0, Math.min(100, runProgress))}%` }} />
+                  <div className="h-full rounded-full bg-blue-500 transition-all duration-500" style={{ width: `${Math.max(0, Math.min(100, displayRunProgress))}%` }} />
                 </div>
                 <div className="mt-2 grid grid-cols-3 gap-1 text-[10px] font-bold">
                   <span className="truncate rounded-md bg-black/15 px-1.5 py-0.5" title={String(runStatus?.run_id ?? '-')}>run {runStatus?.run_id ?? '-'}</span>
                   <span className="truncate rounded-md bg-black/15 px-1.5 py-0.5" title={currentStageLabel}>etapa {currentStageLabel}</span>
-                  <span className="rounded-md bg-black/15 px-1.5 py-0.5">progresso {Math.round(runProgress)}%</span>
+                  <span className="rounded-md bg-black/15 px-1.5 py-0.5">progresso {Math.round(displayRunProgress)}%</span>
                   <span className="rounded-md bg-black/15 px-1.5 py-0.5">total {runElapsed}</span>
                   <span className="rounded-md bg-black/15 px-1.5 py-0.5">etapa {stageElapsed}</span>
                   <span className={cn('rounded-md bg-black/15 px-1.5 py-0.5', staleUpdateWarning ? 'text-amber-300' : '')}>evento {updateElapsed}</span>
@@ -4789,14 +7788,14 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
             ))}
           </div>
 
-          <div className="mt-2 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
+          <div className="mt-3 border-b border-[var(--dash-border)] pb-3">
             <div className="flex items-center justify-between gap-2">
               <h4 className="text-xs font-black text-[var(--dash-text)]">Estado de produção</h4>
               <Badge tone={productionPublicationTone}>{productionPublicationStatus.toLowerCase()}</Badge>
             </div>
             <div className="mt-2 grid grid-cols-2 gap-1.5">
               {productionStateRows.map((item) => (
-                <div key={item.label} className="min-w-0 rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1.5">
+                <div key={item.label} className="min-w-0 border-l border-[var(--dash-border)] px-2 py-1 first:border-l-0">
                   <p className="text-[9px] font-black uppercase tracking-wide text-[var(--dash-muted)]">{item.label}</p>
                   <p className={cn('mt-0.5 truncate text-xs font-black', item.tone === 'emerald' ? 'text-emerald-400' : item.tone === 'red' ? 'text-red-400' : item.tone === 'amber' ? 'text-amber-400' : item.tone === 'blue' ? 'text-blue-400' : 'text-[var(--dash-text)]')} title={String(item.value)}>{String(item.value)}</p>
                 </div>
@@ -4846,12 +7845,12 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
           </div>
 
           <div className={cn(
-            'mt-2 rounded-xl border p-2.5',
+            'mt-3 border-b border-[var(--dash-border)] pb-3',
             visibleProductionRun?.status === 'failed'
               ? latestTerminalDiskFailure
-                ? 'border-amber-400/35 bg-amber-500/10 text-amber-100'
-                : 'border-red-400/35 bg-red-500/10 text-red-100'
-              : 'border-[var(--dash-border)] bg-[var(--dash-subtle)] text-[var(--dash-text)]'
+                ? 'text-amber-100'
+                : 'text-red-100'
+              : 'text-[var(--dash-text)]'
           )}>
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
@@ -4897,332 +7896,298 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
               {visibleProductionRun?.report_path && <p className="truncate">Relatório: <span className="font-bold text-[var(--dash-text)]">{visibleProductionRun.report_path}</span></p>}
             </div>
           </div>
-        </Card>
+        </aside>
 
-        <Card className="flex min-h-0 overflow-hidden p-2.5">
-          {executionPanelActive ? (
-            <div className="flex min-h-0 w-full flex-col">
-              <div className="mb-2 flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h3 className="text-sm font-black text-[var(--dash-text)]">{executionPanelTitle}</h3>
-                  <p className="text-xs text-[var(--dash-muted)]">
-                    {runActive ? 'Agora' : 'Resultado'}: <span className="font-black text-blue-400">{executionPanelCurrent}</span>
-                  </p>
-                </div>
-                <div className="flex flex-wrap justify-end gap-1.5 text-[10px] font-bold">
-                  <Badge tone="blue">{currentActionRun?.run_id ? `run ${currentActionRun.run_id}` : selectedModeInfo.shortLabel}</Badge>
-                  <Badge tone={runActive ? liveRunStatusTone : executionTone}>{runActive ? statusLabel(runStatus?.status) : statusLabel(executionStatus ?? startStatus ?? 'idle')}</Badge>
-                  <Badge tone={runOutputBadgeTone}>{runOutputLabel}</Badge>
-                </div>
+        <section
+          className={cn(
+            'production-main-canvas flex min-h-0 flex-col overflow-hidden',
+            postReleaseExpanded
+              && 'fixed inset-0 z-[100] h-[100dvh] w-screen !rounded-none border-0 !bg-[var(--dash-bg)] p-3 shadow-2xl'
+          )}
+        >
+          <header className="production-process-header shrink-0 border-b border-[var(--dash-border)] px-8 py-6">
+            <div className="production-process-summary">
+              <div className="production-process-copy min-w-0 max-w-3xl">
+                <p className="text-[10px] font-black uppercase tracking-[0.14em] text-[var(--dash-soft)]">{selectedArchitectureModule.shortLabel}</p>
+                <h3 className="mt-1 text-xl font-black tracking-tight text-[var(--dash-text)]">
+                  {effectiveSelectedMode === 'recalibration'
+                    ? ['active_monitoring', 'raw_monitoring'].includes(scoreRecalibration?.lifecycle_state)
+                      ? 'Governança do score calibrado'
+                      : 'Laboratório operacional de recalibração'
+                    : selectedModeInfo.label}
+                </h3>
+                <p className="mt-1 text-sm leading-relaxed text-[var(--dash-muted)]">{selectedModeInfo.description}</p>
               </div>
-
-              <div className="mb-2">
-                <div className="h-1.5 overflow-hidden rounded-full bg-slate-500/20">
-                  <div
-                    className={cn('h-full rounded-full transition-all duration-500', executionTone === 'red' ? 'bg-red-500' : executionTone === 'emerald' ? 'bg-emerald-500' : executionTone === 'amber' ? 'bg-amber-500' : 'bg-blue-500')}
-                    style={{ width: `${Math.max(0, Math.min(100, runActive ? runProgress : executionProgress))}%` }}
-                  />
-                </div>
-                <div className="mt-1 flex items-center justify-between gap-2 text-[10px] font-bold text-[var(--dash-muted)]">
-                  <span>Modo {runActive ? liveModeLabel : selectedModeInfo.label}</span>
-                  <span>{Math.round(runActive ? runProgress : executionProgress)}%</span>
-                </div>
-              </div>
-
-              {evaluationPipelineVisible ? (
-              <div className="mt-2 grid min-h-0 flex-1 gap-2 xl:grid-cols-2">
-                {displayPhases.map((phase, index) => (
-                  <div
-                    key={phase.id}
+              <div className="production-process-controls flex items-start justify-end gap-2">
+                {selectedArchitectureModes.length > 1 ? (
+                  <nav className="production-mode-tabs inline-flex items-center gap-1" aria-label="Etapas do módulo">
+                    {selectedArchitectureModes.map((mode) => (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        onClick={() => {
+                          if (!runActive && !runStartPending) setSelectedMode(mode.id);
+                        }}
+                        disabled={runActive || runStartPending}
+                        className={cn(
+                          'border-b-2 px-3 py-2 text-xs font-black transition',
+                          effectiveSelectedMode === mode.id
+                            ? 'border-blue-400 text-[var(--dash-text)]'
+                            : 'border-transparent text-[var(--dash-muted)] hover:text-[var(--dash-text)]',
+                          (runActive || runStartPending) && 'cursor-not-allowed opacity-50'
+                        )}
+                      >
+                        {mode.shortLabel}
+                      </button>
+                    ))}
+                  </nav>
+                ) : null}
+                {effectiveSelectedMode === 'recalibration' && ['active_monitoring', 'raw_monitoring'].includes(scoreRecalibration?.lifecycle_state) ? (
+                  <button
+                    type="button"
+                    onClick={startNewScoreRecalibrationCycle}
+                    disabled={!scoreRecalibration?.actions?.can_start_new_cycle || scoreRecalibrationBusy}
+                    data-disabled-reason={scoreRecalibrationBusy
+                      ? 'Aguarde a operação de calibração atual terminar.'
+                      : !scoreRecalibration?.actions?.can_start_new_cycle
+                        ? `A próxima calibração será liberada com mais ${compact(scoreRecalibration?.recommendation?.remaining_observation_count ?? 0)} evidências supervisionadas ou um novo contexto de score qualificado.`
+                        : undefined}
+                    className="production-process-action inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-pink-600 px-4 text-xs font-black text-white transition hover:bg-pink-500 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <Play size={15} /> {scoreRecalibrationBusy ? 'Preparando...' : 'Iniciar nova calibração'}
+                  </button>
+                ) : effectiveSelectedMode !== 'recalibration' ? (
+                  <button
+                    onClick={runSelectedModeAction}
+                    disabled={modeButtonDisabled}
+                    data-disabled-reason={modeButtonBlockedReason ?? undefined}
+                    aria-label={selectedModeInfo.button}
                     className={cn(
-                      'flex min-h-0 flex-col rounded-xl border bg-[var(--dash-subtle)] p-2',
-                      phase.status === 'running' ? 'border-blue-400/35 shadow-[0_0_0_1px_rgba(59,130,246,0.12)]' : 'border-[var(--dash-border)]'
+                      'production-process-action inline-flex h-10 items-center justify-center gap-2 rounded-lg px-4 text-sm font-black transition',
+                      !modeButtonDisabled
+                        ? effectiveSelectedMode === 'evaluation'
+                          ? 'bg-emerald-600 text-white hover:bg-emerald-500'
+                          : 'bg-blue-600 text-white hover:bg-blue-500'
+                        : 'bg-slate-500/10 text-[var(--dash-muted)]'
                     )}
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="text-[9px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Fase {index + 1}/4</p>
-                        <h4 className="truncate text-sm font-black text-[var(--dash-text)]">{phase.title}</h4>
-                        <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-[var(--dash-muted)]">{phase.purpose}</p>
-                      </div>
-                      <Badge tone={statusTone(phase.status)}>{statusLabel(phase.status)}</Badge>
-                    </div>
-                    <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-500/15">
-                      <div
-                        className={cn(
-                          'h-full rounded-full transition-all duration-500',
-                          phase.status === 'failed' ? 'bg-red-500' : phase.status === 'running' ? 'bg-blue-500' : phase.status === 'done' ? 'bg-emerald-500' : 'bg-slate-500'
-                        )}
-                        style={{ width: `${phase.progress}%` }}
-                      />
-                    </div>
-                    <div className="dashboard-card-scroll mt-2 min-h-0 flex-1 overflow-auto pr-1">
-                      <div className="flex flex-wrap gap-1">
-                        {phase.stages.map((stage) => (
-                          <span
-                            key={stage.id}
-                            title={[
-                              `${stage.label ?? stage.id}: ${statusLabel(stage.status)}`,
-                              stage.started_at ? `Inicio: ${stage.started_at}` : null,
-                              stage.finished_at ? `Fim: ${stage.finished_at}` : null,
-                              stage.started_at && stage.finished_at ? `Duracao: ${durationLabel(timestampMs(stage.finished_at) - timestampMs(stage.started_at))}` : null,
-                              stage.log_line_count !== undefined ? `Logs: ${stage.log_line_count}` : null,
-                            ].filter(Boolean).join('\n')}
-                            className={cn('inline-flex max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-bold', executionStepClass(stage.status))}
-                          >
-                            <span className={cn(
-                              'h-1.5 w-1.5 shrink-0 rounded-full',
-                              stage.status === 'done' ? 'bg-emerald-400' :
-                                stage.status === 'running' ? 'animate-pulse bg-blue-400' :
-                                  stage.status === 'failed' ? 'bg-red-400' :
-                                    stage.status === 'cancelled' ? 'bg-amber-400' : 'bg-slate-400'
-                            )} />
-                            <span className="truncate">{stage.label ?? stage.id}</span>
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                ))}
+                    <Play size={17} /> {runActive ? 'Executando...' : refreshing ? (effectiveSelectedMode === 'evaluation' ? 'Executando avaliação...' : 'Atualizando...') : effectiveSelectedMode === 'publication' && publicationCanApply ? 'Aplicar confirmados' : effectiveSelectedMode === 'publication' && publicationCanMaterialize ? 'Materializar versão' : selectedModeInfo.actionLabel}
+                  </button>
+                ) : null}
               </div>
-              ) : (
-              <div className="mt-2 grid min-h-0 flex-1 content-start gap-2 xl:grid-cols-2">
-                {executionSteps.map((step, index) => (
-                  <div key={step.label} className={cn('rounded-xl border bg-[var(--dash-subtle)] p-3', executionStepClass(step.status))}>
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="text-[9px] font-black uppercase tracking-wide opacity-70">Etapa {index + 1}/{executionSteps.length}</p>
-                        <h4 className="mt-1 truncate text-sm font-black">{step.label}</h4>
-                        {step.detail && <p className="mt-1 line-clamp-2 text-xs opacity-80">{step.detail}</p>}
-                      </div>
-                      <span className={cn(
-                        'mt-1 h-2 w-2 shrink-0 rounded-full',
-                        step.status === 'done' ? 'bg-emerald-400' :
-                          step.status === 'running' ? 'animate-pulse bg-blue-400' :
-                            step.status === 'failed' ? 'bg-red-400' :
-                              step.status === 'cancelled' ? 'bg-amber-400' : 'bg-slate-400'
-                      )} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-              )}
+            </div>
 
-              {evaluationPipelineVisible ? (
-              <div className="mt-2 grid gap-2 xl:grid-cols-2">
-                <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 p-2">
-                  <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-wide text-emerald-300">
-                    <Database size={13} /> Snapshot / preflight
+            {processSteps.length ? (
+              <div className="production-process-rail relative grid grid-cols-2 gap-x-4 gap-y-5 xl:grid-cols-4">
+                <div className="pointer-events-none absolute left-[8%] right-[8%] top-5 hidden h-px bg-[var(--dash-border-strong)] xl:block" />
+                {processSteps.map((step, index) => {
+                  const current = index === activeProcessStepIndex;
+                  const done = step.status === 'done';
+                  const failed = step.status === 'failed';
+                  const recalibrationStages = ['inputs', 'candidate', 'review', 'promotion'];
+                  return (
+                    <button
+                      key={`${effectiveSelectedMode}-${step.label}`}
+                      type="button"
+                      disabled={effectiveSelectedMode !== 'recalibration'}
+                      onClick={() => effectiveSelectedMode === 'recalibration' && setScoreRecalibrationStage(recalibrationStages[index] ?? 'inputs')}
+                      className="relative z-10 text-center disabled:cursor-default"
+                      title={effectiveSelectedMode !== 'recalibration' ? (step.detail || step.label) : undefined}
+                    >
+                      <span className={cn(
+                        'mx-auto grid h-10 w-10 place-items-center rounded-full border-2 bg-[var(--dash-bg)] text-sm font-black transition',
+                        current && runActive && 'production-process-step-active',
+                        failed
+                          ? 'border-red-400 text-red-300'
+                          : current
+                            ? 'border-pink-500 text-pink-400 shadow-[0_0_0_4px_rgba(236,72,153,0.08)]'
+                            : done
+                              ? 'border-emerald-400 text-emerald-300'
+                              : 'border-[var(--dash-border-strong)] text-[var(--dash-muted)]'
+                      )}>{done && !current ? <Check size={17} /> : index + 1}</span>
+                      <span className={cn('mt-2 block text-sm font-black', current ? 'text-[var(--dash-text)]' : 'text-[var(--dash-muted)]')}>{index + 1}. {step.label}</span>
+                      <span className={cn(
+                        'mt-1 block text-xs font-bold',
+                        failed ? 'text-red-400' : done ? 'text-emerald-400' : current ? 'text-pink-400' : 'text-[var(--dash-soft)]'
+                      )}>{failed ? 'Bloqueado' : done ? 'Pronto' : current && runActive ? `${Math.round(displayRunProgress)}%` : 'Pendente'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+          </header>
+
+          <div className="production-stage-content flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-6">
+          {effectiveSelectedMode === 'recalibration' ? (
+            <ScoreRecalibrationPanel
+              value={scoreRecalibration}
+              loading={scoreRecalibrationLoading}
+              busy={scoreRecalibrationBusy}
+              error={scoreRecalibrationError}
+              stage={scoreRecalibrationStage}
+              onStageChange={setScoreRecalibrationStage}
+              onRefresh={loadScoreRecalibration}
+              onGenerate={generateScoreRecalibration}
+              onReview={reviewScoreRecalibrationDiscrepancy}
+              onPromote={promoteScoreRecalibration}
+              onRestoreVersion={restoreScoreRecalibrationVersion}
+              expanded={postReleaseExpanded}
+              onToggleExpanded={() => setPostReleaseExpanded((expanded) => !expanded)}
+            />
+          ) : executionPanelActive ? (
+            <div className="execution-live-system flex min-h-0 w-full flex-col">
+              <div className="execution-live-overview grid shrink-0 gap-5 border-b border-[var(--dash-border)] pb-5 lg:grid-cols-[minmax(0,1fr)_auto]">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.16em] text-[var(--dash-soft)]">
+                    <span className={cn('execution-live-dot h-2 w-2 rounded-full', executionTerminalProblem ? 'bg-red-400' : runActive || refreshing ? 'is-running bg-blue-400' : 'bg-emerald-400')} />
+                    {executionPanelTitle}
+                    <span className="text-[var(--dash-border-strong)]">/</span>
+                    <span>{executionRunIdentity}</span>
                   </div>
-                  <div className="mt-1.5 grid grid-cols-3 gap-1 text-[10px] font-bold">
-                    <span className="rounded-md bg-black/10 px-1.5 py-0.5">SQLite: {sqliteBackupLabel}</span>
-                    <span className="rounded-md bg-black/10 px-1.5 py-0.5">Snapshot: {fmtBytes(liveDiskPreflight.estimated_snapshot_bytes)}</span>
-                    <span className="rounded-md bg-black/10 px-1.5 py-0.5">DB não duplicado</span>
+                  <h3 className="mt-2 text-xl font-black tracking-tight text-[var(--dash-text)]">{executionPanelCurrent}</h3>
+                  <p className="mt-1 max-w-4xl text-sm leading-5 text-[var(--dash-muted)]">{executionActivityDescription}</p>
+                  <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[10px] font-bold text-[var(--dash-soft)]">
+                    <span>Modo: <strong className="text-[var(--dash-muted)]">{executionModeDisplay}</strong></span>
+                    <span>Status: <strong className={cn(executionTerminalProblem ? 'text-red-400' : runActive || refreshing ? 'text-blue-400' : 'text-emerald-400')}>{executionStatusDisplay}</strong></span>
+                    <span>Output: <strong className="text-[var(--dash-muted)]">{executionOutputDisplay}</strong></span>
+                    {runActive || refreshing ? <span>Etapa ativa há <strong className="text-[var(--dash-muted)]">{refreshing ? diagnosticElapsedLabel : stageElapsed}</strong></span> : null}
                   </div>
                 </div>
-                <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2">
-                  <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">
-                    <TerminalSquare size={13} /> Logs recentes
+                <div className="flex min-w-[9rem] items-end justify-between gap-3 lg:flex-col lg:items-end">
+                  <div className="text-right">
+                    <span className="text-4xl font-black tabular-nums tracking-tighter text-[var(--dash-text)]">{executionProgressPct}%</span>
+                    <p className="mt-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-[var(--dash-soft)]">conclusão geral</p>
                   </div>
-                  <div className="mt-1.5 space-y-0.5 text-[10px] font-bold text-[var(--dash-muted)]">
-                    {liveLogs.length ? liveLogs.map((line, index) => (
-                      <p key={`${index}-${line.slice(0, 16)}`} className="truncate" title={line}>{line}</p>
-                    )) : (
-                      <p>Aguardando eventos da etapa atual.</p>
-                    )}
-                  </div>
+                  <span className="text-xs font-bold text-[var(--dash-muted)]">
+                    etapa {Math.max(1, executionActiveTimelineIndex >= 0 ? executionActiveTimelineIndex + 1 : activeProcessStepIndex + 1)} de {Math.max(1, executionTimelineRows.length)}
+                  </span>
                 </div>
               </div>
-              ) : (
-              <div className="mt-2 rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2">
-                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">
-                  <TerminalSquare size={13} /> Resumo da execucao
-                </div>
-                <p className="mt-1.5 line-clamp-2 text-xs font-bold text-[var(--dash-muted)]">
-                  {displayExecutionDetailText || selectedModeInfo.warning || 'Aguardando execucao do modo selecionado.'}
-                </p>
+
+              <div className="execution-progress-track relative mt-5 h-2 shrink-0 overflow-hidden rounded-full bg-slate-500/15">
+                <div
+                  className={cn(
+                    'execution-progress-fill h-full rounded-full transition-[width] duration-700 ease-out',
+                    executionTerminalProblem ? 'bg-red-500' : runActive || refreshing ? 'is-running bg-blue-500' : 'bg-emerald-500'
+                  )}
+                  style={{ width: `${executionProgressPct}%` }}
+                />
               </div>
-              )}
+
+              <div className="module-list-scroll mt-4 min-h-0 flex-1 overflow-y-auto pr-2">
+                <ol className="execution-timeline relative">
+                  {executionTimelineRows.map((step, index) => {
+                    const isActive = step.status === 'running';
+                    const isDone = step.status === 'done';
+                    const isFailed = step.status === 'failed';
+                    return (
+                      <li
+                        key={step.id ?? `${step.label}-${index}`}
+                        className={cn('execution-timeline-row relative grid gap-3 border-b border-[var(--dash-border)] py-3 pl-12 pr-2 lg:grid-cols-[minmax(13rem,.7fr)_minmax(18rem,1.4fr)_9rem]', isActive && 'is-active')}
+                      >
+                        <span className={cn(
+                          'execution-timeline-marker absolute left-3 top-4 z-10 grid h-6 w-6 place-items-center rounded-full border text-[10px] font-black',
+                          isFailed ? 'border-red-400 bg-red-500/10 text-red-300'
+                            : isActive ? 'is-running border-blue-400 bg-blue-500/15 text-blue-200'
+                              : isDone ? 'border-emerald-400 bg-emerald-500/10 text-emerald-300'
+                                : 'border-[var(--dash-border-strong)] bg-[var(--dash-bg)] text-[var(--dash-soft)]'
+                        )}>{isDone ? <Check size={13} /> : index + 1}</span>
+                        <div className="min-w-0">
+                          <p className="text-[9px] font-black uppercase tracking-[0.12em] text-[var(--dash-soft)]">Etapa {index + 1}/{executionTimelineRows.length}</p>
+                          <h4 className={cn('mt-0.5 truncate text-sm font-black', isFailed ? 'text-red-300' : isActive ? 'text-blue-200' : isDone ? 'text-emerald-300' : 'text-[var(--dash-muted)]')}>{step.label}</h4>
+                        </div>
+                        <div className="min-w-0">
+                          <p className={cn('truncate text-xs font-black', isActive ? 'text-[var(--dash-text)]' : 'text-[var(--dash-muted)]')}>{step.activity}</p>
+                          <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-[var(--dash-soft)]">{step.detail}</p>
+                        </div>
+                        <div className="flex items-center justify-end gap-3 text-right">
+                          <div>
+                            <p className="text-sm font-black tabular-nums text-[var(--dash-text)]">{Math.round(step.progress ?? 0)}%</p>
+                            <p className="text-[9px] font-bold uppercase tracking-wide text-[var(--dash-soft)]">{statusLabel(step.status)}</p>
+                          </div>
+                          <div className="h-9 w-1 overflow-hidden rounded-full bg-slate-500/15">
+                            <div
+                              className={cn('w-full transition-all duration-700', isFailed ? 'bg-red-400' : isActive ? 'bg-blue-400' : isDone ? 'bg-emerald-400' : 'bg-slate-500')}
+                              style={{ height: `${Math.max(4, Number(step.progress ?? 0))}%` }}
+                            />
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </div>
+
+              <div className="execution-live-footer mt-3 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-[var(--dash-border)] pt-3 text-[10px] font-bold text-[var(--dash-soft)]">
+                <span className="inline-flex min-w-0 items-center gap-2">
+                  <TerminalSquare size={13} />
+                  <span className="truncate">{liveLogs.at(-1) || displayExecutionDetailText || 'Aguardando eventos da execução.'}</span>
+                </span>
+                {evaluationPipelineVisible ? (
+                  <span className="inline-flex items-center gap-3">
+                    <span><Database size={12} className="mr-1 inline" />SQLite {sqliteBackupLabel}</span>
+                    <span>snapshot {fmtBytes(liveDiskPreflight.estimated_snapshot_bytes)}</span>
+                  </span>
+                ) : null}
+              </div>
             </div>
           ) : (
           <div className="flex min-h-0 w-full flex-col">
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <div>
-              <h3 className="text-sm font-black text-[var(--dash-text)]">Feedback e pos-release</h3>
-              <p className="text-xs text-[var(--dash-muted)]">Fila visual, hotfix protegido e preparo para update source/output.</p>
-            </div>
-            <Badge tone={release.needs_apply ? 'amber' : 'emerald'}>{release.needs_apply ? 'hotfix pendente' : 'limpo'}</Badge>
-          </div>
-
-          <div className="mt-2 flex min-h-0 flex-1">
-            <div className="flex min-h-0 w-full flex-1 flex-col rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2.5">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h4 className="text-sm font-black text-[var(--dash-text)]">
-                    {postReleaseView === 'feedback'
-                      ? 'Feedback visual / hotfix'
-                      : postReleaseView === 'package'
-                        ? 'Pacote old vs output'
-                      : postReleaseView === 'promotions'
-                        ? 'Promocoes'
-                      : postReleaseView === 'regressions'
-                          ? 'Auditoria do score bruto'
-                      : postReleaseView === 'discovery'
-                          ? 'Familias de qualidade descobertas'
-                      : postReleaseView === 'proposals'
-                          ? 'Propostas assistidas de provedor'
-                      : postReleaseView === 'providers'
-                          ? 'Cobertura e produtividade dos provedores'
-                      : postReleaseView === 'calibration'
-                          ? calibrationPolicyDecision === 'skip' && hasCompletedCalibrationHistory
-                            ? 'Calibracao concluida'
-                            : calibrationPolicyDecision === 'skip'
-                            ? 'Calibracao dispensada pela politica'
-                            : calibrationPolicyDecision === 'sample'
-                              ? 'Amostra pairwise de calibracao'
-                              : 'Revisao pairwise de calibracao'
-                          : postReleaseView === 'apply'
-                            ? 'Needs apply'
-                            : postReleaseView === 'new'
-                              ? 'Novos segmentos'
-                              : postReleaseView === 'low_score'
-                                ? 'Baixo score'
-                                : 'Pendentes'}
-                  </h4>
-                  <p className="text-xs text-[var(--dash-muted)]">
-                    {postReleaseView === 'feedback'
-                      ? 'Somente feedback aberto ou aguardando acao. Itens fechados e holds aceitos ficam arquivados.'
-                      : postReleaseView === 'package'
-                        ? `Comparativo final fechado entre source\\spanish_old e output\\spanish. ${packageScoreSummaryLabel}; ${packageCoverageLabel}. ${changedCohortScoreLabel}. Diferencas brutas: ${compact(rawOutputDiffCount)}; fora do pacote: ${compact(packageExcludedCount)}.`
-                      : postReleaseView === 'promotions'
-                        ? 'Promocoes contra o old que passaram no gate e podem virar apply confirmado.'
-                      : postReleaseView === 'regressions'
-                          ? `${compact(rawScoreRegressionCount)} variacoes brutas auditaveis; ${compact(effectiveScoreRegressionCount)} regressões efetivas no pacote; ${compact(reviewedRawScoreRegressionCount)} ja revisadas/calibradas; ${compact(unresolvedRawScoreRegressionCount)} ainda sem resolucao.`
-                      : postReleaseView === 'discovery'
-                          ? `Mineracao do pacote inteiro na epoch #${patternDiscovery.quality_epoch_id ?? '-'}. ${compact(patternDiscovery.evidence_segment_count ?? 0)} segmentos com evidencia; ${compact(patternDiscovery.ignored_score_only_count ?? 0)} casos de score baixo permaneceram apenas informativos.`
-                      : postReleaseView === 'proposals'
-                          ? `Rascunhos desabilitados gerados a partir da descoberta #${providerProposals.discovery_run_id ?? '-'}. Cada proposta exige implementacao deterministica, shadow integral, invariantes e testes de fronteira antes de virar provedor.`
-                      : postReleaseView === 'providers'
-                          ? `Funil persistido no SQLite para a epoch #${providerHealth.quality_epoch_id ?? '-'}. Casos inspecionados viram evidência somente quando passam pelos filtros determinísticos e pelo gate pareado.`
-                      : postReleaseView === 'calibration'
-                          ? calibrationPolicyDecision === 'skip' && hasCompletedCalibrationHistory
-                            ? `A epoch #${calibrationReview.quality_epoch_id ?? '-'} ja foi calibrada. A politica atual dispensou uma nova amostra (${calibrationPolicySummary}), mas a fila #${calibrationReview.run_id} e suas decisoes permanecem visiveis.`
-                            : calibrationPolicyDecision === 'skip'
-                            ? `A epoch #${calibrationReview.quality_epoch_id ?? '-'} nao precisa de revisao manual: ${calibrationPolicySummary}. A decisao ficou registrada sem alterar score ou output.`
-                            : `Politica ${calibrationPolicyDecision === 'sample' ? 'por amostra' : 'obrigatoria'} na epoch #${calibrationReview.quality_epoch_id ?? '-'}. Motivos: ${calibrationPolicySummary}. Prioritarios: ${compact(calibrationReview.priority_count ?? 0)}; controles: ${compact(Number(calibrationReview.positive_control_count ?? 0) + Number(calibrationReview.negative_control_count ?? 0))}.`
-                          : postReleaseView === 'apply'
-                            ? 'Confirmados cujo output atual ainda difere do texto aprovado e precisa de aplicacao protegida.'
-                            : postReleaseView === 'new'
-                              ? 'Segmentos sem equivalente no old, ordenados por score novo.'
-                      : postReleaseView === 'low_score'
-                                ? `Baixo score nao significa erro automaticamente. ${compact(lowScoreEvidenceFlagged)} sinais com evidencia; ${compact(lowScoreLifecycleClosed)} ja estao fechados no lifecycle; ${compact(lowScoreActionable)} permanecem operacionalmente acionaveis; ${compact(lowScoreInformational)} sao informativos. ${qualityBandsLabel}.`
-                                : 'Pendencias operacionais do segment-state: o que ainda nao fechou e precisa explicar o motivo.'}
-                  </p>
-                </div>
-                <Badge tone={diffReview.instrumented || feedbackRows.length ? 'blue' : 'slate'}>
-                  {postReleaseView === 'feedback'
-                    ? feedbackRows.length ? `${feedbackRows.length} ativos` : archivedFeedbackItems.length ? 'fila limpa' : 'nao instrumentado'
-                    : postReleaseView === 'package'
-                      ? packageScoreSummaryLabel
-                    : postReleaseView === 'calibration'
-                      ? calibrationPolicyDecision === 'skip' && hasCompletedCalibrationHistory
-                        ? `fila #${calibrationReview.run_id} - ${compact(calibrationReview.decided_count ?? 0)} decisoes preservadas`
-                        : calibrationPolicyDecision === 'skip'
-                        ? 'dispensada'
-                        : calibrationReview.consumption_status === 'consumed'
-                        ? `fila #${calibrationReview.run_id ?? '-'} - ${compact(calibrationReview.consumed_count ?? 0)} consumidos`
-                        : `fila #${calibrationReview.run_id ?? '-'} - ${compact(calibrationReview.pending_count ?? 0)} pendentes`
-                    : postReleaseView === 'discovery'
-                      ? `fila #${patternDiscovery.run_id ?? '-'} - ${compact(patternDiscovery.family_count ?? 0)} familias`
-                    : postReleaseView === 'proposals'
-                      ? `geracao #${providerProposals.run_id ?? '-'} - ${compact(proposalDraftCount)} rascunhos`
-                    : postReleaseView === 'providers'
-                      ? `${compact(providerHealth.executed_provider_count ?? 0)}/${compact(providerHealth.provider_count ?? 0)} executados - score #${providerHealth.score_run_id ?? '-'}`
-                    : diffReview.old_score_run_id
-                      ? `score #${diffReview.old_score_run_id} -> #${diffReview.score_run_id ?? '-'}`
-                      : `score #${diffReview.score_run_id ?? '-'}`}
-                </Badge>
-              </div>
-              {postReleaseView === 'low_score' ? (
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  <Badge tone={lowScoreActionable ? 'red' : 'emerald'}>Abertos operacionais {compact(lowScoreActionable)}</Badge>
-                  <Badge tone="blue">Evidencias fechadas {compact(lowScoreLifecycleClosed)}</Badge>
-                  <Badge tone="violet">Com lock humano {compact(lowScoreLifecycleLocked)}</Badge>
-                  <Badge tone="red">Defeito explicito {compact(lowScoreCohorts.explicit_text_issue ?? 0)}</Badge>
-                  <Badge tone="amber">Bloqueio estrutural {compact(lowScoreCohorts.structural_block_without_issue ?? 0)}</Badge>
-                  <Badge tone="emerald">Seguro deterministico {compact(lowScoreCohorts.deterministic_safe_but_low_score ?? 0)}</Badge>
-                  <Badge tone="blue">Texto preservado {compact(lowScoreCohorts.unchanged_or_preserved_text ?? 0)}</Badge>
-                  <Badge tone="slate">Sem evidencia {compact(lowScoreUnexplained)}</Badge>
-                </div>
-              ) : null}
-              {postReleaseView === 'discovery' ? (
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  <Badge tone="amber">Novas {compact(patternDiscovery.new_family_count ?? 0)}</Badge>
-                  <Badge tone="blue">Recorrentes {compact(patternDiscovery.recurring_family_count ?? 0)}</Badge>
-                  <Badge tone="emerald">Cobertas {compact(patternDiscovery.covered_family_count ?? 0)}</Badge>
-                  <Badge tone="slate">Em observacao {compact(Number(patternDiscovery.family_count ?? 0) - Number(patternDiscovery.actionable_family_count ?? 0) - Number(patternDiscovery.covered_family_count ?? 0))}</Badge>
-                </div>
-              ) : null}
-              {postReleaseView === 'proposals' ? (
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  <Badge tone={proposalDraftCount ? 'amber' : 'emerald'}>Rascunhos {compact(proposalDraftCount)}</Badge>
-                  <Badge tone="blue">Positivos {compact(providerProposals.positive_case_count ?? 0)}</Badge>
-                  <Badge tone="slate">Negativos {compact(providerProposals.negative_case_count ?? 0)}</Badge>
-                  <Badge tone="emerald">Fronteira {compact(providerProposals.boundary_case_count ?? 0)}</Badge>
-                  <Badge tone="slate">Escrita no output 0</Badge>
-                </div>
-              ) : null}
-              {postReleaseView === 'providers' ? (
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  <Badge tone={providerHealth.status === 'healthy' ? 'emerald' : 'amber'}>Executados {compact(providerHealth.executed_provider_count ?? 0)}/{compact(providerHealth.provider_count ?? 0)}</Badge>
-                  <Badge tone="blue">Inspecionados {compact(providerHealth.inspected_count ?? 0)}</Badge>
-                  <Badge tone={Number(providerHealth.shadow_eligible_count ?? 0) ? 'amber' : 'emerald'}>Elegíveis {compact(providerHealth.shadow_eligible_count ?? 0)}</Badge>
-                  <Badge tone={Number(providerHealth.promotion_ready_count ?? 0) ? 'blue' : 'slate'}>Promoções {compact(providerHealth.promotion_ready_count ?? 0)}</Badge>
-                  <Badge tone={Number(providerHealth.uncovered_actionable_family_count ?? 0) ? 'amber' : 'emerald'}>Sem provedor {compact(providerHealth.uncovered_actionable_family_count ?? 0)}</Badge>
-                </div>
-              ) : null}
-              <div className="mt-3 flex min-w-0 items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => navigateReviewTabs(-1)}
-                  className="grid h-9 w-7 shrink-0 place-items-center rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] text-[var(--dash-muted)] transition hover:-translate-y-0.5 hover:border-cyan-300/50 hover:text-cyan-200 focus:outline-none focus:ring-2 focus:ring-cyan-300/70"
-                  aria-label={`Relatório anterior: ${previousReviewTab.label}`}
-                  title={`Relatório anterior: ${previousReviewTab.label}`}
-                >
-                  <ChevronLeft size={15} />
-                </button>
-                <div
-                  ref={reviewTabsRef}
-                  role="tablist"
-                  aria-label="Relatórios de pós-release"
-                  className="report-tab-strip dashboard-card-scroll flex min-w-0 flex-1 snap-x snap-mandatory flex-nowrap gap-1.5 overflow-x-auto overflow-y-hidden pb-1.5 pt-1.5"
-                >
-                  {reviewTabs.map((tab) => (
+          <div className="flex min-h-0 flex-1">
+            <div className="module-queue-workspace flex min-h-0 w-full flex-1 flex-col border-y border-[var(--dash-border)] py-3">
+              {reviewSyncPendingCount > 0 || reviewSyncFailedCount > 0 ? (
+                <div className="mb-2 flex flex-wrap items-center justify-end gap-1.5">
+                  {reviewSyncPendingCount > 0 ? <Badge tone="blue">sincronizando {reviewSyncPendingCount}</Badge> : null}
+                  {reviewSyncFailedCount > 0 ? (
                     <button
-                      key={tab.id}
                       type="button"
-                      role="tab"
-                      data-review-tab-id={tab.id}
-                      aria-selected={postReleaseView === tab.id}
-                      onClick={() => selectReviewTab(tab.id)}
-                      className={reviewTabClass(tab, postReleaseView === tab.id)}
+                      onClick={retryFailedReviewSync}
+                      className="rounded-full border border-red-300/30 bg-red-500/10 px-2.5 py-1 text-[10px] font-black text-red-200 transition hover:bg-red-500/20"
                     >
-                      {tab.label}
-                      <Badge tone={tab.tone}>{compact(tab.count)}</Badge>
+                      {reviewSyncFailedCount} falhou · tentar novamente
                     </button>
-                  ))}
+                  ) : null}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => navigateReviewTabs(1)}
-                  className="grid h-9 w-7 shrink-0 place-items-center rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] text-[var(--dash-muted)] transition hover:-translate-y-0.5 hover:border-cyan-300/50 hover:text-cyan-200 focus:outline-none focus:ring-2 focus:ring-cyan-300/70"
-                  aria-label={`Próximo relatório: ${nextReviewTab.label}`}
-                  title={`Próximo relatório: ${nextReviewTab.label}`}
-                >
-                  <ChevronRight size={15} />
-                </button>
-              </div>
-              <div className="dashboard-card-scroll mt-2 min-h-0 flex-1 overflow-auto rounded-lg border border-[var(--dash-border)]">
+              ) : null}
+              {effectiveModuleId === 'improvement' ? (
+                <div className="flex min-w-0 items-center justify-between border-b border-[var(--dash-border)] px-2 pb-2 pt-1">
+                  <div>
+                    <p className="text-xs font-black text-[var(--dash-text)]">Fila de aprendizado humano</p>
+                    <p className="mt-0.5 text-[10px] text-[var(--dash-muted)]">
+                      {compact(unifiedBatchRemaining)} de {compact(unifiedBatchSize)} amostras pendentes neste ciclo · {compact(unifiedBatchReviewed)} decisões já incorporadas · máximo de 50 por avaliação.
+                    </p>
+                  </div>
+                  <Badge tone={unifiedBatchRemaining ? 'amber' : 'emerald'}>{compact(unifiedBatchRemaining)} / {compact(unifiedBatchSize)}</Badge>
+                </div>
+              ) : (
+                <div className="flex min-w-0 items-center gap-1">
+                  <div
+                    ref={reviewTabsRef}
+                    role="tablist"
+                    aria-label="Filas de produção"
+                    className="report-tab-strip dashboard-card-scroll flex min-w-0 flex-1 snap-x snap-mandatory flex-nowrap gap-1 overflow-x-auto overflow-y-hidden border-b border-[var(--dash-border)] pb-0 pt-1"
+                  >
+                    {activeReviewTabs.map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        role="tab"
+                        data-review-tab-id={tab.id}
+                        aria-selected={postReleaseView === tab.id}
+                        onClick={() => selectReviewTab(tab.id)}
+                        className={reviewTabClass(tab, postReleaseView === tab.id)}
+                      >
+                        {tab.label}
+                        <Badge tone={tab.tone}>{compact(tab.count)}</Badge>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div
+                ref={reviewContentRef}
+                className="module-list-scroll dashboard-card-scroll mt-2 min-h-0 flex-1 overflow-x-auto overflow-y-scroll border-y border-[var(--dash-border)]"
+              >
                 {postReleaseView === 'feedback' ? (
                   <table className="w-full min-w-[760px] text-center text-xs">
                     <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
@@ -5257,18 +8222,15 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                     </tbody>
                   </table>
                 ) : postReleaseView === 'promotions' || postReleaseView === 'package' ? (
-                  <table className="w-full min-w-[1340px] text-center text-xs">
+                  <table className="w-full min-w-[1080px] text-center text-xs">
                     <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
                       <tr>
                         <th className="px-2 py-2">Segmento</th>
                         <th className="px-2 py-2 text-left">Arquivo / chave</th>
                         <th className="px-2 py-2 text-left">Old</th>
                         <th className="px-2 py-2 text-left">Output</th>
-                        <th className="px-2 py-2">Score old</th>
-                        <th className="px-2 py-2">Score novo</th>
+                        <th className="px-2 py-2">Score</th>
                         <th className="px-2 py-2">Delta</th>
-                        <th className="px-2 py-2">Integridade</th>
-                        <th className="px-2 py-2">Gate</th>
                         <th className="px-2 py-2">Estado</th>
                       </tr>
                     </thead>
@@ -5279,24 +8241,28 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                           <td className="max-w-[220px] truncate px-2 py-2 text-left" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
                           <td className="max-w-[260px] truncate px-2 py-2 text-left" title={item.old_text ?? ''}>{item.old_text ?? '-'}</td>
                           <td className="max-w-[260px] truncate px-2 py-2 text-left" title={item.output_text ?? ''}>{item.output_text ?? '-'}</td>
-                          <td className="px-2 py-2"><Badge tone={scoreTone(segmentOldScore(item))}>{scoreLabel(segmentOldScore(item))}</Badge></td>
-                          <td className="px-2 py-2" title={scoreCellTitle(item)}><Badge tone={scoreTone(segmentNewScore(item))}>{scoreLabel(segmentNewScore(item))}</Badge></td>
+                          <td className="px-2 py-2" title={scoreCellTitle(item)}>
+                            <span className="whitespace-nowrap font-black text-[var(--dash-muted)]">{scoreLabel(segmentOldScore(item))} → </span>
+                            <Badge tone={scoreTone(segmentNewScore(item))}>{scoreLabel(segmentNewScore(item))}</Badge>
+                          </td>
                           <td className="px-2 py-2" title={scoreCellTitle(item)}><Badge tone={scoreDeltaTone(item)}>{scoreDeltaLabel(item)}</Badge></td>
-                          <td className="max-w-[180px] truncate px-2 py-2" title={integrityTitle(item)}><Badge tone={integrityTone(item)}>{integrityLabel(item)}</Badge></td>
-                          <td className="max-w-[170px] truncate px-2 py-2" title={item.promotion_gate ?? ''}>{item.promotion_gate ?? 'nao medido'}</td>
-                          <td className="max-w-[180px] truncate px-2 py-2" title={item.final_state ?? item.score_action ?? ''}>{item.final_state ?? item.score_action ?? 'nao medido'}</td>
+                          <td className="max-w-[230px] px-2 py-2" title={`${integrityTitle(item)}\n${item.promotion_gate ?? ''}\n${item.final_state ?? item.score_action ?? ''}`}>
+                            <Badge tone={integrityTone(item)}>{integrityLabel(item)}</Badge>
+                            <p className="mt-1 truncate text-[10px] text-[var(--dash-muted)]">{item.final_state ?? item.score_action ?? item.promotion_gate ?? 'não medido'}</p>
+                          </td>
                         </tr>
                       )) : (
-                        <tr><td colSpan={10} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">{postReleaseView === 'package' ? 'Nenhuma diferenca entre old e output medida.' : 'Nenhuma promocao contra o old medida.'}</td></tr>
+                        <tr><td colSpan={7} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">{postReleaseView === 'package' ? 'Nenhuma diferença entre old e output medida.' : 'Nenhuma promoção contra o old medida.'}</td></tr>
                       )}
                     </tbody>
                   </table>
                 ) : postReleaseView === 'proposals' ? (
-                  <table className="w-full min-w-[1180px] text-center text-xs">
+                  <table className="w-full min-w-[1320px] text-center text-xs">
                     <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
                       <tr>
                         <th className="px-2 py-2">Prioridade</th>
                         <th className="px-2 py-2 text-left">Proposta</th>
+                        <th className="px-2 py-2">Fila de correção</th>
                         <th className="px-2 py-2">Contexto</th>
                         <th className="px-2 py-2">Familias</th>
                         <th className="px-2 py-2">Segmentos</th>
@@ -5320,18 +8286,19 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                               <p className="font-black">{item.label ?? String(item.issue_type ?? '').replaceAll('_', ' ')}</p>
                               <p className="truncate text-[10px] text-[var(--dash-muted)]">{item.provider_id} - desabilitado</p>
                             </td>
+                            <td className="max-w-[220px] px-2 py-2 font-bold">{item.correction_lane?.label ?? 'Outros padrões confirmados'}</td>
                             <td className="px-2 py-2">{String(item.token_context ?? '-').replaceAll('_', ' ')}</td>
                             <td className="px-2 py-2" title={files.join(', ')}>{compact(item.family_count ?? 0)}</td>
                             <td className="px-2 py-2 font-black">{compact(item.segment_count ?? 0)}</td>
                             <td className="px-2 py-2" title={`${compact(item.positive_case_count ?? 0)} positivos; ${compact(item.negative_case_count ?? 0)} negativos; ${compact(item.boundary_case_count ?? 0)} de fronteira`}>{compact(totalCases)}</td>
-                            <td className="px-2 py-2"><Badge tone="amber">revisao obrigatoria</Badge></td>
+                            <td className="px-2 py-2" title={`${compact(item.human_review?.supports_pattern ?? 0)} confirmações; ${compact(item.human_review?.boundary_case ?? 0)} fronteiras`}><Badge tone="amber">revisao obrigatoria</Badge></td>
                             <td className="max-w-[300px] px-2 py-2 text-left" title={item.evidence_type}>
                               deterministico, idempotente, tokens preservados e gate pairwise
                             </td>
                           </tr>
                         );
                       }) : (
-                        <tr><td colSpan={8} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">Nenhuma familia acionavel sem cobertura; nenhuma proposta foi criada nesta epoch.</td></tr>
+                        <tr><td colSpan={9} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">Nenhum padrão confirmado aguarda uma nova fila de correção nesta epoch.</td></tr>
                       )}
                     </tbody>
                   </table>
@@ -5376,17 +8343,15 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                     </tbody>
                   </table>
                 ) : postReleaseView === 'discovery' ? (
-                  <table className="w-full min-w-[1080px] text-center text-xs">
+                  <table className="w-full min-w-[980px] text-center text-xs">
                     <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
                       <tr>
-                        <th className="px-2 py-2">Prioridade</th>
-                        <th className="px-2 py-2">Familia</th>
-                        <th className="px-2 py-2">Contexto</th>
-                        <th className="px-2 py-2">Area</th>
-                        <th className="px-2 py-2">Segmentos</th>
-                        <th className="px-2 py-2">Score medio</th>
-                        <th className="px-2 py-2">Estado</th>
-                        <th className="px-2 py-2">Provedor</th>
+                        <th className="px-3 py-2 text-left">Falha descoberta</th>
+                        <th className="px-3 py-2 text-left">Onde ocorre</th>
+                        <th className="px-3 py-2">Evidências</th>
+                        <th className="px-3 py-2">Score</th>
+                        <th className="px-3 py-2 text-left">Correção</th>
+                        <th className="px-3 py-2">Estado</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -5408,93 +8373,1298 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                               ? 'blue'
                               : 'slate';
                         const sample = Array.isArray(item.samples) ? item.samples[0] : null;
+                        const routingLabels = {
+                          ready_for_correction: 'pronta para correção',
+                          ready_with_boundary_guard: 'pronta com fronteira',
+                          rejected_by_human_evidence: 'rejeitada pela evidência',
+                          boundary_only: 'somente fronteira',
+                          awaiting_review: 'aguardando decisão',
+                        };
+                        const routingTone = item.routing_status === 'ready_for_correction'
+                          ? 'emerald'
+                          : item.routing_status === 'ready_with_boundary_guard' || item.routing_status === 'boundary_only'
+                            ? 'amber'
+                            : item.routing_status === 'rejected_by_human_evidence'
+                              ? 'red'
+                              : 'blue';
                         return (
                           <tr key={`pattern-${item.family_key}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
-                            <td className="px-2 py-2"><Badge tone={Number(item.priority ?? 0) >= 75 ? 'red' : Number(item.priority ?? 0) >= 60 ? 'amber' : 'blue'}>{Number(item.priority ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</Badge></td>
-                            <td className="max-w-[240px] px-2 py-2 font-bold" title={sample ? `${sample.relative_path} :: ${sample.source_key}\n${sample.candidate_text}` : item.issue_type}>{String(item.issue_type ?? 'nao medido').replaceAll('_', ' ')}</td>
-                            <td className="px-2 py-2">{String(item.token_context ?? '-').replaceAll('_', ' ')}</td>
-                            <td className="px-2 py-2">{item.file_family ?? '-'}</td>
-                            <td className="px-2 py-2 font-black" title={`${compact(item.closed_segment_count ?? 0)} fechados no lifecycle`}>
+                            <td className="max-w-[260px] px-3 py-2 text-left" title={sample ? `${sample.relative_path} :: ${sample.source_key}\n${sample.candidate_text}` : item.issue_type}>
+                              <p className="font-black">{String(item.issue_type ?? 'não medido').replaceAll('_', ' ')}</p>
+                              <p className="mt-0.5 text-[10px] text-[var(--dash-muted)]">prioridade {Number(item.priority ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</p>
+                            </td>
+                            <td className="max-w-[240px] px-3 py-2 text-left">
+                              <p className="font-bold">{String(item.token_context ?? '-').replaceAll('_', ' ')}</p>
+                              <p className="mt-0.5 truncate text-[10px] text-[var(--dash-muted)]" title={item.file_family ?? ''}>{item.file_family ?? '-'}</p>
+                            </td>
+                            <td className="px-3 py-2 font-black" title={`${compact(item.closed_segment_count ?? 0)} fechados no lifecycle`}>
                               {item.operational_segment_count === null || item.operational_segment_count === undefined
                                 ? compact(item.segment_count ?? 0)
-                                : `${compact(item.operational_segment_count)} ativos / ${compact(item.segment_count ?? 0)} evidencias`}
+                                : `${compact(item.operational_segment_count)} / ${compact(item.segment_count ?? 0)}`}
                             </td>
-                            <td className="px-2 py-2"><Badge tone={scoreTone(item.average_score)}>{scoreLabel(item.average_score)}</Badge></td>
-                            <td className="px-2 py-2"><Badge tone={statusTone}>{statusLabels[item.status] ?? String(item.status ?? '-').replaceAll('_', ' ')}</Badge></td>
-                            <td className="max-w-[210px] px-2 py-2" title={item.evidence_type ?? ''}>{item.provider_id ? String(item.provider_id).replaceAll('_', ' ') : '-'}</td>
+                            <td className="px-3 py-2"><Badge tone={scoreTone(item.average_score)}>{scoreLabel(item.average_score)}</Badge></td>
+                            <td className="max-w-[240px] px-3 py-2 text-left font-bold">{item.correction_lane?.label ?? 'Outros padrões confirmados'}</td>
+                            <td className="px-3 py-2" title={`${compact(item.human_review?.reviewed_count ?? 0)} decisão(ões) humanas`}><Badge tone={routingTone}>{routingLabels[item.routing_status] ?? statusLabels[item.status] ?? String(item.status ?? '-').replaceAll('_', ' ')}</Badge></td>
                           </tr>
                         );
                       }) : (
-                        <tr><td colSpan={8} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">A descoberta ainda nao foi materializada para a epoch atual.</td></tr>
+                        <tr><td colSpan={6} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">A descoberta ainda não foi materializada para a epoch atual.</td></tr>
                       )}
                     </tbody>
                   </table>
-                ) : postReleaseView === 'calibration' ? (
-                  <table className="w-full min-w-[1380px] text-center text-xs">
-                    <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
-                      <tr>
-                        <th className="px-2 py-2">Segmento</th>
-                        <th className="px-2 py-2">Fila</th>
-                        <th className="px-2 py-2 text-left">Arquivo / chave</th>
-                        <th className="px-2 py-2 text-left">Texto A</th>
-                        <th className="px-2 py-2 text-left">Texto B</th>
-                        <th className="px-2 py-2">Score A</th>
-                        <th className="px-2 py-2">Score B</th>
-                        <th className="px-2 py-2">Delta</th>
-                        <th className="px-2 py-2">Decisao humana</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {calibrationReviewSegments.length ? calibrationReviewSegments.map((item) => (
-                        <tr key={`calibration-${item.id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
-                          <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
-                          <td className="px-2 py-2">
-                            <Badge tone={item.is_priority ? 'amber' : item.is_control ? 'blue' : 'slate'}>
-                              {item.is_priority ? 'prioridade' : item.is_control ? 'controle' : 'revisao'}
-                            </Badge>
-                          </td>
-                          <td className="max-w-[220px] truncate px-2 py-2 text-left" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
-                          <td className="max-w-[260px] truncate px-2 py-2 text-left" title={item.baseline_text ?? ''}>{item.baseline_text ?? '-'}</td>
-                          <td className="max-w-[260px] truncate px-2 py-2 text-left" title={item.candidate_text ?? ''}>{item.candidate_text ?? '-'}</td>
-                          <td className="px-2 py-2"><Badge tone={scoreTone(item.baseline_score_raw)}>{scoreLabel(item.baseline_score_raw)}</Badge></td>
-                          <td className="px-2 py-2"><Badge tone={scoreTone(item.candidate_score_raw)}>{scoreLabel(item.candidate_score_raw)}</Badge></td>
-                          <td className="px-2 py-2"><Badge tone={scoreDeltaTone(item)}>{scoreDeltaLabel(item)}</Badge></td>
-                          <td className="px-2 py-2">
-                            {item.review_status === 'decided' ? (
-                              <Badge tone={item.reviewer_label === 'invalid_pair' ? 'red' : 'emerald'}>{item.reviewer_label ?? 'decidido'}</Badge>
-                            ) : (
-                              <div className="flex min-w-[250px] justify-center gap-1">
-                                {[
-                                  ['baseline_preferred', 'A', 'Selecionar o texto A como melhor.'],
-                                  ['candidate_preferred', 'B', 'Selecionar o texto B como melhor.'],
-                                  ['equivalent', 'Equivalentes', 'Marcar os textos A e B como equivalentes.'],
-                                  ['invalid_pair', 'Invalido', 'Marcar este par como invalido.'],
-                                ].map(([label, buttonLabel, description]) => (
-                                  <button
-                                    key={label}
-                                    type="button"
-                                    aria-label={description}
-                                    data-tooltip-title={buttonLabel === 'A' || buttonLabel === 'B' ? `Preferir ${buttonLabel}` : buttonLabel}
-                                    data-tooltip-description={description}
-                                    disabled={calibrationSubmittingItemId === item.id}
-                                    onClick={() => submitCalibrationReview(item.id, label, !item.is_control)}
+                ) : postReleaseView === 'calibration' || postReleaseView === 'audit' ? (
+                  <div className="min-w-[1180px]">
+                    {calibrationMode === 'unified' ? (
+                      <div>
+                        <table className="w-full table-fixed min-w-[1120px] text-center text-xs">
+                          <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                            <tr>
+                              <th className="w-[7%] px-2 py-2">Motivo</th>
+                              <th className="w-[7%] px-2 py-2">Segmento</th>
+                              <th className="w-[15%] px-2 py-2 text-left">Arquivo / chave</th>
+                              <th className="w-[21%] px-2 py-2 text-left">Texto principal</th>
+                              <th className="w-[16%] px-2 py-2">Evidência</th>
+                              <th className="w-[10%] px-2 py-2">Risco</th>
+                              <th className="w-[7%] px-2 py-2">Score efetivo</th>
+                              <th className="w-[17%] px-2 py-2">Estado</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {visibleUnifiedCalibrationItems.length ? visibleUnifiedCalibrationItems.map((item) => (
+                              <tr
+                                key={item.key}
+                                tabIndex={0}
+                                aria-label={`Abrir segmento ${item.segmentId ?? ''}`}
+                                className="cursor-pointer border-t border-[var(--dash-border)] text-[var(--dash-text)] transition hover:bg-cyan-400/[0.045] focus-visible:bg-cyan-400/[0.08] focus-visible:outline-none"
+                                onClick={() => openUnifiedFocusedReview(item)}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter' || event.key === ' ') {
+                                    event.preventDefault();
+                                    openUnifiedFocusedReview(item);
+                                  }
+                                }}
+                              >
+                                <td className="px-2 py-2"><Badge tone={item.queueMeta.tone}>{item.queueMeta.shortLabel}</Badge></td>
+                                <td className="px-2 py-2 font-black text-blue-200">{item.segmentId ?? '-'}</td>
+                                <td className="max-w-[270px] truncate px-2 py-2 text-left" title={`${item.relativePath} :: ${item.sourceKey}`}>
+                                  {item.relativePath || '-'} :: <span className="font-bold">{item.sourceKey || '-'}</span>
+                                </td>
+                                <td className="max-w-[400px] truncate px-2 py-2 text-left" title={item.candidateText || item.outputText || ''}>{item.candidateText || item.outputText || 'Sem texto materializado'}</td>
+                                <td className="max-w-[260px] px-2 py-2">
+                                  <div className="flex flex-wrap justify-center gap-1">
+                                    {(item.patterns.length ? item.patterns : item.evidence).slice(0, 3).map((value, index) => (
+                                      <Badge key={`${item.key}-evidence-${index}`} tone="slate">{String(value).replaceAll('_', ' ')}</Badge>
+                                    ))}
+                                  </div>
+                                </td>
+                                <td className="max-w-[150px] truncate px-2 py-2" title={String(item.risk)}>{String(item.risk).replaceAll('_', ' ')}</td>
+                                <td className="px-2 py-2" title={item.rawScore !== null && item.rawScore !== undefined && item.rawScore !== item.score
+                                  ? `Score bruto ${scoreLabel(item.rawScore)}; efetivo ${scoreLabel(item.score)} (${String(item.scoreSource).replaceAll('_', ' ')}).`
+                                  : `Score ${scoreLabel(item.score)} (${String(item.scoreSource).replaceAll('_', ' ')}).`}>
+                                  <Badge tone={scoreTone(item.score)}>{scoreLabel(item.score)}</Badge>
+                                </td>
+                                <td className="px-2 py-2">
+                                  <Badge tone={item.queue === 'promotion' ? 'emerald' : item.reviewStatus === 'reviewed' ? 'emerald' : item.canDecide ? 'amber' : 'slate'}>
+                                    {item.queue === 'promotion' ? 'pronta para produção' : item.reviewStatus === 'reviewed' ? 'revisado' : item.canDecide ? 'decisão necessária' : 'somente leitura'}
+                                  </Badge>
+                                </td>
+                              </tr>
+                            )) : (
+                              <tr><td colSpan={8} className="px-3 py-6 text-center font-bold text-[var(--dash-muted)]">Nenhum item pendente nesta lista.</td></tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : calibrationMode === 'pairwise' ? (
+                      <table className="w-full min-w-[1380px] text-center text-xs">
+                        <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                          <tr>
+                            <th className="px-2 py-2">Segmento</th>
+                            <th className="px-2 py-2">Fila</th>
+                            <th className="px-2 py-2 text-left">Arquivo / chave</th>
+                            <th className="px-2 py-2 text-left">Texto A</th>
+                            <th className="px-2 py-2 text-left">Texto B</th>
+                            <th className="px-2 py-2">Score A</th>
+                            <th className="px-2 py-2">Score B</th>
+                            <th className="px-2 py-2">Delta</th>
+                            <th className="px-2 py-2">Decisão humana</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {calibrationReviewSegments.length ? calibrationReviewSegments.map((item) => (
+                            <tr key={`calibration-${item.id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
+                              <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
+                              <td className="px-2 py-2">
+                                <Badge tone={item.is_priority ? 'amber' : item.is_control ? 'blue' : 'slate'}>
+                                  {item.is_priority ? 'prioridade' : item.is_control ? 'controle' : 'revisão'}
+                                </Badge>
+                              </td>
+                              <td className="max-w-[220px] truncate px-2 py-2 text-left" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
+                              <td className="max-w-[260px] truncate px-2 py-2 text-left" title={item.baseline_text ?? ''}>{item.baseline_text ?? '-'}</td>
+                              <td className="max-w-[260px] truncate px-2 py-2 text-left" title={item.candidate_text ?? ''}>{item.candidate_text ?? '-'}</td>
+                              <td className="px-2 py-2"><Badge tone={scoreTone(item.baseline_score_raw)}>{scoreLabel(item.baseline_score_raw)}</Badge></td>
+                              <td className="px-2 py-2"><Badge tone={scoreTone(item.candidate_score_raw)}>{scoreLabel(item.candidate_score_raw)}</Badge></td>
+                              <td className="px-2 py-2"><Badge tone={scoreDeltaTone(item)}>{scoreDeltaLabel(item)}</Badge></td>
+                              <td className="px-2 py-2">
+                                {item.review_status === 'decided' ? (
+                                  <Badge tone={item.reviewer_label === 'invalid_pair' ? 'red' : 'emerald'}>{item.reviewer_label ?? 'decidido'}</Badge>
+                                ) : (
+                                  <div className="flex min-w-[250px] justify-center gap-1">
+                                    {[
+                                      ['baseline_preferred', 'A', 'Selecionar o texto A como melhor.'],
+                                      ['candidate_preferred', 'B', 'Selecionar o texto B como melhor.'],
+                                      ['equivalent', 'Equivalentes', 'Marcar os textos A e B como equivalentes.'],
+                                      ['invalid_pair', 'Inválido', 'Marcar este par como inválido.'],
+                                    ].map(([label, buttonLabel, description]) => (
+                                      <button
+                                        key={label}
+                                        type="button"
+                                        aria-label={description}
+                                        data-tooltip-title={buttonLabel === 'A' || buttonLabel === 'B' ? `Preferir ${buttonLabel}` : buttonLabel}
+                                        data-tooltip-description={description}
+                                        disabled={calibrationSubmittingItemId === item.id}
+                                        onClick={() => submitCalibrationReview(item.id, label, !item.is_control)}
+                                        className={cn(
+                                          'rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 font-black text-[var(--dash-muted)] transition hover:border-blue-300/45 hover:text-blue-100 disabled:opacity-40',
+                                          (buttonLabel === 'A' || buttonLabel === 'B') && 'min-w-10'
+                                        )}
+                                      >
+                                        {buttonLabel}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          )) : (
+                            <tr><td colSpan={9} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">{calibrationPolicyDecision === 'skip' ? `Calibração A/B dispensada: ${calibrationPolicySummary}.` : 'Nenhuma fila de calibração A/B materializada para a epoch atual.'}</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    ) : calibrationMode === 'repair' ? (
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2 border-b border-[var(--dash-border)] bg-amber-400/[0.035] px-3 py-2">
+                          <Badge tone="amber">{compact(esHelperRepair.total_count ?? 0)} para triagem</Badge>
+                          <Badge tone="red">{compact(esHelperRepair.high_risk_count ?? 0)} com issue alta</Badge>
+                          <Badge tone="blue">{compact(esHelperRepair.medium_risk_count ?? 0)} com issue média</Badge>
+                          <Badge tone="slate">somente leitura</Badge>
+                          {esHelperRepairDryRun.available ? (
+                            <>
+                              <Badge tone="emerald">{compact(esHelperRepairDryRun.proposal_ready_count ?? 0)} propostas dry-run</Badge>
+                              <Badge tone={Number(esHelperRepairDryRun.blocked_count ?? 0) ? 'amber' : 'emerald'}>
+                                {compact(esHelperRepairDryRun.blocked_count ?? 0)} bloqueado
+                              </Badge>
+                              <Badge tone="slate">apply {compact(esHelperRepairDryRun.apply_count ?? 0)}</Badge>
+                            </>
+                          ) : (
+                            <Badge tone="slate">dry-run não executado</Badge>
+                          )}
+                          <select
+                            aria-label="Filtrar helper da fila de reparo"
+                            value={esHelperRepairHelperFilter}
+                            onChange={(event) => setEsHelperRepairHelperFilter(event.target.value)}
+                            className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)]"
+                          >
+                            <option value="all">
+                              Todos os helpers ({compact(esHelperRepair.total_count ?? 0)})
+                            </option>
+                            {Object.entries(esHelperRepair.helper_counts ?? {}).map(([helper, count]) => (
+                              <option key={helper} value={helper}>
+                                {helper} ({compact(count)})
+                              </option>
+                            ))}
+                          </select>
+                          <select
+                            aria-label="Filtrar rota da fila de reparo"
+                            value={esHelperRepairRouteFilter}
+                            onChange={(event) => setEsHelperRepairRouteFilter(event.target.value)}
+                            className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)]"
+                          >
+                            <option value="all">
+                              Todas as rotas ({compact(esHelperRepair.total_count ?? 0)})
+                            </option>
+                            {Object.entries(esHelperRepair.route_counts ?? {}).map(([route, count]) => (
+                              <option key={route} value={route}>
+                                {esHelperRepairRouteLabels[route] ?? route.replaceAll('_', ' ')} ({compact(count)})
+                              </option>
+                            ))}
+                          </select>
+                          <Badge tone="slate">{compact(visibleEsHelperRepairItems.length)} visíveis</Badge>
+                          <span className="text-[10px] text-[var(--dash-muted)]">
+                            Escopo: contratos com ES_AlAla, ES_DelDela ou ES_ElLa; saída fechada, atual e com issue reproduzida no score.
+                          </span>
+                        </div>
+                        <table className="w-full min-w-[2100px] text-center text-xs">
+                          <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                            <tr>
+                              <th className="px-2 py-2">Segmento</th>
+                              <th className="px-2 py-2">Prioridade</th>
+                              <th className="px-2 py-2">Helper</th>
+                              <th className="px-2 py-2">Rota</th>
+                              <th className="px-2 py-2 text-left">Arquivo / chave</th>
+                              <th className="px-2 py-2 text-left">Inglês</th>
+                              <th className="px-2 py-2 text-left">Saída atual</th>
+                              <th className="px-2 py-2 text-left">Proposta dry-run</th>
+                              <th className="px-2 py-2 text-left">Evidência</th>
+                              <th className="px-2 py-2">Dry-run</th>
+                              <th className="px-2 py-2">Score</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {visibleEsHelperRepairItems.length ? visibleEsHelperRepairItems.map((item) => {
+                              const issues = Array.isArray(item.detected_issues) ? item.detected_issues : [];
+                              const helpers = Array.isArray(item.repair_helpers) ? item.repair_helpers : [];
+                              const repairDryRun = item.repair_dry_run ?? item.literal_dry_run ?? null;
+                              const repairDryRunBlockers = Array.isArray(repairDryRun?.blockers)
+                                ? repairDryRun.blockers
+                                : [];
+                              return (
+                                <tr key={`es-helper-repair-${item.segment_id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
+                                  <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
+                                  <td className="px-2 py-2">
+                                    <Badge tone={item.repair_priority === 'high' ? 'red' : 'amber'}>
+                                      {item.repair_priority === 'high' ? 'alta' : 'média'}
+                                    </Badge>
+                                  </td>
+                                  <td className="px-2 py-2">
+                                    <div className="flex min-w-[120px] flex-wrap justify-center gap-1">
+                                      {helpers.map((helper) => <Badge key={helper} tone="blue">{helper}</Badge>)}
+                                    </div>
+                                  </td>
+                                  <td className="px-2 py-2">
+                                    <Badge tone={item.repair_route === 'gender_structure' ? 'amber' : item.repair_route === 'mixed' ? 'red' : 'blue'}>
+                                      {item.repair_route_label ?? esHelperRepairRouteLabels[item.repair_route] ?? String(item.repair_route ?? 'revisão').replaceAll('_', ' ')}
+                                    </Badge>
+                                  </td>
+                                  <td className="max-w-[250px] truncate px-2 py-2 text-left" title={`${item.relative_path} :: ${item.source_key}`}>
+                                    {item.relative_path} :: <span className="font-bold">{item.source_key}</span>
+                                  </td>
+                                  <td className="max-w-[280px] truncate px-2 py-2 text-left" title={item.english_text ?? ''}>{item.english_text ?? '-'}</td>
+                                  <td className="max-w-[370px] truncate px-2 py-2 text-left" title={item.output_text ?? ''}>{item.output_text ?? '-'}</td>
+                                  <td
+                                    className="max-w-[420px] truncate px-2 py-2 text-left"
+                                    title={repairDryRun?.candidate_text ?? ''}
+                                  >
+                                    {repairDryRun?.lane === 'proposal_ready'
+                                      ? repairDryRun.candidate_text
+                                      : repairDryRun
+                                        ? 'Sem alteração segura'
+                                        : '-'}
+                                  </td>
+                                  <td className="max-w-[320px] px-2 py-2 text-left">
+                                    <div className="flex flex-wrap gap-1">
+                                      {issues.map((issue, issueIndex) => {
+                                        const matches = Array.isArray(issue.matches) ? issue.matches.filter(Boolean) : [];
+                                        const issueLabel = issue.label ?? esHelperRepairIssueLabels[issue.code] ?? String(issue.code ?? 'issue').replaceAll('_', ' ');
+                                        const description = matches.length
+                                          ? `${issueLabel}: ${matches.join(', ')}`
+                                          : issue.message ?? issueLabel;
+                                        return (
+                                          <Badge
+                                            key={`${item.segment_id}-${issue.code}-${issueIndex}`}
+                                            tone={issue.severity === 'high' ? 'red' : 'amber'}
+                                            title={description}
+                                          >
+                                            {issueLabel}{matches.length ? ` · ${matches.join(', ')}` : ''}
+                                          </Badge>
+                                        );
+                                      })}
+                                    </div>
+                                  </td>
+                                  <td className="px-2 py-2">
+                                    {repairDryRun?.lane === 'proposal_ready' ? (
+                                      <div className="flex min-w-[150px] flex-wrap justify-center gap-1">
+                                        <Badge tone="emerald">proposta pronta</Badge>
+                                        <Badge tone="slate">sem apply</Badge>
+                                      </div>
+                                    ) : repairDryRun ? (
+                                      <div
+                                        className="flex min-w-[170px] flex-wrap justify-center gap-1"
+                                        title={repairDryRunBlockers
+                                          .map((blocker) => esHelperRepairDryRunBlockerLabels[blocker] ?? blocker.replaceAll('_', ' '))
+                                          .join('; ')}
+                                      >
+                                        <Badge tone="amber">bloqueado</Badge>
+                                        {repairDryRunBlockers.map((blocker) => (
+                                          <Badge key={`${item.segment_id}-${blocker}`} tone="slate">
+                                            {esHelperRepairDryRunBlockerLabels[blocker] ?? blocker.replaceAll('_', ' ')}
+                                          </Badge>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <Badge tone="slate">sem dry-run materializado</Badge>
+                                    )}
+                                  </td>
+                                  <td className="px-2 py-2">
+                                    <Badge tone={scoreTone(item.model_safe_probability)}>{scoreLabel(item.model_safe_probability)}</Badge>
+                                  </td>
+                                </tr>
+                              );
+                            }) : (
+                              <tr><td colSpan={11} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">Nenhum reparo corresponde aos filtros atuais.</td></tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : calibrationMode === 'mojibake' ? (
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2 border-b border-[var(--dash-border)] bg-emerald-400/[0.025] px-3 py-2">
+                          <Badge tone="violet">shadow #{mojibakeLexiconReview.shadow_run_id ?? '-'}</Badge>
+                          <Badge tone="blue">{compact(mojibakeLexiconReview.record_count ?? 0)} sinais</Badge>
+                          <Badge tone="amber">{compact(pendingMojibakeLexiconCount)} pendentes</Badge>
+                          <Badge tone="emerald">{compact(mojibakeLexiconReview.reviewed_count ?? 0)} revisados</Badge>
+                          <Badge tone="emerald">{compact(mojibakeLexiconReview.complete_suggestion_count ?? 0)} completas</Badge>
+                          <Badge tone="amber">{compact(mojibakeLexiconReview.partial_suggestion_count ?? 0)} parciais</Badge>
+                          <Badge tone="blue">{compact(mojibakeLexiconReview.unresolved_count ?? 0)} sem proposta</Badge>
+                          <Badge tone="violet">{compact(mojibakeLexiconReview.memory_supported_segment_count ?? 0)} apoiados pela memória</Badge>
+                          <Badge tone="violet">{compact(mojibakeLexiconReview.memory_supported_replacement_count ?? 0)} trocas supervisionadas</Badge>
+                          <Badge tone="slate">{compact(mojibakeLexiconReview.human_locked_count ?? 0)} com lock</Badge>
+                          <Badge tone={mojibakeLexiconReview.is_current_score_run ? 'emerald' : 'amber'}>
+                            {mojibakeLexiconReview.is_current_score_run ? 'score atual' : 'snapshot anterior'}
+                          </Badge>
+                          <div className="ml-auto flex rounded-xl border border-[var(--dash-border)] bg-[var(--dash-soft)] p-1">
+                            <button
+                              type="button"
+                              onClick={() => setMojibakeReviewView('segments')}
+                              className={cn(
+                                'rounded-lg px-3 py-1 text-[10px] font-black transition',
+                                mojibakeReviewView === 'segments' ? 'bg-blue-400/20 text-blue-100' : 'text-[var(--dash-muted)]'
+                              )}
+                            >
+                              Segmentos
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setMojibakeReviewView('patterns')}
+                              className={cn(
+                                'rounded-lg px-3 py-1 text-[10px] font-black transition',
+                                mojibakeReviewView === 'patterns' ? 'bg-violet-400/20 text-violet-100' : 'text-[var(--dash-muted)]'
+                              )}
+                            >
+                              Padrões de fronteira · {compact(mojibakeLexiconReview.boundary_pattern_pending_count ?? 0)}
+                            </button>
+                          </div>
+                          <select
+                            aria-label="Filtrar status da revisão Unicode"
+                            value={mojibakeStatusFilter}
+                            onChange={(event) => setMojibakeStatusFilter(event.target.value)}
+                            className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)]"
+                          >
+                            <option value="pending">Somente pendentes</option>
+                            <option value="reviewed">Somente revisados</option>
+                            <option value="all">Todos os sinais</option>
+                          </select>
+                          <select
+                            aria-label="Filtrar família de evidência Unicode"
+                            value={mojibakeFamilyFilter}
+                            onChange={(event) => setMojibakeFamilyFilter(event.target.value)}
+                            className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)]"
+                          >
+                            <option value="all">Todas as famílias</option>
+                            {Object.entries(mojibakeFamilyMeta).map(([family, meta]) => (
+                              <option key={family} value={family}>
+                                {meta.label} ({compact(mojibakeLexiconReview.family_counts?.[family] ?? 0)})
+                              </option>
+                            ))}
+                          </select>
+                          <select
+                            aria-label="Filtrar padrão Unicode"
+                            value={mojibakePatternFilter}
+                            onChange={(event) => setMojibakePatternFilter(event.target.value)}
+                            className="max-w-[280px] rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)]"
+                          >
+                            <option value="all">Todos os padrões</option>
+                            {Object.entries(mojibakeLexiconReview.pattern_counts ?? {}).map(([pattern, count]) => (
+                              <option key={pattern} value={pattern}>{pattern} ({compact(count)})</option>
+                            ))}
+                          </select>
+                          <select
+                            aria-label="Filtrar origem da proposta Unicode"
+                            value={mojibakeSupportFilter}
+                            onChange={(event) => setMojibakeSupportFilter(event.target.value)}
+                            className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)]"
+                          >
+                            <option value="all">Todas as origens</option>
+                            <option value="memory">Memória supervisionada</option>
+                            <option value="heuristic">Somente heurística</option>
+                          </select>
+                          <input
+                            type="search"
+                            aria-label="Buscar sinal Unicode"
+                            value={mojibakeSearchFilter}
+                            onChange={(event) => setMojibakeSearchFilter(event.target.value)}
+                            placeholder="Buscar segmento, chave ou texto…"
+                            className="w-64 rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)] placeholder:text-[var(--dash-muted)]"
+                          />
+                          <Badge tone="slate">{compact(visibleMojibakeLexiconItems.length)} visíveis</Badge>
+                          <span className="text-[10px] text-[var(--dash-muted)]">
+                            Revisão supervisionada por segmento. Nenhuma decisão desta fila escreve no output, apply ou lifecycle.
+                          </span>
+                        </div>
+                        {mojibakeReviewView === 'patterns' ? (
+                          <div className="border-b border-[var(--dash-border)] bg-violet-400/[0.025]">
+                            <div className="flex flex-wrap items-center gap-2 border-b border-[var(--dash-border)] px-3 py-2">
+                              <Badge tone="violet">{compact(mojibakeLexiconReview.boundary_pattern_count ?? 0)} padrões</Badge>
+                              <Badge tone="amber">{compact(mojibakeLexiconReview.boundary_pattern_pending_count ?? 0)} pendentes</Badge>
+                              <Badge tone="emerald">{compact(mojibakeLexiconReview.boundary_pattern_reviewed_count ?? 0)} revisados</Badge>
+                              <Badge tone="blue">{compact(mojibakeLexiconReview.boundary_pattern_occurrence_count ?? 0)} ocorrências</Badge>
+                              <select
+                                aria-label="Filtrar status dos padrões de fronteira"
+                                value={mojibakeBoundaryStatusFilter}
+                                onChange={(event) => setMojibakeBoundaryStatusFilter(event.target.value)}
+                                className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)]"
+                              >
+                                <option value="pending">Somente pendentes</option>
+                                <option value="reviewed">Somente revisados</option>
+                                <option value="all">Todos os padrões</option>
+                              </select>
+                              <input
+                                type="search"
+                                aria-label="Buscar padrão de fronteira"
+                                value={mojibakeBoundarySearchFilter}
+                                onChange={(event) => setMojibakeBoundarySearchFilter(event.target.value)}
+                                placeholder="Buscar padrão ou candidato…"
+                                className="w-56 rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)] placeholder:text-[var(--dash-muted)]"
+                              />
+                              <Badge tone="slate">{compact(visibleMojibakeBoundaryPatterns.length)} visíveis</Badge>
+                              <span className="text-[10px] text-[var(--dash-muted)]">
+                                Somente alternativas Unicode acentuadas são exibidas. A decisão alimenta o próximo shadow v4 sem escrita operacional.
+                              </span>
+                            </div>
+                            <div className="grid gap-2 p-2">
+                              {visibleMojibakeBoundaryPatterns.length ? visibleMojibakeBoundaryPatterns.map((group) => {
+                                const decisionMeta = mojibakeBoundaryDecisionMeta[group.decision];
+                                const alternatives = Array.isArray(group.alternatives) ? group.alternatives : [];
+                                const examples = Array.isArray(group.examples) ? group.examples : [];
+                                const contextFamilies = Object.entries(group.context_family_counts ?? {});
+                                const submitting = mojibakeSubmittingPattern === group.normalized_pattern;
+                                return (
+                                  <details
+                                    key={`mojibake-boundary-${group.normalized_pattern}`}
                                     className={cn(
-                                      'rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 font-black text-[var(--dash-muted)] transition hover:border-blue-300/45 hover:text-blue-100 disabled:opacity-40',
-                                      (buttonLabel === 'A' || buttonLabel === 'B') && 'min-w-10'
+                                      'group rounded-xl border bg-[var(--dash-card)]',
+                                      group.review_status === 'reviewed'
+                                        ? 'border-emerald-300/25 bg-emerald-400/[0.035]'
+                                        : 'border-[var(--dash-border)]'
                                     )}
                                   >
-                                    {buttonLabel}
-                                  </button>
-                                ))}
-                              </div>
+                                    <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3 px-3 py-2">
+                                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                        <span className="font-black text-[var(--dash-text)]">{group.display_pattern}</span>
+                                        <Badge tone={group.review_status === 'reviewed' ? 'emerald' : 'amber'}>
+                                          {group.review_status === 'reviewed' ? 'revisado' : 'aguardando revisão'}
+                                        </Badge>
+                                        <Badge tone="blue">{compact(group.segment_count ?? 0)} segmentos</Badge>
+                                        <Badge tone="slate">{compact(group.occurrence_count ?? 0)} ocorrências</Badge>
+                                         {group.resolved_by_pattern_count ? <Badge tone="violet">{compact(group.resolved_by_pattern_count)} resolvidas pelo padrão</Badge> : null}
+                                         {contextFamilies.map(([family, count]) => (
+                                           <Badge key={`${group.normalized_pattern}-${family}`} tone="slate">
+                                             {mojibakeContextFamilyLabels[family] ?? family} · {compact(count)}
+                                           </Badge>
+                                         ))}
+                                         {decisionMeta ? <Badge tone={decisionMeta.tone}>{decisionMeta.label}{group.canonical_replacement ? ` · ${group.canonical_replacement}` : ''}</Badge> : null}
+                                      </div>
+                                      <span className="text-[10px] font-black text-[var(--dash-muted)] group-open:rotate-180">⌄</span>
+                                    </summary>
+                                    <div className="border-t border-[var(--dash-border)] px-3 py-2">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="text-[10px] font-black uppercase tracking-wide text-[var(--dash-muted)]">Alternativas acentuadas do corpus</span>
+                                        {alternatives.slice(0, 6).map((alternative) => (
+                                          <button
+                                            key={`${group.normalized_pattern}-${alternative.text}`}
+                                            type="button"
+                                            disabled={submitting}
+                                            onClick={() => submitMojibakeBoundaryPatternReview(group, 'canonical_replacement', alternative.text)}
+                                            className={cn(
+                                              'rounded-lg border px-2 py-1 text-[10px] font-black transition disabled:opacity-40',
+                                              group.decision === 'canonical_replacement' && group.canonical_replacement === alternative.text
+                                                ? 'border-emerald-300/60 bg-emerald-400/15 text-emerald-100'
+                                                : 'border-[var(--dash-border)] text-[var(--dash-text)] hover:border-emerald-300/45'
+                                            )}
+                                          >
+                                            {alternative.text} · {compact(alternative.corpus_support ?? 0)}
+                                          </button>
+                                        ))}
+                                        {Number(group.diagnostic_candidate_count ?? 0) > alternatives.length ? (
+                                          <Badge tone="slate">
+                                            {compact(Number(group.diagnostic_candidate_count ?? 0) - alternatives.length)} alternativas diagnósticas ocultas
+                                          </Badge>
+                                        ) : null}
+                                        <button
+                                          type="button"
+                                          disabled={submitting}
+                                          onClick={() => submitMojibakeBoundaryPatternReview(group, 'valid_punctuation')}
+                                          className="rounded-lg border border-blue-300/35 px-2 py-1 text-[10px] font-black text-blue-100 transition hover:bg-blue-400/10 disabled:opacity-40"
+                                        >
+                                          Pontuação válida
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={submitting}
+                                          onClick={() => submitMojibakeBoundaryPatternReview(group, 'context_required')}
+                                          className="rounded-lg border border-amber-300/35 px-2 py-1 text-[10px] font-black text-amber-100 transition hover:bg-amber-400/10 disabled:opacity-40"
+                                        >
+                                          Depende de contexto
+                                        </button>
+                                      </div>
+                                      {group.decision_reason ? (
+                                        <p className="mt-2 text-[10px] text-[var(--dash-muted)]">
+                                          Decisão: {group.decision_reason} · {group.reviewer ?? 'revisor'} · {compactDateTime(group.reviewed_at)}
+                                        </p>
+                                      ) : null}
+                                    </div>
+                                    <div className="overflow-x-auto border-t border-[var(--dash-border)]">
+                                      <table className="w-full min-w-[1500px] text-xs">
+                                        <thead className="bg-[var(--dash-soft)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                                          <tr>
+                                            <th className="px-2 py-2">Segmento</th>
+                                            <th className="px-2 py-2 text-left">Arquivo / chave</th>
+                                            <th className="px-2 py-2 text-left">Inglês</th>
+                                            <th className="px-2 py-2 text-left">Espanhol</th>
+                                            <th className="px-2 py-2 text-left">Saída atual</th>
+                                            <th className="px-2 py-2">Score</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {examples.map((example) => (
+                                            <tr key={`${group.normalized_pattern}-${example.segment_id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
+                                              <td className="px-2 py-2 text-center font-bold text-[var(--dash-muted)]">{example.segment_id}</td>
+                                              <td className="max-w-[300px] truncate px-2 py-2" title={`${example.relative_path ?? ''} :: ${example.source_key ?? ''}`}>{example.relative_path ?? '-'} :: <strong>{example.source_key ?? '-'}</strong></td>
+                                              <td className="max-w-[280px] truncate px-2 py-2" title={example.english_preview ?? ''}>{example.english_preview ?? '-'}</td>
+                                              <td className="max-w-[280px] truncate px-2 py-2" title={example.spanish_preview ?? ''}>{example.spanish_preview ?? '-'}</td>
+                                              <td className="max-w-[380px] truncate px-2 py-2 font-bold text-amber-100" title={example.output_preview ?? ''}>{example.output_preview ?? '-'}</td>
+                                              <td className="px-2 py-2 text-center"><Badge tone={scoreTone(example.score)}>{scoreLabel(example.score)}</Badge></td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </details>
+                                );
+                              }) : (
+                                <div className="rounded-xl border border-[var(--dash-border)] px-3 py-8 text-center text-xs font-bold text-[var(--dash-muted)]">
+                                  Nenhum padrão corresponde aos filtros atuais.
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ) : null}
+                        {mojibakeReviewView === 'segments' && mojibakeLexiconReview.previous_shadow_run_id ? (
+                          <div className="flex flex-wrap items-center gap-2 border-b border-violet-300/15 bg-violet-400/[0.045] px-3 py-2 text-[10px] text-[var(--dash-muted)]">
+                            <Badge tone="violet">
+                              shadow #{mojibakeLexiconReview.previous_shadow_run_id} → #{mojibakeLexiconReview.shadow_run_id}
+                            </Badge>
+                            <Badge tone={mojibakeLexiconReview.changed_segment_count ? 'amber' : 'emerald'}>
+                              {compact(mojibakeLexiconReview.changed_segment_count ?? 0)} propostas alteradas
+                            </Badge>
+                            <Badge tone="blue">{compact(mojibakeLexiconReview.new_suggestion_count ?? 0)} novas propostas</Badge>
+                            <Badge tone="emerald">{compact(mojibakeLexiconReview.newly_complete_count ?? 0)} tornaram-se completas</Badge>
+                            <Badge tone="violet">{compact(mojibakeLexiconReview.memory_supported_segment_count ?? 0)} segmentos reforçados</Badge>
+                            <Badge tone="emerald">{compact(mojibakeLexiconReview.carried_review_count ?? 0)} revisões preservadas</Badge>
+                            <span>
+                              O score e o total de sinais só mudam após alteração do output e nova pontuação; este comparativo mostra o efeito do treino sobre a evidência.
+                            </span>
+                          </div>
+                        ) : null}
+                        <div className={cn('overflow-x-auto', mojibakeReviewView !== 'segments' && 'hidden')}>
+                          <table className="w-full min-w-[2140px] text-center text-xs">
+                            <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                              <tr>
+                                <th className="px-2 py-2">Segmento</th>
+                                <th className="px-2 py-2">Evidência</th>
+                                <th className="px-2 py-2 text-left">Arquivo / chave</th>
+                                <th className="px-2 py-2 text-left">Inglês</th>
+                                <th className="px-2 py-2 text-left">Espanhol</th>
+                                <th className="px-2 py-2 text-left">Saída atual</th>
+                                <th className="px-2 py-2 text-left">Proposta</th>
+                                <th className="px-2 py-2">Padrões</th>
+                                <th className="px-2 py-2">Risco</th>
+                                <th className="px-2 py-2">Score</th>
+                                <th className="px-2 py-2">Decisão supervisionada</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {visibleMojibakeLexiconItems.length ? visibleMojibakeLexiconItems.map((item) => {
+                                const familyMeta = mojibakeFamilyMeta[item.family] ?? { label: item.family ?? 'sinal', tone: 'slate' };
+                                const decisionMeta = item.review_status === 'reviewed'
+                                  ? mojibakeDecisionMeta[item.decision]
+                                  : null;
+                                const patterns = Array.isArray(item.patterns) ? item.patterns : [];
+                                const blockers = Array.isArray(item.blockers) ? item.blockers : [];
+                                const residualSignals = Array.isArray(item.residual_word_signals) ? item.residual_word_signals : [];
+                                const unresolvedSignals = Array.isArray(item.unresolved_signals) ? item.unresolved_signals : [];
+                                const residualFindings = Array.isArray(item.residual_findings) ? item.residual_findings : [];
+                                const genderResidualCount = residualFindings.filter((finding) => finding?.route === 'semantic_gender').length;
+                                const tokenStructureResidualCount = residualFindings.filter((finding) => finding?.route === 'token_structure').length;
+                                const unicodeOccurrenceCount = residualFindings.filter((finding) => finding?.route === 'unicode_occurrence').length;
+                                const residualTooltipRows = residualTooltipRowsFor(item);
+                                const residualFindingTitle = residualFindings.map((finding) => [
+                                  finding.issue_family,
+                                  finding.observed_text ? `trecho: ${finding.observed_text}` : '',
+                                  finding.controller ? `controle: ${finding.controller}` : '',
+                                  finding.expected_expression ? `esperado: ${finding.expected_expression}` : '',
+                                ].filter(Boolean).join(' · ')).join('\n');
+                                const submitting = mojibakeSubmittingSegmentId === item.segment_id;
+                                return (
+                                  <tr
+                                    key={`mojibake-${item.segment_id}`}
+                                    tabIndex={0}
+                                    role="button"
+                                    aria-label={`Abrir revisão focada do segmento ${item.segment_id}`}
+                                    onClick={(event) => {
+                                      if (event.target.closest('button, a, input, select, textarea')) return;
+                                      openMojibakeFocusedReview(item.segment_id);
+                                    }}
+                                    onKeyDown={(event) => {
+                                      if (event.key !== 'Enter' && event.key !== ' ') return;
+                                      event.preventDefault();
+                                      openMojibakeFocusedReview(item.segment_id);
+                                    }}
+                                    className={cn(
+                                      'cursor-pointer border-t border-[var(--dash-border)] text-[var(--dash-text)] outline-none transition hover:bg-blue-400/[0.045] focus-visible:bg-blue-400/[0.07] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-blue-300/50',
+                                      item.review_status === 'reviewed' && 'bg-emerald-400/[0.035]'
+                                    )}
+                                  >
+                                    <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">
+                                      <button
+                                        type="button"
+                                        onClick={() => openMojibakeFocusedReview(item.segment_id)}
+                                        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 transition hover:bg-blue-400/10 hover:text-blue-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-blue-300/60"
+                                        title="Abrir revisão focada"
+                                      >
+                                        {item.segment_id}
+                                        <Maximize2 size={11} />
+                                      </button>
+                                    </td>
+                                    <td className="px-2 py-2"><Badge tone={familyMeta.tone}>{familyMeta.label}</Badge></td>
+                                    <td className="max-w-[300px] truncate px-2 py-2 text-left" title={`${item.relative_path ?? ''} :: ${item.source_key ?? ''}`}>
+                                      {item.relative_path ?? '-'} :: <span className="font-bold">{item.source_key ?? '-'}</span>
+                                    </td>
+                                    <td className="max-w-[260px] truncate px-2 py-2 text-left" title={item.english_preview ?? ''}>{item.english_preview ?? '-'}</td>
+                                    <td className="max-w-[260px] truncate px-2 py-2 text-left" title={item.spanish_preview ?? ''}>{item.spanish_preview ?? '-'}</td>
+                                    <td className="max-w-[330px] truncate px-2 py-2 text-left font-bold text-amber-100" title={item.output_preview ?? ''}>{item.output_preview ?? '-'}</td>
+                                    <td
+                                      className="max-w-[330px] truncate px-2 py-2 text-left text-emerald-100"
+                                      title={[
+                                        item.candidate_preview ?? '',
+                                        residualSignals.length ? `Restam: ${residualSignals.join(', ')}` : '',
+                                        ...unresolvedSignals.map((signal) => `${signal.token ?? '?'}: ${signal.reason ?? 'sem resolução'}`),
+                                      ].filter(Boolean).join('\n')}
+                                    >
+                                      {item.candidate_available ? item.candidate_preview : 'Sem proposta segura'}
+                                    </td>
+                                    <td className="max-w-[180px] px-2 py-2" title={patterns.join('; ')}>
+                                      <div className="flex flex-wrap justify-center gap-1">
+                                        {patterns.length ? patterns.map((pattern) => <Badge key={pattern} tone="slate">{pattern}</Badge>) : <Badge tone="slate">não inferido</Badge>}
+                                      </div>
+                                    </td>
+                                    <td className="px-2 py-2">
+                                      <div className="flex min-w-[130px] flex-wrap justify-center gap-1" title={blockers.join('; ')}>
+                                        {item.human_locked ? <Badge tone="violet">lock humano</Badge> : null}
+                                        {item.memory_supported ? <Badge tone="violet">memória supervisionada · {item.memory_supported_replacement_count}</Badge> : null}
+                                        {item.prior_review_available ? <Badge tone="blue">revisão anterior</Badge> : null}
+                                        {item.known_residual_issue ? (
+                                          <Badge tone="amber" title={item.decision_reason ?? ''}>resíduo já apontado</Badge>
+                                        ) : null}
+                                        {genderResidualCount ? (
+                                          <Badge tone="violet" title={residualFindingTitle}>semântica/gênero · {genderResidualCount}</Badge>
+                                        ) : null}
+                                        {tokenStructureResidualCount ? (
+                                          <Badge tone="blue" title={residualFindingTitle}>estrutura de token · {tokenStructureResidualCount}</Badge>
+                                        ) : null}
+                                        {unicodeOccurrenceCount ? (
+                                          <Badge tone="slate" title={residualFindingTitle}>ocorrências Unicode · {unicodeOccurrenceCount}</Badge>
+                                        ) : null}
+                                        {!item.token_integrity_ok ? <Badge tone="red">tokens</Badge> : null}
+                                        {item.candidate_available && item.candidate_complete ? <Badge tone="emerald">integral</Badge> : null}
+                                        {item.candidate_available && item.known_residual_issue && item.focus_candidate_complete ? <Badge tone="blue">foco corrigido</Badge> : null}
+                                        {item.candidate_available && !item.candidate_complete && !item.known_residual_issue ? (
+                                          <Badge
+                                            tone="amber"
+                                            tabIndex={0}
+                                            data-tooltip-title={`Resíduos identificados (${residualTooltipRows.length})`}
+                                            data-tooltip-description={residualTooltipRows.join('\n')}
+                                            data-tooltip-meta="Ocorrências que ainda permanecem após a correção focal."
+                                          >
+                                            restam {item.remaining_signal_count ?? residualSignals.length}
+                                          </Badge>
+                                        ) : null}
+                                        {item.family === 'stale_snapshot' ? <Badge tone="red">stale</Badge> : null}
+                                        {!item.human_locked && item.token_integrity_ok && item.family !== 'stale_snapshot' ? <Badge tone="slate">sem lock</Badge> : null}
+                                      </div>
+                                    </td>
+                                    <td className="px-2 py-2"><Badge tone={scoreTone(item.model_safe_probability)}>{scoreLabel(item.model_safe_probability)}</Badge></td>
+                                    <td className="px-2 py-2">
+                                      {decisionMeta ? (
+                                        <div className="flex min-w-[330px] flex-col items-center gap-1" title={item.decision_reason ?? ''}>
+                                          <Badge tone={decisionMeta.tone}>{decisionMeta.label}</Badge>
+                                          <span className="max-w-[320px] truncate text-[10px] text-[var(--dash-muted)]">
+                                            {item.decision_reason ?? 'decisão registrada'} · {item.reviewer ?? 'revisor'}
+                                            {item.review_origin === 'carried' ? ` · preservada do shadow #${item.source_shadow_run_id}` : ''}
+                                          </span>
+                                        </div>
+                                      ) : (
+                                        <div className="flex min-w-[330px] flex-wrap justify-center gap-1">
+                                          <button
+                                            type="button"
+                                            disabled={submitting || (item.remaining_signal_count ?? residualSignals.length) > 0 || item.family === 'stale_snapshot'}
+                                            onClick={() => submitMojibakeLexiconReview(item, 'accept_suggestion')}
+                                            className="rounded-lg border border-emerald-300/35 px-2 py-1 text-[10px] font-black text-emerald-100 transition hover:bg-emerald-400/10 disabled:cursor-not-allowed disabled:opacity-30"
+                                          >
+                                            Aceitar proposta
+                                          </button>
+                                          <button
+                                            type="button"
+                                            disabled={submitting || (item.remaining_signal_count ?? residualSignals.length) <= 0 || item.family === 'stale_snapshot'}
+                                            onClick={() => submitMojibakeLexiconReview(item, 'partial_correction')}
+                                            title={(item.remaining_signal_count ?? residualSignals.length) > 0
+                                              ? 'Confirma que a correção focal está certa e mantém os resíduos já mapeados, sem exigir comentário.'
+                                              : 'Registra que o foco foi corrigido, mas existe outro erro ainda não estruturado.'}
+                                            className="rounded-lg border border-amber-300/35 px-2 py-1 text-[10px] font-black text-amber-100 transition hover:bg-amber-400/10 disabled:cursor-not-allowed disabled:opacity-30"
+                                          >
+                                            {(item.remaining_signal_count ?? residualSignals.length) > 0
+                                              ? `Confirmar resíduos (${item.remaining_signal_count ?? residualSignals.length})`
+                                              : 'Foco corrigido, outro erro'}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            disabled={submitting}
+                                            onClick={() => openMojibakeFocusedReview(item.segment_id)}
+                                            title="Abra o segmento para selecionar quais ocorrências de ? são pontuação legítima."
+                                            className="rounded-lg border border-blue-300/35 px-2 py-1 text-[10px] font-black text-blue-100 transition hover:bg-blue-400/10 disabled:opacity-30"
+                                          >
+                                            Validar “?”
+                                          </button>
+                                          <button
+                                            type="button"
+                                            disabled={submitting}
+                                            onClick={() => submitMojibakeLexiconReview(item, 'manual_review')}
+                                            className="rounded-lg border border-amber-300/35 px-2 py-1 text-[10px] font-black text-amber-100 transition hover:bg-amber-400/10 disabled:opacity-30"
+                                          >
+                                            Revisão manual
+                                          </button>
+                                        </div>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              }) : (
+                                <tr>
+                                  <td colSpan={11} className="px-3 py-6 text-center font-bold text-[var(--dash-muted)]">
+                                    {mojibakeLexiconReview.instrumented
+                                      ? 'Nenhum sinal corresponde aos filtros atuais.'
+                                      : 'O shadow Unicode/mojibake ainda não foi materializado.'}
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ) : calibrationMode === 'glossary_case' ? (
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2 border-b border-[var(--dash-border)] bg-violet-400/[0.035] px-3 py-2">
+                          <Badge tone="violet">shadow #{glossaryDisplayCase.shadow_run_id ?? '-'}</Badge>
+                          <Badge tone="blue">{compact(glossaryDisplayCase.record_count ?? 0)} segmentos</Badge>
+                          <Badge tone="slate">{compact(glossaryDisplayCase.key_count ?? 0)} chaves</Badge>
+                          <Badge tone="amber">{compact(glossaryDisplayCase.pending_key_count ?? 0)} chaves pendentes</Badge>
+                          <Badge tone="amber">{compact(glossaryDisplayCase.pending_segment_count ?? 0)} segmentos pendentes</Badge>
+                          <Badge tone="emerald">{compact(glossaryDisplayCase.reviewed_key_count ?? 0)} chaves resolvidas</Badge>
+                          <Badge tone={glossaryDisplayCase.is_current_score_run ? 'emerald' : 'amber'}>
+                            {glossaryDisplayCase.is_current_score_run ? 'score atual' : 'snapshot anterior'}
+                          </Badge>
+                          <select
+                            aria-label="Filtrar status das políticas de Glossary"
+                            value={glossaryCaseStatusFilter}
+                            onChange={(event) => setGlossaryCaseStatusFilter(event.target.value)}
+                            className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)]"
+                          >
+                            <option value="pending">Somente pendentes</option>
+                            <option value="reviewed">Somente revisadas</option>
+                            <option value="all">Todas as políticas</option>
+                          </select>
+                          <input
+                            type="search"
+                            aria-label="Buscar chave de Glossary"
+                            value={glossaryCaseKeyFilter}
+                            onChange={(event) => setGlossaryCaseKeyFilter(event.target.value)}
+                            placeholder="Buscar chave…"
+                            className="w-48 rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)] placeholder:text-[var(--dash-muted)]"
+                          />
+                          <Badge tone="slate">{compact(visibleGlossaryDisplayCaseGroups.length)} grupos visíveis</Badge>
+                          <span className="text-[10px] text-[var(--dash-muted)]">
+                            Uma decisão classifica a chave inteira. Nada aqui escreve output, apply, confirmação ou lifecycle.
+                          </span>
+                        </div>
+                        <div className="grid gap-2 p-2">
+                          {visibleGlossaryDisplayCaseGroups.length ? visibleGlossaryDisplayCaseGroups.map((group) => {
+                            const policyMeta = glossaryCasePolicyMeta[group.policy]
+                              ?? glossaryCasePolicyMeta.unknown;
+                            const examples = Array.isArray(group.segments) ? group.segments : [];
+                            return (
+                              <details
+                                key={`glossary-case-${group.glossary_key}`}
+                                className="group rounded-xl border border-[var(--dash-border)] bg-[var(--dash-card)]"
+                              >
+                                <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3 px-3 py-2">
+                                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                    <span className="font-black text-[var(--dash-text)]">{group.glossary_key}</span>
+                                    <Badge tone={policyMeta.tone}>{policyMeta.label}</Badge>
+                                    <Badge tone="slate">{compact(group.segment_count ?? 0)} segmentos</Badge>
+                                    <Badge tone="slate">{compact(group.occurrence_count ?? 0)} ocorrências</Badge>
+                                    {group.explicit_policy ? <Badge tone="blue">decisão por chave</Badge> : null}
+                                  </div>
+                                  <div className="flex flex-wrap items-center justify-end gap-1">
+                                    <button
+                                      type="button"
+                                      disabled={glossaryCaseSubmittingKey === group.glossary_key}
+                                      onClick={(event) => {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        submitGlossaryDisplayCaseReview(group.glossary_key, 'case_sensitive');
+                                      }}
+                                      className={cn(
+                                        'rounded-lg border px-2 py-1 text-[10px] font-black transition disabled:opacity-40',
+                                        group.policy === 'case_sensitive'
+                                          ? 'border-emerald-300/60 bg-emerald-400/15 text-emerald-100'
+                                          : 'border-[var(--dash-border)] text-[var(--dash-muted)] hover:border-emerald-300/45 hover:text-emerald-100'
+                                      )}
+                                    >
+                                      Manter maiúscula
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={glossaryCaseSubmittingKey === group.glossary_key}
+                                      onClick={(event) => {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        submitGlossaryDisplayCaseReview(group.glossary_key, 'case_flexible');
+                                      }}
+                                      className={cn(
+                                        'rounded-lg border px-2 py-1 text-[10px] font-black transition disabled:opacity-40',
+                                        group.policy === 'case_flexible'
+                                          ? 'border-blue-300/60 bg-blue-400/15 text-blue-100'
+                                          : 'border-[var(--dash-border)] text-[var(--dash-muted)] hover:border-blue-300/45 hover:text-blue-100'
+                                      )}
+                                    >
+                                      Minúscula válida
+                                    </button>
+                                    <span className="ml-1 text-[10px] font-black text-[var(--dash-muted)] group-open:rotate-180">⌄</span>
+                                  </div>
+                                </summary>
+                                {group.decision_reason ? (
+                                  <p className="border-t border-[var(--dash-border)] px-3 py-2 text-[10px] text-[var(--dash-muted)]">
+                                    Decisão: {group.decision_reason} · {group.reviewer ?? 'revisor'} · {compactDateTime(group.reviewed_at)}
+                                  </p>
+                                ) : null}
+                                <div className="overflow-x-auto border-t border-[var(--dash-border)]">
+                                  <table className="w-full min-w-[1420px] text-center text-xs">
+                                    <thead className="bg-[var(--dash-soft)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                                      <tr>
+                                        <th className="px-2 py-2">Segmento</th>
+                                        <th className="px-2 py-2 text-left">Arquivo / chave</th>
+                                        <th className="px-2 py-2 text-left">Display inglês</th>
+                                        <th className="px-2 py-2 text-left">Display atual</th>
+                                        <th className="px-2 py-2 text-left">Forma canônica</th>
+                                        <th className="px-2 py-2">Lock humano</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {examples.map((item) => (
+                                        <tr key={`${group.glossary_key}-${item.segment_id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
+                                          <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
+                                          <td className="max-w-[320px] truncate px-2 py-2 text-left" title={`${item.relative_path} :: ${item.source_key}`}>
+                                            {item.relative_path} :: <span className="font-bold">{item.source_key}</span>
+                                          </td>
+                                          <td className="max-w-[240px] truncate px-2 py-2 text-left" title={item.english_display ?? ''}>{item.english_display ?? '-'}</td>
+                                          <td className="max-w-[240px] truncate px-2 py-2 text-left font-bold text-amber-100" title={item.output_display ?? ''}>{item.output_display ?? '-'}</td>
+                                          <td className="max-w-[240px] truncate px-2 py-2 text-left text-emerald-100" title={item.canonical_heading ?? ''}>{item.canonical_heading ?? '-'}</td>
+                                          <td className="px-2 py-2"><Badge tone={item.human_locked ? 'blue' : 'slate'}>{item.human_locked ? 'sim' : 'não'}</Badge></td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </details>
+                            );
+                          }) : (
+                            <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-card)] px-3 py-6 text-center text-xs font-bold text-[var(--dash-muted)]">
+                              {glossaryDisplayCase.instrumented
+                                ? 'Nenhuma chave corresponde aos filtros atuais.'
+                                : 'O shadow de capitalização em Glossary ainda não foi materializado.'}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--dash-border)] bg-[var(--dash-card)] px-3 py-2">
+                          <div>
+                            <p className="text-xs font-black text-[var(--dash-text)]">
+                              {lowScoreCalibrationView === 'dynamic'
+                                ? 'Auditoria de score · longos/complexos e dinâmicos'
+                                : lowScoreCalibrationView === 'pending'
+                                ? 'Pendências orientadas pelos shadows'
+                                : 'Análise completa da amostra'}
+                            </p>
+                            <p className="text-[10px] text-[var(--dash-muted)]">
+                              {lowScoreCalibrationView === 'dynamic'
+                                ? 'Amostra inédita e estratificada de textos sem defeito detectado. “Bom” registra qualidade confirmada sem comentário e não altera output.'
+                                : lowScoreCalibrationView === 'pending'
+                                ? 'Somente itens ainda não revisados; clique em um card para isolar o padrão.'
+                                : 'Explore revisados e pendentes por origem, grupo, padrão e status.'}
+                            </p>
+                          </div>
+                          <div className="flex rounded-lg border border-[var(--dash-border)] bg-[var(--dash-soft)] p-0.5">
+                            <button
+                              type="button"
+                              aria-pressed={lowScoreCalibrationView === 'pending'}
+                              onClick={() => setLowScoreCalibrationView('pending')}
+                              className={cn(
+                                'rounded-md px-2.5 py-1 text-[10px] font-black transition',
+                                lowScoreCalibrationView === 'pending'
+                                  ? 'bg-amber-400/15 text-amber-100'
+                                  : 'text-[var(--dash-muted)] hover:text-[var(--dash-text)]'
+                              )}
+                            >
+                              Pendências · {compact(manualLowScorePendingCount)}
+                            </button>
+                            <button
+                              type="button"
+                              aria-pressed={lowScoreCalibrationView === 'dynamic'}
+                              onClick={() => setLowScoreCalibrationView('dynamic')}
+                              className={cn(
+                                'rounded-md px-2.5 py-1 text-[10px] font-black transition',
+                                lowScoreCalibrationView === 'dynamic'
+                                  ? 'bg-violet-400/15 text-violet-100'
+                                  : 'text-[var(--dash-muted)] hover:text-[var(--dash-text)]'
+                              )}
+                            >
+                              Auditoria de score · {compact(dynamicScoreHoldout.selected_count ?? dynamicScoreHoldoutItems.length)}
+                            </button>
+                            <button
+                              type="button"
+                              aria-pressed={lowScoreCalibrationView === 'analytics'}
+                              onClick={() => setLowScoreCalibrationView('analytics')}
+                              className={cn(
+                                'rounded-md px-2.5 py-1 text-[10px] font-black transition',
+                                lowScoreCalibrationView === 'analytics'
+                                  ? 'bg-cyan-400/15 text-cyan-100'
+                                  : 'text-[var(--dash-muted)] hover:text-[var(--dash-text)]'
+                              )}
+                            >
+                              Analítico completo · {compact(manualLowScoreSampleCount)}
+                            </button>
+                          </div>
+                        </div>
+                        {lowScoreCalibrationView === 'pending' ? (
+                          <div className="grid gap-1.5 border-b border-[var(--dash-border)] bg-amber-400/[0.02] p-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+                            <button
+                              type="button"
+                              aria-pressed={calibrationShadowFilter === 'all'}
+                              onClick={() => setCalibrationShadowFilter('all')}
+                              className={cn(
+                                'rounded-lg border px-2 py-1.5 text-left transition',
+                                calibrationShadowFilter === 'all'
+                                  ? 'border-cyan-300/55 bg-cyan-400/[0.09]'
+                                  : 'border-[var(--dash-border)] bg-[var(--dash-card)] hover:border-cyan-300/30'
+                              )}
+                            >
+                              <p className="truncate text-[10px] font-black text-[var(--dash-text)]">Todas as pendências</p>
+                              <p className="mt-0.5 text-[9px] text-[var(--dash-muted)]">Amostra atual</p>
+                              <p className="mt-1 text-xs font-black text-amber-200">{compact(manualLowScorePendingCount)} pendentes</p>
+                            </button>
+                            {latestSegmentedCalibrationShadows.map((shadow) => {
+                              const rejected = shadow.status === 'rejected';
+                              const selected = calibrationShadowFilter === shadow.pattern;
+                              const patternLabel = segmentedCalibrationPatternLabels[shadow.pattern]
+                                ?? String(shadow.pattern ?? 'padrão').replaceAll('_', ' ');
+                              const pendingCount = Number(shadowPendingCounts[shadow.pattern] ?? 0);
+                              return (
+                                <button
+                                  key={`segmented-shadow-filter-${shadow.run_id}`}
+                                  type="button"
+                                  aria-label={`Filtrar pendências pelo Shadow ${shadow.run_id}: ${patternLabel}`}
+                                  aria-pressed={selected}
+                                  onClick={() => setCalibrationShadowFilter(shadow.pattern)}
+                                  className={cn(
+                                    'rounded-lg border px-2 py-1.5 text-left transition',
+                                    selected
+                                      ? 'border-cyan-300/55 bg-cyan-400/[0.09]'
+                                      : rejected
+                                        ? 'border-red-300/15 bg-red-400/[0.025] hover:border-red-300/30'
+                                        : 'border-emerald-300/15 bg-emerald-400/[0.025] hover:border-emerald-300/30'
+                                  )}
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <p className={cn('truncate text-[10px] font-black', rejected ? 'text-red-100' : 'text-emerald-100')}>
+                                      #{shadow.run_id} · {patternLabel}
+                                    </p>
+                                    <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', rejected ? 'bg-red-400' : 'bg-emerald-400')} />
+                                  </div>
+                                  <p className="mt-0.5 truncate text-[9px] text-[var(--dash-muted)]">
+                                    score {scoreLabel(shadow.posterior_safe_probability)} · pop. {compact(shadow.population_match_count ?? 0)}
+                                  </p>
+                                  <p className={cn('mt-1 text-xs font-black', pendingCount ? 'text-amber-200' : 'text-[var(--dash-muted)]')}>
+                                    {compact(pendingCount)} pendentes
+                                  </p>
+                                </button>
+                              );
+                            })}
+                            <button
+                              type="button"
+                              aria-pressed={calibrationShadowFilter === 'without_shadow'}
+                              onClick={() => setCalibrationShadowFilter('without_shadow')}
+                              className={cn(
+                                'rounded-lg border px-2 py-1.5 text-left transition',
+                                calibrationShadowFilter === 'without_shadow'
+                                  ? 'border-cyan-300/55 bg-cyan-400/[0.09]'
+                                  : 'border-[var(--dash-border)] bg-[var(--dash-card)] hover:border-cyan-300/30'
+                              )}
+                            >
+                              <p className="truncate text-[10px] font-black text-[var(--dash-text)]">Sem padrão shadow</p>
+                              <p className="mt-0.5 text-[9px] text-[var(--dash-muted)]">Fora das famílias avaliadas</p>
+                              <p className="mt-1 text-xs font-black text-amber-200">{compact(pendingWithoutShadowCount)} pendentes</p>
+                            </button>
+                          </div>
+                        ) : null}
+                        {lowScoreCalibrationView === 'dynamic' ? (
+                          <div className="flex flex-wrap items-center gap-2 border-b border-[var(--dash-border)] bg-violet-400/[0.035] px-3 py-2">
+                            <Badge tone="violet">fila #{dynamicScoreHoldout.run_id ?? '-'}</Badge>
+                            <Badge tone="blue">{compact(dynamicScoreHoldout.population_count ?? 0)} elegíveis</Badge>
+                            <Badge tone="slate">{compact(dynamicScoreHoldout.selection?.unseen_candidate_count ?? 0)} inéditos</Badge>
+                            <Badge tone="emerald">{compact(dynamicScoreHoldout.reviewed_count ?? 0)} revisados</Badge>
+                            <Badge tone="amber">{compact(visibleDynamicScoreHoldoutPendingCount)} pendentes</Badge>
+                            {dynamicScoreHoldout.auto_seeded && <Badge tone="emerald">fila regenerada nesta score</Badge>}
+                            <select
+                              aria-label="Filtrar evidência do holdout dinâmico"
+                              value={dynamicHoldoutLaneFilter}
+                              onChange={(event) => setDynamicHoldoutLaneFilter(event.target.value)}
+                              className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)]"
+                            >
+                              <option value="all">Todas as evidências</option>
+                              {Object.entries(dynamicScoreHoldout.lane_counts ?? {}).map(([lane, count]) => (
+                                <option key={lane} value={lane}>
+                                  {lowScoreCalibrationLaneMeta[lane]?.label ?? lane} ({compact(count)})
+                                </option>
+                              ))}
+                            </select>
+                            <select
+                              aria-label="Filtrar faixa do holdout dinâmico"
+                              value={dynamicHoldoutBandFilter}
+                              onChange={(event) => setDynamicHoldoutBandFilter(event.target.value)}
+                              className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)]"
+                            >
+                              <option value="all">Todas as faixas</option>
+                              {Object.entries(dynamicScoreHoldout.band_counts ?? {}).map(([band, count]) => (
+                                <option key={band} value={band}>{band} ({compact(count)})</option>
+                              ))}
+                            </select>
+                            <select
+                              aria-label="Filtrar revisão do holdout dinâmico"
+                              value={dynamicHoldoutStatusFilter}
+                              onChange={(event) => setDynamicHoldoutStatusFilter(event.target.value)}
+                              className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)]"
+                            >
+                              <option value="pending">Somente pendentes</option>
+                              <option value="reviewed">Somente revisados</option>
+                              <option value="all">Todos</option>
+                            </select>
+                            <Badge tone="slate">{compact(visibleDynamicScoreHoldoutItems.length)} visíveis</Badge>
+                            <span className="text-[10px] text-[var(--dash-muted)]">
+                              Exclui {compact(dynamicScoreHoldout.excluded_reviewed_count ?? 0)} textos já revisados e {compact(dynamicScoreHoldout.excluded_training_count ?? 0)} segmentos usados no treino do modelo.
+                            </span>
+                            {dynamicScoreHoldout.provision_error && <Badge tone="red">falha ao gerar fila</Badge>}
+                          </div>
+                        ) : null}
+                        {lowScoreCalibrationView === 'analytics' ? (
+                        <div className="flex flex-wrap items-center gap-2 border-b border-[var(--dash-border)] bg-cyan-400/[0.035] px-3 py-2">
+                          <Badge tone="blue">{compact(manualLowScoreCalibration.eligible_count ?? 0)} elegíveis</Badge>
+                          <Badge tone="slate">{compact(manualLowScoreSampleCount)} na amostra</Badge>
+                          <Badge tone="emerald">{compact(manualLowScoreReviewedCount)} revisados</Badge>
+                          <Badge tone="amber">{compact(manualLowScorePendingCount)} pendentes</Badge>
+                          <select
+                            aria-label="Filtrar origem da calibração"
+                            value={calibrationLaneFilter}
+                            onChange={(event) => {
+                              const nextLane = event.target.value;
+                              setCalibrationLaneFilter(nextLane);
+                              setCalibrationPatternFilter('all');
+                              if (
+                                calibrationGroupFilter !== 'all'
+                                && !manualLowScoreCalibrationItems.some((item) => (
+                                  item.calibration_group === calibrationGroupFilter
+                                  && (nextLane === 'all' || item.calibration_lane === nextLane)
+                                ))
+                              ) {
+                                setCalibrationGroupFilter('all');
+                              }
+                            }}
+                            className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)]"
+                          >
+                            <option value="all">
+                              Todas as origens ({compact(manualLowScoreSampleCount)} amostra · {compact(manualLowScorePendingCount)} pend.)
+                            </option>
+                            {Object.entries(manualLowScoreCalibrationLaneSampleCounts).map(([lane, count]) => (
+                              <option
+                                key={lane}
+                                value={lane}
+                                title={`${compact(manualLowScoreCalibrationEligibleLaneCounts[lane] ?? 0)} elegíveis no universo`}
+                              >
+                                {lowScoreCalibrationLaneMeta[lane]?.label ?? lane} ({compact(count)} amostra · {compact(manualLowScoreCalibrationLanePendingCounts[lane] ?? 0)} pend.)
+                              </option>
+                            ))}
+                          </select>
+                          <select
+                            aria-label="Filtrar grupo da calibração"
+                            value={calibrationGroupFilter}
+                            onChange={(event) => {
+                              setCalibrationGroupFilter(event.target.value);
+                              setCalibrationPatternFilter('all');
+                            }}
+                            className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)]"
+                          >
+                            <option value="all">
+                              Todos os grupos ({compact(laneFilteredManualLowScoreCalibrationItems.length)} amostra · {compact(laneFilteredManualLowScorePendingCount)} pend.)
+                            </option>
+                            {manualLowScoreCalibrationGroups.map(([group, count]) => (
+                              <option key={group} value={group}>
+                                {group} ({compact(count)} amostra · {compact(manualLowScoreCalibrationGroupPendingCounts[group] ?? 0)} pend.)
+                              </option>
+                            ))}
+                          </select>
+                          <select
+                            aria-label="Filtrar padrão de treino da calibração"
+                            value={calibrationPatternFilter}
+                            onChange={(event) => setCalibrationPatternFilter(event.target.value)}
+                            className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)]"
+                          >
+                            <option value="all">
+                              Todos os padrões ({compact(groupFilteredManualLowScoreCalibrationItems.length)} amostra · {compact(groupFilteredManualLowScorePendingCount)} pend.)
+                            </option>
+                            {Object.entries(manualLowScoreCalibrationPatternCounts)
+                              .sort((a, b) => Number(b[1]) - Number(a[1]) || String(a[0]).localeCompare(String(b[0])))
+                              .map(([pattern, count]) => (
+                                <option key={pattern} value={pattern}>
+                                  {manualLowScoreCalibrationPatternLabels[pattern] ?? pattern.replaceAll('_', ' ')} ({compact(count)} amostra · {compact(manualLowScoreCalibrationPatternPendingCounts[pattern] ?? 0)} pend.)
+                                </option>
+                              ))}
+                          </select>
+                          <select
+                            aria-label="Filtrar status da revisão"
+                            value={calibrationReviewStatusFilter}
+                            onChange={(event) => setCalibrationReviewStatusFilter(event.target.value)}
+                            className="rounded-lg border border-[var(--dash-border)] bg-[var(--dash-card)] px-2 py-1 text-xs font-bold text-[var(--dash-text)]"
+                          >
+                            <option value="all">Todos os status</option>
+                            <option value="pending">Somente pendentes</option>
+                            <option value="reviewed">Somente revisados</option>
+                          </select>
+                          <Badge tone="slate">
+                            {compact(visibleManualLowScoreCalibrationItems.length)} visíveis · {compact(visibleManualLowScorePendingCount)} pendentes
+                          </Badge>
+                          <span className="text-[10px] text-[var(--dash-muted)]">
+                            Critérios: score &lt; 50%, zero issues, tokens íntegros, saída atual fechada e sem apply.
+                          </span>
+                        </div>
+                        ) : lowScoreCalibrationView === 'pending' ? (
+                          <div className="flex flex-wrap items-center gap-2 border-b border-[var(--dash-border)] bg-amber-400/[0.035] px-3 py-2">
+                            <Badge tone="amber">{compact(shadowFilteredPendingCalibrationItems.length)} pendentes visíveis</Badge>
+                            <Badge tone="slate">
+                              {calibrationShadowFilter === 'all'
+                                ? 'todas as famílias'
+                                : calibrationShadowFilter === 'without_shadow'
+                                  ? 'sem padrão shadow'
+                                  : segmentedCalibrationPatternLabels[calibrationShadowFilter]
+                                    ?? calibrationShadowFilter.replaceAll('_', ' ')}
+                            </Badge>
+                            <span className="text-[10px] text-[var(--dash-muted)]">
+                              Esta visão exclui os {compact(manualLowScoreReviewedCount)} casos já revisados. Cards com zero indicam que a amostra atual não possui pendência daquela família.
+                            </span>
+                          </div>
+                        ) : null}
+                        <table className="w-full min-w-[1540px] text-center text-xs">
+                          <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
+                            <tr>
+                              <th className="px-2 py-2">Segmento</th>
+                              <th className="px-2 py-2">Origem segura</th>
+                              <th className="px-2 py-2">Grupo</th>
+                              {lowScoreCalibrationView === 'dynamic' && <th className="px-2 py-2">Faixa</th>}
+                              <th className="px-2 py-2 text-left">Arquivo / chave</th>
+                              <th className="px-2 py-2 text-left">Inglês</th>
+                              <th className="px-2 py-2 text-left">Saída atual</th>
+                              <th className="px-2 py-2">Score</th>
+                              {lowScoreCalibrationView === 'dynamic' && <th className="px-2 py-2">Tokens</th>}
+                              <th className="px-2 py-2">Decisão manual</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {displayedManualLowScoreCalibrationItems.length ? displayedManualLowScoreCalibrationItems.map((item) => {
+                              const laneMeta = lowScoreCalibrationLaneMeta[item.calibration_lane]
+                                ?? { label: String(item.calibration_lane ?? 'não classificado').replaceAll('_', ' '), tone: 'slate' };
+                              return (
+                                <tr key={`manual-low-score-${item.segment_id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
+                                  <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
+                                  <td className="px-2 py-2"><Badge tone={laneMeta.tone}>{laneMeta.label}</Badge></td>
+                                  <td className="px-2 py-2"><Badge tone="slate">{item.calibration_group ?? '-'}</Badge></td>
+                                  {lowScoreCalibrationView === 'dynamic' && (
+                                    <td className="px-2 py-2"><Badge tone="violet">{item.probability_band ?? '-'}</Badge></td>
+                                  )}
+                                  <td className="max-w-[250px] truncate px-2 py-2 text-left" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
+                                  <td className="max-w-[280px] truncate px-2 py-2 text-left" title={item.english_text ?? ''}>{item.english_text ?? '-'}</td>
+                                  <td className="max-w-[320px] truncate px-2 py-2 text-left" title={item.output_text ?? ''}>{item.output_text ?? '-'}</td>
+                                  <td className="px-2 py-2"><Badge tone={scoreTone(item.model_safe_probability)}>{scoreLabel(item.model_safe_probability)}</Badge></td>
+                                  {lowScoreCalibrationView === 'dynamic' && (
+                                    <td className="px-2 py-2" title={`peso amostral ${Number(item.sampling_weight ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })}`}>
+                                      <Badge tone="blue">{compact(item.dynamic_token_count ?? 0)}</Badge>
+                                    </td>
+                                  )}
+                                  <td className="px-2 py-2">
+                                    <div className="flex min-w-[370px] flex-wrap justify-center gap-1">
+                                      {Object.entries(lowScoreCalibrationDecisionMeta).map(([label, meta]) => (
+                                        <button
+                                          key={label}
+                                          type="button"
+                                          aria-label={`${meta.label}: ${meta.description}`}
+                                          data-tooltip-title={meta.label}
+                                          data-tooltip-description={meta.description}
+                                          disabled={lowScoreCalibrationSubmittingSegmentId === item.segment_id}
+                                          onClick={() => submitLowScoreCalibrationReview(item.segment_id, label)}
+                                          className={cn(
+                                            'rounded-lg border px-2 py-1 font-black transition disabled:opacity-40',
+                                            item.reviewer_label === label
+                                              ? 'border-cyan-300/60 bg-cyan-400/15 text-cyan-100'
+                                              : 'border-[var(--dash-border)] bg-[var(--dash-card)] text-[var(--dash-muted)] hover:border-blue-300/45 hover:text-blue-100'
+                                          )}
+                                        >
+                                          {meta.label}
+                                        </button>
+                                      ))}
+                                    </div>
+                                    {item.review_status === 'decided' && (
+                                      <p className="mt-1 truncate text-[9px] text-[var(--dash-muted)]" title={item.review_reason ?? ''}>
+                                        registrado por {item.reviewer ?? 'revisor'} · {item.review_reason ?? 'sem motivo'}
+                                      </p>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            }) : (
+                              <tr>
+                                <td colSpan={lowScoreCalibrationView === 'dynamic' ? 10 : 8} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">
+                                  {lowScoreCalibrationView === 'dynamic'
+                                    ? 'Nenhum item do holdout corresponde aos filtros atuais.'
+                                    : lowScoreCalibrationView === 'pending'
+                                    ? 'Nenhuma pendência da amostra atual corresponde a este shadow.'
+                                    : 'Nenhum exemplo corresponde aos filtros analíticos atuais.'}
+                                </td>
+                              </tr>
                             )}
-                          </td>
-                        </tr>
-                      )) : (
-                        <tr><td colSpan={9} className="px-3 py-5 text-center font-bold text-[var(--dash-muted)]">{calibrationPolicyDecision === 'skip' ? `Calibracao dispensada: ${calibrationPolicySummary}.` : 'Nenhuma fila de calibracao materializada para a epoch atual.'}</td></tr>
-                      )}
-                    </tbody>
-                  </table>
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
                 ) : postReleaseView === 'regressions' ? (
                   <table className="w-full min-w-[1160px] text-center text-xs">
                     <thead className="sticky top-0 bg-[var(--dash-card)] text-[10px] uppercase tracking-wide text-[var(--dash-muted)]">
@@ -5611,7 +9781,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {(postReleaseView === 'low_score' ? lowScoreSegments : unhandledSegments).length ? (postReleaseView === 'low_score' ? lowScoreSegments : unhandledSegments).slice(0, 80).map((item) => (
+                      {(postReleaseView === 'low_score' ? visibleLowScoreSegments : unhandledSegments).length ? (postReleaseView === 'low_score' ? visibleLowScoreSegments : unhandledSegments).slice(0, 80).map((item) => (
                         <tr key={`${postReleaseView}-${item.segment_id}`} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
                           <td className="px-2 py-2 font-bold text-[var(--dash-muted)]">{item.segment_id}</td>
                           <td className="max-w-[240px] truncate px-2 py-2 text-left" title={`${item.relative_path} :: ${item.source_key}`}>{item.relative_path} :: <span className="font-bold">{item.source_key}</span></td>
@@ -5722,7 +9892,7 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
               <div className="rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] p-2">
                 <h4 className="text-sm font-black text-[var(--dash-text)]">Fluxo protegido</h4>
                 <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-500/20">
-                  <div className={cn('h-full rounded-full', runStatus?.status === 'failed' ? 'bg-red-500' : runActive ? 'bg-blue-500' : 'bg-emerald-500')} style={{ width: `${Math.max(0, Math.min(100, runProgress))}%` }} />
+                  <div className={cn('h-full rounded-full', runStatus?.status === 'failed' ? 'bg-red-500' : runActive ? 'bg-blue-500' : 'bg-emerald-500')} style={{ width: `${Math.max(0, Math.min(100, displayRunProgress))}%` }} />
                 </div>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {displayPhases.map((phase, index) => (
@@ -5736,9 +9906,529 @@ function ProductionControlCompact({ data, onRefreshAppState }) {
           </div>
           </div>
           )}
-        </Card>
+          </div>
+        </section>
       </div>
     </div>
+    {typeof document !== 'undefined' && unifiedFocusedItem ? createPortal(
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="unified-focused-review-title"
+        data-content-theme={document.querySelector('[data-content-theme]')?.getAttribute('data-content-theme') ?? 'dark'}
+        className="dashboard-shell fixed inset-0 z-[9999] bg-[var(--dash-bg)] text-[var(--dash-text)]"
+      >
+        <div className="mx-auto flex h-[100dvh] w-full max-w-[1920px] min-w-0 flex-col gap-3 p-3 sm:p-4">
+          <header className="flex shrink-0 items-center justify-between gap-4 rounded-2xl border border-[var(--dash-border)] bg-[var(--dash-card)] px-4 py-3 shadow-[0_18px_60px_rgba(0,0,0,0.28)]">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={unifiedFocusedItem.queueMeta.tone}>{unifiedFocusedItem.queueMeta.label}</Badge>
+                <Badge tone="violet">segmento #{unifiedFocusedItem.segmentId ?? '-'}</Badge>
+                <span className="text-xs font-bold text-[var(--dash-muted)]">
+                  {unifiedFocusedIndex + 1} de {visibleUnifiedCalibrationItems.length} na visão atual
+                </span>
+              </div>
+              <h2 id="unified-focused-review-title" className="mt-1 truncate text-lg font-black">{unifiedFocusedTaskTitle}</h2>
+              <p className="mt-0.5 truncate text-xs text-[var(--dash-muted)]" title={`${unifiedFocusedItem.relativePath} :: ${unifiedFocusedItem.sourceKey}`}>
+                {unifiedFocusedItem.relativePath || '-'} :: <span className="font-bold text-[var(--dash-text)]">{unifiedFocusedItem.sourceKey || '-'}</span>
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                disabled={unifiedFocusedIndex <= 0 || unifiedFocusedSubmitting}
+                onClick={() => moveUnifiedFocus(-1)}
+                className="grid h-10 w-10 place-items-center rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] text-[var(--dash-muted)] transition hover:border-blue-300/45 hover:text-blue-200 disabled:cursor-not-allowed disabled:opacity-30"
+                aria-label="Item anterior"
+                title="Item anterior · seta para esquerda"
+              >
+                <ChevronLeft size={18} />
+              </button>
+              <button
+                type="button"
+                disabled={unifiedFocusedIndex < 0 || unifiedFocusedIndex >= visibleUnifiedCalibrationItems.length - 1 || unifiedFocusedSubmitting}
+                onClick={() => moveUnifiedFocus(1)}
+                className="grid h-10 w-10 place-items-center rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] text-[var(--dash-muted)] transition hover:border-blue-300/45 hover:text-blue-200 disabled:cursor-not-allowed disabled:opacity-30"
+                aria-label="Próximo item"
+                title="Próximo item · seta para direita"
+              >
+                <ChevronRight size={18} />
+              </button>
+              <button
+                ref={unifiedFocusedCloseRef}
+                type="button"
+                onClick={() => setUnifiedFocusedItemKey(null)}
+                className="grid h-10 w-10 place-items-center rounded-xl border border-red-300/25 bg-red-400/[0.06] text-red-200 transition hover:border-red-300/50 hover:bg-red-400/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300/60"
+                aria-label="Fechar revisão focada"
+                title="Fechar e voltar à lista · Esc"
+              >
+                <X size={19} />
+              </button>
+            </div>
+          </header>
+
+          {unifiedFocusedPatternGuidance ? (
+            <section className="shrink-0 rounded-2xl border border-blue-300/25 bg-blue-400/[0.035] px-4 py-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[9px] font-black uppercase tracking-[0.14em] text-blue-300">Padrão em julgamento</p>
+                  <h3 className="mt-0.5 text-sm font-black text-[var(--dash-text)]">{unifiedFocusedPatternGuidance.title}</h3>
+                  <p className="mt-0.5 text-[11px] leading-4 text-[var(--dash-muted)]">{unifiedFocusedPatternGuidance.hypothesis}</p>
+                </div>
+                <div className="text-right">
+                  {unifiedFocusedItem.familySegmentCount != null ? (
+                    <Badge tone="blue">família com {Number(unifiedFocusedItem.familySegmentCount).toLocaleString('pt-BR')} segmentos</Badge>
+                  ) : null}
+                  {unifiedFocusedPatternGuidance.scope ? (
+                    <p className="mt-1 text-[10px] font-bold text-[var(--dash-muted)]">Escopo: {unifiedFocusedPatternGuidance.scope}</p>
+                  ) : null}
+                </div>
+              </div>
+            </section>
+          ) : null}
+
+          {!unifiedFocusedPatternGuidance ? (
+            <section className="shrink-0 rounded-2xl border border-blue-300/25 bg-blue-400/[0.035] px-4 py-3">
+              <p className="text-[9px] font-black uppercase tracking-[0.14em] text-blue-300">O que você está ensinando</p>
+              <p className="mt-1 text-xs leading-5 text-[var(--dash-muted)]">{unifiedFocusedTaskDescription}</p>
+            </section>
+          ) : null}
+
+          <main className="grid min-h-0 flex-1 grid-rows-[minmax(190px,1.08fr)_minmax(150px,1fr)] gap-3">
+            {unifiedFocusedIsPairwise ? (
+              <div className="grid min-h-0 gap-3 lg:grid-cols-2">
+                {[
+                  ['Opção A · versão anterior', unifiedFocusedItem.oldText, 'violet'],
+                  ['Opção B · versão candidata', unifiedFocusedItem.candidateText, 'emerald'],
+                ].map(([label, value, tone]) => (
+                  <section key={label} className={cn(
+                    'flex min-h-0 flex-col overflow-hidden rounded-2xl border bg-[var(--dash-card)]',
+                    tone === 'emerald' ? 'border-emerald-300/30' : 'border-violet-300/30'
+                  )}>
+                    <div className="shrink-0 border-b border-[var(--dash-border)] px-4 py-2.5">
+                      <p className={cn(
+                        'text-[10px] font-black uppercase tracking-[0.14em]',
+                        tone === 'emerald' ? 'text-emerald-300' : 'text-violet-300'
+                      )}>{label}</p>
+                    </div>
+                    <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+                      <p className="whitespace-pre-wrap break-words font-mono text-sm leading-6 text-[var(--dash-text)]">{value || 'Sem texto disponível.'}</p>
+                    </div>
+                  </section>
+                ))}
+              </div>
+            ) : (
+            <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-emerald-300/25 bg-emerald-400/[0.035]">
+              <div className="flex shrink-0 items-center justify-between gap-3 border-b border-emerald-300/15 px-4 py-2.5">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-[0.14em] text-emerald-300">
+                    {unifiedFocusedIsSignalClassification ? 'Saída atual e sinal em validação' : 'Correção em validação'}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-[var(--dash-muted)]">
+                    {unifiedFocusedIsSignalClassification ? 'Este item não propõe mudança de texto; ele mede a precisão do detector.' : 'Compare a mudança proposta com o texto atualmente materializado.'}
+                  </p>
+                </div>
+                {!unifiedFocusedIsSignalClassification ? <div className="dashboard-segmented shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setUnifiedFocusedPrimaryView('candidate')}
+                    className={cn('dashboard-segmented-button px-3 text-xs font-bold', unifiedFocusedPrimaryView === 'candidate' && 'is-active')}
+                  >
+                    Proposta
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setUnifiedFocusedPrimaryView('output')}
+                    className={cn('dashboard-segmented-button px-3 text-xs font-bold', unifiedFocusedPrimaryView === 'output' && 'is-active')}
+                  >
+                    Saída atual
+                  </button>
+                </div> : null}
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+                <p className="whitespace-pre-wrap break-words font-mono text-sm leading-6 text-emerald-50">
+                  {unifiedFocusedPrimaryText || 'Sem texto materializado para esta origem.'}
+                </p>
+              </div>
+            </section>
+            )}
+
+            <div className="grid min-h-0 gap-3 lg:grid-cols-3">
+              {[
+                ['English', unifiedFocusedItem.englishText, 'blue'],
+                ['Spanish', unifiedFocusedItem.spanishText, 'amber'],
+                unifiedFocusedIsPairwise
+                  ? ['Critério da decisão', 'Escolha a versão que preserva o sentido e os tokens com melhor português. Use “Equivalentes” se ambas forem igualmente boas e “Par inválido” se faltarem dados para comparar.', 'violet']
+                  : unifiedFocusedIsSignalClassification
+                    ? [
+                        'Evidência detectada',
+                        [
+                          ...unifiedFocusedDetectedIssues.flatMap((issue) => [issue.label ?? issue.code, ...(issue.matches ?? [])]),
+                          ...(unifiedFocusedDryRun.blockers ?? []).map((blocker) => `trava: ${String(blocker).replaceAll('_', ' ')}`),
+                        ].filter(Boolean).join('\n') || unifiedFocusedItem.evidence.join('\n'),
+                        'violet',
+                      ]
+                    : ['Old · baseline anterior', unifiedFocusedItem.oldText, 'violet'],
+              ].map(([label, value, tone]) => (
+                <section key={label} className={cn(
+                  'flex min-h-0 flex-col overflow-hidden rounded-2xl border bg-[var(--dash-card)]',
+                  tone === 'blue' ? 'border-blue-300/20' : tone === 'amber' ? 'border-amber-300/20' : 'border-violet-300/20'
+                )}>
+                  <div className="shrink-0 border-b border-[var(--dash-border)] px-4 py-2.5">
+                    <p className={cn(
+                      'text-[10px] font-black uppercase tracking-[0.14em]',
+                      tone === 'blue' ? 'text-blue-300' : tone === 'amber' ? 'text-amber-300' : 'text-violet-300'
+                    )}>{label}</p>
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+                    <p className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-[var(--dash-text)]">{value || 'Sem texto disponível.'}</p>
+                  </div>
+                </section>
+              ))}
+            </div>
+          </main>
+
+          <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--dash-border)] bg-[var(--dash-card)] px-4 py-3 shadow-[0_-12px_40px_rgba(0,0,0,0.2)]">
+            <div className="min-w-0">
+              <p className="text-xs font-black">Decisão supervisionada</p>
+              <p className="mt-0.5 text-[11px] text-[var(--dash-muted)]">
+                {unifiedFocusedItem.canDecide
+                  ? 'Ao registrar, a revisão avança automaticamente para o próximo item visível.'
+                  : unifiedFocusedHasDecisionContract
+                    ? 'A decisão registrada continua vinculada à evidência exata deste snapshot.'
+                    : 'Esta origem ainda não possui contrato de voto; a leitura focada não altera o sistema.'}
+              </p>
+              {unifiedFocusedLearningDestinations.length ? (
+                <p className="mt-1 text-[10px] font-bold text-blue-300">
+                  Destinos do aprendizado: {unifiedFocusedLearningDestinations.join(' · ')}
+                </p>
+              ) : null}
+            </div>
+            {unifiedFocusedItem.reviewStatus === 'reviewed' ? (
+              <div className="flex items-center gap-2">
+                <Badge tone="emerald">decisão já registrada</Badge>
+                {unifiedFocusedItem.raw.review_decision && (
+                  <Badge tone="blue">{String(unifiedFocusedItem.raw.review_decision).replaceAll('_', ' ')}</Badge>
+                )}
+              </div>
+            ) : unifiedFocusedUsesLearningDecision ? (
+              <div className="flex flex-wrap justify-end gap-2">
+                {unifiedLearningDecisionOptions.map((meta) => (
+                  <button
+                    key={meta.value}
+                    type="button"
+                    disabled={unifiedFocusedSubmitting}
+                    onClick={() => submitUnifiedFocusedDecision(meta.value)}
+                    aria-label={`${meta.label}: ${meta.description}`}
+                    className={cn(
+                      'rounded-xl border px-3 py-2 text-xs font-black transition disabled:opacity-30',
+                      meta.tone === 'emerald'
+                        ? 'border-emerald-300/35 text-emerald-100 hover:bg-emerald-400/10'
+                        : meta.tone === 'red'
+                          ? 'border-red-300/35 text-red-100 hover:bg-red-400/10'
+                          : 'border-amber-300/35 text-amber-100 hover:bg-amber-400/10'
+                    )}
+                  >
+                    {meta.label}
+                  </button>
+                ))}
+              </div>
+            ) : unifiedFocusedItem.decisionType === 'pairwise' ? (
+              <div className="flex flex-wrap justify-end gap-2">
+                {[
+                  ['baseline_preferred', 'A está melhor'],
+                  ['candidate_preferred', 'B está melhor'],
+                  ['equivalent', 'Mesma qualidade'],
+                  ['invalid_pair', 'Par inválido'],
+                ].map(([decision, label]) => (
+                  <button
+                    key={decision}
+                    type="button"
+                    disabled={unifiedFocusedSubmitting}
+                    onClick={() => submitUnifiedFocusedDecision(decision)}
+                    className="rounded-xl border border-blue-300/30 px-3 py-2 text-xs font-black text-blue-100 transition hover:bg-blue-400/10 disabled:opacity-30"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => openUnifiedSpecializedView(unifiedFocusedItem)}
+                className="rounded-xl border border-cyan-300/35 bg-cyan-400/[0.06] px-3 py-2 text-xs font-black text-cyan-100 transition hover:bg-cyan-400/10"
+              >
+                {unifiedFocusedItem.decisionType === 'mojibake' ? 'Revisar sinais Unicode' : 'Abrir visão especializada'}
+              </button>
+            )}
+          </footer>
+        </div>
+      </div>,
+      document.body
+    ) : null}
+    {typeof document !== 'undefined' && mojibakeFocusedItem ? createPortal(
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="mojibake-focused-review-title"
+        data-content-theme={document.querySelector('[data-content-theme]')?.getAttribute('data-content-theme') ?? 'dark'}
+        className="dashboard-shell fixed inset-0 z-[10000] bg-[var(--dash-bg)] text-[var(--dash-text)]"
+      >
+        <div className="mx-auto flex h-[100dvh] w-full max-w-[1920px] min-w-0 flex-col gap-3 p-3 sm:p-4">
+          <header className="flex shrink-0 items-center justify-between gap-4 rounded-2xl border border-[var(--dash-border)] bg-[var(--dash-card)] px-4 py-3 shadow-[0_18px_60px_rgba(0,0,0,0.28)]">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone="violet">segmento #{mojibakeFocusedItem.segment_id}</Badge>
+                <Badge tone={mojibakeFocusedFamilyMeta.tone}>{mojibakeFocusedFamilyMeta.label}</Badge>
+                <span className="text-xs font-bold text-[var(--dash-muted)]">
+                  {mojibakeFocusedIndex + 1} de {mojibakeFocusedItems.length} na visão atual
+                </span>
+              </div>
+              <h2 id="mojibake-focused-review-title" className="mt-1 truncate text-lg font-black">
+                Revisão focada do segmento
+              </h2>
+              <p className="mt-0.5 truncate text-xs text-[var(--dash-muted)]" title={`${mojibakeFocusedItem.relative_path ?? ''} :: ${mojibakeFocusedItem.source_key ?? ''}`}>
+                {mojibakeFocusedItem.relative_path ?? '-'} :: <span className="font-bold text-[var(--dash-text)]">{mojibakeFocusedItem.source_key ?? '-'}</span>
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                disabled={mojibakeFocusedItems.length <= 1 || mojibakeFocusedSubmitting}
+                onClick={() => moveMojibakeFocus(-1)}
+                className="grid h-10 w-10 place-items-center rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] text-[var(--dash-muted)] transition hover:border-blue-300/45 hover:text-blue-200 disabled:cursor-not-allowed disabled:opacity-30"
+                aria-label="Segmento anterior"
+                title="Segmento anterior · seta para esquerda"
+              >
+                <ChevronLeft size={18} />
+              </button>
+              <button
+                type="button"
+                disabled={mojibakeFocusedItems.length <= 1 || mojibakeFocusedSubmitting}
+                onClick={() => moveMojibakeFocus(1)}
+                className="grid h-10 w-10 place-items-center rounded-xl border border-[var(--dash-border)] bg-[var(--dash-subtle)] text-[var(--dash-muted)] transition hover:border-blue-300/45 hover:text-blue-200 disabled:cursor-not-allowed disabled:opacity-30"
+                aria-label="Próximo segmento"
+                title="Próximo segmento · seta para direita"
+              >
+                <ChevronRight size={18} />
+              </button>
+              <button
+                ref={mojibakeFocusedCloseRef}
+                type="button"
+                onClick={closeMojibakeFocusedReview}
+                className="grid h-10 w-10 place-items-center rounded-xl border border-red-300/25 bg-red-400/[0.06] text-red-200 transition hover:border-red-300/50 hover:bg-red-400/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300/60"
+                aria-label="Fechar revisão focada"
+                title="Fechar e voltar à lista · Esc"
+              >
+                <X size={19} />
+              </button>
+            </div>
+          </header>
+
+          <section className="grid shrink-0 gap-2 rounded-2xl border border-[var(--dash-border)] bg-[var(--dash-card)] p-3 lg:grid-cols-[minmax(260px,1.4fr)_minmax(200px,1fr)_minmax(150px,.65fr)_minmax(220px,1fr)]">
+            <div className="min-w-0">
+              <p className="text-[9px] font-black uppercase tracking-[0.12em] text-[var(--dash-muted)]">Padrões identificados</p>
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {mojibakeFocusedPatterns.length
+                  ? mojibakeFocusedPatterns.map((pattern) => <Badge key={pattern} tone="slate">{pattern}</Badge>)
+                  : <Badge tone="slate">não inferido</Badge>}
+              </div>
+            </div>
+            <div className="min-w-0">
+              <p className="text-[9px] font-black uppercase tracking-[0.12em] text-[var(--dash-muted)]">Risco e evidência</p>
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {mojibakeFocusedItem.human_locked ? <Badge tone="violet">lock humano</Badge> : <Badge tone="slate">sem lock</Badge>}
+                {mojibakeFocusedItem.memory_supported ? <Badge tone="violet">memória · {mojibakeFocusedItem.memory_supported_replacement_count}</Badge> : null}
+                {mojibakeFocusedBlockers.slice(0, 3).map((blocker) => <Badge key={blocker} tone="amber">{blocker}</Badge>)}
+              </div>
+            </div>
+            <div>
+              <p className="text-[9px] font-black uppercase tracking-[0.12em] text-[var(--dash-muted)]">Score atual</p>
+              <div className="mt-1.5"><Badge tone={scoreTone(mojibakeFocusedItem.model_safe_probability)}>{scoreLabel(mojibakeFocusedItem.model_safe_probability)}</Badge></div>
+            </div>
+            <div className="min-w-0">
+              <p className="text-[9px] font-black uppercase tracking-[0.12em] text-[var(--dash-muted)]">Resíduos estruturados</p>
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {mojibakeFocusedRemainingCount ? (
+                  <Badge
+                    tone="amber"
+                    tabIndex={0}
+                    data-tooltip-title={`Resíduos identificados (${mojibakeFocusedResidualTooltipRows.length})`}
+                    data-tooltip-description={mojibakeFocusedResidualTooltipRows.join('\n')}
+                    data-tooltip-meta="Ocorrências que ainda permanecem após a correção focal."
+                  >
+                    restam {mojibakeFocusedRemainingCount}
+                  </Badge>
+                ) : <Badge tone="emerald">sem resíduo detectado</Badge>}
+                {Number(mojibakeFocusedItem.validated_punctuation_count ?? 0) > 0 ? (
+                  <Badge tone="blue">pontuação preservada · {mojibakeFocusedItem.validated_punctuation_count}</Badge>
+                ) : null}
+                {mojibakeFocusedResidualFindings.map((finding, index) => (
+                  <Badge key={`${finding.route ?? 'residual'}-${index}`} tone={finding.route === 'semantic_gender' ? 'violet' : finding.route === 'token_structure' ? 'blue' : 'slate'}>
+                    {finding.issue_family ?? finding.route ?? 'resíduo'}
+                  </Badge>
+                ))}
+              </div>
+              {mojibakeFocusedQuestionSignals.length ? (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  <span className="w-full text-[9px] font-bold text-[var(--dash-muted)]">Selecione apenas a pontuação legítima</span>
+                  {mojibakeFocusedQuestionSignals.map((signal) => {
+                    const signalIndex = Number(signal?.signal_index);
+                    const selected = mojibakeFocusedValidSignalIndexes.includes(signalIndex);
+                    const token = String(signal?.token ?? '?');
+                    const reason = String(signal?.reason ?? 'contexto necessário');
+                    return (
+                      <button
+                        key={`${signalIndex}-${signal?.signal_signature ?? token}`}
+                        type="button"
+                        onClick={() => setMojibakeFocusedValidSignalIndexes((current) => (
+                          current.includes(signalIndex)
+                            ? current.filter((value) => value !== signalIndex)
+                            : [...current, signalIndex]
+                        ))}
+                        className={cn(
+                          'rounded-lg border px-2 py-1 text-[10px] font-black transition',
+                          selected
+                            ? 'border-blue-300/60 bg-blue-400/15 text-blue-100'
+                            : 'border-[var(--dash-border)] text-[var(--dash-muted)] hover:border-blue-300/45 hover:text-blue-100'
+                        )}
+                        data-tooltip-title={`Ocorrência ${signalIndex + 1}: ${token}`}
+                        data-tooltip-description={reason}
+                        data-tooltip-meta="Marque somente se este ponto de interrogação faz parte da pontuação final do texto."
+                      >
+                        {selected ? '✓ ' : ''}{token} · {signalIndex + 1}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          </section>
+
+          <main className="grid min-h-0 flex-1 grid-rows-[minmax(190px,1.08fr)_minmax(150px,1fr)] gap-3">
+            <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-emerald-300/25 bg-emerald-400/[0.035]">
+              <div className="flex shrink-0 items-center justify-between gap-3 border-b border-emerald-300/15 px-4 py-2.5">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-[0.14em] text-emerald-300">Texto principal em validação</p>
+                  <p className="mt-0.5 text-[11px] text-[var(--dash-muted)]">Compare a proposta integral com a saída que originou a correção.</p>
+                </div>
+                <div className="dashboard-segmented shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setMojibakeFocusedPrimaryView('candidate')}
+                    className={cn('dashboard-segmented-button px-3 text-xs font-bold', mojibakeFocusedPrimaryView === 'candidate' && 'is-active')}
+                  >
+                    Proposta
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMojibakeFocusedPrimaryView('output')}
+                    className={cn('dashboard-segmented-button px-3 text-xs font-bold', mojibakeFocusedPrimaryView === 'output' && 'is-active')}
+                  >
+                    Saída atual
+                  </button>
+                </div>
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+                {mojibakeFocusedLoading ? (
+                  <p className="text-sm font-bold text-blue-200">Carregando texto integral…</p>
+                ) : mojibakeFocusedError ? (
+                  <p className="text-sm font-bold text-red-300">{mojibakeFocusedError}</p>
+                ) : (
+                  <p className="whitespace-pre-wrap break-words font-mono text-sm leading-6 text-emerald-50">
+                    {mojibakeFocusedPrimaryText || 'Sem texto disponível.'}
+                  </p>
+                )}
+              </div>
+            </section>
+
+            <div className="grid min-h-0 gap-3 lg:grid-cols-3">
+              {[
+                ['English', mojibakeFocusedDetail?.english_text, 'blue'],
+                ['Spanish', mojibakeFocusedDetail?.spanish_text, 'amber'],
+                ['Old · baseline anterior', mojibakeFocusedDetail?.old_text, 'violet'],
+              ].map(([label, value, tone]) => (
+                <section key={label} className={cn(
+                  'flex min-h-0 flex-col overflow-hidden rounded-2xl border bg-[var(--dash-card)]',
+                  tone === 'blue' ? 'border-blue-300/20' : tone === 'amber' ? 'border-amber-300/20' : 'border-violet-300/20'
+                )}>
+                  <div className="shrink-0 border-b border-[var(--dash-border)] px-4 py-2.5">
+                    <p className={cn(
+                      'text-[10px] font-black uppercase tracking-[0.14em]',
+                      tone === 'blue' ? 'text-blue-300' : tone === 'amber' ? 'text-amber-300' : 'text-violet-300'
+                    )}>{label}</p>
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+                    <p className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-[var(--dash-text)]">
+                      {mojibakeFocusedLoading ? 'Carregando…' : value || 'Sem texto disponível.'}
+                    </p>
+                  </div>
+                </section>
+              ))}
+            </div>
+          </main>
+
+          <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--dash-border)] bg-[var(--dash-card)] px-4 py-3 shadow-[0_-12px_40px_rgba(0,0,0,0.2)]">
+            <div className="min-w-0">
+              <p className="text-xs font-black">Decisão supervisionada</p>
+              <p className="mt-0.5 text-[11px] text-[var(--dash-muted)]">Ao registrar, a revisão avança automaticamente para o próximo segmento visível.</p>
+            </div>
+            {mojibakeFocusedDecisionMeta ? (
+              <div className="flex flex-wrap items-center gap-2" title={mojibakeFocusedItem.decision_reason ?? ''}>
+                <Badge tone={mojibakeFocusedDecisionMeta.tone}>{mojibakeFocusedDecisionMeta.label}</Badge>
+                <span className="max-w-[560px] truncate text-xs text-[var(--dash-muted)]">{mojibakeFocusedItem.decision_reason ?? 'decisão registrada'}</span>
+              </div>
+            ) : (
+              <div className="flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={mojibakeFocusedSubmitting || mojibakeFocusedRemainingCount > 0 || mojibakeFocusedItem.family === 'stale_snapshot'}
+                  onClick={() => submitMojibakeLexiconReview(mojibakeFocusedItem, 'accept_suggestion')}
+                  className="rounded-xl border border-emerald-300/35 bg-emerald-400/[0.05] px-3 py-2 text-xs font-black text-emerald-100 transition hover:bg-emerald-400/10 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  Aceitar proposta
+                </button>
+                <button
+                  type="button"
+                  disabled={mojibakeFocusedSubmitting || mojibakeFocusedRemainingCount <= 0 || mojibakeFocusedItem.family === 'stale_snapshot'}
+                  onClick={() => submitMojibakeLexiconReview(mojibakeFocusedItem, 'partial_correction')}
+                  className="rounded-xl border border-amber-300/35 bg-amber-400/[0.05] px-3 py-2 text-xs font-black text-amber-100 transition hover:bg-amber-400/10 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  {mojibakeFocusedRemainingCount ? `Confirmar resíduos (${mojibakeFocusedRemainingCount})` : 'Foco corrigido, outro erro'}
+                </button>
+                <button
+                  type="button"
+                  disabled={mojibakeFocusedSubmitting || !mojibakeFocusedSelectedQuestionSignals.length}
+                  onClick={() => submitMojibakeLexiconReview(
+                    mojibakeFocusedItem,
+                    'valid_question_mark',
+                    mojibakeFocusedSelectedQuestionSignals.map((signal) => ({
+                      signal_index: Number(signal.signal_index),
+                      token: String(signal.token ?? ''),
+                    }))
+                  )}
+                  className="rounded-xl border border-blue-300/35 bg-blue-400/[0.05] px-3 py-2 text-xs font-black text-blue-100 transition hover:bg-blue-400/10 disabled:opacity-30"
+                >
+                  {mojibakeFocusedSelectedQuestionSignals.length
+                    ? `Confirmar pontuação (${mojibakeFocusedSelectedQuestionSignals.length})`
+                    : 'Selecione “?” válido'}
+                </button>
+                <button
+                  type="button"
+                  disabled={mojibakeFocusedSubmitting}
+                  onClick={() => submitMojibakeLexiconReview(mojibakeFocusedItem, 'manual_review')}
+                  className="rounded-xl border border-amber-300/35 px-3 py-2 text-xs font-black text-amber-100 transition hover:bg-amber-400/10 disabled:opacity-30"
+                >
+                  Revisão manual
+                </button>
+              </div>
+            )}
+          </footer>
+        </div>
+      </div>,
+      document.body
+    ) : null}
+    </>
   );
 }
 
@@ -5864,7 +10554,13 @@ function ProjectOverviewDashboard({ data }) {
   const totalSegments = Number(packageScore.total_segment_count ?? release.total_segments ?? 0);
   const measuredSegments = Number(packageScore.measured_count ?? 0);
   const oldScore = Number(packageScore.avg_old_score ?? packageScore.weighted_avg_old_score ?? 0);
-  const outputScore = Number(packageScore.avg_new_score ?? packageScore.weighted_avg_new_score ?? 0);
+  const effectiveScoreContract = packageScore.effective_score_contract ?? {};
+  const outputScore = Number(packageScore.operational_effective_avg_score ?? packageScore.avg_new_score ?? packageScore.weighted_avg_new_score ?? 0);
+  const scoreSourceDetail = effectiveScoreContract.active
+    ? `Calibrado #${effectiveScoreContract.candidate_run_id} aplicado ao contexto atual`
+    : effectiveScoreContract.reason === 'score_context_changed'
+      ? `Score bruto atual · calibrado #${effectiveScoreContract.candidate_run_id} pertence ao contexto anterior`
+      : 'Score operacional atual sem calibração versionada aplicada';
   const scoreDelta = Number(packageScore.avg_delta ?? packageScore.weighted_avg_delta ?? 0);
   const coverage = Number(packageScore.coverage ?? 0);
   const pending = Number(release.pending_count ?? 0);
@@ -5985,12 +10681,13 @@ function ProjectOverviewDashboard({ data }) {
           <Badge tone={comparable ? 'emerald' : 'amber'}>{comparable ? 'contrato interno comparável' : 'contrato divergente'}</Badge>
           <Badge tone={crossVersionComparable ? 'emerald' : 'amber'}>{crossVersionComparable ? 'versões comparáveis' : baselineSensitive ? 'baseline-sensitive' : 'comparabilidade pendente'}</Badge>
           <Badge tone="blue">score #{scoreContract.old?.run_id ?? '-'} -&gt; #{scoreContract.output?.run_id ?? '-'}</Badge>
+          {effectiveScoreContract.reason === 'score_context_changed' ? <Badge tone="amber">calibrado #{effectiveScoreContract.candidate_run_id} · contexto anterior</Badge> : null}
           <Badge tone={appState.cache?.stale ? 'amber' : 'emerald'}>{appState.cache?.stale ? 'cache defasado' : 'dados atuais'}</Badge>
         </div>
       </section>
 
       <section className="grid shrink-0 grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
-        <OverviewKpi label="Score operacional" value={scoreLabel(outputScore)} detail={`risco na epoch · baseline ${scoreLabel(oldScore)} · ${deltaLabel}`} tone="blue" icon={BarChart3} />
+        <OverviewKpi label={effectiveScoreContract.active ? 'Score efetivo calibrado' : 'Score operacional bruto'} value={scoreLabel(outputScore)} detail={scoreSourceDetail} tone="blue" icon={BarChart3} />
         <OverviewKpi label="Ganho pareado" value={pairwiseDeltaLabel} detail={pairwiseDetail} tone={pairwiseGainAvailable && Number(validatedPairwiseGain.regressed_count ?? 0) === 0 ? 'emerald' : 'amber'} icon={Scale} />
         <OverviewKpi label="Fechamento operacional" value={closureLabel} detail={`${fmt(operationalClosure.closed_count ?? release.closed_count ?? 0)} fechados · ${fmt(pending)} pendentes · ${fmt(needsApply)} apply`} tone={operationallyClosed ? 'emerald' : 'amber'} icon={ShieldCheck} />
         <OverviewKpi label="Dívida de qualidade" value={qualityDebtLabel} detail={qualityDebtDetail} tone={qualityDebtActionable ? 'amber' : qualityDebt.status === 'clear' ? 'emerald' : 'blue'} icon={qualityDebtActionable ? AlertTriangle : CheckCircle2} />
@@ -6079,8 +10776,311 @@ function ProjectOverviewDashboard({ data }) {
   );
 }
 
+const calibrationSliceLabels = {
+  curto_simples: 'Curto / simples',
+  medio_dinamico: 'Médio / dinâmico',
+  longo_complexo: 'Longo / complexo',
+  predominantemente_dinamico: 'Predominantemente dinâmico',
+  baixo_score_manual: 'Revisão de baixo score',
+  mojibake_proposta: 'Proposta Unicode/mojibake',
+};
+
+function CalibrationTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  const visibleEntries = payload.filter((entry) => entry.value != null);
+  return (
+    <div className="max-w-[300px] rounded-xl border border-[var(--dash-border)] bg-[var(--dash-card)] p-3 text-xs shadow-2xl">
+      <p className="font-black text-[var(--dash-text)]">{calibrationSliceLabels[label] ?? label}</p>
+      {visibleEntries.map((entry) => (
+        <p key={entry.dataKey} className="mt-1" style={{ color: entry.color }}>
+          {entry.name}: {String(entry.dataKey).toLowerCase().includes('observationcount')
+            ? fmt(entry.value)
+            : `${Number(entry.value).toLocaleString('pt-BR', { maximumFractionDigits: 2 })}%`}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function ModelMetricsDashboard({ data }) {
+  const calibration = data.mlPerformance?.supervisedCalibration ?? {};
+  const model = calibration.model ?? {};
+  const operational = model.operational ?? {};
+  const raw = model.raw ?? {};
+  const overall = calibration.overall ?? {};
+  const rawOverall = calibration.raw_overall ?? {};
+  const shadow = calibration.shadow_calibration ?? {};
+  const shadowCandidate = shadow.candidate ?? {};
+  const shadowGuardrails = shadow.guardrails ?? {};
+  const currentBands = new Map((overall.bands ?? []).map((row) => [row.band, row]));
+  const shadowBands = new Map((shadowCandidate.bands ?? []).map((row) => [row.band, row]));
+  const [sliceKey, setSliceKey] = useState('by_complexity');
+  const [panelView, setPanelView] = useState('charts');
+
+  if (!calibration.available) {
+    return (
+      <Card className="p-6">
+        <h2 className="text-lg font-black text-[var(--dash-text)]">Métricas e calibração</h2>
+        <p className="mt-2 text-sm text-[var(--dash-muted)]">
+          {calibration.message ?? 'Ainda não há decisões humanas com score e hash comparáveis.'}
+        </p>
+      </Card>
+    );
+  }
+
+  const reliabilityBandLabels = Array.from(new Set([
+    ...currentBands.keys(),
+    ...shadowBands.keys(),
+  ])).sort((left, right) => {
+    const leftRow = currentBands.get(left) ?? shadowBands.get(left) ?? {};
+    const rightRow = currentBands.get(right) ?? shadowBands.get(right) ?? {};
+    return Number(leftRow.lower ?? 0) - Number(rightRow.lower ?? 0);
+  });
+  const reliability = reliabilityBandLabels.map((band) => {
+    const currentRow = currentBands.get(band);
+    const shadowRow = shadowBands.get(band);
+    const referenceRow = currentRow ?? shadowRow ?? {};
+    return {
+      band,
+      predicted: currentRow ? Number(currentRow.predicted_rate) * 100 : null,
+      shadowPredicted: shadowRow ? Number(shadowRow.predicted_rate) * 100 : null,
+      observed: currentRow ? Number(currentRow.observed_safe_rate) * 100 : null,
+      shadowObserved: shadowRow ? Number(shadowRow.observed_safe_rate) * 100 : null,
+      ideal: Number(referenceRow.midpoint ?? 0) * 100,
+      currentObservationCount: currentRow ? Number(currentRow.observation_count ?? 0) : null,
+      shadowObservationCount: shadowRow ? Number(shadowRow.observation_count ?? 0) : null,
+    };
+  });
+  const holdoutComparison = [
+    { metric: 'Accuracy', raw: Number(raw.accuracy ?? 0) * 100, operational: Number(operational.accuracy ?? 0) * 100 },
+    { metric: 'Macro F1', raw: Number(raw.macro_f1 ?? 0) * 100, operational: Number(operational.macro_f1 ?? 0) * 100 },
+    { metric: 'Precisão segura', raw: Number(raw.safe_precision ?? 0) * 100, operational: Number(operational.safe_precision ?? 0) * 100 },
+    { metric: 'Cobertura segura', raw: Number(raw.safe_recall ?? 0) * 100, operational: Number(operational.safe_recall ?? 0) * 100 },
+  ];
+  const shadowSlices = new Map((shadow[sliceKey] ?? []).map((row) => [row.label, row]));
+  const sliceRows = (calibration[sliceKey] ?? []).map((row) => {
+    const shadowRow = shadowSlices.get(row.label) ?? {};
+    return {
+      ...row,
+      displayLabel: calibrationSliceLabels[row.label] ?? row.label,
+      predicted: Number(row.mean_confidence ?? 0) * 100,
+      observed: Number(row.observed_safe_rate ?? 0) * 100,
+      ecePct: Number(row.ece ?? 0) * 100,
+      observationCount: Number(row.observation_count ?? 0),
+      shadowConfidence: shadowRow.mean_confidence,
+      shadowEce: shadowRow.ece,
+      shadowBrier: shadowRow.brier,
+    };
+  });
+  const statusTone = calibration.status === 'calibrado'
+    ? 'emerald'
+    : calibration.status === 'atencao'
+      ? 'amber'
+      : calibration.status === 'amostra_insuficiente'
+        ? 'slate'
+        : 'red';
+  const eceDelta = overall.ece != null && rawOverall.ece != null
+    ? Number(overall.ece) - Number(rawOverall.ece)
+    : null;
+
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
+      <section className="flex shrink-0 flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-black text-[var(--dash-text)]">Métricas do modelo e calibração</h2>
+          <p className="mt-1 text-xs text-[var(--dash-muted)]">
+            Holdout mede classificação; decisões humanas medem se a confiança atribuída ao mesmo texto é coerente.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={statusTone}>{String(calibration.status ?? 'não medido').replaceAll('_', ' ')}</Badge>
+          <Badge tone="blue">modelo #{calibration.model_run_id}</Badge>
+          <Badge tone="violet">score #{calibration.score_run_id}</Badge>
+          {shadow.available && (
+            <Badge tone={shadow.gate_passed ? 'emerald' : 'red'}>
+              shadow #{shadow.persisted_run_id ?? '-'} · {String(shadow.status ?? '').replaceAll('_', ' ')}
+            </Badge>
+          )}
+          {shadow.available && (
+            <Badge tone="blue">
+              ECE {ppMetric(Number(overall.ece ?? 0) * 100)} → {ppMetric(Number(shadowCandidate.ece ?? 0) * 100)}
+            </Badge>
+          )}
+          {shadow.available && (
+            <Badge tone={Number(shadowGuardrails.candidate_false_safe_count ?? 0) === 0 ? 'emerald' : 'red'}>
+              falso seguro {fmt(shadowGuardrails.candidate_false_safe_count)}
+            </Badge>
+          )}
+          <Badge tone="slate">revisões até {calibration.review_watermark ?? '-'}</Badge>
+        </div>
+      </section>
+
+      <section className="grid shrink-0 grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
+        <OverviewKpi label="Accuracy" value={pctMetric(operational.accuracy)} detail={`${fmt(operational.test_examples)} exemplos · política operacional`} tone="blue" icon={BarChart3} />
+        <OverviewKpi label="Macro F1" value={pctMetric(operational.macro_f1)} detail="equilíbrio entre as quatro classes" tone="emerald" icon={Scale} />
+        <OverviewKpi label="Precisão segura" value={pctMetric(operational.safe_precision)} detail={`${fmt(operational.false_safe_count)} falsos seguros`} tone={Number(operational.false_safe_count) ? 'red' : 'emerald'} icon={ShieldCheck} />
+        <OverviewKpi label="Cobertura segura" value={pctMetric(operational.safe_recall)} detail="safe recall com gate operacional" tone="blue" icon={SearchCheck} />
+        <OverviewKpi label="ECE supervisionado" value={ppMetric(Number(overall.ece ?? 0) * 100)} detail={`${fmt(overall.observation_count)} textos com hash exato`} tone={statusTone} icon={Activity} />
+        <OverviewKpi
+          label={shadow.available ? 'Brier bruto → shadow' : 'Brier score'}
+          value={shadow.available ? `${metric(overall.brier)} → ${metric(shadowCandidate.brier)}` : metric(overall.brier)}
+          detail={shadow.available ? 'out-of-fold · confiança informativa' : 'erro quadrático da probabilidade'}
+          tone={shadow.available && Number(shadowCandidate.brier ?? 1) < Number(overall.brier ?? 1) ? 'emerald' : 'amber'}
+          icon={BrainCircuit}
+        />
+      </section>
+
+      <Card className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[var(--dash-border)] px-4 py-3">
+          <div>
+            <h3 className="text-sm font-black text-[var(--dash-text)]">
+              {panelView === 'charts' ? 'Comparativo visual das métricas' : 'Analítico da calibração'}
+            </h3>
+            <p className="mt-1 text-xs text-[var(--dash-muted)]">
+              {panelView === 'charts'
+                ? 'Confiabilidade supervisionada e impacto da política operacional.'
+                : 'Confiança, qualidade humana observada e erro por recorte.'}
+            </p>
+          </div>
+          <nav className="dashboard-segmented w-fit" aria-label="Visualização das métricas">
+            <button onClick={() => setPanelView('charts')} className={cn('dashboard-segmented-button px-4 text-xs font-black', panelView === 'charts' && 'is-active')}>
+              Gráficos
+            </button>
+            <button onClick={() => setPanelView('analytics')} className={cn('dashboard-segmented-button px-4 text-xs font-black', panelView === 'analytics' && 'is-active')}>
+              Analítico
+            </button>
+          </nav>
+        </div>
+
+        {panelView === 'charts' ? (
+          <div className="grid min-h-0 flex-1 gap-3 p-3 xl:grid-cols-2">
+            <section className="flex min-h-0 flex-col rounded-xl border border-[var(--dash-border)] bg-[var(--dash-surface-2)]/35 p-4">
+              <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-black text-[var(--dash-text)]">Curva de confiabilidade supervisionada</h4>
+                  <p className="mt-1 text-xs text-[var(--dash-muted)]">
+                    Previsto e observado devem se aproximar; em ciano, a confiança calibrada por revisões humanas. Ela é apenas informativa e não altera o gate operacional.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <Badge tone={Number(overall.calibration_gap ?? 0) < 0 ? 'amber' : 'blue'}>
+                    gap {Number(overall.calibration_gap ?? 0) >= 0 ? '+' : ''}{ppMetric(Number(overall.calibration_gap ?? 0) * 100)}
+                  </Badge>
+                  {eceDelta != null && <Badge tone={eceDelta <= 0 ? 'emerald' : 'amber'}>vs bruto {eceDelta >= 0 ? '+' : ''}{ppMetric(eceDelta * 100)}</Badge>}
+                </div>
+              </div>
+              <div className="mt-3 min-h-0 flex-1">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={reliability} margin={{ top: 12, right: 16, left: 0, bottom: 6 }}>
+                    <CartesianGrid strokeDasharray="3 5" stroke="currentColor" opacity={0.09} vertical={false} />
+                    <XAxis dataKey="band" tick={chartText} tickLine={false} axisLine={{ opacity: 0.18 }} />
+                    <YAxis yAxisId="rate" domain={[0, 100]} tick={chartText} tickFormatter={(value) => `${value}%`} tickLine={false} axisLine={false} />
+                    <YAxis yAxisId="count" orientation="right" tick={chartText} tickFormatter={compact} tickLine={false} axisLine={false} />
+                    <RechartsTooltip content={<CalibrationTooltip />} />
+                    <Legend verticalAlign="top" height={46} iconType="circle" wrapperStyle={{ color: 'var(--dash-muted)', fontSize: 11, fontWeight: 700 }} />
+                    <Bar yAxisId="count" dataKey="currentObservationCount" name="Amostra atual" fill="#475569" opacity={0.48} radius={[5, 5, 0, 0]} />
+                    {shadow.available && (
+                      <Bar yAxisId="count" dataKey="shadowObservationCount" name="Amostra shadow" fill="#155e75" opacity={0.48} radius={[5, 5, 0, 0]} />
+                    )}
+                    <Line yAxisId="rate" type="monotone" dataKey="ideal" name="Ideal" stroke="#64748b" strokeDasharray="5 5" dot={false} strokeWidth={2} />
+                    <Line yAxisId="rate" type="monotone" dataKey="predicted" name="Confiança prevista" stroke="#3b82f6" strokeWidth={3} dot={{ r: 4 }} />
+                    {shadow.available && (
+                      <Line yAxisId="rate" type="monotone" dataKey="shadowPredicted" name="Confiança calibrada (shadow)" stroke="#22d3ee" strokeWidth={3} dot={{ r: 4 }} />
+                    )}
+                    <Line yAxisId="rate" type="monotone" dataKey="observed" name="Qualidade observada (atual)" stroke="#10b981" strokeWidth={3} dot={{ r: 4 }} />
+                    {shadow.available && (
+                      <Line yAxisId="rate" type="monotone" dataKey="shadowObserved" name="Qualidade observada (shadow)" stroke="#10b981" strokeDasharray="7 4" strokeWidth={3} dot={{ r: 4, fill: 'var(--dash-card)' }} />
+                    )}
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            </section>
+
+            <section className="flex min-h-0 flex-col rounded-xl border border-[var(--dash-border)] bg-[var(--dash-surface-2)]/35 p-4">
+              <div className="shrink-0">
+                <h4 className="text-sm font-black text-[var(--dash-text)]">Modelo bruto × política operacional</h4>
+                <p className="mt-1 text-xs text-[var(--dash-muted)]">O gate sacrifica cobertura e accuracy para manter falso seguro zerado.</p>
+              </div>
+              <div className="mt-3 min-h-0 flex-1">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={holdoutComparison} margin={{ top: 12, right: 16, left: 0, bottom: 6 }} barCategoryGap="28%">
+                    <CartesianGrid strokeDasharray="3 5" stroke="currentColor" opacity={0.09} vertical={false} />
+                    <XAxis dataKey="metric" tick={chartText} tickLine={false} axisLine={{ opacity: 0.18 }} />
+                    <YAxis domain={[0, 100]} tick={chartText} tickFormatter={(value) => `${value}%`} tickLine={false} axisLine={false} />
+                    <RechartsTooltip content={<CalibrationTooltip />} />
+                    <Legend verticalAlign="top" height={30} iconType="circle" wrapperStyle={{ color: 'var(--dash-muted)', fontSize: 11, fontWeight: 700 }} />
+                    <Bar dataKey="raw" name="Modelo bruto" fill="#8b5cf6" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="operational" name="Política operacional" fill="#10b981" radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </section>
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[var(--dash-border)] px-4 py-3">
+              <div>
+                <h4 className="text-sm font-black text-[var(--dash-text)]">Onde o score está descalibrado</h4>
+                <p className="mt-1 text-xs text-[var(--dash-muted)]">Selecione o recorte para localizar os maiores desvios.</p>
+              </div>
+              <nav className="dashboard-segmented w-fit" aria-label="Recorte analítico">
+                {[
+                  ['by_complexity', 'Complexidade'],
+                  ['by_family', 'Família'],
+                  ['by_source', 'Origem'],
+                ].map(([key, label]) => (
+                  <button key={key} onClick={() => setSliceKey(key)} className={cn('dashboard-segmented-button px-3 text-xs font-black', sliceKey === key && 'is-active')}>
+                    {label}
+                  </button>
+                ))}
+              </nav>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto">
+              <table className="w-full min-w-[820px] text-left text-xs">
+                <thead className="sticky top-0 z-10 bg-[var(--dash-surface-2)] text-[var(--dash-muted)]">
+                  <tr>
+                    <th className="px-4 py-3">Recorte</th>
+                    <th className="px-4 py-3 text-right">Amostra</th>
+                    <th className="px-4 py-3 text-right">Positivos</th>
+                    <th className="px-4 py-3 text-right">Confiança</th>
+                    <th className="px-4 py-3 text-right">Confiança shadow</th>
+                    <th className="px-4 py-3 text-right">Qualidade observada</th>
+                    <th className="px-4 py-3 text-right">ECE</th>
+                    <th className="px-4 py-3 text-right">ECE shadow</th>
+                    <th className="px-4 py-3 text-right">Brier</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sliceRows.map((row) => (
+                    <tr key={row.label} className="border-t border-[var(--dash-border)] text-[var(--dash-text)]">
+                      <td className="px-4 py-3 font-bold">{row.displayLabel}</td>
+                      <td className="px-4 py-3 text-right">{fmt(row.observation_count)}</td>
+                      <td className="px-4 py-3 text-right">{fmt(row.positive_count)}</td>
+                      <td className="px-4 py-3 text-right text-blue-400">{pctMetric(row.mean_confidence)}</td>
+                      <td className="px-4 py-3 text-right text-cyan-300">{pctMetric(row.shadowConfidence)}</td>
+                      <td className="px-4 py-3 text-right text-emerald-400">{pctMetric(row.observed_safe_rate)}</td>
+                      <td className="px-4 py-3 text-right font-bold text-amber-400">{ppMetric(Number(row.ece ?? 0) * 100)}</td>
+                      <td className="px-4 py-3 text-right font-bold text-cyan-300">{ppMetric(Number(row.shadowEce ?? 0) * 100)}</td>
+                      <td className="px-4 py-3 text-right">{metric(row.shadowBrier ?? row.brier)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-[var(--dash-border)] px-4 py-3 text-xs text-[var(--dash-muted)]">
+              <span>{calibration.contract?.caveat}</span>
+              <span>{calibration.contract?.target} · mínimo {fmt(calibration.contract?.minimum_observations)} observações</span>
+            </div>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 const dashboardViewItems = [
   { id: 'overview', label: 'Visão Geral', subtitle: 'Índice global, evolução das versões e prioridades de qualidade.' },
+  { id: 'metrics', label: 'Métricas', subtitle: 'Acurácia, cobertura segura e calibração supervisionada do score.' },
   { id: 'network', label: 'Rede', subtitle: 'Arquitetura neuro-simbólica, agentes, microagentes e ligações.' },
 ];
 
@@ -6124,6 +11124,10 @@ function ProjectIntelligenceDashboard({ data }) {
 
   if (view === 'network') {
     return <NeuralArchitecture data={data} />;
+  }
+
+  if (view === 'metrics') {
+    return <ModelMetricsDashboard data={data} />;
   }
 
   return <ProjectOverviewDashboard data={data} />;
@@ -10295,18 +15299,20 @@ function App() {
   });
   const [data, setData] = useState(null);
   const [appState, setAppState] = useState(null);
+  const [supervisedCalibration, setSupervisedCalibration] = useState(null);
   const [error, setError] = useState(null);
   const [dashboardView, setDashboardView] = useState(dashboardViewFromHash);
-  const needsFullDashboard = activeTab !== 'Production' && !(activeTab === 'Dashboard' && dashboardView === 'network');
+  const needsFullDashboard = activeTab !== 'Production'
+    && !(activeTab === 'Dashboard' && ['network', 'metrics'].includes(dashboardView));
 
-  const fetchAppStatePayload = async () => {
-    const response = await fetch(`${API_BASE}/app-state`);
+  const fetchAppStatePayload = async ({ force = false } = {}) => {
+    const response = await fetch(`${API_BASE}/app-state${force ? '?force=1' : ''}`);
     if (!response.ok) throw new Error(`API ${response.status}`);
     return response.json();
   };
 
-  const refreshAppStateNow = async (consolidatedPayload = null) => {
-    const payload = consolidatedPayload ?? await fetchAppStatePayload();
+  const refreshAppStateNow = async (consolidatedPayload = null, options = {}) => {
+    const payload = consolidatedPayload ?? await fetchAppStatePayload(options);
     setAppState(payload);
     setError(null);
     return payload;
@@ -10358,6 +15364,30 @@ function App() {
   }, [needsFullDashboard]);
 
   useEffect(() => {
+    if (activeTab !== 'Dashboard' || dashboardView !== 'metrics') return undefined;
+    let alive = true;
+    const loadCalibration = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/ml/calibration`);
+        if (!response.ok) throw new Error(`API ${response.status}`);
+        const payload = await response.json();
+        if (alive) {
+          setSupervisedCalibration(payload);
+          setError(null);
+        }
+      } catch (err) {
+        if (alive) setError(err.message);
+      }
+    };
+    loadCalibration();
+    const timer = setInterval(loadCalibration, 60000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [activeTab, dashboardView]);
+
+  useEffect(() => {
     const onHashChange = () => {
       const hash = decodeURIComponent(window.location.hash.replace(/^#/, ''));
       const route = hash.split('/')[0];
@@ -10405,7 +15435,38 @@ function App() {
   const showOperationalNav = operationalNavItems.includes(activeTab);
   const canRenderWithoutApi = activeTab === 'Neural Network' || activeTab === 'Network' || (activeTab === 'Dashboard' && dashboardView === 'network');
   const canRenderWithAppState = activeTab === 'Production' || activeTab === 'Dashboard';
-  const screenData = { ...(data ?? { agents: { summary: {} } }), appState: appState ?? {}, _fullDashboardLoaded: Boolean(data) };
+  const screenData = {
+    ...(data ?? { agents: { summary: {} } }),
+    appState: appState ?? {},
+    mlPerformance: {
+      ...(data?.mlPerformance ?? {}),
+      ...(supervisedCalibration ? { supervisedCalibration } : {}),
+    },
+    _fullDashboardLoaded: Boolean(data),
+  };
+  const systemRelease = screenData.appState?.release ?? {};
+  const systemCache = screenData.appState?.cache ?? {};
+  const systemPackageDiffSummary = systemRelease.post_release?.diff_review?.summary ?? {};
+  const systemPackagePendingCount = Number(systemRelease.pending_count ?? 0);
+  const systemPackageApplyCount = Number(systemRelease.needs_apply ?? 0);
+  const systemPackageChangeCount = Number(
+    systemPackageDiffSummary.raw_output_diff_count
+      ?? systemPackageDiffSummary.changed_vs_old
+      ?? systemPackageDiffSummary.package_diff_count
+      ?? 0
+  );
+  const systemPackageStatus = systemPackageApplyCount > 0
+    ? `${compact(systemPackageApplyCount)} aguardando Apply`
+    : systemPackagePendingCount > 0
+      ? `${compact(systemPackagePendingCount)} pendentes`
+      : systemPackageChangeCount > 0
+        ? 'Pronto para nova versão'
+        : 'Estável';
+  const systemPackageStable = systemPackageStatus === 'Estável';
+  const systemPackageReady = systemPackageStatus === 'Pronto para nova versão';
+  const systemQualityDebt = systemRelease.quality_debt ?? {};
+  const systemQualitySignalCount = Number(systemQualityDebt.actionable_signal_count ?? 0);
+  const systemQualityNeedsAudit = systemQualityDebt.has_actionable_debt === true;
   const isWaitingForData = !data && !error && !canRenderWithoutApi && !(canRenderWithAppState && appState);
   const canRenderScreen = Boolean(data || canRenderWithoutApi || (canRenderWithAppState && appState));
 
@@ -10413,23 +15474,66 @@ function App() {
     <div className="h-screen overflow-hidden">
       <div
         data-content-theme={isDarkMode ? 'dark' : 'light'}
-        className={`${isDarkMode ? 'dark ' : ''}dashboard-shell h-screen w-full overflow-hidden p-4 [&_button]:cursor-pointer`}
+        className={cn(
+          isDarkMode && 'dark',
+          'dashboard-shell h-screen w-full overflow-hidden [&_button]:cursor-pointer',
+          activeTab === 'Production' ? 'system-shell' : 'p-4'
+        )}
       >
-        <main className="mx-auto flex h-full max-w-[1920px] flex-col overflow-hidden">
-          <header className="dashboard-header grid min-h-[64px] shrink-0 grid-cols-12 items-center gap-4 border px-4 py-2">
-            <div className="col-span-12 lg:col-span-5">
-              <div className="flex items-center gap-4">
-                <div className="grid h-10 w-10 place-items-center rounded-xl border border-red-500/25 bg-[#070b18] shadow-[0_0_24px_rgba(251,23,75,0.18)]">
-                  <img src="/favicon.svg" alt="" className="h-8 w-8" aria-hidden="true" />
+        <main className={cn(
+          'mx-auto flex h-full flex-col overflow-hidden',
+          activeTab === 'Production' ? 'max-w-none' : 'max-w-[1920px]'
+        )}>
+          <header className={cn(
+            'dashboard-header grid min-h-[64px] shrink-0 grid-cols-12 items-center gap-4 border px-4 py-2',
+            activeTab === 'Production' && 'system-appbar'
+          )}>
+            <div className={cn('col-span-12', activeTab === 'Production' ? 'lg:col-span-3' : 'lg:col-span-5')}>
+              {activeTab === 'Production' ? (
+                <div className="flex items-center gap-4">
+                  <SystemMark className="h-11 w-11" iconSize={20} />
+                  <div className="min-w-0">
+                    <h1 className="truncate text-lg font-black tracking-tight">CK3 PT-BR</h1>
+                    <p className="truncate text-sm text-[var(--dash-muted)]">Command Workspace</p>
+                  </div>
                 </div>
-                <div className="min-w-0">
-                  <h1 className="truncate text-lg font-semibold tracking-tight">{currentScreen.title}</h1>
-                  <p className="truncate text-sm text-[var(--dash-muted)]">{headerSubtitle}</p>
+              ) : (
+                <div className="flex items-center gap-4">
+                  <SystemMark className="h-10 w-10" iconSize={18} />
+                  <div className="min-w-0">
+                    <h1 className="truncate text-lg font-semibold tracking-tight">{currentScreen.title}</h1>
+                    <p className="truncate text-sm text-[var(--dash-muted)]">{headerSubtitle}</p>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
-            <div className="col-span-12 flex flex-wrap items-center justify-start gap-2 lg:col-span-7 lg:justify-end">
+            {activeTab === 'Production' ? (
+              <div className="col-span-12 hidden min-w-0 items-center divide-x divide-[var(--dash-border)] lg:col-span-6 lg:grid lg:grid-cols-3">
+                <div className="min-w-0 px-6">
+                  <p className="text-[10px] font-black uppercase tracking-[0.12em] text-[var(--dash-soft)]">Pacote ativo</p>
+                  <p className="mt-1 truncate text-sm font-black text-[var(--dash-text)]">
+                    CK3 PT-BR: Release <span className="font-bold text-[var(--dash-muted)]">· {systemCache.generated_at ? compactDateTime(systemCache.generated_at) : 'snapshot pendente'}</span>
+                  </p>
+                </div>
+                <div className="min-w-0 px-6">
+                  <p className="text-[10px] font-black uppercase tracking-[0.12em] text-[var(--dash-soft)]">Status do pacote</p>
+                  <p className={cn('mt-1 inline-flex items-center gap-2 truncate text-sm font-black', systemPackageStable ? 'text-emerald-400' : systemPackageReady ? 'text-blue-400' : 'text-amber-400')}>
+                    <span className={cn('h-2.5 w-2.5 shrink-0 rounded-full', systemPackageStable ? 'bg-emerald-400' : systemPackageReady ? 'bg-blue-400' : 'bg-amber-400')} />
+                    <span className="truncate">{systemPackageStatus}</span>
+                  </p>
+                </div>
+                <div className="min-w-0 px-6">
+                  <p className="text-[10px] font-black uppercase tracking-[0.12em] text-[var(--dash-soft)]">Qualidade</p>
+                  <p className={cn('mt-1 inline-flex items-center gap-2 truncate text-sm font-black', systemQualityNeedsAudit ? 'text-amber-400' : 'text-emerald-400')}>
+                    <span className={cn('h-2.5 w-2.5 shrink-0 rounded-full', systemQualityNeedsAudit ? 'bg-amber-400' : 'bg-emerald-400')} />
+                    <span className="truncate">{systemQualityNeedsAudit ? `${compact(systemQualitySignalCount)} sinais mapeados` : 'Saudável'}</span>
+                  </p>
+                </div>
+              </div>
+            ) : null}
+
+            <div className={cn('col-span-12 flex flex-wrap items-center justify-start gap-2 lg:justify-end', activeTab === 'Production' ? 'lg:col-span-3' : 'lg:col-span-7')}>
               {activeTab === 'Dashboard' ? (
                 <nav className="dashboard-segmented w-fit flex-wrap">
                   {dashboardViewItems.map((item) => (
@@ -10446,21 +15550,19 @@ function App() {
                   ))}
                 </nav>
               ) : showOperationalNav && (
-                <nav className="dashboard-segmented w-fit flex-wrap">
+                <nav className="flex w-fit flex-wrap">
                   <button
                     onClick={() => openDashboardTab('Dashboard/overview')}
-                    className="dashboard-segmented-button is-active grid w-8 place-items-center"
-                    title="Abrir Dashboard em nova guia"
+                    className="system-utility-button inline-flex items-center gap-2"
                     aria-label="Abrir Dashboard em nova guia"
                   >
-                    <LayoutDashboard size={15} />
+                    <LayoutDashboard size={16} /> <span>Dashboard</span>
                   </button>
                 </nav>
               )}
               <button
                 onClick={() => setIsDarkMode((current) => !current)}
                 className="dashboard-icon-button"
-                title={isDarkMode ? 'Ativar tema claro' : 'Ativar tema escuro'}
                 aria-label={isDarkMode ? 'Ativar tema claro' : 'Ativar tema escuro'}
               >
                 {isDarkMode ? <Sun /> : <Moon />}
@@ -10468,7 +15570,7 @@ function App() {
             </div>
           </header>
 
-          <div className="mt-3 min-h-0 flex-1 overflow-hidden">
+          <div className={cn('min-h-0 flex-1 overflow-hidden', activeTab === 'Production' ? 'mt-0' : 'mt-3')}>
             {error && (
               <Card className="mb-5 border-red-500/40 p-4 text-red-300">
                 Não consegui carregar a API local: {error}. Inicie com <code>python dashboard/backend.py --host 127.0.0.1 --port 8765</code>.
@@ -10483,7 +15585,12 @@ function App() {
   );
 }
 
-createRoot(document.getElementById('root')).render(
+const dashboardRootElement = document.getElementById('root');
+const dashboardReactRoot = globalThis.__CK3_DASHBOARD_REACT_ROOT__
+  ?? createRoot(dashboardRootElement);
+globalThis.__CK3_DASHBOARD_REACT_ROOT__ = dashboardReactRoot;
+
+dashboardReactRoot.render(
   <DashboardErrorBoundary>
     <>
       <GlobalTooltipLayer />

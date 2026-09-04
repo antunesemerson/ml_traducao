@@ -139,6 +139,363 @@ body {
   transform: translateY(-1px);
 }
 
+/* Operational workspace shell. Dashboard surfaces deliberately remain unchanged. */
+.system-shell {
+  background:
+    radial-gradient(circle at 14% -12%, color-mix(in srgb, var(--dash-accent) 8%, transparent), transparent 30%),
+    var(--dash-bg);
+}
+
+.system-appbar {
+  min-height: 4rem;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--dash-elevated) 96%, transparent);
+  box-shadow: none;
+}
+
+.system-mark {
+  flex: 0 0 auto;
+  filter: drop-shadow(0 0 12px color-mix(in srgb, var(--dash-accent) 26%, transparent));
+}
+
+.system-utility-button {
+  min-height: var(--ui-control-height);
+  border: 1px solid var(--dash-border);
+  border-radius: 0.625rem;
+  background: transparent;
+  padding: 0.5rem 0.875rem;
+  color: var(--dash-muted);
+  font-size: 0.75rem;
+  font-weight: 800;
+  transition:
+    border-color var(--ui-duration-fast) var(--ui-ease-standard),
+    background-color var(--ui-duration-fast) var(--ui-ease-standard),
+    color var(--ui-duration-fast) var(--ui-ease-standard);
+}
+
+.system-utility-button:hover {
+  border-color: color-mix(in srgb, var(--dash-accent) 42%, var(--dash-border));
+  background: var(--dash-hover);
+  color: var(--dash-text);
+}
+
+.production-workspace {
+  background: transparent;
+}
+
+.production-package-context {
+  display: none;
+}
+
+.production-workspace-grid {
+  background: color-mix(in srgb, var(--dash-bg) 92%, var(--dash-card));
+}
+
+.production-module-sidebar {
+  background: color-mix(in srgb, var(--dash-card) 72%, transparent);
+  scrollbar-gutter: stable;
+}
+
+.production-module-sidebar > :not(.production-module-primary-nav):not(.production-sidebar-collapse) {
+  display: none !important;
+}
+
+.production-module-primary-nav {
+  padding-top: 1rem;
+}
+
+.production-module-primary-nav > button {
+  min-height: 6rem;
+  padding-inline: 1.75rem;
+}
+
+.production-module-sidebar.is-collapsed .production-module-primary-nav > button {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.production-module-sidebar.is-collapsed .production-module-label {
+  display: none;
+}
+
+.production-sidebar-collapse {
+  background: transparent;
+}
+
+.production-main-canvas {
+  background: transparent;
+}
+
+.production-process-header {
+  background: color-mix(in srgb, var(--dash-bg) 96%, transparent);
+  min-height: 15rem;
+}
+
+.production-process-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 14rem;
+  min-height: 5.25rem;
+  align-items: start;
+  gap: 1.5rem;
+}
+
+.production-process-summary.has-calibration-actions {
+  grid-template-columns: minmax(0, 1fr) 30rem;
+}
+
+.production-process-copy {
+  height: 5.25rem;
+  min-height: 5.25rem;
+  overflow: hidden;
+}
+
+.production-process-copy > p:last-child {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.production-process-controls {
+  width: 14rem;
+  min-height: var(--ui-control-height);
+}
+
+.production-process-controls.has-calibration-actions {
+  width: 30rem;
+}
+
+.production-process-action {
+  width: 100%;
+  white-space: nowrap;
+}
+
+.production-process-rail {
+  min-height: 6rem;
+  margin-top: 1.25rem;
+}
+
+.production-process-step-active,
+.execution-timeline-marker.is-running {
+  animation: execution-marker-pulse 1.8s ease-out infinite;
+}
+
+.execution-live-dot.is-running {
+  animation: execution-live-dot 1.2s ease-in-out infinite;
+}
+
+.execution-progress-fill {
+  position: relative;
+  overflow: hidden;
+}
+
+.execution-progress-fill.is-running::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.48) 48%, transparent 100%);
+  transform: translateX(-100%);
+  animation: execution-progress-scan 1.5s linear infinite;
+}
+
+.execution-timeline::before {
+  position: absolute;
+  top: 1.65rem;
+  bottom: 1.65rem;
+  left: 1.47rem;
+  width: 1px;
+  content: "";
+  background: var(--dash-border-strong);
+}
+
+.execution-timeline-row {
+  isolation: isolate;
+  transition: background-color 240ms ease, opacity 240ms ease;
+}
+
+.execution-timeline-row.is-active {
+  background: linear-gradient(90deg, color-mix(in srgb, rgb(59 130 246) 11%, transparent), transparent 72%);
+}
+
+@keyframes execution-marker-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.36); }
+  70% { box-shadow: 0 0 0 9px rgba(59, 130, 246, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+}
+
+@keyframes execution-live-dot {
+  0%, 100% { opacity: 0.55; transform: scale(0.82); }
+  50% { opacity: 1; transform: scale(1.18); }
+}
+
+@keyframes execution-progress-scan {
+  to { transform: translateX(100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .production-process-step-active,
+  .execution-timeline-marker.is-running,
+  .execution-live-dot.is-running,
+  .execution-progress-fill.is-running::after {
+    animation: none;
+  }
+}
+
+.module-queue-workspace {
+  background: transparent;
+  overflow: hidden;
+}
+
+.module-list-scroll {
+  min-height: 0;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-color: color-mix(in srgb, var(--dash-accent) 52%, var(--dash-border)) transparent;
+}
+
+.module-list-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 7px;
+}
+
+.module-list-scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--dash-accent) 42%, var(--dash-border));
+  border-radius: 999px;
+}
+
+.module-list-scroll:hover::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--dash-accent) 68%, var(--dash-border));
+}
+
+.module-queue-workspace table {
+  font-variant-numeric: tabular-nums;
+}
+
+.module-queue-workspace table thead {
+  background: color-mix(in srgb, var(--dash-card) 62%, var(--dash-bg));
+}
+
+.module-queue-workspace table th,
+.module-queue-workspace table td {
+  vertical-align: middle;
+}
+
+.production-stage-content > .dashboard-surface,
+.production-stage-content > .dashboard-header {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.production-stage-content .score-recalibration-heading,
+.production-stage-content .score-recalibration-stage-rail {
+  display: none;
+}
+
+.production-stage-content table tbody tr {
+  background: transparent;
+}
+
+.production-stage-content table tbody tr:hover {
+  background: color-mix(in srgb, var(--dash-accent) 5%, transparent);
+}
+
+.production-stage-content button[aria-label*="segundo painel"] {
+  display: none;
+}
+
+[data-content-theme="light"].system-shell {
+  background:
+    radial-gradient(circle at 14% -12%, rgba(37, 99, 235, 0.08), transparent 30%),
+    rgb(248 250 252);
+  color-scheme: light;
+}
+
+[data-content-theme="light"].system-shell .system-appbar {
+  background: rgba(255, 255, 255, 0.98);
+}
+
+[data-content-theme="light"].system-shell .production-workspace-grid,
+[data-content-theme="light"].system-shell .production-main-canvas,
+[data-content-theme="light"].system-shell .production-process-header {
+  background: rgb(248 250 252);
+}
+
+[data-content-theme="light"].system-shell .production-module-sidebar {
+  background: rgb(255 255 255);
+}
+
+[data-content-theme="light"].system-shell .module-queue-workspace table thead {
+  background: rgb(241 245 249);
+}
+
+[data-content-theme="light"].system-shell .module-queue-workspace table tbody tr:hover {
+  background: rgb(239 246 255);
+}
+
+@media (max-width: 1279px) {
+  .production-workspace-grid,
+  .production-workspace-grid.is-sidebar-collapsed {
+    grid-template-columns: 1fr;
+  }
+
+  .production-module-sidebar {
+    max-height: none;
+    border-right: 0;
+    border-bottom: 1px solid var(--dash-border);
+  }
+
+  .production-module-primary-nav {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    padding-top: 0;
+  }
+
+  .production-module-primary-nav > button {
+    min-height: 4.5rem;
+    padding-inline: 1rem;
+  }
+
+  .production-sidebar-collapse {
+    display: none;
+  }
+
+  .production-process-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .production-process-summary.has-calibration-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .production-process-controls,
+  .production-process-action {
+    width: 100%;
+  }
+
+  .production-process-controls.has-calibration-actions {
+    width: 100%;
+  }
+}
+
+@media (max-width: 639px) {
+  .production-calibration-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 1280px) {
+  .production-workspace-grid {
+    grid-template-columns: 204px minmax(0, 1fr);
+  }
+
+  .production-workspace-grid.is-sidebar-collapsed {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+}
+
 .dashboard-badge {
   display: inline-flex;
   min-height: 1.75rem;

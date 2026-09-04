@@ -20,10 +20,24 @@ from apply_safe_output_updates import protected_tokens
 from quality_missing_space_after_token_shadow import load_context_rows
 
 
-RULE_VERSION = "quality_mojibake_lexicon_shadow_v1"
+RULE_VERSION = "quality_mojibake_lexicon_shadow_v5"
 ISSUE_CODE = "replacement_question_mark_mojibake"
 ELIGIBLE_LANE = "pairwise_evidence_eligible"
 WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ?]+", re.UNICODE)
+PORTUGUESE_REPAIR_CHARS = frozenset("áàâãéêíóôõúüç")
+STRUCTURAL_LINE_BREAK_RE = re.compile(r"(?:\\n|\r?\n)")
+STRUCTURAL_PARAGRAPH_BREAK_RE = re.compile(r"(?:(?:\\n){2,}|\r?\n(?:[ \t]*\r?\n)+)")
+SPANISH_SENTENCE_START_COPULA_RE = re.compile(
+    r"^\s*(?:[\\\"'«“¿]\s*)?"
+    r"(?:(?:#\w+|#!|\$[^$]+\$|\[[^\]]+\])\s*)*"
+    r"es\b",
+    re.IGNORECASE,
+)
+STRUCTURAL_PREFIX_RE = re.compile(
+    r"^(?:\s|[\\\"'«“¿]|#\w+|#!|\$[^$]+\$|\[[^\]]+\])*$"
+)
+SUPERVISED_PATTERN_MINIMUM = 2
+DOMINANT_CANDIDATE_RATIO = 6.0
 
 
 def stamp() -> str:
@@ -94,7 +108,7 @@ def build_corpus_lexicon(conn: sqlite3.Connection) -> tuple[dict[int, set[str]],
         document_words = {
             match.group(0).casefold()
             for match in WORD_RE.finditer(str(row["text"] or ""))
-            if "?" not in match.group(0) and len(match.group(0)) >= 2
+            if "?" not in match.group(0) and len(match.group(0)) >= 1
         }
         for word in document_words:
             words_by_length[len(word)].add(word)
@@ -109,11 +123,367 @@ def matches_pattern(pattern: str, candidate: str) -> bool:
 
 
 def restore_case(original: str, candidate: str) -> str:
-    if original.isupper():
+    letters = [character for character in original if character.isalpha()]
+    if len(letters) > 1 and all(character.isupper() for character in letters):
         return candidate.upper()
     if original[:1].isupper():
         return candidate[:1].upper() + candidate[1:]
     return candidate
+
+
+def load_supervised_pattern_memory(
+    conn: sqlite3.Connection,
+) -> dict[str, dict[str, int]]:
+    table = conn.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'mojibake_lexicon_replacement_decisions'
+        """
+    ).fetchone()
+    if not table:
+        return {}
+    memory: dict[str, dict[str, int]] = defaultdict(dict)
+    rows = conn.execute(
+        """
+        SELECT LOWER(original_text) AS original_text,
+               LOWER(replacement_text) AS replacement_text,
+               COUNT(DISTINCT segment_id) AS support
+        FROM mojibake_lexicon_replacement_decisions
+        WHERE outcome IN ('accepted_complete', 'accepted_partial')
+        GROUP BY LOWER(original_text), LOWER(replacement_text)
+        """
+    ).fetchall()
+    for row in rows:
+        memory[str(row["original_text"] or "")][str(row["replacement_text"] or "")] = int(
+            row["support"] or 0
+        )
+    return dict(memory)
+
+
+def load_boundary_pattern_decisions(
+    conn: sqlite3.Connection,
+) -> dict[str, dict[str, Any]]:
+    table = conn.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'mojibake_boundary_pattern_decisions'
+        """
+    ).fetchone()
+    if not table:
+        return {}
+    return {
+        str(row["normalized_pattern"] or "").casefold(): dict(row)
+        for row in conn.execute(
+            """
+            SELECT normalized_pattern, display_pattern, decision,
+                   canonical_replacement, reason, reviewer,
+                   source_shadow_run_id, source_score_run_id, updated_at
+            FROM mojibake_boundary_pattern_decisions
+            """
+        ).fetchall()
+        if str(row["normalized_pattern"] or "")
+    }
+
+
+def repaired_positions_are_portuguese(pattern: str, candidate: str) -> bool:
+    positions = [index for index, character in enumerate(pattern) if character == "?"]
+    return bool(positions) and all(
+        candidate[index].casefold() in PORTUGUESE_REPAIR_CHARS
+        for index in positions
+    )
+
+
+def accented_candidates(pattern: str, candidates: list[str]) -> list[str]:
+    return [
+        candidate
+        for candidate in candidates
+        if repaired_positions_are_portuguese(pattern, candidate)
+    ]
+
+
+def structural_paragraph_index(text: str, position: int) -> int:
+    return sum(1 for _ in STRUCTURAL_PARAGRAPH_BREAK_RE.finditer(text[:position]))
+
+
+def structural_paragraphs(text: str) -> list[str]:
+    return STRUCTURAL_PARAGRAPH_BREAK_RE.split(str(text or ""))
+
+
+def spanish_paragraph_supports_initial_e(
+    output_text: str,
+    spanish_text: str,
+    position: int,
+) -> bool:
+    output_index = structural_paragraph_index(output_text, position)
+    spanish_parts = structural_paragraphs(spanish_text)
+    if output_index >= len(spanish_parts):
+        return False
+    paragraph = spanish_parts[output_index].replace("\\n", "\n")
+    return bool(SPANISH_SENTENCE_START_COPULA_RE.search(paragraph))
+
+
+def follows_structural_line_break(text: str, position: int) -> bool:
+    prefix = text[:position]
+    matches = list(STRUCTURAL_LINE_BREAK_RE.finditer(prefix))
+    if not matches:
+        return False
+    return bool(STRUCTURAL_PREFIX_RE.fullmatch(prefix[matches[-1].end() :]))
+
+
+def residual_question_mark_signals(text: str) -> list[str]:
+    signals: list[str] = []
+    for match in WORD_RE.finditer(text):
+        token = match.group(0)
+        if "?" not in token:
+            continue
+        if follows_separated_gender_plural_suffix(text, match):
+            continue
+        if (
+            token.casefold() == "n?"
+            and match.start() > 0
+            and text[match.start() - 1] == "\\"
+        ):
+            signals.append("\\n?")
+        else:
+            signals.append(token)
+    return signals
+
+
+def follows_separated_gender_plural_suffix(
+    text: str,
+    match: re.Match[str],
+) -> bool:
+    if match.group(0).casefold() != "s?":
+        return False
+    structural_matches = list(
+        local_quality_validator.GENDER_TOKEN_SEPARATED_PLURAL_SUFFIX_PATTERN.finditer(
+            text[: match.end()]
+        )
+    )
+    return bool(structural_matches) and structural_matches[-1].end() == match.start() + 1
+
+
+def select_contextual_candidate(
+    token: str,
+    candidates: list[str],
+    support: Counter[str],
+    supervised_patterns: dict[str, dict[str, int]],
+    boundary_decisions: dict[str, dict[str, Any]],
+) -> tuple[str | None, str, float]:
+    pattern = token.casefold()
+    boundary_decision = boundary_decisions.get(pattern) or {}
+    boundary_outcome = str(boundary_decision.get("decision") or "")
+    if boundary_outcome == "canonical_replacement":
+        selected = str(boundary_decision.get("canonical_replacement") or "").casefold()
+        if (
+            selected
+            and matches_pattern(pattern, selected)
+            and repaired_positions_are_portuguese(pattern, selected)
+        ):
+            return selected, "supervised_boundary_pattern", 0.99
+        return None, "invalid_supervised_boundary_pattern", 0.0
+    if boundary_outcome == "valid_punctuation":
+        return None, "human_valid_punctuation", 0.0
+    if boundary_outcome == "context_required":
+        return None, "human_context_required", 0.0
+
+    supervised = [
+        (candidate, supervised_patterns.get(pattern, {}).get(candidate, 0))
+        for candidate in candidates
+        if supervised_patterns.get(pattern, {}).get(candidate, 0)
+        >= SUPERVISED_PATTERN_MINIMUM
+    ]
+    supervised.sort(key=lambda item: (-item[1], -support[item[0]], item[0]))
+    if supervised:
+        selected, human_support = supervised[0]
+        return selected, "supervised_pattern", min(0.99, 0.93 + human_support * 0.01)
+
+    if pattern.startswith("?") or pattern.endswith("?"):
+        return None, "boundary_question_mark_ambiguous", 0.0
+
+    accented = accented_candidates(pattern, candidates)
+    accented.sort(key=lambda candidate: (-support[candidate], candidate))
+    if len(accented) == 1:
+        return accented[0], "unique_portuguese_character", 0.93
+    if len(accented) > 1:
+        top = accented[0]
+        runner_up = accented[1]
+        top_support = int(support[top])
+        runner_up_support = max(1, int(support[runner_up]))
+        if (
+            len(pattern) >= 3
+            and top_support >= 10
+            and top_support / runner_up_support >= DOMINANT_CANDIDATE_RATIO
+        ):
+            dominance = min(0.05, (top_support / runner_up_support) / 100)
+            return top, "dominant_portuguese_character", 0.90 + dominance
+        return None, "accented_candidate_ambiguous", 0.0
+    return None, "portuguese_candidate_missing", 0.0
+
+
+def repair_text_contextual(
+    text: str,
+    words_by_length: dict[int, set[str]],
+    support: Counter[str],
+    minimum_support: int,
+    supervised_patterns: dict[str, dict[str, int]] | None = None,
+    boundary_decisions: dict[str, dict[str, Any]] | None = None,
+    english_text: str = "",
+    spanish_text: str = "",
+) -> tuple[str, list[dict[str, Any]], list[str], list[dict[str, Any]]]:
+    replacements: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    unresolved: list[dict[str, Any]] = []
+    supervised_patterns = supervised_patterns or {}
+    boundary_decisions = boundary_decisions or {}
+
+    def replace(match: re.Match[str]) -> str:
+        raw_token = match.group(0)
+        if "?" not in raw_token:
+            return raw_token
+        if follows_separated_gender_plural_suffix(text, match):
+            blockers.append("gender_token_plural_suffix_spacing")
+            unresolved.append(
+                {
+                    "token": "[token] s?",
+                    "lexical_token": raw_token,
+                    "reason": "gender_token_plural_suffix_spacing",
+                    "candidate_count": 0,
+                    "diagnostic_candidate_count": 0,
+                    "alternatives": [],
+                    "context_family": "gender_token_plural_suffix_spacing",
+                    "aligned_source_evidence": "dynamic_gender_token_plural",
+                }
+            )
+            return raw_token
+        token = raw_token
+        target_start = match.start()
+        preserved_prefix = ""
+        structural_newline = follows_structural_line_break(text, match.start())
+        attached_structure_punctuation = bool(
+            raw_token == "?"
+            and match.start() > 0
+            and text[match.start() - 1] in "]$!#"
+        )
+        if attached_structure_punctuation:
+            structural_newline = False
+        if (
+            raw_token.casefold() == "n?"
+            and match.start() > 0
+            and text[match.start() - 1] == "\\"
+        ):
+            preserved_prefix = raw_token[0]
+            token = raw_token[1:]
+            target_start += 1
+            structural_newline = True
+        pattern = token.casefold()
+        candidates = sorted(
+            (
+                word
+                for word in words_by_length.get(len(pattern), set())
+                if support[word] >= minimum_support and matches_pattern(pattern, word)
+            ),
+            key=lambda candidate: (-support[candidate], candidate),
+        )
+        relevant_candidates = sorted(
+            accented_candidates(pattern, candidates),
+            key=lambda candidate: (-support[candidate], candidate),
+        )
+        if attached_structure_punctuation:
+            relevant_candidates = []
+        context_family = (
+            "newline_sentence_start"
+            if token == "?" and structural_newline
+            else "format_token_punctuation"
+            if token == "?" and attached_structure_punctuation
+            else "inline_singleton"
+            if token == "?"
+            else "lexical_accent_loss"
+        )
+        aligned_spanish_copula = bool(
+            token == "?"
+            and structural_newline
+            and spanish_paragraph_supports_initial_e(text, spanish_text, target_start)
+        )
+        if aligned_spanish_copula:
+            replacement = "É"
+            replacements.append(
+                {
+                    "original": "?",
+                    "replacement": replacement,
+                    "start": target_start,
+                    "end": target_start + 1,
+                    "corpus_support": int(support["é"]),
+                    "selection_reason": "structural_newline_aligned_spanish_copula",
+                    "confidence": 0.98,
+                    "candidate_count": 1,
+                    "diagnostic_candidate_count": len(candidates),
+                    "alternatives": [
+                        {"text": "É", "corpus_support": int(support["é"])}
+                    ],
+                    "context_family": context_family,
+                    "aligned_source_evidence": "spanish_sentence_start_es",
+                }
+            )
+            return preserved_prefix + replacement
+        selected, selection_reason, confidence = select_contextual_candidate(
+            token,
+            relevant_candidates,
+            support,
+            supervised_patterns,
+            boundary_decisions,
+        )
+        if selected is None:
+            blockers.append(selection_reason)
+            display_token = (
+                "\\n?"
+                if structural_newline and token == "?"
+                else "[estrutura]?"
+                if attached_structure_punctuation
+                else token
+            )
+            unresolved.append(
+                {
+                    "token": display_token,
+                    "lexical_token": token,
+                    "reason": selection_reason,
+                    "candidate_count": len(relevant_candidates),
+                    "diagnostic_candidate_count": len(candidates),
+                    "alternatives": [
+                        {"text": candidate, "corpus_support": int(support[candidate])}
+                        for candidate in relevant_candidates[:8]
+                    ],
+                    "context_family": context_family,
+                    "aligned_source_evidence": None,
+                }
+            )
+            return raw_token
+        replacement = restore_case(token, selected)
+        replacements.append(
+            {
+                "original": token,
+                "replacement": replacement,
+                "start": target_start,
+                "end": target_start + len(token),
+                "corpus_support": int(support[selected]),
+                "selection_reason": selection_reason,
+                "confidence": round(confidence, 4),
+                "candidate_count": len(relevant_candidates),
+                "diagnostic_candidate_count": len(candidates),
+                "alternatives": [
+                    {"text": candidate, "corpus_support": int(support[candidate])}
+                    for candidate in relevant_candidates[:8]
+                ],
+                "context_family": context_family,
+                "aligned_source_evidence": None,
+            }
+        )
+        return preserved_prefix + replacement
+
+    candidate = WORD_RE.sub(replace, text)
+    return candidate, replacements, blockers, unresolved
 
 
 def repair_text(
@@ -122,33 +492,13 @@ def repair_text(
     support: Counter[str],
     minimum_support: int,
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
-    replacements: list[dict[str, Any]] = []
-    blockers: list[str] = []
-
-    def replace(match: re.Match[str]) -> str:
-        token = match.group(0)
-        if "?" not in token:
-            return token
-        pattern = token.casefold()
-        candidates = sorted(
-            word
-            for word in words_by_length.get(len(pattern), set())
-            if support[word] >= minimum_support and matches_pattern(pattern, word)
-        )
-        if len(candidates) != 1:
-            blockers.append("lexical_candidate_missing" if not candidates else "lexical_candidate_ambiguous")
-            return token
-        replacement = restore_case(token, candidates[0])
-        replacements.append(
-            {
-                "original": token,
-                "replacement": replacement,
-                "corpus_support": int(support[candidates[0]]),
-            }
-        )
-        return replacement
-
-    return WORD_RE.sub(replace, text), replacements, blockers
+    candidate, replacements, blockers, _ = repair_text_contextual(
+        text,
+        words_by_length,
+        support,
+        minimum_support,
+    )
+    return candidate, replacements, blockers
 
 
 def load_score_rows(conn: sqlite3.Connection, score_run_id: int, threshold: float) -> list[dict[str, Any]]:
@@ -157,6 +507,7 @@ def load_score_rows(conn: sqlite3.Connection, score_run_id: int, threshold: floa
         for row in conn.execute(
             """
             SELECT score.*, source.relative_path, source.source_key,
+                   source.english_text, source.spanish_text,
                    output.portuguese_text AS current_output_text,
                    COALESCE(confirmation.locked, 0) AS human_locked
             FROM ml_score_items score
@@ -184,14 +535,23 @@ def build_records(
     words_by_length: dict[int, set[str]],
     support: Counter[str],
     minimum_support: int,
+    supervised_patterns: dict[str, dict[str, int]] | None = None,
+    boundary_decisions: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     eligible_rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
     context_rows = load_context_rows(conn, [int(row["segment_id"]) for row in score_rows])
     for row in score_rows:
         original = str(row.get("candidate_text") or "")
-        candidate, replacements, lexical_blockers = repair_text(
-            original, words_by_length, support, minimum_support
+        candidate, replacements, lexical_blockers, unresolved_signals = repair_text_contextual(
+            original,
+            words_by_length,
+            support,
+            minimum_support,
+            supervised_patterns,
+            boundary_decisions,
+            str(row.get("english_text") or ""),
+            str(row.get("spanish_text") or ""),
         )
         blockers = list(lexical_blockers)
         codes = issue_codes(row.get("issues_json"))
@@ -212,6 +572,15 @@ def build_records(
         post_codes = [str(item.get("code")) for item in post_validation.get("issues") or []]
         if post_codes:
             blockers.append("post_validation_issue")
+        residual_word_signals = residual_question_mark_signals(candidate)
+        candidate_complete = (
+            bool(replacements)
+            and not residual_word_signals
+            and not post_codes
+            and token_ok
+        )
+        if residual_word_signals:
+            blockers.append("residual_question_mark_signal")
 
         unique_blockers = sorted(set(blockers))
         eligible = not unique_blockers
@@ -230,6 +599,10 @@ def build_records(
                 "baseline_hash": sha256_text(original),
                 "candidate_hash": sha256_text(candidate),
                 "replacements": replacements,
+                "unresolved_signals": unresolved_signals,
+                "residual_word_signals": residual_word_signals,
+                "residual_signal_count": len(residual_word_signals),
+                "candidate_complete": candidate_complete,
                 "minimum_corpus_support": minimum_support,
                 "pre_issue_codes": sorted(codes),
                 "post_issue_codes": post_codes,
@@ -316,6 +689,12 @@ def write_reports(
         "summary": reports_dir / f"{prefix}_summary.json",
     }
     eligible = [record for record in records if record["lane"] == ELIGIBLE_LANE]
+    complete_suggestions = [record for record in records if record.get("candidate_complete")]
+    partial_suggestions = [
+        record
+        for record in records
+        if record.get("replacements") and not record.get("candidate_complete")
+    ]
     blocker_counts: Counter[str] = Counter(
         blocker for record in records for blocker in record["blockers"]
     )
@@ -332,6 +711,8 @@ def write_reports(
         "minimum_corpus_support": minimum_support,
         "record_count": len(records),
         "pairwise_evidence_eligible_count": len(eligible),
+        "complete_suggestion_count": len(complete_suggestions),
+        "partial_suggestion_count": len(partial_suggestions),
         "blocked_count": len(records) - len(eligible),
         "blocker_counts": dict(blocker_counts),
         "eligible_replacement_counts": dict(replacement_counts),
@@ -357,6 +738,8 @@ def write_reports(
         f"- Score run: `{score_run['id']}`",
         f"- Records: `{len(records)}`",
         f"- Pairwise eligible: `{len(eligible)}`",
+        f"- Complete suggestions: `{len(complete_suggestions)}`",
+        f"- Partial suggestions: `{len(partial_suggestions)}`",
         f"- Minimum corpus support: `{minimum_support}`",
         "- Writes: `0`",
         "",
@@ -400,6 +783,8 @@ def main() -> None:
     try:
         score_run = latest_full_output_score_run(conn, args.score_run_id)
         words_by_length, support = build_corpus_lexicon(conn)
+        supervised_patterns = load_supervised_pattern_memory(conn)
+        boundary_decisions = load_boundary_pattern_decisions(conn)
         score_rows = load_score_rows(conn, int(score_run["id"]), args.threshold)
         records = build_records(
             conn,
@@ -408,6 +793,8 @@ def main() -> None:
             words_by_length,
             support,
             args.minimum_support,
+            supervised_patterns,
+            boundary_decisions,
         )
     finally:
         conn.close()
@@ -416,6 +803,11 @@ def main() -> None:
         settings, score_run, args.threshold, args.minimum_support, records
     )
     eligible_count = sum(record["lane"] == ELIGIBLE_LANE for record in records)
+    complete_count = sum(bool(record.get("candidate_complete")) for record in records)
+    partial_count = sum(
+        bool(record.get("replacements")) and not record.get("candidate_complete")
+        for record in records
+    )
     shadow_snapshot = {}
     if args.persist_db:
         with db.connect(settings) as write_conn:
@@ -429,6 +821,9 @@ def main() -> None:
                 metadata={
                     "threshold": args.threshold,
                     "minimum_support": args.minimum_support,
+                    "supervised_pattern_count": len(supervised_patterns),
+                    "boundary_pattern_decision_count": len(boundary_decisions),
+                    "candidate_algorithm": "accent_filtered_structural_context_v4",
                 },
             )
     print("[quality-mojibake-lexicon] Read-only shadow completed")
@@ -443,6 +838,8 @@ def main() -> None:
         "score_run_id": int(score_run["id"]),
         "record_count": len(records),
         "pairwise_evidence_eligible_count": eligible_count,
+        "complete_suggestion_count": complete_count,
+        "partial_suggestion_count": partial_count,
         **shadow_snapshot,
     }, ensure_ascii=False, indent=2))
 

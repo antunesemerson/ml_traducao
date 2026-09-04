@@ -26,6 +26,31 @@ from quality_mojibake_lexicon_shadow import (  # noqa: E402
 
 
 class QualityMojibakeLexiconPairwiseEvidenceTests(unittest.TestCase):
+    def test_positioned_newline_question_mark_replacement_is_replayed_exactly(self) -> None:
+        baseline = "Uma pergunta?\\n\\n? um desafio aberto"
+        start = baseline.rindex("?")
+        replacements = [
+            {
+                "start": start,
+                "end": start + 1,
+                "original": "?",
+                "replacement": "É",
+                "selection_reason": "structural_newline_aligned_spanish_copula",
+            }
+        ]
+
+        self.assertEqual(
+            apply_recorded_replacements(baseline, replacements),
+            "Uma pergunta?\\n\\nÉ um desafio aberto",
+        )
+
+    def test_positioned_replacement_rejects_a_stale_span(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "positioned replacements"):
+            apply_recorded_replacements(
+                "\\n\\n? um desafio aberto",
+                [{"start": 0, "end": 1, "original": "?", "replacement": "É"}],
+            )
+
     def test_recorded_replacements_require_an_exact_occurrence_contract(self) -> None:
         replacements = [
             {"original": "poder?", "replacement": "poderá", "corpus_support": 2},

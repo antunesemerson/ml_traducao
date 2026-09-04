@@ -24,9 +24,10 @@ from quality_spanish_dynamic_literal_authorization import (
     PAIRWISE_ELISION_EVIDENCE_TYPE,
     evidence_authorizes_intentional_elision,
 )
+from quality_exact_shared_glossary_calibration import calibrate_safe_probability
 
 
-RULE_VERSION = "ml_score_segments_v2"
+RULE_VERSION = "ml_score_segments_v3_segmented_score_calibration"
 TOKEN_INTEGRITY_OK_STATUSES = {"ok", "intentional_elision"}
 PAIRWISE_ELISION_EMPTY_PAYLOAD = {
     "pairwise_evidence_id": None,
@@ -45,6 +46,7 @@ HARD_STRUCTURE_ISSUES = {
 }
 FIXABLE_ISSUES = {
     "spanish_punctuation",
+    "spanish_angular_quotes",
     "missing_space_after_token",
     "missing_space_before_token",
     "gender_token_extra_suffix",
@@ -621,7 +623,12 @@ def model_prediction(
     classes = list(model.named_steps["classifier"].classes_)
     probabilities = model.predict_proba([text])[0]
     probability_by_class = {label: float(probabilities[index]) for index, label in enumerate(classes)}
-    safe_probability = probability_by_class.get("auto_safe", 0.0)
+    raw_safe_probability = probability_by_class.get("auto_safe", 0.0)
+    safe_probability, probability_by_class = calibrated_model_probability(
+        row,
+        raw_safe_probability,
+        probability_by_class,
+    )
     if safe_probability >= safe_threshold:
         return "auto_safe", safe_probability, safe_probability, probability_by_class
     non_safe = [(label, probability) for label, probability in probability_by_class.items() if label != "auto_safe"]
@@ -641,9 +648,14 @@ def model_predictions(
     classes = list(model.named_steps["classifier"].classes_)
     probabilities_by_row = model.predict_proba(texts)
     predictions: list[tuple[str, float, float, dict[str, float]]] = []
-    for probabilities in probabilities_by_row:
+    for row, probabilities in zip(rows, probabilities_by_row):
         probability_by_class = {label: float(probabilities[index]) for index, label in enumerate(classes)}
-        safe_probability = probability_by_class.get("auto_safe", 0.0)
+        raw_safe_probability = probability_by_class.get("auto_safe", 0.0)
+        safe_probability, probability_by_class = calibrated_model_probability(
+            row,
+            raw_safe_probability,
+            probability_by_class,
+        )
         if safe_probability >= safe_threshold:
             predictions.append(("auto_safe", safe_probability, safe_probability, probability_by_class))
             continue
@@ -651,6 +663,37 @@ def model_predictions(
         action, confidence = max(non_safe, key=lambda item: item[1])
         predictions.append((action, safe_probability, confidence, probability_by_class))
     return predictions
+
+
+def calibrated_model_probability(
+    row: dict[str, Any],
+    raw_safe_probability: float,
+    probability_by_class: dict[str, float],
+) -> tuple[float, dict[str, float]]:
+    calibration = calibrate_safe_probability(row, raw_safe_probability)
+    row["_score_calibration"] = calibration if calibration["applied"] else None
+    if not calibration["applied"]:
+        return float(raw_safe_probability), probability_by_class
+
+    calibrated_probability = float(calibration["calibrated_safe_probability"])
+    adjusted = dict(probability_by_class)
+    non_safe_labels = [label for label in adjusted if label != "auto_safe"]
+    non_safe_total = sum(max(float(adjusted[label]), 0.0) for label in non_safe_labels)
+    remaining_probability = max(0.0, 1.0 - calibrated_probability)
+    adjusted["auto_safe"] = calibrated_probability
+    if non_safe_labels:
+        if non_safe_total > 0:
+            for label in non_safe_labels:
+                adjusted[label] = (
+                    max(float(adjusted[label]), 0.0)
+                    / non_safe_total
+                    * remaining_probability
+                )
+        else:
+            share = remaining_probability / len(non_safe_labels)
+            for label in non_safe_labels:
+                adjusted[label] = share
+    return calibrated_probability, adjusted
 
 
 def final_decision(
@@ -672,12 +715,25 @@ def final_decision(
         intentional_elision_authorized=intentional_elision_authorized,
     )
     issue_codes = {issue["code"] for issue in validation["issues"]}
+    score_calibration = row.get("_score_calibration") or {}
+    raw_safe_probability = float(
+        score_calibration.get("raw_safe_probability", safe_probability)
+    )
     reasons = [
         f"model_action:{model_action}",
+        f"raw_safe_probability:{raw_safe_probability:.4f}",
         f"safe_probability:{safe_probability:.4f}",
         f"safe_threshold:{safe_threshold:.4f}",
         f"model_confidence:{model_confidence:.4f}",
     ]
+    if score_calibration.get("applied"):
+        reasons.append(
+            "score_calibration:"
+            f"{score_calibration['policy_id']}:"
+            f"shadow_run={score_calibration['source_shadow_run_id']}:"
+            f"raw={raw_safe_probability:.6f}:"
+            f"calibrated={safe_probability:.6f}"
+        )
     deterministic_blocked = 0
     final_action = model_action
     risk_class = "low" if final_action == "auto_safe" else "medium"
@@ -857,6 +913,17 @@ def final_decision(
         "final_action": final_action,
         "risk_class": risk_class,
         "model_safe_probability": round(safe_probability, 6),
+        "raw_model_safe_probability": round(raw_safe_probability, 6),
+        "score_calibration": (
+            str(score_calibration.get("policy_id"))
+            if score_calibration.get("applied")
+            else None
+        ),
+        "score_calibration_source_run_id": (
+            int(score_calibration["source_shadow_run_id"])
+            if score_calibration.get("applied")
+            else None
+        ),
         "model_confidence": round(model_confidence, 6),
         "token_status": status,
         "issue_count": validation["issue_count"],
@@ -987,6 +1054,9 @@ def insert_items(conn, run_id: int, items: list[dict[str, Any]], created_at: str
             final_action,
             risk_class,
             model_safe_probability,
+            raw_model_safe_probability,
+            score_calibration,
+            score_calibration_source_run_id,
             model_confidence,
             token_status,
             issue_count,
@@ -1000,7 +1070,7 @@ def insert_items(conn, run_id: int, items: list[dict[str, Any]], created_at: str
             issues_json,
             created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -1014,6 +1084,9 @@ def insert_items(conn, run_id: int, items: list[dict[str, Any]], created_at: str
                 item["final_action"],
                 item["risk_class"],
                 item["model_safe_probability"],
+                item["raw_model_safe_probability"],
+                item["score_calibration"],
+                item["score_calibration_source_run_id"],
                 item["model_confidence"],
                 item["token_status"],
                 item["issue_count"],

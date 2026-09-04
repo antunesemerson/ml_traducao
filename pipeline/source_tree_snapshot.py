@@ -10,16 +10,28 @@ from typing import Any
 import db
 
 
-RULE_VERSION = "source_tree_snapshot_v1"
+RULE_VERSION = "source_tree_snapshot_v2_cached_hashes"
 
 
-def inspect_tree(root: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def inspect_tree(
+    root: Path,
+    cached_files: dict[str, dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     digest = hashlib.sha256()
     records: list[dict[str, Any]] = []
+    cached_files = cached_files or {}
     for path in sorted(item for item in root.rglob("*.yml") if item.is_file()):
         relative_path = path.relative_to(root).as_posix()
         stat = path.stat()
-        file_hash = db.file_hash(path)
+        cached = cached_files.get(relative_path) or {}
+        if (
+            int(cached.get("size_bytes") or -1) == stat.st_size
+            and int(cached.get("source_mtime_ns") or -1) == stat.st_mtime_ns
+            and cached.get("file_hash")
+        ):
+            file_hash = str(cached["file_hash"])
+        else:
+            file_hash = db.file_hash(path)
         digest.update(relative_path.encode("utf-8"))
         digest.update(b"\0")
         digest.update(file_hash.encode("ascii"))
@@ -43,6 +55,41 @@ def inspect_tree(root: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     )
 
 
+def source_index_matches_snapshot(conn, snapshot_id: int) -> bool:
+    """Check the indexed English/Spanish manifests without rereading source files."""
+    snapshot_rows = conn.execute(
+        """
+        SELECT source_kind, relative_path, file_hash
+        FROM source_tree_snapshot_files
+        WHERE snapshot_id = ?
+        """,
+        (snapshot_id,),
+    ).fetchall()
+    indexed_rows = conn.execute(
+        """
+        SELECT package_name, relative_path, file_hash
+        FROM files
+        WHERE package_name IN ('english_source', 'spanish_source')
+        """
+    ).fetchall()
+    source_kind_by_package = {
+        "english_source": "english",
+        "spanish_source": "spanish",
+    }
+    snapshot_manifest = {
+        (str(row["source_kind"]), str(row["relative_path"])): str(row["file_hash"] or "")
+        for row in snapshot_rows
+    }
+    indexed_manifest = {
+        (
+            source_kind_by_package[str(row["package_name"])],
+            str(row["relative_path"]),
+        ): str(row["file_hash"] or "")
+        for row in indexed_rows
+    }
+    return snapshot_manifest == indexed_manifest
+
+
 def create_snapshot(
     *,
     label: str,
@@ -52,12 +99,37 @@ def create_snapshot(
     settings = db.load_settings()
     english_root = db.project_path(settings["english_source"])
     spanish_root = db.project_path(settings["spanish_source"])
-    english, english_files = inspect_tree(english_root)
-    spanish, spanish_files = inspect_tree(spanish_root)
     created_at = db.utc_now()
 
     with db.connect(settings) as conn:
         db.ensure_database(conn)
+        latest = conn.execute(
+            "SELECT id FROM source_tree_snapshots ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        cached_by_kind: dict[str, dict[str, dict[str, Any]]] = {
+            "english": {},
+            "spanish": {},
+        }
+        if latest:
+            for row in conn.execute(
+                """
+                SELECT source_kind, relative_path, file_hash, size_bytes, source_mtime_ns
+                FROM source_tree_snapshot_files
+                WHERE snapshot_id = ?
+                """,
+                (int(latest["id"]),),
+            ).fetchall():
+                cached_by_kind.setdefault(str(row["source_kind"]), {})[
+                    str(row["relative_path"])
+                ] = dict(row)
+        english, english_files = inspect_tree(
+            english_root,
+            cached_by_kind.get("english"),
+        )
+        spanish, spanish_files = inspect_tree(
+            spanish_root,
+            cached_by_kind.get("spanish"),
+        )
         existing = conn.execute(
             """
             SELECT *

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "provider_id": "redundant_select_cstring",
+  "label": "Select_CString com opcoes identicas",
+  "enabled": true,
+  "priority": 250,
+  "evidence_type": "deterministic_redundant_select_cstring_repair",
+  "discovery": {
+    "issue_types": ["redundant_select_cstring_options"]
+  },
+  "shadow_script": "pipeline/quality_redundant_select_cstring_shadow.py",
+  "shadow_args": [],
+  "evidence_script": "pipeline/quality_redundant_select_cstring_pairwise_evidence.py",
+  "evidence_args": []
+}

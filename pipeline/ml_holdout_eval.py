@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 from collections import Counter, defaultdict
@@ -35,7 +36,7 @@ from ml_score_segments import (
 )
 
 
-RULE_VERSION = "ml_holdout_eval_v6_title_compound_direction_guard"
+RULE_VERSION = "ml_holdout_eval_v7_frozen_reference_split"
 
 
 def count_labels(examples: list[dict[str, Any]]) -> Counter:
@@ -85,6 +86,40 @@ def select_holdout_paths(
     if not selected:
         raise RuntimeError("Could not select holdout paths.")
     return selected
+
+
+def load_reference_holdout_paths(conn, reference_run_id: int) -> tuple[list[str], dict[str, Any]]:
+    """Reuse a completed holdout's exact file split for an apples-to-apples comparison."""
+    row = conn.execute(
+        """
+        SELECT id, dataset_run_id, finished_at, metrics_json
+        FROM ml_holdout_eval_runs
+        WHERE id = ? AND finished_at IS NOT NULL
+        LIMIT 1
+        """,
+        (reference_run_id,),
+    ).fetchone()
+    if not row:
+        raise RuntimeError(f"Holdout reference run {reference_run_id} was not found or is incomplete.")
+    try:
+        metrics = json.loads(row["metrics_json"] or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Holdout reference run {reference_run_id} has invalid metrics.") from exc
+    paths = metrics.get("holdout_paths") or []
+    if not isinstance(paths, list) or not paths or not all(isinstance(path, str) and path for path in paths):
+        raise RuntimeError(f"Holdout reference run {reference_run_id} has no usable file split.")
+    ordered_paths = sorted(set(paths))
+    return ordered_paths, {
+        "run_id": int(row["id"]),
+        "dataset_run_id": int(row["dataset_run_id"]),
+        "finished_at": row["finished_at"],
+    }
+
+
+def holdout_text_identity(row: dict[str, Any]) -> str:
+    """Stable identity for a reviewed candidate, independent of its dataset row id."""
+    value = f"{int(row['segment_id'])}\x1f{row.get('candidate_text') or ''}"
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def format_counts(counter: Counter) -> list[str]:
@@ -207,6 +242,7 @@ def main(
     sample_limit: int = 20,
     feature_set: str = DEFAULT_FEATURE_SET,
     train_strategy: str = DEFAULT_TRAIN_STRATEGY,
+    reference_run_id: int | None = None,
 ) -> None:
     settings = db.load_settings()
     started_at = datetime.now()
@@ -217,21 +253,54 @@ def main(
         db.ensure_database(conn)
         dataset_run_id = dataset_run_id or latest_dataset_run_id(conn)
         examples = fetch_examples(conn, dataset_run_id)
+        reference_split = (
+            load_reference_holdout_paths(conn, reference_run_id)
+            if reference_run_id
+            else None
+        )
+        reference_examples = (
+            fetch_examples(conn, reference_split[1]["dataset_run_id"])
+            if reference_split
+            else []
+        )
     if train_strategy == "dedup_weighted_v2":
         examples = deduplicate_examples(examples)
+        reference_examples = deduplicate_examples(reference_examples)
 
     if len(count_labels(examples)) < 2:
         raise RuntimeError("Need at least two risk labels to evaluate holdout.")
 
-    holdout_paths = select_holdout_paths(
-        examples,
-        target_ratio=target_ratio,
-        min_negative=min_negative,
-        max_paths=max_paths,
-    )
+    if reference_split:
+        holdout_paths, reference_metadata = reference_split
+        selection_mode = "frozen_reference"
+    else:
+        holdout_paths = select_holdout_paths(
+            examples,
+            target_ratio=target_ratio,
+            min_negative=min_negative,
+            max_paths=max_paths,
+        )
+        reference_metadata = None
+        selection_mode = "derived"
+    split_fingerprint = hashlib.sha256(
+        "\n".join(sorted(holdout_paths)).encode("utf-8")
+    ).hexdigest()[:16]
     holdout_path_set = set(holdout_paths)
     train_pool = [row for row in examples if row["relative_path"] not in holdout_path_set]
     holdout_examples = [row for row in examples if row["relative_path"] in holdout_path_set]
+    novel_holdout_examples = 0
+    if reference_split:
+        reference_holdout_ids = {
+            holdout_text_identity(row)
+            for row in reference_examples
+            if row["relative_path"] in holdout_path_set
+        }
+        original_holdout_count = len(holdout_examples)
+        holdout_examples = [
+            row for row in holdout_examples
+            if holdout_text_identity(row) in reference_holdout_ids
+        ]
+        novel_holdout_examples = original_holdout_count - len(holdout_examples)
     selected_train = select_examples(
         train_pool,
         safe_multiplier=safe_multiplier,
@@ -298,6 +367,15 @@ def main(
         f"- Safe threshold: {safe_threshold:.2f}",
         f"- Feature set: {feature_set}",
         f"- Train strategy: {train_strategy}",
+        f"- Selection mode: {selection_mode}",
+        f"- Split fingerprint: {split_fingerprint}",
+        f"- Novel holdout texts excluded: {novel_holdout_examples}",
+        (
+            f"- Frozen reference: run {reference_metadata['run_id']} "
+            f"(dataset {reference_metadata['dataset_run_id']})"
+            if reference_metadata
+            else "- Frozen reference: none"
+        ),
         "",
         "Holdout paths:",
         *[f"- {path}" for path in holdout_paths],
@@ -362,6 +440,14 @@ def main(
     finished_at = datetime.now().isoformat(timespec="seconds")
     metrics = {
         "holdout_paths": holdout_paths,
+        "holdout_selection": {
+            "mode": selection_mode,
+            "reference_run_id": reference_metadata["run_id"] if reference_metadata else None,
+            "reference_dataset_run_id": reference_metadata["dataset_run_id"] if reference_metadata else None,
+            "split_fingerprint": split_fingerprint,
+            "strict_text_overlap": bool(reference_metadata),
+            "novel_holdout_examples_excluded": novel_holdout_examples,
+        },
         "train_label_counts": dict(train_label_counts),
         "holdout_label_counts": dict(holdout_label_counts),
         "classification_report": report,
@@ -459,6 +545,12 @@ if __name__ == "__main__":
     parser.add_argument("--sample-limit", type=int, default=20)
     parser.add_argument("--feature-set", choices=FEATURE_SETS, default=DEFAULT_FEATURE_SET)
     parser.add_argument("--train-strategy", choices=TRAIN_STRATEGIES, default=DEFAULT_TRAIN_STRATEGY)
+    parser.add_argument(
+        "--reference-run-id",
+        type=int,
+        default=None,
+        help="Reuse the exact file holdout split from a completed evaluation run.",
+    )
     args = parser.parse_args()
     main(
         dataset_run_id=args.dataset_run_id,
@@ -470,4 +562,5 @@ if __name__ == "__main__":
         sample_limit=args.sample_limit,
         feature_set=args.feature_set,
         train_strategy=args.train_strategy,
+        reference_run_id=args.reference_run_id,
     )

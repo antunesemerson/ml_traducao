@@ -1484,6 +1484,18 @@ def main() -> None:
         help="During ML train/holdout experiments, positive-to-risky sampling multiplier.",
     )
     parser.add_argument(
+        "--ml-dataset-run-id",
+        type=int,
+        default=None,
+        help="During ml-holdout-eval, evaluate this saved supervised dataset run.",
+    )
+    parser.add_argument(
+        "--ml-holdout-reference-run-id",
+        type=int,
+        default=None,
+        help="During ml-holdout-eval, reuse the exact file split from this completed run.",
+    )
+    parser.add_argument(
         "--ml-thresholds",
         default=None,
         help="During ml-threshold-sweep, comma-separated thresholds, for example 0.90,0.92,0.95.",
@@ -2013,11 +2025,13 @@ def main() -> None:
             try:
                 with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
                     ml_holdout_eval.main(
+                        dataset_run_id=args.ml_dataset_run_id,
                         safe_threshold=args.auto_min_score or 0.90,
                         safe_multiplier=args.ml_safe_multiplier,
                         sample_limit=args.auto_limit or 20,
                         feature_set=args.ml_feature_set,
                         train_strategy=args.ml_train_strategy,
+                        reference_run_id=args.ml_holdout_reference_run_id,
                     )
             except Exception:
                 traceback.print_exc(file=buffer)

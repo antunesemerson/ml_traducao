@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import UTC, datetime
@@ -668,6 +669,183 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
 
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS glossary_display_case_policies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            glossary_key TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            policy TEXT NOT NULL
+                CHECK(policy IN ('case_sensitive', 'case_flexible')),
+            reason TEXT NOT NULL,
+            reviewer TEXT NOT NULL,
+            source_shadow_run_id INTEGER,
+            source_score_run_id INTEGER,
+            evidence_segment_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mojibake_lexicon_review_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            segment_id INTEGER NOT NULL UNIQUE,
+            decision TEXT NOT NULL
+                CHECK(decision IN (
+                    'accept_suggestion',
+                    'valid_question_mark',
+                    'manual_review'
+                )),
+            reason TEXT NOT NULL,
+            reviewer TEXT NOT NULL,
+            source_shadow_run_id INTEGER NOT NULL,
+            source_score_run_id INTEGER NOT NULL,
+            baseline_hash TEXT NOT NULL,
+            candidate_hash TEXT,
+            candidate_text TEXT,
+            patterns_json TEXT NOT NULL DEFAULT '[]',
+            resolution_scope TEXT NOT NULL DEFAULT 'manual',
+            remaining_signal_count INTEGER NOT NULL DEFAULT 0,
+            residual_findings_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    mojibake_review_columns = ensure_columns(
+        conn,
+        "mojibake_lexicon_review_decisions",
+        [
+            ("resolution_scope", "TEXT NOT NULL DEFAULT 'manual'"),
+            ("remaining_signal_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("residual_findings_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ],
+    )
+    changes.extend(mojibake_review_columns)
+    if "mojibake_lexicon_review_decisions.resolution_scope" in mojibake_review_columns:
+        conn.execute(
+            """
+            UPDATE mojibake_lexicon_review_decisions
+            SET resolution_scope = CASE
+              WHEN decision IN ('accept_suggestion', 'valid_question_mark') THEN 'complete'
+              WHEN LOWER(reason) LIKE '%parcial%' THEN 'partial'
+              ELSE 'manual'
+            END
+            """
+        )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mojibake_lexicon_replacement_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            segment_id INTEGER NOT NULL,
+            pattern_key TEXT NOT NULL,
+            original_text TEXT NOT NULL,
+            replacement_text TEXT NOT NULL,
+            outcome TEXT NOT NULL
+                CHECK(outcome IN (
+                    'accepted_complete',
+                    'accepted_partial',
+                    'needs_context',
+                    'rejected'
+                )),
+            reason TEXT NOT NULL,
+            reviewer TEXT NOT NULL,
+            source_shadow_run_id INTEGER NOT NULL,
+            source_score_run_id INTEGER NOT NULL,
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(segment_id, pattern_key)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mojibake_boundary_pattern_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            normalized_pattern TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            display_pattern TEXT NOT NULL,
+            decision TEXT NOT NULL
+                CHECK(decision IN (
+                    'canonical_replacement',
+                    'valid_punctuation',
+                    'context_required'
+                )),
+            canonical_replacement TEXT,
+            reason TEXT NOT NULL,
+            reviewer TEXT NOT NULL,
+            source_shadow_run_id INTEGER NOT NULL,
+            source_score_run_id INTEGER NOT NULL,
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+    replacement_decision_count = conn.execute(
+        "SELECT COUNT(*) AS total FROM mojibake_lexicon_replacement_decisions"
+    ).fetchone()["total"]
+    if int(replacement_decision_count or 0) == 0:
+        for review in conn.execute(
+            """
+            SELECT segment_id, decision, reason, reviewer,
+                   source_shadow_run_id, source_score_run_id,
+                   patterns_json, resolution_scope, updated_at
+            FROM mojibake_lexicon_review_decisions
+            """
+        ).fetchall():
+            try:
+                patterns = json.loads(str(review["patterns_json"] or "[]"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                patterns = []
+            if review["decision"] == "accept_suggestion":
+                outcome = "accepted_complete"
+            elif review["resolution_scope"] == "partial":
+                outcome = "accepted_partial"
+            else:
+                outcome = "needs_context"
+            for pattern in patterns:
+                if not isinstance(pattern, dict):
+                    continue
+                original = str(pattern.get("original") or "")
+                replacement = str(pattern.get("replacement") or "")
+                if not original or not replacement or original == replacement:
+                    continue
+                pattern_key = hashlib.sha256(
+                    f"{original.casefold()}\0{replacement.casefold()}".encode("utf-8")
+                ).hexdigest()
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO mojibake_lexicon_replacement_decisions (
+                      segment_id, pattern_key, original_text, replacement_text,
+                      outcome, reason, reviewer, source_shadow_run_id,
+                      source_score_run_id, evidence_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(review["segment_id"]),
+                        pattern_key,
+                        original,
+                        replacement,
+                        outcome,
+                        str(review["reason"] or "review migration"),
+                        str(review["reviewer"] or "dashboard_human_review"),
+                        int(review["source_shadow_run_id"] or 0),
+                        int(review["source_score_run_id"] or 0),
+                        json.dumps(pattern, ensure_ascii=False),
+                        str(review["updated_at"] or utc_now()),
+                        str(review["updated_at"] or utc_now()),
+                    ),
+                )
+
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS local_learning_pattern_stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             pattern_key TEXT NOT NULL UNIQUE,
@@ -1089,6 +1267,9 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
             final_action TEXT NOT NULL,
             risk_class TEXT NOT NULL,
             model_safe_probability REAL,
+            raw_model_safe_probability REAL,
+            score_calibration TEXT,
+            score_calibration_source_run_id INTEGER,
             model_confidence REAL,
             token_status TEXT NOT NULL,
             issue_count INTEGER NOT NULL DEFAULT 0,
@@ -5717,6 +5898,9 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
                 ("final_action", "TEXT"),
                 ("risk_class", "TEXT"),
                 ("model_safe_probability", "REAL"),
+                ("raw_model_safe_probability", "REAL"),
+                ("score_calibration", "TEXT"),
+                ("score_calibration_source_run_id", "INTEGER"),
                 ("model_confidence", "REAL"),
                 ("token_status", "TEXT"),
                 ("issue_count", "INTEGER NOT NULL DEFAULT 0"),
@@ -8028,6 +8212,300 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         ON segment_confirmations(feedback_id)
         """
     )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_regenerative_review_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            queue_type TEXT NOT NULL CHECK(
+                queue_type IN ('repair', 'discovery', 'proposal')
+            ),
+            item_key TEXT NOT NULL,
+            segment_id INTEGER,
+            snapshot_id INTEGER NOT NULL,
+            evidence_hash TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            reason TEXT,
+            reviewer TEXT NOT NULL,
+            contract_version TEXT NOT NULL,
+            evidence_json TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_supervised_calibration_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            metric_version TEXT NOT NULL,
+            model_run_id INTEGER NOT NULL,
+            score_run_id INTEGER NOT NULL,
+            review_watermark TEXT NOT NULL,
+            observation_count INTEGER NOT NULL DEFAULT 0,
+            positive_count INTEGER NOT NULL DEFAULT 0,
+            negative_count INTEGER NOT NULL DEFAULT 0,
+            ece REAL,
+            brier REAL,
+            mean_confidence REAL,
+            observed_safe_rate REAL,
+            calibration_gap REAL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(model_run_id) REFERENCES ml_model_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(score_run_id) REFERENCES ml_score_runs(id) ON DELETE RESTRICT,
+            UNIQUE(metric_version, model_run_id, score_run_id, review_watermark)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_score_calibration_shadow_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            metric_run_id INTEGER NOT NULL,
+            model_run_id INTEGER NOT NULL,
+            score_run_id INTEGER NOT NULL,
+            review_watermark TEXT NOT NULL,
+            observation_count INTEGER NOT NULL DEFAULT 0,
+            fold_count INTEGER NOT NULL DEFAULT 0,
+            current_ece REAL,
+            candidate_ece REAL,
+            current_brier REAL,
+            candidate_brier REAL,
+            current_false_safe_count INTEGER NOT NULL DEFAULT 0,
+            candidate_false_safe_count INTEGER NOT NULL DEFAULT 0,
+            gate_passed INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            model_json TEXT NOT NULL,
+            metrics_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(metric_run_id) REFERENCES ml_supervised_calibration_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(model_run_id) REFERENCES ml_model_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(score_run_id) REFERENCES ml_score_runs(id) ON DELETE RESTRICT,
+            UNIQUE(rule_version, model_run_id, score_run_id, review_watermark)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_score_calibration_shadow_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            text_hash TEXT NOT NULL,
+            source TEXT NOT NULL,
+            complexity TEXT NOT NULL,
+            family TEXT NOT NULL,
+            fold INTEGER NOT NULL,
+            human_outcome INTEGER NOT NULL,
+            current_probability REAL NOT NULL,
+            shadow_probability REAL NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES ml_score_calibration_shadow_runs(id) ON DELETE CASCADE,
+            UNIQUE(run_id, segment_id, text_hash, source)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_score_calibration_shadow_items_run
+        ON ml_score_calibration_shadow_items(run_id, complexity, human_outcome)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_score_calibration_candidate_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            shadow_run_id INTEGER NOT NULL,
+            model_run_id INTEGER NOT NULL,
+            score_run_id INTEGER NOT NULL,
+            source_snapshot_id INTEGER,
+            candidate_tree_hash TEXT NOT NULL,
+            review_watermark TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'generated',
+            item_count INTEGER NOT NULL DEFAULT 0,
+            raw_mean_probability REAL,
+            current_mean_probability REAL,
+            candidate_mean_probability REAL,
+            improved_count INTEGER NOT NULL DEFAULT 0,
+            degraded_count INTEGER NOT NULL DEFAULT 0,
+            unchanged_count INTEGER NOT NULL DEFAULT 0,
+            band_change_count INTEGER NOT NULL DEFAULT 0,
+            required_review_count INTEGER NOT NULL DEFAULT 0,
+            gate_json TEXT NOT NULL DEFAULT '{}',
+            summary_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(shadow_run_id) REFERENCES ml_score_calibration_shadow_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(model_run_id) REFERENCES ml_model_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(score_run_id) REFERENCES ml_score_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(source_snapshot_id) REFERENCES source_tree_snapshots(id) ON DELETE SET NULL,
+            UNIQUE(shadow_run_id, score_run_id, candidate_tree_hash)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_score_calibration_candidate_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            text_hash TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            complexity TEXT NOT NULL,
+            family TEXT NOT NULL,
+            raw_probability REAL NOT NULL,
+            current_probability REAL NOT NULL,
+            candidate_probability REAL NOT NULL,
+            delta REAL NOT NULL,
+            raw_band TEXT NOT NULL,
+            current_band TEXT NOT NULL,
+            candidate_band TEXT NOT NULL,
+            review_required INTEGER NOT NULL DEFAULT 0,
+            review_rank INTEGER,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES ml_score_calibration_candidate_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE RESTRICT,
+            UNIQUE(run_id, segment_id, text_hash)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_score_calibration_candidate_items_run
+        ON ml_score_calibration_candidate_items(run_id, review_required, review_rank, ABS(delta) DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_score_calibration_discrepancy_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            candidate_run_id INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            text_hash TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            reason TEXT,
+            reviewer TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(candidate_run_id) REFERENCES ml_score_calibration_candidate_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE RESTRICT,
+            UNIQUE(candidate_run_id, segment_id, text_hash)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_score_calibration_registry (
+            registry_key TEXT PRIMARY KEY,
+            active_candidate_run_id INTEGER,
+            previous_candidate_run_id INTEGER,
+            updated_at TEXT NOT NULL,
+            updated_by TEXT NOT NULL,
+            FOREIGN KEY(active_candidate_run_id) REFERENCES ml_score_calibration_candidate_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(previous_candidate_run_id) REFERENCES ml_score_calibration_candidate_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_score_calibration_promotion_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            candidate_run_id INTEGER,
+            previous_candidate_run_id INTEGER,
+            action TEXT NOT NULL,
+            reason TEXT,
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(candidate_run_id) REFERENCES ml_score_calibration_candidate_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY(previous_candidate_run_id) REFERENCES ml_score_calibration_candidate_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_dynamic_score_holdout_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_version TEXT NOT NULL,
+            model_run_id INTEGER NOT NULL,
+            score_run_id INTEGER NOT NULL,
+            segment_state_run_id INTEGER NOT NULL,
+            population_count INTEGER NOT NULL DEFAULT 0,
+            excluded_reviewed_count INTEGER NOT NULL DEFAULT 0,
+            excluded_training_count INTEGER NOT NULL DEFAULT 0,
+            target_count INTEGER NOT NULL DEFAULT 0,
+            selected_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            selection_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(model_run_id) REFERENCES ml_model_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(score_run_id) REFERENCES ml_score_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY(segment_state_run_id) REFERENCES segment_state_runs(id) ON DELETE RESTRICT,
+            UNIQUE(rule_version, score_run_id, segment_state_run_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_dynamic_score_holdout_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            display_order INTEGER NOT NULL,
+            segment_id INTEGER NOT NULL,
+            text_hash TEXT NOT NULL,
+            calibration_lane TEXT NOT NULL,
+            calibration_group TEXT NOT NULL,
+            probability_band TEXT NOT NULL,
+            text_length INTEGER NOT NULL,
+            dynamic_token_count INTEGER NOT NULL,
+            stratum_population INTEGER NOT NULL,
+            stratum_selected INTEGER NOT NULL,
+            sampling_weight REAL NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES ml_dynamic_score_holdout_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY(segment_id) REFERENCES source_segments(id) ON DELETE CASCADE,
+            UNIQUE(run_id, segment_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_dynamic_score_holdout_items_run
+        ON ml_dynamic_score_holdout_items(run_id, calibration_lane, probability_band)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_glossary_display_case_policies_policy
+        ON glossary_display_case_policies(policy, updated_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_mojibake_lexicon_review_decisions_status
+        ON mojibake_lexicon_review_decisions(decision, updated_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_mojibake_replacement_decisions_pattern
+        ON mojibake_lexicon_replacement_decisions(
+          original_text, replacement_text, outcome, updated_at
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_mojibake_boundary_pattern_decisions_status
+        ON mojibake_boundary_pattern_decisions(decision, updated_at)
+        """
+    )
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_local_learning_pattern_stats_weight
@@ -8266,6 +8744,19 @@ def ensure_database(conn: sqlite3.Connection) -> list[str]:
         """
         CREATE INDEX IF NOT EXISTS idx_ml_quality_provider_proposal_cases_proposal_kind
         ON ml_quality_provider_proposal_cases(proposal_id, case_kind, id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ml_regenerative_review_active_evidence
+        ON ml_regenerative_review_decisions(queue_type, item_key, evidence_hash)
+        WHERE is_active = 1
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_regenerative_review_queue_latest
+        ON ml_regenerative_review_decisions(queue_type, item_key, id DESC)
         """
     )
     conn.execute(

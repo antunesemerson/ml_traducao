@@ -1,87 +1,65 @@
-# Design QA — sistema visual do Project Intelligence
+# Design QA — limpeza e simetria dos módulos operacionais
 
-- Fonte visual da Visão Geral: `assets/validation-screenshots/design-audit-project-intelligence-after.png`.
-- Implementação da Visão Geral: `assets/validation-screenshots/design-qa-overview-after-dark.png`.
-- Fonte visual da Network: `assets/validation-screenshots/design-qa-network-before.png`.
-- Implementação da Network: `assets/validation-screenshots/design-qa-network-after-dark.png`.
-- Comparações completas: `assets/validation-screenshots/design-qa-overview-token-comparison.png` e `assets/validation-screenshots/design-qa-network-token-comparison.png`.
-- Evidência complementar: `assets/validation-screenshots/design-qa-overview-after-light.png` e `assets/validation-screenshots/design-qa-network-after-light.png`.
-- Viewport: 1280 × 720.
-- Estado: dados reais carregados, tema escuro como referência principal, layout favorito salvo na Network.
+## Evidência
+
+- Fonte visual — Produção: `C:\Users\Emerson\AppData\Local\Temp\codex-clipboard-576c9e25-8b23-4913-981d-19e123911613.png` (1878 × 930 px).
+- Fonte visual — Avaliação: `C:\Users\Emerson\AppData\Local\Temp\codex-clipboard-2821e20c-6fa5-454c-b006-e8438fd61d09.png` (1876 × 927 px).
+- Fonte visual — Calibração: `C:\Users\Emerson\AppData\Local\Temp\codex-clipboard-b163b116-3698-4994-9701-58363d93c52a.png` (1871 × 928 px).
+- Refinamentos — subtítulo, tooltips e estados: `C:\Users\Emerson\AppData\Local\Temp\codex-clipboard-8680f6da-e6a8-4939-a40c-05e9b255a4f9.png`, `C:\Users\Emerson\AppData\Local\Temp\codex-clipboard-340b9f52-e738-4851-91a5-6e7341ae8613.png` e `C:\Users\Emerson\AppData\Local\Temp\codex-clipboard-b9f9eea4-9e58-49a3-aaa6-2722c27ad1ce.png`.
+- Refinamentos — menu, tema e identidade: `C:\Users\Emerson\AppData\Local\Temp\codex-clipboard-1a6bedc7-ea2c-4284-804d-fb392d8eb5cf.png`, `C:\Users\Emerson\AppData\Local\Temp\codex-clipboard-20d24acd-c321-4660-98f7-9c55e51b3b01.png`, `C:\Users\Emerson\AppData\Local\Temp\codex-clipboard-6313d971-fdd4-43b0-be54-28796b5151ba.png` e `C:\Users\Emerson\AppData\Local\Temp\codex-clipboard-e8a31efa-7ab8-4528-8204-6ded479fff0f.png`.
+- Implementação — Produção: `C:\Users\Emerson\OneDrive\Área de Trabalho\Docs\Projetos\0001 - ML Tradução\qa-production-clean.png` (1880 × 928 px).
+- Implementação — Avaliação: `C:\Users\Emerson\OneDrive\Área de Trabalho\Docs\Projetos\0001 - ML Tradução\qa-evaluation-clean.png` (1880 × 928 px).
+- Implementação — Calibração: `C:\Users\Emerson\OneDrive\Área de Trabalho\Docs\Projetos\0001 - ML Tradução\qa-calibration-clean.png` (1880 × 928 px).
+- Implementação — sistema escuro, menu recolhido: `C:\Users\Emerson\OneDrive\Área de Trabalho\Docs\Projetos\0001 - ML Tradução\qa\system-dark-collapsed.png`.
+- Implementação — sistema claro: `C:\Users\Emerson\OneDrive\Área de Trabalho\Docs\Projetos\0001 - ML Tradução\qa\system-light-production.png`.
+- Implementação — novo ícone no Dashboard: `C:\Users\Emerson\OneDrive\Área de Trabalho\Docs\Projetos\0001 - ML Tradução\qa\dashboard-new-icon.png`.
+- Viewport CSS: 1880 × 928; densidade 1×. As referências variam até 9 px de largura, sem redimensionamento necessário para avaliar os blocos indicados.
+- Estado: temas escuro e claro; menu recolhido por padrão; Avaliação em Descobertas; Calibração com score #24 ativo e monitorado; Produção na lista Pacote.
+
+## Comparação visual
+
+As três referências e as três capturas finais foram abertas juntas e comparadas no mesmo viewport. Os blocos circulados foram removidos sem alterar navegação, progresso, tabelas, paleta ou hierarquia do sistema.
+
+Não foi necessário um recorte adicional: títulos, botões, trilhos de progresso, abas e primeiras linhas das tabelas permanecem legíveis nas capturas originais de 1880 px. A comparação focada foi feita diretamente nas regiões de cabeçalho, trilho e início do conteúdo de cada tela.
+
+## Superfícies de fidelidade
+
+- Tipografia: família, pesos e hierarquia existentes foram preservados; não houve mudança de tokens tipográficos.
+- Espaçamento e ritmo: cabeçalho, ação e trilho agora compartilham exatamente `top=65`, `actionTop=89`, `actionRight=1848`, `railTop=193` e `headerHeight=249` nos três módulos.
+- Cores e tokens: estados azul, rosa, âmbar, verde e superfícies do tema permanecem ligados aos tokens existentes.
+- Imagens e ativos: a identidade antiga foi substituída, conforme solicitado, pelo mesmo hexágono com pulso operacional usado no sistema. O Dashboard usa o componente vetorial existente e o favicon recebeu a versão SVG correspondente.
+- Conteúdo: foram removidos somente os resumos redundantes solicitados. A verificação automática do source continua no fluxo de execução, sem faixa própria na interface.
+
+## Histórico da iteração
+
+1. A primeira captura mostrou um desvio P2: o trilho de Produção ficava 13 px abaixo dos demais por causa da descrição em duas linhas.
+2. Correção aplicada: a área de texto do cabeçalho passou a ter altura fixa e limite de duas linhas.
+3. Pós-correção: Avaliação, Calibração e Produção mediram as mesmas posições e altura de cabeçalho; nenhuma sobreposição ou corte de controle foi observado.
+4. As listas foram isoladas em uma região rolável: `body` e `html` permaneceram em 720/720 px, enquanto a lista mediu 277 px de viewport para 6.152 px de conteúdo.
+5. O tema claro foi validado com superfícies `rgb(248, 250, 252)`/`rgb(255, 255, 255)` e texto principal `rgb(15, 23, 42)`, sem herdar os fundos pretos do tema escuro.
+6. O backend confirmou o candidato #24 promovido no registro `operational_calibrated_score`, em `active_monitoring`, com zero falso seguro e nenhuma revisão pendente; o menu passa a mostrá-lo como `alta fidelidade` até surgir novo contexto, quando muda para `nova evidência`.
+
+## Interações e console
+
+- Alternância Avaliação → Calibração → Produção testada.
+- Ação da Calibração confirmada no cabeçalho, alinhada à direita: `Iniciar nova calibração`. O comando direto `Desativar score calibrado` foi removido.
+- A área inferior da Calibração agora apresenta o histórico versionado: score calibrado #24 ativo e score bruto original, com Score médio, ECE, Brier e Falsos seguros para comparação.
+- As métricas do histórico explicam em tooltip como influenciam a confiança e as travas; cada versão inativa e compatível oferece `Restaurar`, inclusive o score bruto original.
+- Cores operacionais confirmadas na interface visível: Avaliação em verde (`rgb(5, 150, 105)`), Calibração em rosa (`rgb(219, 39, 119)`) e Produção em azul (`rgb(37, 99, 235)`), com as mesmas cores nas linhas ativas do menu.
+- Botões habilitados não expõem tooltip; botões bloqueados recebem motivo operacional via `data-disabled-reason`, com fallback global para travas não especializadas.
+- Menu confirmado recolhido no primeiro carregamento e expansível pelo controle inferior.
+- Subtítulo de Produção confirmado como: `Aplica promoções confirmadas, valida o output e materializa uma nova versão.`
+- Novo ícone confirmado no cabeçalho do Dashboard e em `/favicon.svg`.
+- Abas e tabelas permaneceram disponíveis depois da limpeza.
+- Console do navegador: 0 erros.
+- Build Vite concluído com sucesso.
 
 ## Findings
 
-- Nenhum P0, P1 ou P2 permaneceu após a comparação final.
-- A Visão Geral mantém composição, densidade, hierarquia, conteúdo e proporção dos dois gráficos aprovados.
-- A Network preserva a identidade do atlas e passa a usar as mesmas superfícies, bordas, elevação, controles e estados ativos do dashboard.
-- A aba Network agora pode renderizar sua estrutura imediatamente, sem bloquear o atlas enquanto o payload geral do dashboard é carregado.
-
-## Superfícies obrigatórias
-
-- Fontes e tipografia: família Inter/system preservada; pesos, escala, altura de linha, rótulos e números tabulares permanecem legíveis e coerentes entre as abas.
-- Espaçamento e ritmo: cabeçalho, navegação segmentada, botões de ícone, cartões e painel de métricas usam alturas e raios semânticos compartilhados.
-- Cores e tokens: temas claro e escuro usam a mesma camada de tokens para canvas, superfície, superfície elevada, borda, texto, hover, foco e estados semânticos.
-- Imagens e ativos: favicon e ícones Lucide existentes foram preservados; não houve substituição de ativos por placeholders.
-- Copy e conteúdo: textos e métricas operacionais foram preservados; não houve alteração de significado dos dados.
-
-## Interações verificadas
-
-- Alternância Visão Geral ↔ Network.
-- Alternância de tema claro ↔ escuro.
-- Seleção de nó e abertura do painel de detalhe da Network.
-- Salvar e restaurar o layout favorito do atlas.
-- Renderização de 1 linha de evolução, 5 barras de qualidade e 31 nós com dados reais.
-- Console: nenhum erro na navegação e nas interações finais; apenas mensagens informativas do Vite/React no ambiente de desenvolvimento.
-
-## Comparação e histórico
-
-1. Primeira comparação: a Network foi capturada com o favorito não salvo, diferente da referência.
-2. Correção: o estado favorito foi salvo, a tela foi recarregada e a comparação foi refeita no mesmo viewport e tema.
-3. Evidência pós-correção: `assets/validation-screenshots/design-qa-network-token-comparison.png`; o estado e a composição passaram a corresponder à referência.
-4. A Visão Geral passou na primeira comparação após a tokenização; `assets/validation-screenshots/design-qa-overview-token-comparison.png` não mostrou drift acionável.
-
-## Focused regions
-
-Não foi necessário um recorte adicional: os controles, KPIs, eixos, rótulos dos nós e estados ativos permanecem legíveis nas comparações lado a lado em resolução original.
+Nenhum P0, P1 ou P2 permanece. A diferença entre referência e implementação é intencional e corresponde à limpeza solicitada e à substituição dos controles antigos pelo histórico restaurável.
 
 ## Follow-up polish
 
-- P3: a Network em tema claro mantém conexões deliberadamente discretas para não competir com os nós; pode receber um modo opcional de alto contraste no futuro.
-- P3: um breakpoint estreito não foi capturado nesta rodada porque o produto-alvo é o desktop; a estrutura responsiva existente foi preservada.
-
-final result: passed
-
----
-
-# Design QA — gráfico de evolução dos pacotes
-
-- Fonte visual: `assets/validation-screenshots/design-qa-package-evolution-source.png`.
-- Implementação final: `assets/validation-screenshots/design-qa-package-evolution-area-dark.png`.
-- Estado interativo: `assets/validation-screenshots/design-qa-package-evolution-tooltip-dark.png`.
-- Viewport: 1866 × 918.
-- Estado: Visão Geral, tema escuro, dados reais carregados, pacote V7 candidato.
-
-## Findings
-
-- Nenhum P0, P1, P2 ou P3 permaneceu após a comparação final.
-- A linha contínua passa pelos cinco pontos de dados e usa o mesmo token azul dos marcadores.
-- A área parte da curva e se dissolve verticalmente em gradiente até a base do gráfico, ocupando o espaço sem reduzir a legibilidade da grade.
-- Os eixos, rótulos, cartões e o gráfico de distribuição lateral permaneceram visualmente estáveis.
-
-## Interações verificadas
-
-- Foco acessível no ponto V6 abriu o tooltip completo, com score, cobertura, faixas e contrato comparável.
-- Os cinco pontos mantêm área de interação ampliada, `tabIndex` e texto acessível.
-- Console do navegador sem erros ou avisos durante a validação final.
-
-## Comparação e histórico
-
-1. A referência foi capturada com pontos desconectados e sem preenchimento de área.
-2. A implementação foi comparada no mesmo viewport e tema, em uma única entrada visual lado a lado.
-3. A primeira comparação pós-implementação passou: a nova linha e o gradiente correspondem à direção solicitada e não introduziram drift acionável nas demais superfícies.
-
-## Focused regions
-
-Não foi necessário recorte adicional: o gráfico ocupa a maior área das capturas em resolução original, e linha, gradiente, pontos e eixos permanecem legíveis. O estado do tooltip foi capturado separadamente para verificar o conteúdo e a sobreposição.
+Nenhum P3 necessário para esta solicitação.
 
 final result: passed

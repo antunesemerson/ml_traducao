@@ -13,11 +13,12 @@ from typing import Any
 import db
 
 
-RULE_VERSION = "quality_pattern_discovery_v2"
+RULE_VERSION = "quality_pattern_discovery_v6_reopen_refined_evidence"
 DEFAULT_LOW_SCORE_THRESHOLD = 0.5
 MIN_ACTIONABLE_SEGMENTS = 3
 MAX_SAMPLES = 3
 PROVIDERS_DIR = Path(__file__).resolve().with_name("quality_promotion_providers")
+ANGULAR_QUOTE_MARKS = ("«", "»", "Â«", "Â»")
 
 SEVERITY_WEIGHT = {
     "critical": 1.0,
@@ -37,6 +38,36 @@ def _json_object(value: Any) -> dict[str, Any]:
     except (TypeError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _refine_human_issue_type(
+    issue_type: str,
+    candidate_text: str,
+    reason: str,
+    current_issue_types: set[str] | None = None,
+) -> str:
+    """Keep typography evidence out of the semantic residual-Spanish family."""
+    normalized_issue = str(issue_type or "").casefold()
+    normalized_reason = str(reason or "").casefold()
+    normalized_current_issues = {
+        str(current_issue or "").casefold()
+        for current_issue in (current_issue_types or set())
+    }
+    has_angular_quotes = any(mark in str(candidate_text or "") for mark in ANGULAR_QUOTE_MARKS)
+    quote_reason = any(token in normalized_reason for token in ("aspas", "angular", "guillem", "pontua"))
+    current_has_angular_quotes = "spanish_angular_quotes" in normalized_current_issues
+    current_has_residual_spanish = any(
+        token in current_issue
+        for current_issue in normalized_current_issues
+        for token in ("residual_spanish", "spanish_residue", "persistent_spanish_residue")
+    )
+    if (
+        normalized_issue == "residual_spanish"
+        and has_angular_quotes
+        and (quote_reason or (current_has_angular_quotes and not current_has_residual_spanish))
+    ):
+        return "spanish_angular_quotes"
+    return str(issue_type or "")
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -258,7 +289,7 @@ def _evidence_rows(conn: sqlite3.Connection, score_run_id: int) -> list[dict[str
     explicit = conn.execute(
         f"""
         SELECT item.segment_id, item.relative_path, item.source_key,
-               SUBSTR(COALESCE(item.candidate_text, ''), 1, 2000) AS candidate_text,
+               COALESCE(item.candidate_text, '') AS candidate_text,
                item.model_safe_probability, item.final_action, item.risk_class,
                item.token_status, {relation_sql} AS text_relation,
                {lifecycle_select},
@@ -279,7 +310,7 @@ def _evidence_rows(conn: sqlite3.Connection, score_run_id: int) -> list[dict[str
     structural = conn.execute(
         f"""
         SELECT item.segment_id, item.relative_path, item.source_key,
-               SUBSTR(COALESCE(item.candidate_text, ''), 1, 2000) AS candidate_text,
+               COALESCE(item.candidate_text, '') AS candidate_text,
                item.model_safe_probability, item.final_action, item.risk_class,
                item.token_status, {relation_sql} AS text_relation,
                {lifecycle_select},
@@ -296,6 +327,90 @@ def _evidence_rows(conn: sqlite3.Connection, score_run_id: int) -> list[dict[str
         query_parameters,
     ).fetchall()
     return [dict(row) for row in [*explicit, *structural]]
+
+
+def _human_audit_evidence_rows(
+    conn: sqlite3.Connection,
+    score_run_id: int,
+) -> list[dict[str, Any]]:
+    """Turn independently audited defects into discovery blind-spot evidence."""
+    if not _table_exists(conn, "local_learning_candidates"):
+        return []
+    state_run_id = 0
+    if _table_exists(conn, "segment_state_runs") and _table_exists(conn, "segment_state_items"):
+        state_run = conn.execute(
+            """
+            SELECT id FROM segment_state_runs
+            WHERE finished_at IS NOT NULL
+            ORDER BY id DESC LIMIT 1
+            """
+        ).fetchone()
+        state_run_id = int(state_run["id"] or 0) if state_run else 0
+    lifecycle_select = (
+        "lifecycle.state_group, lifecycle.locked AS lifecycle_locked, "
+        "lifecycle.confirmed_matches_output, lifecycle.needs_output_apply, lifecycle.is_closed"
+        if state_run_id
+        else (
+            "NULL AS state_group, NULL AS lifecycle_locked, "
+            "NULL AS confirmed_matches_output, NULL AS needs_output_apply, NULL AS is_closed"
+        )
+    )
+    lifecycle_join = (
+        "LEFT JOIN segment_state_items lifecycle "
+        "ON lifecycle.segment_id = item.segment_id AND lifecycle.run_id = ?"
+        if state_run_id
+        else ""
+    )
+    relation_sql = """
+        CASE
+          WHEN item.candidate_text = source.old_text
+           AND item.candidate_text = source.spanish_text THEN 'equals_old_and_spanish'
+          WHEN item.candidate_text = source.old_text THEN 'equals_old'
+          WHEN item.candidate_text = source.spanish_text THEN 'equals_spanish'
+          WHEN item.candidate_text = source.english_text THEN 'equals_english'
+          ELSE 'distinct_candidate'
+        END
+    """
+    params = (state_run_id, score_run_id) if state_run_id else (score_run_id,)
+    rows = conn.execute(
+        f"""
+        SELECT item.segment_id, item.relative_path, item.source_key,
+               COALESCE(item.candidate_text, '') AS candidate_text,
+               item.model_safe_probability, item.final_action, item.risk_class,
+               item.token_status, {relation_sql} AS text_relation,
+               {lifecycle_select},
+               json_object(
+                 'code', audit.human_label,
+                 'severity', 'high',
+                 'reason', COALESCE(audit.reason, ''),
+                 'reviewed_at', COALESCE(audit.reviewed_at, '')
+               ) AS issue_json,
+               'human_audit_blind_spot' AS evidence_kind
+        FROM ml_score_items item
+        JOIN source_segments source
+          ON source.id = item.segment_id AND source.is_active = 1
+        JOIN output_segments output ON output.segment_id = item.segment_id
+        JOIN local_learning_candidates audit
+          ON audit.id = (
+            SELECT prior.id
+            FROM local_learning_candidates prior
+            WHERE prior.segment_id = item.segment_id
+              AND prior.origin = 'manual_low_score_calibration'
+              AND prior.human_label IN (
+                'semantic_error', 'residual_spanish', 'structure_error'
+              )
+              AND prior.local_status = 'reviewed'
+            ORDER BY prior.id DESC
+            LIMIT 1
+          )
+         AND audit.current_output_text = output.portuguese_text
+        {lifecycle_join}
+        WHERE item.run_id = ?
+        ORDER BY audit.reviewed_at DESC, item.segment_id
+        """,
+        params,
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def _score_only_count(
@@ -340,7 +455,10 @@ def _score_family(
     severity = float(family["severity"])
     scored_reach_count = operational_segment_count if lifecycle_observed_count else segment_count
     support = min(0.18, math.log10(1 + scored_reach_count) * 0.08)
-    confidence = (0.72 if family["evidence_kind"] == "explicit_issue" else 0.58) + support
+    if family["evidence_kind"] == "human_audit_blind_spot":
+        confidence = 0.92 + support
+    else:
+        confidence = (0.72 if family["evidence_kind"] == "explicit_issue" else 0.58) + support
     if severity >= 1.0:
         confidence += 0.04
     if historical:
@@ -367,12 +485,14 @@ def _score_family(
         and lifecycle_observed_count == segment_count
         and operational_segment_count == 0
     )
-    if fully_closed:
+    if fully_closed and family["evidence_kind"] != "human_audit_blind_spot":
         status = "closed_observation"
         priority *= 0.20
     elif provider:
         status = "covered_by_provider"
         priority *= 0.55
+    elif family["evidence_kind"] == "human_audit_blind_spot":
+        status = "recurring_candidate" if historical else "new_candidate"
     elif scored_reach_count >= MIN_ACTIONABLE_SEGMENTS and confidence >= 0.55:
         status = "recurring_candidate" if historical else "new_candidate"
     else:
@@ -420,11 +540,51 @@ def discover_patterns(
     provider_coverage = provider_coverage if provider_coverage is not None else load_provider_coverage()
     groups: dict[str, dict[str, Any]] = {}
     evidence_segment_ids: set[int] = set()
-    for row in _evidence_rows(conn, context["score_run_id"]):
+    current_evidence_rows = _evidence_rows(conn, context["score_run_id"])
+    current_issue_types_by_segment: dict[int, set[str]] = defaultdict(set)
+    for current_row in current_evidence_rows:
+        if str(current_row.get("evidence_kind") or "") != "explicit_issue":
+            continue
+        current_issue = _json_object(current_row.get("issue_json"))
+        current_issue_type = str(
+            current_issue.get("code")
+            or current_issue.get("type")
+            or "unknown_explicit_issue"
+        )
+        current_issue_types_by_segment[int(current_row["segment_id"])].add(current_issue_type)
+    evidence_rows = [
+        *current_evidence_rows,
+        *_human_audit_evidence_rows(conn, context["score_run_id"]),
+    ]
+    audit_blind_spot_segment_ids: set[int] = set()
+    for row in evidence_rows:
         evidence_kind = str(row["evidence_kind"])
         issue = _json_object(row.get("issue_json"))
-        if evidence_kind == "explicit_issue":
+        if evidence_kind in {"explicit_issue", "human_audit_blind_spot"}:
             issue_type = str(issue.get("code") or issue.get("type") or "unknown_explicit_issue")
+            if evidence_kind == "human_audit_blind_spot":
+                historical_issue_type = issue_type
+                current_issue_types = current_issue_types_by_segment.get(
+                    int(row["segment_id"]),
+                    set(),
+                )
+                issue_type = _refine_human_issue_type(
+                    issue_type,
+                    str(row.get("candidate_text") or ""),
+                    str(issue.get("reason") or ""),
+                    current_issue_types,
+                )
+                # An audit already recorded with the same precise current
+                # class is no longer a blind spot. A generic historical label
+                # refined into a different current class must reopen once so
+                # the operator can confirm the correct repair contract.
+                if (
+                    historical_issue_type.casefold() == issue_type.casefold()
+                    and issue_type.casefold() in {
+                    current_issue.casefold() for current_issue in current_issue_types
+                    }
+                ):
+                    continue
             severity = _severity_value(issue.get("severity"), evidence_kind)
         else:
             risk = str(row.get("risk_class") or "unknown").casefold().replace(" ", "_")
@@ -462,6 +622,8 @@ def discover_patterns(
             },
         )
         segment_id = int(row["segment_id"])
+        if evidence_kind == "human_audit_blind_spot":
+            audit_blind_spot_segment_ids.add(segment_id)
         score = row.get("model_safe_probability")
         family["segment_ids"].add(segment_id)
         lifecycle_observed = row.get("state_group") is not None
@@ -473,7 +635,12 @@ def discover_patterns(
             )
         )
         needs_output_apply = bool(int(row.get("needs_output_apply") or 0))
-        operational = not lifecycle_observed or not lifecycle_closed or needs_output_apply
+        operational = (
+            evidence_kind == "human_audit_blind_spot"
+            or not lifecycle_observed
+            or not lifecycle_closed
+            or needs_output_apply
+        )
         if lifecycle_observed:
             family["lifecycle_observed_segment_ids"].add(segment_id)
         if lifecycle_closed and not needs_output_apply:
@@ -496,7 +663,7 @@ def discover_patterns(
                     "segment_id": segment_id,
                     "relative_path": row.get("relative_path"),
                     "source_key": row.get("source_key"),
-                    "candidate_text": str(row.get("candidate_text") or "")[:500],
+                    "candidate_text": str(row.get("candidate_text") or ""),
                     "score": round(float(score), 6) if score is not None else None,
                     "final_action": row.get("final_action"),
                     "token_status": row.get("token_status"),
@@ -537,7 +704,7 @@ def discover_patterns(
         low_score_threshold,
     )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "source": RULE_VERSION,
         "run_key": run_key,
         **context,
@@ -551,6 +718,7 @@ def discover_patterns(
         "closed_family_count": counts["closed_observation"],
         "actionable_family_count": counts["new_candidate"] + counts["recurring_candidate"],
         "ignored_score_only_count": ignored_score_only_count,
+        "audit_blind_spot_count": len(audit_blind_spot_segment_ids),
         "confirmation_write_count": 0,
         "output_write_count": 0,
         "score_write_count": 0,
@@ -573,6 +741,7 @@ def persist_discovery(conn: sqlite3.Connection, result: dict[str, Any]) -> int:
             "closed_family_count",
             "actionable_family_count",
             "ignored_score_only_count",
+            "audit_blind_spot_count",
         )
     }
     summary["top_families"] = [

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -15,10 +17,41 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _resolve_pipeline_python(
+    root: Path = ROOT,
+    *,
+    environ: dict[str, str] | None = None,
+    fallback: str | None = None,
+) -> str:
+    """Use the project runtime for pipeline subprocesses, independently of the API runtime."""
+    runtime_env = os.environ if environ is None else environ
+    override = str(runtime_env.get("CK3_PIPELINE_PYTHON") or "").strip()
+    candidates = [
+        Path(override) if override else None,
+        root / ".venv" / "Scripts" / "python.exe",
+        root / ".venv" / "bin" / "python",
+    ]
+    for candidate in candidates:
+        if candidate is not None and candidate.is_file():
+            return str(candidate.resolve())
+    return str(fallback or sys.executable)
+
+
+PIPELINE_PYTHON = _resolve_pipeline_python()
+
+
+def _normalize_pipeline_command(command: list[str]) -> list[str]:
+    if command and str(command[0]) == str(sys.executable):
+        return [PIPELINE_PYTHON, *command[1:]]
+    return list(command)
+
+
 DEFAULT_DB = ROOT / "memory" / "translation_engine.sqlite"
 NEURAL_VISUALIZATION_FILE = ROOT / "docs" / "neurosymbolic_network_visualization.json"
 LEARNING_STATUS_FILE = ROOT / "memory" / "learning_status.json"
@@ -56,10 +89,13 @@ PRODUCTION_SNAPSHOT_ARCHIVE_ROOT = ROOT / "memory" / "production_snapshot_archiv
 EVALUATION_DECISION_LATEST_FILE = ROOT / "memory" / "evaluation_decision_latest.json"
 RELEASE_DIFF_REVIEW_CACHE_FILE = ROOT / "memory" / "release_diff_review_cache.json"
 QUALITY_PROMOTION_PROVIDERS_DIR = ROOT / "pipeline" / "quality_promotion_providers"
-RELEASE_DIFF_REVIEW_SCHEMA_VERSION = 5
-DASHBOARD_CACHE_SCHEMA_VERSION = 9
+RELEASE_DIFF_REVIEW_SCHEMA_VERSION = 28
+DASHBOARD_CACHE_SCHEMA_VERSION = 37
 PRODUCTION_FULL_SQLITE_BACKUP_ENABLED = False
 PRODUCTION_RUN_LOCK = threading.Lock()
+PRODUCTION_STATUS_WRITE_LOCK = threading.Lock()
+PRODUCTION_STATUS_WRITE_ATTEMPTS = 8
+PRODUCTION_STATUS_WRITE_RETRY_SECONDS = 0.05
 DIAGNOSTIC_RUN_LOCK = threading.Lock()
 DIAGNOSTIC_STATUS_LOCK = threading.Lock()
 DASHBOARD_CACHE_LOCK = threading.Lock()
@@ -71,7 +107,357 @@ QUALITY_HOTSPOTS_LOCK = threading.Lock()
 QUALITY_HOTSPOTS_CACHE: dict[str, Any] = {"score_run_id": None, "items": []}
 PACKAGE_VERSION_BANDS_LOCK = threading.Lock()
 PACKAGE_VERSION_BANDS_CACHE: dict[str, Any] = {"key": None, "items": {}}
+RELEASE_DIFF_REVIEW_CACHE_LOCK = threading.Lock()
+RELEASE_DIFF_REVIEW_CACHE_WRITE_ATTEMPTS = 8
+RELEASE_DIFF_REVIEW_CACHE_WRITE_RETRY_SECONDS = 0.05
 RELEASE_DIFF_REVIEW_CACHE: dict[str, Any] = {"key": None, "payload": None}
+LOW_SCORE_CALIBRATION_QUEUE_SOURCE = "low-score-calibration"
+LOW_SCORE_CALIBRATION_ORIGIN = "manual_low_score_calibration"
+LOW_SCORE_SEGMENTED_SHADOW_RULE_VERSION = (
+    "manual_low_score_segmented_calibration_shadow_v3"
+)
+ES_HELPER_LITERAL_DRY_RUN_RULE_VERSION = (
+    "quality_contract_es_literal_repair_dry_run_v1"
+)
+ES_HELPER_REPAIR_DRY_RUN_RULE_VERSION = (
+    "quality_contract_es_helper_repair_dry_run_v1"
+)
+GLOSSARY_DISPLAY_CASE_SHADOW_RULE_VERSION = (
+    "quality_glossary_display_case_shadow_v1"
+)
+GLOSSARY_DISPLAY_CASE_POLICIES = {
+    "case_sensitive",
+    "case_flexible",
+}
+MOJIBAKE_LEXICON_SHADOW_RULE_VERSION = "quality_mojibake_lexicon_shadow_v5"
+MOJIBAKE_BOUNDARY_PATTERN_DECISIONS = {
+    "canonical_replacement",
+    "valid_punctuation",
+    "context_required",
+}
+MOJIBAKE_LEXICON_REVIEW_DECISIONS = {
+    "accept_suggestion",
+    "partial_correction",
+    "valid_question_mark",
+    "manual_review",
+}
+MOJIBAKE_RESIDUAL_FINDING_FAMILIES = {
+    "dynamic_gender_possessive",
+    "dynamic_gender_agreement",
+    "dynamic_gender_irregular_noun",
+    "lexical_accent_loss",
+    "valid_punctuation",
+    "redundant_select_cstring",
+    "semantic_error",
+    "structure_error",
+    "token_error",
+    "other",
+}
+MOJIBAKE_RESIDUAL_FINDING_DISPOSITIONS = {
+    "repair",
+    "preserve",
+    "collapse",
+    "manual",
+}
+LOW_SCORE_CALIBRATION_LABELS = {
+    "correct",
+    "contextual_exception",
+    "needs_context",
+    "semantic_error",
+    "residual_spanish",
+    "structure_error",
+}
+REGENERATIVE_REVIEW_CONTRACT_VERSION = "regenerative_queue_review_v1"
+REGENERATIVE_REVIEW_BATCH_LIMIT = 50
+
+
+def _discovery_required_confirmation_count(family: dict[str, Any]) -> int:
+    """Keep human review proportional to the reach of a discovered family."""
+    sample_count = len(family.get("samples") or [])
+    if sample_count <= 1:
+        return sample_count
+    segment_count = _int(family.get("segment_count"))
+    confidence = _num(family.get("confidence"))
+    severity = _num(family.get("severity"))
+    if segment_count >= 100 or (confidence >= 0.9 and severity >= 0.8):
+        return min(3, sample_count)
+    if segment_count >= 20 or confidence >= 0.8 or severity >= 0.8:
+        return min(2, sample_count)
+    return 1
+
+
+def _discovery_pattern_guidance(
+    issue_type: str | None,
+    token_context: str | None,
+    file_family: str | None,
+) -> dict[str, str]:
+    """Describe the exact hypothesis a discovery representative is judging."""
+    issue = str(issue_type or "").strip().casefold()
+    context = str(token_context or "").strip().replace("_", " ")
+    area = str(file_family or "").strip().replace("_", " ")
+    scope = " · ".join(value for value in (context, area) if value)
+
+    if issue == "spanish_angular_quotes":
+        return {
+            "title": "Aspas angulares fora do padrão PT-BR",
+            "hypothesis": (
+                "O detector encontrou aspas « » no texto em português; o conteúdo pode estar "
+                "correto, mas a tipografia deve ser normalizada para aspas duplas."
+            ),
+            "confirm_when": (
+                "Confirme quando o único defeito for o uso de « » e elas puderem ser trocadas "
+                "por aspas duplas sem alterar palavras nem tokens CK3."
+            ),
+            "reject_when": (
+                "Rejeite apenas se não houver aspas angulares no texto atual ou se o detector "
+                "tiver confundido outro caractere com aspas."
+            ),
+            "boundary_when": (
+                "Registre fronteira se as aspas fizerem parte de um token protegido, código ou "
+                "contexto em que a substituição literal não seja segura."
+            ),
+            "decision_question": "Este caso permite trocar somente « » por aspas duplas, preservando todo o restante?",
+            "scope": scope,
+        }
+
+    if issue == "spanish_punctuation":
+        return {
+            "title": "Pontuação de origem espanhola no texto PT-BR",
+            "hypothesis": (
+                "O detector encontrou pontuação espanhola que deve ser normalizada sem "
+                "reinterpretar ou retraduzir o conteúdo."
+            ),
+            "confirm_when": "Confirme quando a pontuação marcada não pertence ao padrão PT-BR.",
+            "reject_when": "Rejeite quando o caractere estiver correto ou fizer parte de conteúdo protegido.",
+            "boundary_when": "Registre fronteira quando a troca depender do contexto ou da estrutura CK3.",
+            "decision_question": "A pontuação pode ser normalizada com segurança neste segmento?",
+            "scope": scope,
+        }
+
+    if issue == "embedded_gender_token_fragment":
+        return {
+            "title": "Token de gênero embutido em uma palavra",
+            "hypothesis": (
+                "O detector suspeita que um helper ES_* foi encaixado em um radical e pode "
+                "produzir palavra duplicada, incompleta ou sem concordância."
+            ),
+            "confirm_when": (
+                "Confirme se ao menos uma saída possível do helper forma português inválido, "
+                "duplica uma terminação ou quebra a concordância."
+            ),
+            "reject_when": (
+                "Rejeite como falso positivo se o radical foi truncado de propósito e todas as "
+                "saídas do helper completam formas portuguesas corretas."
+            ),
+            "boundary_when": (
+                "Registre fronteira se a construção só é correta para determinados radicais, "
+                "helpers, gêneros ou contextos; essa condição deve limitar o detector."
+            ),
+            "decision_question": "Este exemplo comprova o defeito, comprova que é seguro ou revela uma exceção à regra?",
+            "scope": scope,
+        }
+
+    if any(token in issue for token in ("spanish", "espanhol", "residual", "untranslated")):
+        return {
+            "title": "Espanhol residual no texto PT-BR",
+            "hypothesis": "O detector suspeita que palavras ou construções espanholas permaneceram no texto português.",
+            "confirm_when": "Confirme quando o trecho destacado é espanhol residual e deveria estar traduzido em PT-BR.",
+            "reject_when": "Rejeite como falso positivo quando o termo é nome próprio, citação, chave protegida ou uso intencional.",
+            "boundary_when": "Registre fronteira quando o mesmo termo deve ser traduzido em alguns contextos e preservado em outros.",
+            "decision_question": "O sinal encontrado é um defeito traduzível, um uso legítimo ou depende do contexto?",
+            "scope": scope,
+        }
+
+    readable_issue = str(issue_type or "padrão descoberto").replace("_", " ")
+    return {
+        "title": readable_issue[:1].upper() + readable_issue[1:],
+        "hypothesis": f"O detector suspeita que este exemplo pertence ao padrão “{readable_issue}”.",
+        "confirm_when": "Confirme quando o problema descrito está realmente presente e a mesma regra pode encontrar casos semelhantes.",
+        "reject_when": "Rejeite como falso positivo quando o sinal existe, mas não representa defeito neste exemplo.",
+        "boundary_when": "Registre fronteira quando a regra só é válida sob uma condição específica que precisa ser preservada.",
+        "decision_question": "Este exemplo confirma a regra, invalida a regra ou define uma exceção necessária?",
+        "scope": scope,
+    }
+
+
+REGENERATIVE_REVIEW_CONTRACTS = {
+    "repair": {
+        "label": "Evidência de reparo",
+        "learning_effect": "classify_repair_evidence",
+        "decisions": [
+            {
+                "value": "candidate_valid",
+                "label": "Reparo correto",
+                "description": "O candidato resolve o foco sem introduzir outro defeito.",
+                "tone": "emerald",
+            },
+            {
+                "value": "issue_confirmed",
+                "label": "Problema confirmado",
+                "description": "O problema é real, mas ainda não há candidato seguro completo.",
+                "tone": "amber",
+            },
+            {
+                "value": "false_positive",
+                "label": "Falso positivo",
+                "description": "A evidência não representa um defeito neste contexto.",
+                "tone": "blue",
+            },
+            {
+                "value": "needs_context",
+                "label": "Precisa contexto",
+                "description": "A evidência disponível não permite uma decisão segura.",
+                "tone": "slate",
+            },
+        ],
+    },
+    "discovery": {
+        "label": "Evidência de descoberta",
+        "learning_effect": "classify_pattern_evidence",
+        "decisions": [
+            {
+                "value": "supports_pattern",
+                "label": "Confirmar este padrão",
+                "description": "O exemplo comprova o defeito descrito pela hipótese desta família.",
+                "tone": "emerald",
+            },
+            {
+                "value": "contradicts_pattern",
+                "label": "Rejeitar como falso positivo",
+                "description": "O sinal existe, mas não representa defeito neste exemplo.",
+                "tone": "red",
+            },
+            {
+                "value": "boundary_case",
+                "label": "Registrar exceção / fronteira",
+                "description": "A regra depende de uma condição específica que precisa ser protegida.",
+                "tone": "amber",
+            },
+        ],
+    },
+    "proposal": {
+        "label": "Evidência de proposta",
+        "learning_effect": "classify_provider_proposal_case",
+        "decisions": [
+            {
+                "value": "supports_proposal",
+                "label": "Apoia proposta",
+                "description": "O caso é compatível com o contrato sugerido para o provedor.",
+                "tone": "emerald",
+            },
+            {
+                "value": "rejects_proposal",
+                "label": "Rejeita proposta",
+                "description": "O contrato sugerido não deve cobrir este caso.",
+                "tone": "red",
+            },
+            {
+                "value": "boundary_case",
+                "label": "Caso de fronteira",
+                "description": "O caso deve permanecer como teste de fronteira do contrato.",
+                "tone": "amber",
+            },
+        ],
+    },
+}
+
+REGENERATIVE_REVIEW_LEARNING_DESTINATIONS = {
+    ("repair", "candidate_valid"): [
+        "correction_validation",
+        "promotion_gate",
+        "score_calibration_positive",
+    ],
+    ("repair", "issue_confirmed"): [
+        "discovery_family",
+        "correction_planning",
+        "score_calibration_negative",
+    ],
+    ("repair", "false_positive"): [
+        "protected_boundary",
+        "detector_suppression",
+    ],
+    ("repair", "needs_context"): ["internal_observation"],
+    ("discovery", "supports_pattern"): [
+        "correction_lane",
+        "provider_learning",
+        "score_calibration_negative",
+    ],
+    ("discovery", "contradicts_pattern"): [
+        "protected_boundary",
+        "detector_suppression",
+    ],
+    ("discovery", "boundary_case"): [
+        "protected_boundary",
+        "regression_test",
+    ],
+    ("proposal", "supports_proposal"): [
+        "provider_contract",
+        "promotion_gate",
+    ],
+    ("proposal", "rejects_proposal"): ["provider_contract_exclusion"],
+    ("proposal", "boundary_case"): [
+        "provider_boundary_test",
+        "regression_test",
+    ],
+}
+
+
+def _regenerative_learning_destinations(
+    queue_type: str,
+    decision: str,
+) -> list[str]:
+    return list(
+        REGENERATIVE_REVIEW_LEARNING_DESTINATIONS.get(
+            (str(queue_type), str(decision)),
+            ["supervised_evidence"],
+        )
+    )
+LOW_SCORE_TRAINING_PATTERN_LABELS = {
+    "contract_es_helper": "Contratos com helper ES",
+    "contract_es_oa_suffix_only": "Contratos · ES_OA como sufixo",
+    "contract_es_article_preposition_helper": (
+        "Contratos · artigo/preposição ES"
+    ),
+    "redundant_select_cstring": "Select_CString repetido",
+    "accent_sensitive_spanish": "Espanhol sem acento",
+    "exact_shared_glossary_token": "Glossary isolado",
+    "outside_custom_glossary_token": "Glossary fora de custom",
+}
+ES_HELPER_REPAIR_ISSUE_LABELS = {
+    "accent_sensitive_spanish_residue": "Espanhol residual sem acento",
+    "spanish_residue": "Espanhol residual",
+    "spanish_residue_in_literal": "Espanhol dentro de literal",
+    "space_before_punctuation": "Espaço antes da pontuação",
+    "missing_space_after_token": "Token colado ao texto seguinte",
+    "gender_token_extra_prefix": "Radical já flexionado antes do token",
+    "gender_token_extra_suffix": "Sufixo extra após o token",
+    "embedded_gender_token_fragment": "Token inserido dentro de palavra",
+    "neutral_word_with_gender_token": "Palavra neutra com token de gênero",
+    "score_issue_unclassified": "Issue do score sem detalhe local",
+}
+ES_HELPER_REPAIR_ROUTE_LABELS = {
+    "spanish_literal": "Traduzir literal espanhol",
+    "spanish_cleanup": "Remover espanhol residual",
+    "gender_structure": "Reparar estrutura de gênero",
+    "punctuation_spacing": "Ajustar pontuação/espaçamento",
+    "mixed": "Reparo misto",
+    "other": "Revisão contextual",
+}
+ES_HELPER_LITERAL_DRY_RUN_BLOCKER_LABELS = {
+    "expected_fragment_mismatch": "O texto mudou desde a revisão",
+    "human_locked_confirmation": "Confirmação humana bloqueada",
+    "needs_output_apply": "Saída ainda precisa de apply",
+    "no_allowlisted_repair": "Sem reparo determinístico seguro",
+    "no_allowlisted_literal_replacement": "Sem tradução determinística segura",
+    "no_change": "Nenhuma alteração segura encontrada",
+    "not_pure_literal_issue_scope": "Há outros tipos de issue no segmento",
+    "post_validation_issue": "A validação ainda encontra issue",
+    "segment_not_closed": "Segmento não está fechado",
+    "stale_output_text": "Output mudou desde o score",
+    "unexpected_source_key": "A chave de origem mudou desde a revisão",
+    "unexpected_token_delta": "Alteração inesperada na estrutura de tokens",
+    "unsupported_issue_scope": "Há um tipo de issue fora do lote revisado",
+}
 PRODUCTION_STATUS_CACHE_LOCK = threading.Lock()
 PRODUCTION_STATUS_CACHE: dict[str, Any] = {"key": None, "snapshot": None}
 PRODUCTION_STATUS_CACHE_SCHEMA_VERSION = 1
@@ -154,6 +540,471 @@ def _int(value: Any, default: int = 0) -> int:
     if value is None:
         return default
     return int(value)
+
+
+def _regenerative_review_evidence_hash(
+    queue_type: str,
+    item_key: str,
+    evidence: dict[str, Any],
+) -> str:
+    canonical = json.dumps(
+        {
+            "queue_type": queue_type,
+            "item_key": item_key,
+            "evidence": evidence,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _regenerative_review_lookup(
+    con: sqlite3.Connection,
+    queue_type: str,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    if not _table_exists(con, "ml_regenerative_review_decisions"):
+        return {}
+    rows = _all(
+        con,
+        """
+        SELECT id, item_key, segment_id, snapshot_id, evidence_hash,
+               decision, reason, reviewer, contract_version,
+               created_at, updated_at
+        FROM ml_regenerative_review_decisions
+        WHERE queue_type = ? AND is_active = 1
+        ORDER BY id DESC
+        """,
+        (queue_type,),
+    )
+    return {
+        (str(row.get("item_key") or ""), str(row.get("evidence_hash") or "")): row
+        for row in rows
+    }
+
+
+def _attach_regenerative_review_contract(
+    item: dict[str, Any],
+    *,
+    queue_type: str,
+    item_key: str,
+    snapshot_id: int,
+    evidence: dict[str, Any],
+    decisions_by_evidence: dict[tuple[str, str], dict[str, Any]],
+    allowed_decisions: set[str] | None = None,
+) -> dict[str, Any]:
+    contract = REGENERATIVE_REVIEW_CONTRACTS.get(queue_type)
+    if not contract:
+        return item
+    evidence_hash = _regenerative_review_evidence_hash(
+        queue_type,
+        item_key,
+        evidence,
+    )
+    decision_options = [
+        {
+            **dict(option),
+            "learning_destinations": _regenerative_learning_destinations(
+                queue_type,
+                str(option.get("value") or ""),
+            ),
+        }
+        for option in contract["decisions"]
+        if allowed_decisions is None or option["value"] in allowed_decisions
+    ]
+    recorded = decisions_by_evidence.get((item_key, evidence_hash))
+    item["review_contract"] = {
+        "available": True,
+        "contract_version": REGENERATIVE_REVIEW_CONTRACT_VERSION,
+        "queue_type": queue_type,
+        "label": contract["label"],
+        "learning_effect": contract["learning_effect"],
+        "item_key": item_key,
+        "snapshot_id": _int(snapshot_id),
+        "evidence_hash": evidence_hash,
+        "evidence": evidence,
+        "decisions": decision_options,
+        "operational_writes": False,
+    }
+    item["review_status"] = "reviewed" if recorded else "pending"
+    item["review_decision"] = recorded.get("decision") if recorded else None
+    item["review_reason"] = recorded.get("reason") if recorded else None
+    item["reviewed_at"] = recorded.get("updated_at") if recorded else None
+    item["reviewer"] = recorded.get("reviewer") if recorded else None
+    return item
+
+
+def _regenerative_learning_label(
+    queue_type: str,
+    decision: str,
+    evidence: dict[str, Any],
+) -> str | None:
+    """Translate a queue vote into the shared supervised-learning vocabulary."""
+    if queue_type == "discovery":
+        if decision == "contradicts_pattern":
+            return "correct"
+        if decision == "boundary_case":
+            return "contextual_exception"
+        if decision == "supports_pattern":
+            issue = str(evidence.get("issue_type") or "").casefold()
+            if any(token in issue for token in ("punctuation", "angular_quote", "guillemet", "aspas")):
+                return "semantic_error"
+            return (
+                "residual_spanish"
+                if any(token in issue for token in ("spanish", "espanhol", "residual", "untranslated"))
+                else "semantic_error"
+            )
+    if queue_type == "repair":
+        if decision in {"candidate_valid", "false_positive"}:
+            return "correct"
+        if decision == "needs_context":
+            return None
+        if decision == "issue_confirmed":
+            issue_signal = " ".join(
+                str(value) for value in (evidence.get("issue_codes") or [])
+            ).casefold()
+            if any(token in issue_signal for token in ("punctuation", "angular_quote", "guillemet", "aspas")):
+                return "semantic_error"
+            return (
+                "residual_spanish"
+                if any(token in issue_signal for token in ("spanish", "espanhol", "residual", "untranslated"))
+                else "semantic_error"
+            )
+    return None
+
+
+_REGENERATIVE_PROTECTED_TOKEN_PATTERN = re.compile(
+    r"(\$[^$\s]+\$|\[[^\]]+\]|#[A-Za-z0-9_]+|#!|@[A-Za-z0-9_]+!|\\n)"
+)
+
+
+def _ptbr_angular_quote_candidate(value: str) -> str:
+    """Normalize visible guillemets while leaving CK3/YAML tokens byte-identical."""
+    parts = _REGENERATIVE_PROTECTED_TOKEN_PATTERN.split(str(value or ""))
+    for index in range(0, len(parts), 2):
+        parts[index] = (
+            parts[index]
+            .replace("Â«", '"')
+            .replace("Â»", '"')
+            .replace("«", '"')
+            .replace("»", '"')
+        )
+    return "".join(parts)
+
+
+def _sync_regenerative_review_learning(
+    con: sqlite3.Connection,
+    *,
+    queue_type: str,
+    item_key: str,
+    segment_id: int | None,
+    snapshot_id: int,
+    evidence_hash: str,
+    evidence: dict[str, Any],
+    decision: str,
+    reason: str | None,
+    reviewer: str,
+    reviewed_at: str,
+) -> dict[str, Any]:
+    """Persist segment-level votes in the shared learning memory without output writes."""
+    human_label = _regenerative_learning_label(queue_type, decision, evidence)
+    segment_id_value = _int(segment_id)
+    if not human_label or not segment_id_value:
+        return {"synced": False, "reason": "provider_evidence_only"}
+    if not all(
+        _table_exists(con, table)
+        for table in (
+            "source_segments",
+            "output_segments",
+            "local_learning_runs",
+            "local_learning_candidates",
+        )
+    ):
+        return {"synced": False, "reason": "learning_tables_unavailable"}
+    record = _one(
+        con,
+        """
+        SELECT source.id AS segment_id, source.relative_path, source.source_key,
+               source.source_line_number, source.english_text,
+               source.spanish_text, source.old_text,
+               output.portuguese_text AS output_text
+        FROM source_segments source
+        JOIN output_segments output ON output.segment_id = source.id
+        WHERE source.id = ? AND source.is_active = 1
+        LIMIT 1
+        """,
+        (segment_id_value,),
+    )
+    if not record:
+        return {"synced": False, "reason": "segment_unavailable"}
+
+    output_text = str(record.get("output_text") or "")
+    candidate_text = str(evidence.get("candidate_text") or "")
+    suggested_text = (
+        candidate_text
+        if queue_type == "repair" and decision == "candidate_valid" and candidate_text
+        else output_text
+    )
+    corrected_text: str | None = None
+    issue_type = str(evidence.get("issue_type") or "").casefold()
+    if (
+        queue_type == "discovery"
+        and decision == "supports_pattern"
+        and any(token in issue_type for token in ("angular_quote", "guillemet", "aspas"))
+    ):
+        normalized_quotes = _ptbr_angular_quote_candidate(output_text)
+        if normalized_quotes != output_text:
+            suggested_text = normalized_quotes
+            corrected_text = normalized_quotes
+    suggested_hash = hashlib.sha256(suggested_text.encode("utf-8")).hexdigest()
+    origin = f"regenerative_{queue_type}_review"
+    match_type = f"{queue_type}:{item_key}"[:512]
+    learning_reasons = [
+        f"regenerative_queue:{queue_type}",
+        f"regenerative_decision:{decision}",
+        f"regenerative_snapshot:{snapshot_id}",
+        f"regenerative_evidence:{evidence_hash}",
+        *[
+            f"learning_destination:{destination}"
+            for destination in _regenerative_learning_destinations(queue_type, decision)
+        ],
+    ]
+    existing = _one(
+        con,
+        """
+        SELECT id, run_id
+        FROM local_learning_candidates
+        WHERE segment_id = ? AND origin = ? AND match_type = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (segment_id_value, origin, match_type),
+    )
+    if existing:
+        candidate_id = _int(existing.get("id"))
+        run_id = _int(existing.get("run_id"))
+        con.execute(
+            """
+            UPDATE local_learning_candidates
+            SET suggested_text = ?, suggested_hash = ?, human_label = ?,
+                corrected_text = ?, token_status = ?, reason = ?, reviewer = ?, reviewed_at = ?,
+                local_status = 'reviewed', suggestion_status = 'human_reviewed',
+                reasons_json = ?, learned_at = NULL,
+                confirmation_synced_at = NULL, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                suggested_text,
+                suggested_hash,
+                human_label,
+                corrected_text,
+                "ok" if corrected_text else "unknown",
+                reason,
+                reviewer,
+                reviewed_at,
+                json.dumps(learning_reasons, ensure_ascii=False),
+                reviewed_at,
+                candidate_id,
+            ),
+        )
+        created = False
+    else:
+        cursor = con.execute(
+            """
+            INSERT INTO local_learning_runs (
+              mode, limit_count, auto_confidence_threshold,
+              candidate_count, high_confidence_count, pending_human_count,
+              status, notes, started_at, finished_at, updated_at
+            ) VALUES (?, 1, 1.0, 1, 1, 0, 'completed', ?, ?, ?, ?)
+            """,
+            (
+                f"regenerative_review:{queue_type}",
+                json.dumps(learning_reasons, ensure_ascii=False),
+                reviewed_at,
+                reviewed_at,
+                reviewed_at,
+            ),
+        )
+        run_id = _int(cursor.lastrowid)
+        cursor = con.execute(
+            """
+            INSERT INTO local_learning_candidates (
+              run_id, segment_id, relative_path, source_key, source_line_number,
+              english_text, spanish_text, old_text, current_output_text,
+              suggested_text, suggested_hash, queue_source, focus_group,
+              source_language, origin, match_type, match_score, token_status,
+              suggestion_status, local_confidence_score, local_status,
+              human_label, corrected_text, reason, reviewer, reviewed_at,
+              reasons_json, created_at, updated_at
+            ) VALUES (
+              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'human-audit', ?, 'pt-BR',
+              ?, ?, 1.0, ?, 'human_reviewed', 1.0, 'reviewed',
+              ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            """,
+            (
+                run_id,
+                segment_id_value,
+                record.get("relative_path"),
+                record.get("source_key"),
+                record.get("source_line_number"),
+                record.get("english_text"),
+                record.get("spanish_text"),
+                record.get("old_text"),
+                output_text,
+                suggested_text,
+                suggested_hash,
+                queue_type,
+                origin,
+                match_type,
+                "ok" if corrected_text else "unknown",
+                human_label,
+                corrected_text,
+                reason,
+                reviewer,
+                reviewed_at,
+                json.dumps(learning_reasons, ensure_ascii=False),
+                reviewed_at,
+                reviewed_at,
+            ),
+        )
+        candidate_id = _int(cursor.lastrowid)
+        created = True
+    return {
+        "synced": True,
+        "candidate_id": candidate_id,
+        "run_id": run_id,
+        "human_label": human_label,
+        "created": created,
+        "suggested_hash": suggested_hash,
+    }
+
+
+def _record_regenerative_review_decision(
+    con: sqlite3.Connection,
+    *,
+    queue_type: str,
+    item_key: str,
+    segment_id: int | None,
+    snapshot_id: int,
+    evidence_hash: str,
+    evidence: dict[str, Any],
+    decision: str,
+    reason: str | None,
+    reviewer: str,
+) -> dict[str, Any]:
+    contract = REGENERATIVE_REVIEW_CONTRACTS.get(queue_type)
+    if not contract:
+        raise ValueError("queue_type does not expose a supervised review contract.")
+    valid_decisions = {option["value"] for option in contract["decisions"]}
+    if decision not in valid_decisions:
+        raise ValueError(
+            f"decision must be one of: {', '.join(sorted(valid_decisions))}."
+        )
+    if not item_key or len(item_key) > 512:
+        raise ValueError("item_key is required and must have at most 512 characters.")
+    if not snapshot_id:
+        raise ValueError("snapshot_id is required.")
+    if not isinstance(evidence, dict):
+        raise ValueError("evidence must be an object.")
+    if queue_type == "repair" and decision == "candidate_valid":
+        candidate_hash = str(evidence.get("candidate_hash") or "")
+        output_hash = str(evidence.get("output_hash") or "")
+        if (
+            evidence.get("dry_run_lane") != "proposal_ready"
+            or not candidate_hash
+            or candidate_hash == output_hash
+        ):
+            raise ValueError(
+                "candidate_valid requires a proposal-ready repair that changes the output."
+            )
+    expected_hash = _regenerative_review_evidence_hash(
+        queue_type,
+        item_key,
+        evidence,
+    )
+    if evidence_hash != expected_hash:
+        raise ValueError("Evidence changed; refresh the queue before deciding.")
+    if not re.fullmatch(r"[0-9a-f]{64}", evidence_hash):
+        raise ValueError("evidence_hash must be a SHA-256 digest.")
+    reviewer = reviewer.strip() or "dashboard_human_review"
+    now = _now_iso()
+    previous = _one(
+        con,
+        """
+        SELECT id
+        FROM ml_regenerative_review_decisions
+        WHERE queue_type = ? AND item_key = ? AND evidence_hash = ? AND is_active = 1
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (queue_type, item_key, evidence_hash),
+    )
+    if previous:
+        con.execute(
+            """
+            UPDATE ml_regenerative_review_decisions
+            SET is_active = 0, updated_at = ?
+            WHERE id = ?
+            """,
+            (now, _int(previous.get("id"))),
+        )
+    cursor = con.execute(
+        """
+        INSERT INTO ml_regenerative_review_decisions (
+            queue_type, item_key, segment_id, snapshot_id, evidence_hash,
+            decision, reason, reviewer, contract_version, evidence_json,
+            is_active, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+        """,
+        (
+            queue_type,
+            item_key,
+            _int(segment_id) or None,
+            snapshot_id,
+            evidence_hash,
+            decision,
+            reason.strip() if isinstance(reason, str) and reason.strip() else None,
+            reviewer,
+            REGENERATIVE_REVIEW_CONTRACT_VERSION,
+            json.dumps(evidence, ensure_ascii=False, sort_keys=True),
+            now,
+            now,
+        ),
+    )
+    learning = _sync_regenerative_review_learning(
+        con,
+        queue_type=queue_type,
+        item_key=item_key,
+        segment_id=segment_id,
+        snapshot_id=snapshot_id,
+        evidence_hash=evidence_hash,
+        evidence=evidence,
+        decision=decision,
+        reason=reason,
+        reviewer=reviewer,
+        reviewed_at=now,
+    )
+    con.commit()
+    return {
+        "ok": True,
+        "decision_id": _int(cursor.lastrowid),
+        "queue_type": queue_type,
+        "item_key": item_key,
+        "segment_id": _int(segment_id) or None,
+        "snapshot_id": snapshot_id,
+        "evidence_hash": evidence_hash,
+        "decision": decision,
+        "learning_destinations": _regenerative_learning_destinations(
+            queue_type,
+            decision,
+        ),
+        "learning": learning,
+        "reviewer": reviewer,
+        "reviewed_at": now,
+        "operational_writes": bool(learning.get("synced")),
+    }
 
 
 def _pct(part: Any, total: Any) -> float:
@@ -4431,18 +5282,33 @@ def _pairwise_calibration_review_payload(con: sqlite3.Connection) -> dict[str, A
             "quality_epoch_id": policy_epoch_id or None,
             "consumption_status": "policy_not_materialized" if policy else "not_instrumented",
         }
+    has_source_context = _table_exists(con, "source_segments")
+    source_context_select = (
+        "source.english_text, source.spanish_text,"
+        if has_source_context
+        else "NULL AS english_text, NULL AS spanish_text,"
+    )
+    source_context_join = (
+        "LEFT JOIN source_segments source ON source.id = review.segment_id"
+        if has_source_context
+        else ""
+    )
     items = _all(
         con,
-        """
-        SELECT id, run_id, evidence_id, segment_id, relative_path, source_key,
-               source_line_number, review_lane, display_order, baseline_text,
-               candidate_text, baseline_score_raw, candidate_score_raw, raw_delta,
-               score_outcome, review_status, reviewer_label, reviewer_reason,
-               reviewer, reviewed_at, training_eligible, holdout_eligible,
-               control_blinded, pair_hash
-        FROM ml_pairwise_calibration_review_items
-        WHERE run_id = ?
-        ORDER BY display_order, id
+        f"""
+        SELECT review.id, review.run_id, review.evidence_id, review.segment_id,
+               review.relative_path, review.source_key, review.source_line_number,
+               {source_context_select}
+               review.review_lane, review.display_order, review.baseline_text,
+               review.candidate_text, review.baseline_score_raw,
+               review.candidate_score_raw, review.raw_delta, review.score_outcome,
+               review.review_status, review.reviewer_label, review.reviewer_reason,
+               review.reviewer, review.reviewed_at, review.training_eligible,
+               review.holdout_eligible, review.control_blinded, review.pair_hash
+        FROM ml_pairwise_calibration_review_items review
+        {source_context_join}
+        WHERE review.run_id = ?
+        ORDER BY review.display_order, review.id
         LIMIT 200
         """,
         (_int(run.get("id")),),
@@ -4530,6 +5396,3532 @@ def _low_score_cohort(record: dict[str, Any]) -> str:
     ):
         return "unchanged_or_preserved_text"
     return "low_confidence_without_specific_evidence"
+
+
+def _low_score_calibration_group(relative_path: str | None) -> str:
+    normalized = str(relative_path or "").replace("\\", "/").strip("/")
+    if not normalized:
+        return "sem-grupo"
+    parts = [part for part in normalized.split("/") if part]
+    if len(parts) == 1:
+        return "core"
+    if parts[0].lower() == "dlc" and len(parts) > 1:
+        return f"dlc/{parts[1]}"
+    return parts[0]
+
+
+def _low_score_calibration_lane(record: dict[str, Any]) -> str | None:
+    output_text = record.get("output_text")
+    confirmation_level = str(record.get("confirmation_level") or "").strip().lower()
+    if (
+        confirmation_level in {"human", "human_confirmed"}
+        and record.get("confirmed_text") == output_text
+    ):
+        return "human_confirmed_low_score"
+    if str(record.get("final_action") or "").strip().lower() == "auto_safe":
+        return "deterministic_safe_low_score"
+    candidate_text = record.get("candidate_text")
+    if candidate_text is not None and any(
+        candidate_text == record.get(field)
+        for field in ("old_text", "spanish_text", "english_text")
+        if record.get(field) is not None
+    ):
+        return "preserved_text_low_score"
+    return None
+
+
+def _manual_low_score_training_patterns(record: dict[str, Any]) -> list[str]:
+    text = str(record.get("output_text") or record.get("candidate_text") or "")
+    patterns: list[str] = []
+
+    pipeline_dir = str(ROOT / "pipeline")
+    if pipeline_dir not in sys.path:
+        sys.path.insert(0, pipeline_dir)
+    import local_quality_validator
+    import low_score_training_patterns
+
+    glossary_record = dict(record)
+    glossary_record["candidate_text"] = text
+    if low_score_training_patterns.is_contract_es_helper(glossary_record):
+        patterns.append("contract_es_helper")
+    if low_score_training_patterns.is_contract_es_oa_suffix_only(
+        glossary_record
+    ):
+        patterns.append("contract_es_oa_suffix_only")
+    if low_score_training_patterns.is_contract_es_article_preposition_helper(
+        glossary_record
+    ):
+        patterns.append("contract_es_article_preposition_helper")
+    if low_score_training_patterns.is_custom_exact_shared_glossary(
+        glossary_record
+    ):
+        patterns.append("exact_shared_glossary_token")
+    if low_score_training_patterns.is_outside_custom_exact_shared_glossary(
+        glossary_record
+    ):
+        patterns.append("outside_custom_glossary_token")
+    if local_quality_validator.redundant_select_cstring_literals(text):
+        patterns.append("redundant_select_cstring")
+    if local_quality_validator.count_accent_sensitive_spanish_residue(text)[0]:
+        patterns.append("accent_sensitive_spanish")
+    return patterns
+
+
+def _manual_low_score_segmented_shadow_payload(
+    con: sqlite3.Connection,
+    *,
+    score_run_id: int,
+) -> dict[str, Any]:
+    empty = {
+        "available": False,
+        "run_id": 0,
+        "score_run_id": _int(score_run_id),
+        "status": "not_evaluated",
+        "pattern": None,
+        "limited_evidence": True,
+        "posterior_safe_probability": None,
+        "training_match_count": 0,
+        "control_match_count": 0,
+        "boundary_sentinel_count": 0,
+        "boundary_sentinel_changed_count": 0,
+        "population_match_count": 0,
+        "population_near_miss_count": 0,
+        "population_match_issue_count": 0,
+        "population_match_auto_safe_count": 0,
+        "brier_delta": None,
+        "log_loss_delta": None,
+        "separation_delta": None,
+        "failed_gates": [],
+        "gates": {},
+        "operational_writes": False,
+        "evaluated_at": None,
+    }
+    if not score_run_id or not _table_exists(con, "ml_quality_shadow_runs"):
+        return empty
+    row = _one(
+        con,
+        """
+        SELECT id, score_run_id, status, metadata_json, finished_at
+        FROM ml_quality_shadow_runs
+        WHERE source_rule_version = ?
+          AND score_run_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (LOW_SCORE_SEGMENTED_SHADOW_RULE_VERSION, score_run_id),
+    )
+    if not row:
+        return empty
+    try:
+        metadata = json.loads(str(row.get("metadata_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        metadata = {}
+    posterior = metadata.get("posterior") or {}
+    delta = metadata.get("delta") or {}
+    return {
+        **empty,
+        "available": True,
+        "run_id": _int(row.get("id")),
+        "score_run_id": _int(row.get("score_run_id")),
+        "status": str(metadata.get("status") or row.get("status") or "not_evaluated"),
+        "pattern": metadata.get("pattern"),
+        "limited_evidence": bool(metadata.get("limited_evidence", True)),
+        "posterior_safe_probability": posterior.get("posterior_safe_probability"),
+        "training_match_count": _int(metadata.get("reviewed_training_match_count")),
+        "control_match_count": _int(metadata.get("reviewed_control_match_count")),
+        "boundary_sentinel_count": _int(
+            metadata.get("reviewed_boundary_sentinel_count")
+        ),
+        "boundary_sentinel_changed_count": _int(
+            metadata.get("boundary_sentinel_changed_count")
+        ),
+        "population_match_count": _int(metadata.get("population_match_count")),
+        "population_near_miss_count": _int(
+            metadata.get("population_near_miss_count")
+        ),
+        "population_match_issue_count": _int(
+            metadata.get("population_match_issue_count")
+        ),
+        "population_match_auto_safe_count": _int(
+            metadata.get("population_match_auto_safe_count")
+        ),
+        "brier_delta": delta.get("brier"),
+        "log_loss_delta": delta.get("log_loss"),
+        "separation_delta": delta.get("separation"),
+        "failed_gates": metadata.get("failed_gates") or [],
+        "gates": metadata.get("gates") or {},
+        "operational_writes": bool(metadata.get("operational_writes", False)),
+        "evaluated_at": metadata.get("evaluated_at") or row.get("finished_at"),
+    }
+
+
+def _manual_low_score_segmented_shadows_payload(
+    con: sqlite3.Connection,
+    *,
+    score_run_id: int,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    if not score_run_id or not _table_exists(con, "ml_quality_shadow_runs"):
+        return []
+    rows = _all(
+        con,
+        """
+        SELECT id, score_run_id, status, metadata_json, finished_at
+        FROM ml_quality_shadow_runs
+        WHERE source_rule_version = ?
+          AND score_run_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (
+            LOW_SCORE_SEGMENTED_SHADOW_RULE_VERSION,
+            score_run_id,
+            max(1, _int(limit)),
+        ),
+    )
+    payloads: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            metadata = json.loads(str(row.get("metadata_json") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            metadata = {}
+        posterior = metadata.get("posterior") or {}
+        delta = metadata.get("delta") or {}
+        payloads.append(
+            {
+                "available": True,
+                "run_id": _int(row.get("id")),
+                "score_run_id": _int(row.get("score_run_id")),
+                "status": str(
+                    metadata.get("status")
+                    or row.get("status")
+                    or "not_evaluated"
+                ),
+                "pattern": metadata.get("pattern"),
+                "limited_evidence": bool(
+                    metadata.get("limited_evidence", True)
+                ),
+                "posterior_safe_probability": posterior.get(
+                    "posterior_safe_probability"
+                ),
+                "training_match_count": _int(
+                    metadata.get("reviewed_training_match_count")
+                ),
+                "training_safe_count": _int(
+                    posterior.get("training_safe_count")
+                ),
+                "training_risky_count": _int(
+                    posterior.get("training_risky_count")
+                ),
+                "control_match_count": _int(
+                    metadata.get("reviewed_control_match_count")
+                ),
+                "boundary_sentinel_count": _int(
+                    metadata.get("reviewed_boundary_sentinel_count")
+                ),
+                "boundary_sentinel_changed_count": _int(
+                    metadata.get("boundary_sentinel_changed_count")
+                ),
+                "population_match_count": _int(
+                    metadata.get("population_match_count")
+                ),
+                "population_near_miss_count": _int(
+                    metadata.get("population_near_miss_count")
+                ),
+                "population_match_issue_count": _int(
+                    metadata.get("population_match_issue_count")
+                ),
+                "population_match_auto_safe_count": _int(
+                    metadata.get("population_match_auto_safe_count")
+                ),
+                "brier_delta": delta.get("brier"),
+                "log_loss_delta": delta.get("log_loss"),
+                "separation_delta": delta.get("separation"),
+                "failed_gates": metadata.get("failed_gates") or [],
+                "gates": metadata.get("gates") or {},
+                "operational_writes": bool(
+                    metadata.get("operational_writes", False)
+                ),
+                "evaluated_at": (
+                    metadata.get("evaluated_at") or row.get("finished_at")
+                ),
+            }
+        )
+    return payloads
+
+
+def _es_helper_repair_route(issues: list[dict[str, Any]]) -> str:
+    codes = {
+        str(issue.get("code") or "").strip()
+        for issue in issues
+        if issue.get("code")
+    }
+    routes: set[str] = set()
+    if "spanish_residue_in_literal" in codes:
+        routes.add("spanish_literal")
+    if codes & {
+        "accent_sensitive_spanish_residue",
+        "spanish_residue",
+    }:
+        routes.add("spanish_cleanup")
+    if any(
+        code.startswith("gender_")
+        or code in {
+            "embedded_gender_token_fragment",
+            "leading_gender_article_token",
+            "missing_space_after_token",
+            "missing_space_before_token",
+            "neutral_word_with_gender_token",
+        }
+        for code in codes
+    ):
+        routes.add("gender_structure")
+    if codes & {
+        "space_before_punctuation",
+        "stray_leading_question_mark",
+    }:
+        routes.add("punctuation_spacing")
+    if len(routes) > 1:
+        return "mixed"
+    return next(iter(routes), "other")
+
+
+def _es_helper_repair_dry_run_payload(
+    con: sqlite3.Connection,
+    *,
+    score_run_id: int,
+) -> dict[str, Any]:
+    empty = {
+        "available": False,
+        "run_id": 0,
+        "score_run_id": _int(score_run_id),
+        "status": "not_evaluated",
+        "record_count": 0,
+        "proposal_ready_count": 0,
+        "blocked_count": 0,
+        "repair_count": 0,
+        "post_validation_clean_count": 0,
+        "token_integrity_ok_count": 0,
+        "ready_for_apply_count": 0,
+        "apply_count": 0,
+        "candidate_generation_only": True,
+        "operational_writes": False,
+        "blocker_counts": {},
+        "blocker_labels": ES_HELPER_LITERAL_DRY_RUN_BLOCKER_LABELS,
+        "items": [],
+    }
+    if (
+        not score_run_id
+        or not _table_exists(con, "ml_quality_shadow_runs")
+        or not _table_exists(con, "ml_quality_shadow_items")
+    ):
+        return empty
+    row = _one(
+        con,
+        """
+        SELECT id, score_run_id, record_count, eligible_count, status,
+               metadata_json, finished_at
+        FROM ml_quality_shadow_runs
+        WHERE source_rule_version IN (?, ?)
+          AND score_run_id = ?
+          AND status = 'completed'
+        ORDER BY
+          CASE WHEN source_rule_version = ? THEN 0 ELSE 1 END,
+          id DESC
+        LIMIT 1
+        """,
+        (
+            ES_HELPER_REPAIR_DRY_RUN_RULE_VERSION,
+            ES_HELPER_LITERAL_DRY_RUN_RULE_VERSION,
+            score_run_id,
+            ES_HELPER_REPAIR_DRY_RUN_RULE_VERSION,
+        ),
+    )
+    if not row:
+        return empty
+    try:
+        metadata = json.loads(str(row.get("metadata_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        metadata = {}
+    items: list[dict[str, Any]] = []
+    for item_row in _all(
+        con,
+        """
+        SELECT payload_json
+        FROM ml_quality_shadow_items
+        WHERE run_id = ?
+        ORDER BY segment_id, id
+        """,
+        (_int(row.get("id")),),
+    ):
+        try:
+            item = json.loads(str(item_row.get("payload_json") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(item, dict):
+            items.append(item)
+    proposal_ready_count = _int(
+        metadata.get("proposal_ready_count"),
+        _int(row.get("eligible_count")),
+    )
+    record_count = _int(row.get("record_count"), len(items))
+    return {
+        **empty,
+        "available": True,
+        "run_id": _int(row.get("id")),
+        "score_run_id": _int(row.get("score_run_id")),
+        "status": str(metadata.get("status") or row.get("status") or "completed"),
+        "record_count": record_count,
+        "proposal_ready_count": proposal_ready_count,
+        "blocked_count": _int(
+            metadata.get("blocked_count"),
+            max(0, record_count - proposal_ready_count),
+        ),
+        "repair_count": _int(metadata.get("repair_count")),
+        "post_validation_clean_count": _int(
+            metadata.get("post_validation_clean_count")
+        ),
+        "token_integrity_ok_count": _int(
+            metadata.get("token_integrity_ok_count")
+        ),
+        "ready_for_apply_count": 0,
+        "apply_count": 0,
+        "candidate_generation_only": True,
+        "operational_writes": False,
+        "blocker_counts": metadata.get("blocker_counts") or {},
+        "items": items,
+    }
+
+
+def _es_helper_literal_dry_run_payload(
+    con: sqlite3.Connection,
+    *,
+    score_run_id: int,
+) -> dict[str, Any]:
+    """Compatibility alias for callers written before the unified ES repair batch."""
+    return _es_helper_repair_dry_run_payload(
+        con,
+        score_run_id=score_run_id,
+    )
+
+
+def _manual_es_helper_repair_payload(
+    con: sqlite3.Connection,
+    *,
+    score_run_id: int,
+    segment_state_run_id: int,
+    limit: int = 100,
+) -> dict[str, Any]:
+    repair_dry_run = _es_helper_repair_dry_run_payload(
+        con,
+        score_run_id=score_run_id,
+    )
+    empty = {
+        "instrumented": False,
+        "pattern": "contract_es_article_preposition_helper",
+        "score_run_id": _int(score_run_id),
+        "segment_state_run_id": _int(segment_state_run_id),
+        "total_count": 0,
+        "sample_count": 0,
+        "high_risk_count": 0,
+        "medium_risk_count": 0,
+        "helper_counts": {},
+        "route_counts": {},
+        "issue_code_counts": {},
+        "issue_labels": ES_HELPER_REPAIR_ISSUE_LABELS,
+        "route_labels": ES_HELPER_REPAIR_ROUTE_LABELS,
+        "repair_dry_run": repair_dry_run,
+        "literal_dry_run": repair_dry_run,
+        "operational_writes": False,
+        "items": [],
+    }
+    required = {
+        "ml_score_items",
+        "source_segments",
+        "output_segments",
+        "segment_state_items",
+    }
+    if (
+        not score_run_id
+        or not segment_state_run_id
+        or not all(_table_exists(con, table) for table in required)
+    ):
+        return empty
+
+    pipeline_dir = str(ROOT / "pipeline")
+    if pipeline_dir not in sys.path:
+        sys.path.insert(0, pipeline_dir)
+    import local_quality_validator
+    import low_score_training_patterns
+
+    records = _all(
+        con,
+        """
+        SELECT
+          source.id AS segment_id,
+          source.relative_path,
+          source.source_key,
+          source.source_line_number,
+          source.english_text,
+          source.spanish_text,
+          source.old_text,
+          output.portuguese_text AS output_text,
+          score.candidate_text,
+          score.model_safe_probability,
+          score.model_confidence,
+          score.final_action,
+          score.risk_class,
+          score.token_status,
+          score.issue_count,
+          score.high_issue_count,
+          state.is_closed,
+          state.needs_output_apply
+        FROM ml_score_items score
+        JOIN source_segments source
+          ON source.id = score.segment_id AND source.is_active = 1
+        JOIN output_segments output
+          ON output.segment_id = source.id
+        JOIN segment_state_items state
+          ON state.segment_id = source.id AND state.run_id = ?
+        WHERE score.run_id = ?
+          AND source.relative_path LIKE 'contracts/%'
+          AND output.portuguese_text LIKE '%Custom(%ES_%'
+          AND score.issue_count > 0
+          AND score.model_safe_probability IS NOT NULL
+          AND score.candidate_text = output.portuguese_text
+          AND state.is_closed = 1
+          AND state.needs_output_apply = 0
+        ORDER BY
+          score.high_issue_count DESC,
+          score.issue_count DESC,
+          score.model_safe_probability ASC,
+          source.id ASC
+        """,
+        (segment_state_run_id, score_run_id),
+    )
+    article_helpers = low_score_training_patterns.ARTICLE_PREPOSITION_HELPERS
+    repair_dry_run_by_segment = {
+        _int(item.get("segment_id")): item
+        for item in repair_dry_run.get("items") or []
+        if isinstance(item, dict) and _int(item.get("segment_id"))
+    }
+    items: list[dict[str, Any]] = []
+    for record in records:
+        if not low_score_training_patterns.is_contract_es_article_preposition_helper(
+            record
+        ):
+            continue
+        validation = local_quality_validator.validate_text(
+            record.get("output_text")
+        )
+        detected_issues = list(validation.get("issues") or [])
+        if not detected_issues:
+            detected_issues = [
+                {
+                    "code": "score_issue_unclassified",
+                    "severity": (
+                        "high" if _int(record.get("high_issue_count")) else "medium"
+                    ),
+                    "message": (
+                        "O score registrou issue, mas o validador local atual "
+                        "não reproduziu o detalhe."
+                    ),
+                    "matches": [],
+                }
+            ]
+        helper_names = list(low_score_training_patterns.es_helper_names(record))
+        repair_helpers = sorted(
+            {
+                helper_name
+                for helper_name in helper_names
+                if helper_name.casefold() in article_helpers
+            },
+            key=str.casefold,
+        )
+        route = _es_helper_repair_route(detected_issues)
+        items.append(
+            {
+                **record,
+                "helper_names": helper_names,
+                "repair_helpers": repair_helpers,
+                "repair_route": route,
+                "repair_route_label": ES_HELPER_REPAIR_ROUTE_LABELS[route],
+                "detected_issues": [
+                    {
+                        **issue,
+                        "label": ES_HELPER_REPAIR_ISSUE_LABELS.get(
+                            str(issue.get("code") or ""),
+                            str(issue.get("code") or "Issue").replace("_", " "),
+                        ),
+                    }
+                    for issue in detected_issues
+                ],
+                "repair_priority": (
+                    "high" if _int(record.get("high_issue_count")) else "medium"
+                ),
+                "repair_dry_run": repair_dry_run_by_segment.get(
+                    _int(record.get("segment_id"))
+                ),
+                "literal_dry_run": repair_dry_run_by_segment.get(
+                    _int(record.get("segment_id"))
+                ),
+                "operational_writes": False,
+            }
+        )
+
+    helper_counts: dict[str, int] = {}
+    route_counts: dict[str, int] = {}
+    issue_code_counts: dict[str, int] = {}
+    for item in items:
+        for helper_name in item["repair_helpers"]:
+            helper_counts[helper_name] = helper_counts.get(helper_name, 0) + 1
+        route = str(item["repair_route"])
+        route_counts[route] = route_counts.get(route, 0) + 1
+        for code in {
+            str(issue.get("code") or "")
+            for issue in item["detected_issues"]
+            if issue.get("code")
+        }:
+            issue_code_counts[code] = issue_code_counts.get(code, 0) + 1
+
+    repair_review_lookup = _regenerative_review_lookup(con, "repair")
+    repair_snapshot_id = _int(repair_dry_run.get("run_id")) or _int(score_run_id)
+    for item in items:
+        dry_run = item.get("repair_dry_run") or item.get("literal_dry_run") or {}
+        candidate_text = str(dry_run.get("candidate_text") or item.get("output_text") or "")
+        output_text = str(item.get("output_text") or "")
+        item_key = f"segment:{_int(item.get('segment_id'))}"
+        evidence = {
+            "segment_id": _int(item.get("segment_id")),
+            "output_hash": hashlib.sha256(output_text.encode("utf-8")).hexdigest(),
+            "candidate_hash": hashlib.sha256(candidate_text.encode("utf-8")).hexdigest(),
+            "candidate_text": candidate_text if candidate_text != output_text else "",
+            "repair_route": str(item.get("repair_route") or ""),
+            "repair_helpers": sorted(str(value) for value in item.get("repair_helpers") or []),
+            "issue_codes": sorted(
+                str(issue.get("code") or "")
+                for issue in item.get("detected_issues") or []
+                if issue.get("code")
+            ),
+            "dry_run_lane": str(dry_run.get("lane") or ""),
+            "dry_run_blockers": sorted(str(value) for value in dry_run.get("blockers") or []),
+        }
+        allowed_decisions = {
+            "issue_confirmed",
+            "false_positive",
+            "needs_context",
+        }
+        if dry_run.get("lane") == "proposal_ready" and candidate_text != output_text:
+            allowed_decisions.add("candidate_valid")
+        _attach_regenerative_review_contract(
+            item,
+            queue_type="repair",
+            item_key=item_key,
+            snapshot_id=repair_snapshot_id,
+            evidence=evidence,
+            decisions_by_evidence=repair_review_lookup,
+            allowed_decisions=allowed_decisions,
+        )
+
+    total_count = len(items)
+    visible_items = items[: max(1, _int(limit))]
+    return {
+        **empty,
+        "instrumented": True,
+        "total_count": total_count,
+        "sample_count": len(visible_items),
+        "high_risk_count": sum(
+            1 for item in items if item["repair_priority"] == "high"
+        ),
+        "medium_risk_count": sum(
+            1 for item in items if item["repair_priority"] == "medium"
+        ),
+        "helper_counts": dict(
+            sorted(helper_counts.items(), key=lambda item: (-item[1], item[0]))
+        ),
+        "route_counts": dict(
+            sorted(route_counts.items(), key=lambda item: (-item[1], item[0]))
+        ),
+        "issue_code_counts": dict(
+            sorted(
+                issue_code_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ),
+        "review_pending_count": sum(
+            1 for item in items if item.get("review_status") != "reviewed"
+        ),
+        "reviewed_count": sum(
+            1 for item in items if item.get("review_status") == "reviewed"
+        ),
+        "items": visible_items,
+    }
+
+
+def _glossary_display_case_calibration_payload(
+    con: sqlite3.Connection,
+    *,
+    score_run_id: int,
+) -> dict[str, Any]:
+    empty = {
+        "instrumented": False,
+        "shadow_run_id": 0,
+        "score_run_id": _int(score_run_id),
+        "is_current_score_run": False,
+        "record_count": 0,
+        "occurrence_count": 0,
+        "key_count": 0,
+        "pending_key_count": 0,
+        "reviewed_key_count": 0,
+        "pending_segment_count": 0,
+        "reviewed_segment_count": 0,
+        "lane_counts": {},
+        "policy_counts": {},
+        "operational_writes": False,
+        "groups": [],
+    }
+    if (
+        not _table_exists(con, "ml_quality_shadow_runs")
+        or not _table_exists(con, "ml_quality_shadow_items")
+    ):
+        return empty
+    shadow = _one(
+        con,
+        """
+        SELECT id, score_run_id, record_count, eligible_count, status,
+               metadata_json, finished_at
+        FROM ml_quality_shadow_runs
+        WHERE source_rule_version = ?
+          AND status = 'completed'
+        ORDER BY
+          CASE WHEN score_run_id = ? THEN 0 ELSE 1 END,
+          id DESC
+        LIMIT 1
+        """,
+        (GLOSSARY_DISPLAY_CASE_SHADOW_RULE_VERSION, _int(score_run_id)),
+    )
+    if not shadow:
+        return empty
+    try:
+        metadata = json.loads(str(shadow.get("metadata_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        metadata = {}
+    decisions = {
+        str(row.get("glossary_key") or "").strip().upper(): row
+        for row in (
+            _all(
+                con,
+                """
+                SELECT glossary_key, policy, reason, reviewer,
+                       source_shadow_run_id, source_score_run_id,
+                       evidence_segment_count, created_at, updated_at
+                FROM glossary_display_case_policies
+                ORDER BY glossary_key
+                """,
+            )
+            if _table_exists(con, "glossary_display_case_policies")
+            else []
+        )
+    }
+    raw_items: list[dict[str, Any]] = []
+    for item_row in _all(
+        con,
+        """
+        SELECT payload_json
+        FROM ml_quality_shadow_items
+        WHERE run_id = ?
+        ORDER BY segment_id, id
+        """,
+        (_int(shadow.get("id")),),
+    ):
+        try:
+            item = json.loads(str(item_row.get("payload_json") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(item, dict):
+            raw_items.append(item)
+
+    groups: dict[str, dict[str, Any]] = {}
+    segment_keys: dict[int, set[str]] = {}
+    for item in raw_items:
+        segment_id = _int(item.get("segment_id"))
+        segment_keys.setdefault(segment_id, set())
+        snapshot_policies = {
+            str(policy.get("glossary_key") or "").strip().upper(): policy
+            for policy in (item.get("policies") or [])
+            if isinstance(policy, dict)
+        }
+        for occurrence in item.get("occurrences") or []:
+            if not isinstance(occurrence, dict):
+                continue
+            glossary_key = str(
+                occurrence.get("glossary_key") or ""
+            ).strip().upper()
+            if not glossary_key:
+                continue
+            segment_keys[segment_id].add(glossary_key)
+            snapshot_policy = snapshot_policies.get(glossary_key) or {}
+            decision = decisions.get(glossary_key) or {}
+            policy = str(
+                decision.get("policy")
+                or snapshot_policy.get("policy")
+                or "unknown"
+            )
+            group = groups.setdefault(
+                glossary_key,
+                {
+                    "glossary_key": glossary_key,
+                    "policy": policy,
+                    "snapshot_policy": str(
+                        snapshot_policy.get("policy") or "unknown"
+                    ),
+                    "review_status": (
+                        "reviewed"
+                        if policy in GLOSSARY_DISPLAY_CASE_POLICIES
+                        else "pending"
+                    ),
+                    "decision_reason": decision.get("reason"),
+                    "reviewer": decision.get("reviewer"),
+                    "reviewed_at": decision.get("updated_at"),
+                    "explicit_policy": bool(decision),
+                    "segment_count": 0,
+                    "occurrence_count": 0,
+                    "segments": [],
+                },
+            )
+            if decision:
+                group.update(
+                    {
+                        "policy": policy,
+                        "review_status": "reviewed",
+                        "decision_reason": decision.get("reason"),
+                        "reviewer": decision.get("reviewer"),
+                        "reviewed_at": decision.get("updated_at"),
+                        "explicit_policy": True,
+                    }
+                )
+            group["occurrence_count"] += 1
+            canonical_heading = str(
+                occurrence.get("canonical_heading") or ""
+            ).strip()
+            english_display = str(
+                occurrence.get("english_display") or ""
+            ).strip()
+            if (
+                canonical_heading
+                and english_display
+                and (
+                    "\ufffd" in canonical_heading
+                    or (
+                        len(canonical_heading) == len(english_display)
+                        and any(
+                            canonical_char == "?" and english_char != "?"
+                            for canonical_char, english_char in zip(
+                                canonical_heading,
+                                english_display,
+                            )
+                        )
+                    )
+                )
+            ):
+                canonical_heading = english_display
+            if not any(
+                _int(existing.get("segment_id")) == segment_id
+                for existing in group["segments"]
+            ):
+                group["segments"].append(
+                    {
+                        "segment_id": segment_id,
+                        "relative_path": item.get("relative_path"),
+                        "source_key": item.get("source_key"),
+                        "human_locked": bool(item.get("human_locked")),
+                        "english_display": occurrence.get("english_display"),
+                        "output_display": occurrence.get("output_display"),
+                        "canonical_heading": canonical_heading or None,
+                        "original_preview": item.get("original_preview"),
+                        "candidate_preview": item.get("candidate_preview"),
+                    }
+                )
+                group["segment_count"] += 1
+
+    policy_by_key = {
+        key: str(group.get("policy") or "unknown")
+        for key, group in groups.items()
+    }
+    lane_counts: dict[str, int] = {}
+    pending_segments: set[int] = set()
+    for segment_id, keys in segment_keys.items():
+        policies = [policy_by_key.get(key, "unknown") for key in keys]
+        if "policy_conflict" in policies:
+            lane = "policy_conflict"
+        elif "unknown" in policies:
+            lane = "review_required"
+        elif "case_sensitive" in policies:
+            lane = "confirmed_case_sensitive"
+        else:
+            lane = "accepted_contextual_case"
+        lane_counts[lane] = lane_counts.get(lane, 0) + 1
+        if lane in {"review_required", "policy_conflict"}:
+            pending_segments.add(segment_id)
+
+    group_items = sorted(
+        groups.values(),
+        key=lambda group: (
+            group.get("review_status") == "reviewed",
+            -_int(group.get("segment_count")),
+            str(group.get("glossary_key") or ""),
+        ),
+    )
+    policy_counts: dict[str, int] = {}
+    for group in group_items:
+        policy = str(group.get("policy") or "unknown")
+        policy_counts[policy] = policy_counts.get(policy, 0) + 1
+    pending_key_count = sum(
+        1 for group in group_items if group.get("review_status") != "reviewed"
+    )
+    record_count = len(segment_keys)
+    return {
+        **empty,
+        "instrumented": True,
+        "shadow_run_id": _int(shadow.get("id")),
+        "score_run_id": _int(shadow.get("score_run_id")),
+        "is_current_score_run": (
+            _int(shadow.get("score_run_id")) == _int(score_run_id)
+        ),
+        "record_count": record_count,
+        "occurrence_count": sum(
+            _int(group.get("occurrence_count")) for group in group_items
+        ),
+        "key_count": len(group_items),
+        "pending_key_count": pending_key_count,
+        "reviewed_key_count": len(group_items) - pending_key_count,
+        "pending_segment_count": len(pending_segments),
+        "reviewed_segment_count": max(0, record_count - len(pending_segments)),
+        "lane_counts": lane_counts,
+        "policy_counts": policy_counts,
+        "snapshot_metadata": metadata,
+        "groups": group_items,
+    }
+
+
+def _record_glossary_display_case_policy(
+    con: sqlite3.Connection,
+    *,
+    glossary_key: str,
+    policy: str,
+    reason: str,
+    reviewer: str,
+    shadow_run_id: int = 0,
+) -> dict[str, Any]:
+    normalized_key = str(glossary_key or "").strip().upper()
+    normalized_policy = str(policy or "").strip().lower()
+    normalized_reason = str(reason or "").strip()
+    reviewer_name = str(reviewer or "").strip() or "dashboard_human_review"
+    if normalized_policy not in GLOSSARY_DISPLAY_CASE_POLICIES:
+        raise ValueError(
+            "Política inválida: use case_sensitive ou case_flexible."
+        )
+    if not normalized_key or not normalized_reason:
+        raise ValueError("glossary_key e reason são obrigatórios.")
+    shadow = _one(
+        con,
+        """
+        SELECT id, score_run_id
+        FROM ml_quality_shadow_runs
+        WHERE source_rule_version = ?
+          AND status = 'completed'
+          AND (? = 0 OR id = ?)
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (
+            GLOSSARY_DISPLAY_CASE_SHADOW_RULE_VERSION,
+            _int(shadow_run_id),
+            _int(shadow_run_id),
+        ),
+    )
+    if not shadow:
+        raise ValueError("Snapshot Glossary não encontrado.")
+    evidence = _one(
+        con,
+        """
+        SELECT COUNT(DISTINCT segment_id) AS total
+        FROM ml_quality_shadow_items
+        WHERE run_id = ?
+          AND EXISTS (
+            SELECT 1
+            FROM json_each(
+              json_extract(ml_quality_shadow_items.payload_json, '$.glossary_keys')
+            )
+            WHERE upper(value) = ?
+          )
+        """,
+        (_int(shadow.get("id")), normalized_key),
+    )
+    evidence_count = _int(evidence.get("total"))
+    if evidence_count <= 0:
+        raise ValueError(
+            f"A chave {normalized_key} não pertence ao snapshot Glossary selecionado."
+        )
+    now = _now_iso()
+    con.execute(
+        """
+        INSERT INTO glossary_display_case_policies (
+          glossary_key, policy, reason, reviewer,
+          source_shadow_run_id, source_score_run_id,
+          evidence_segment_count, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(glossary_key) DO UPDATE SET
+          policy = excluded.policy,
+          reason = excluded.reason,
+          reviewer = excluded.reviewer,
+          source_shadow_run_id = excluded.source_shadow_run_id,
+          source_score_run_id = excluded.source_score_run_id,
+          evidence_segment_count = excluded.evidence_segment_count,
+          updated_at = excluded.updated_at
+        """,
+        (
+            normalized_key,
+            normalized_policy,
+            normalized_reason,
+            reviewer_name,
+            _int(shadow.get("id")),
+            _int(shadow.get("score_run_id")),
+            evidence_count,
+            now,
+            now,
+        ),
+    )
+    con.commit()
+    return {
+        "ok": True,
+        "glossary_key": normalized_key,
+        "policy": normalized_policy,
+        "reason": normalized_reason,
+        "reviewer": reviewer_name,
+        "shadow_run_id": _int(shadow.get("id")),
+        "score_run_id": _int(shadow.get("score_run_id")),
+        "evidence_segment_count": evidence_count,
+        "operational_writes": False,
+        "output_changed": False,
+    }
+
+
+def _mojibake_preview(value: Any, limit: int = 520) -> str:
+    text = str(value or "").replace("\r", "").replace("\n", "\\n")
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _rebuild_mojibake_candidate(
+    baseline: str,
+    replacements: list[dict[str, Any]],
+) -> str:
+    positioned = []
+    for replacement in replacements:
+        start = replacement.get("start")
+        end = replacement.get("end")
+        if isinstance(start, int) and isinstance(end, int):
+            positioned.append((start, end, replacement))
+    if positioned and len(positioned) == len(replacements):
+        candidate = baseline
+        for start, end, replacement in sorted(positioned, key=lambda item: item[0], reverse=True):
+            original = str(replacement.get("original") or "")
+            updated = str(replacement.get("replacement") or "")
+            if not original or start < 0 or end < start or candidate[start:end] != original:
+                raise ValueError(
+                    f"A substituição posicionada {original!r} não corresponde mais ao output atual."
+                )
+            candidate = candidate[:start] + updated + candidate[end:]
+        return candidate
+    candidate = baseline
+    for replacement in replacements:
+        original = str(replacement.get("original") or "")
+        updated = str(replacement.get("replacement") or "")
+        if not original or original not in candidate:
+            raise ValueError(
+                f"A substituiÃ§Ã£o {original!r} nÃ£o corresponde mais ao output atual."
+            )
+        candidate = candidate.replace(original, updated, 1)
+    return candidate
+
+
+def _current_mojibake_candidate_validation(
+    payload: dict[str, Any],
+    candidate_text: str,
+) -> tuple[bool, list[str]]:
+    """Revalidate a stored shadow candidate with the current quality contract."""
+    pipeline_dir = str(ROOT / "pipeline")
+    if pipeline_dir not in sys.path:
+        sys.path.insert(0, pipeline_dir)
+    import local_quality_validator
+
+    validation = local_quality_validator.validate_text(candidate_text)
+    issue_codes = sorted(
+        {
+            str(issue.get("code") or "")
+            for issue in (validation.get("issues") or [])
+            if str(issue.get("code") or "")
+        }
+    )
+    residual_signals = [
+        str(value)
+        for value in (payload.get("residual_word_signals") or [])
+        if str(value)
+    ]
+    unresolved_signals = [
+        value
+        for value in (payload.get("unresolved_signals") or [])
+        if isinstance(value, dict)
+    ]
+    complete = bool(
+        candidate_text
+        and payload.get("replacements")
+        and payload.get("token_integrity_ok")
+        and not residual_signals
+        and not unresolved_signals
+        and not issue_codes
+    )
+    return complete, issue_codes
+
+
+def _mojibake_replacement_is_internal(replacement: dict[str, Any]) -> bool:
+    token = str(replacement.get("original") or "")
+    positions = [index for index, character in enumerate(token) if character == "?"]
+    return bool(positions) and all(
+        0 < index < len(token) - 1
+        and token[index - 1].isalpha()
+        and token[index + 1].isalpha()
+        for index in positions
+    )
+
+
+def _mojibake_accented_alternative_matches(pattern: str, candidate: str) -> bool:
+    normalized_pattern = str(pattern or "").casefold()
+    normalized_candidate = str(candidate or "").casefold()
+    if len(normalized_pattern) != len(normalized_candidate):
+        return False
+    accented = frozenset("áàâãéêíóôõúüç")
+    return all(
+        expected == actual
+        or (expected == "?" and actual in accented)
+        for expected, actual in zip(normalized_pattern, normalized_candidate)
+    )
+
+
+def _mojibake_lexicon_review_payload(
+    con: sqlite3.Connection,
+    *,
+    score_run_id: int,
+) -> dict[str, Any]:
+    empty = {
+        "instrumented": False,
+        "shadow_run_id": 0,
+        "score_run_id": _int(score_run_id),
+        "is_current_score_run": False,
+        "record_count": 0,
+        "pending_count": 0,
+        "reviewed_count": 0,
+        "suggestion_count": 0,
+        "complete_suggestion_count": 0,
+        "partial_suggestion_count": 0,
+        "internal_suggestion_count": 0,
+        "contextual_suggestion_count": 0,
+        "unresolved_count": 0,
+        "human_locked_count": 0,
+        "stale_count": 0,
+        "previous_shadow_run_id": 0,
+        "changed_segment_count": 0,
+        "unchanged_segment_count": 0,
+        "new_suggestion_count": 0,
+        "newly_complete_count": 0,
+        "memory_supported_segment_count": 0,
+        "memory_supported_replacement_count": 0,
+        "carried_review_count": 0,
+        "family_counts": {},
+        "decision_counts": {},
+        "blocker_counts": {},
+        "pattern_counts": {},
+        "boundary_pattern_count": 0,
+        "boundary_pattern_pending_count": 0,
+        "boundary_pattern_reviewed_count": 0,
+        "boundary_pattern_occurrence_count": 0,
+        "boundary_patterns": [],
+        "operational_writes": False,
+        "items": [],
+    }
+    if not all(
+        _table_exists(con, table)
+        for table in (
+            "ml_quality_shadow_runs",
+            "ml_quality_shadow_items",
+            "source_segments",
+            "output_segments",
+        )
+    ):
+        return empty
+    shadow = _one(
+        con,
+        """
+        SELECT id, score_run_id, record_count, eligible_count, status,
+               metadata_json, finished_at
+        FROM ml_quality_shadow_runs
+        WHERE source_rule_version = ?
+          AND status = 'completed'
+        ORDER BY CASE WHEN score_run_id = ? THEN 0 ELSE 1 END, id DESC
+        LIMIT 1
+        """,
+        (MOJIBAKE_LEXICON_SHADOW_RULE_VERSION, _int(score_run_id)),
+    )
+    if not shadow:
+        return empty
+    previous_shadow = _one(
+        con,
+        """
+        SELECT id, score_run_id
+        FROM ml_quality_shadow_runs
+        WHERE source_rule_version LIKE 'quality_mojibake_lexicon_shadow_v%'
+          AND status = 'completed'
+          AND id < ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (_int(shadow.get("id")),),
+    )
+    previous_payloads: dict[int, dict[str, Any]] = {}
+    if previous_shadow:
+        for previous_item in _all(
+            con,
+            """
+            SELECT segment_id, payload_json
+            FROM ml_quality_shadow_items
+            WHERE run_id = ?
+            """,
+            (_int(previous_shadow.get("id")),),
+        ):
+            try:
+                previous_payloads[_int(previous_item.get("segment_id"))] = json.loads(
+                    str(previous_item.get("payload_json") or "{}")
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+    decision_table_columns = (
+        _table_columns(con, "mojibake_lexicon_review_decisions")
+        if _table_exists(con, "mojibake_lexicon_review_decisions")
+        else set()
+    )
+    decision_extra_columns = ", ".join(
+        column
+        for column in (
+            "resolution_scope",
+            "remaining_signal_count",
+            "residual_findings_json",
+        )
+        if column in decision_table_columns
+    )
+    if decision_extra_columns:
+        decision_extra_columns = ", " + decision_extra_columns
+    decisions = {
+        _int(row.get("segment_id")): row
+        for row in (
+            _all(
+                con,
+                """
+                SELECT segment_id, decision, reason, reviewer,
+                       source_shadow_run_id, source_score_run_id,
+                       baseline_hash, candidate_hash, candidate_text,
+                       patterns_json, created_at, updated_at
+                       {decision_extra_columns}
+                FROM mojibake_lexicon_review_decisions
+                ORDER BY segment_id
+                """.format(decision_extra_columns=decision_extra_columns),
+            )
+            if _table_exists(con, "mojibake_lexicon_review_decisions")
+            else []
+        )
+    }
+    boundary_decisions = {
+        str(row.get("normalized_pattern") or "").casefold(): row
+        for row in (
+            _all(
+                con,
+                """
+                SELECT normalized_pattern, display_pattern, decision,
+                       canonical_replacement, reason, reviewer,
+                       source_shadow_run_id, source_score_run_id,
+                       evidence_json, created_at, updated_at
+                FROM mojibake_boundary_pattern_decisions
+                ORDER BY normalized_pattern
+                """,
+            )
+            if _table_exists(con, "mojibake_boundary_pattern_decisions")
+            else []
+        )
+    }
+    rows = _all(
+        con,
+        """
+        SELECT item.segment_id, item.lane, item.payload_json,
+               source.relative_path, source.source_key,
+               source.english_text, source.spanish_text,
+               output.portuguese_text AS output_text
+        FROM ml_quality_shadow_items item
+        JOIN source_segments source ON source.id = item.segment_id
+        JOIN output_segments output ON output.segment_id = item.segment_id
+        WHERE item.run_id = ?
+        ORDER BY item.segment_id
+        """,
+        (_int(shadow.get("id")),),
+    )
+    items: list[dict[str, Any]] = []
+    family_counts: dict[str, int] = {}
+    decision_counts: dict[str, int] = {}
+    blocker_counts: dict[str, int] = {}
+    pattern_counts: dict[str, int] = {}
+    stale_count = 0
+    for row in rows:
+        try:
+            payload = json.loads(str(row.get("payload_json") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        replacements = [
+            replacement
+            for replacement in (payload.get("replacements") or [])
+            if isinstance(replacement, dict)
+        ]
+        output_text = str(row.get("output_text") or "")
+        baseline_hash = hashlib.sha256(output_text.encode("utf-8")).hexdigest()
+        snapshot_hash = str(payload.get("baseline_hash") or "")
+        stale = bool(snapshot_hash and snapshot_hash != baseline_hash)
+        candidate_text = ""
+        if replacements and not stale:
+            try:
+                candidate_text = _rebuild_mojibake_candidate(
+                    output_text,
+                    replacements,
+                )
+            except ValueError:
+                stale = True
+                candidate_text = ""
+        expected_candidate_hash = str(payload.get("candidate_hash") or "")
+        rebuilt_candidate_hash = (
+            hashlib.sha256(candidate_text.encode("utf-8")).hexdigest()
+            if candidate_text
+            else ""
+        )
+        if (
+            candidate_text
+            and expected_candidate_hash
+            and expected_candidate_hash != rebuilt_candidate_hash
+        ):
+            stale = True
+            candidate_text = ""
+            rebuilt_candidate_hash = ""
+        has_suggestion = bool(candidate_text and candidate_text != output_text)
+        raw_residual_signals = [
+            str(value)
+            for value in (payload.get("residual_word_signals") or [])
+            if str(value)
+        ]
+        raw_unresolved_signals = [
+            dict(value)
+            for value in (payload.get("unresolved_signals") or [])
+            if isinstance(value, dict)
+        ]
+        for signal_index, signal in enumerate(raw_unresolved_signals):
+            signal["signal_index"] = signal_index
+            signal["signal_signature"] = _mojibake_unresolved_signal_signature(
+                signal, signal_index
+            )
+        focus_candidate_complete, current_post_issue_codes = (
+            _current_mojibake_candidate_validation(payload, candidate_text)
+            if has_suggestion
+            else (False, [])
+        )
+        memory_supported_replacements = [
+            replacement
+            for replacement in replacements
+            if str(replacement.get("selection_reason") or "")
+            in {"supervised_pattern", "supervised_boundary_pattern"}
+        ]
+        memory_supported = bool(memory_supported_replacements)
+        segment_id = _int(row.get("segment_id"))
+        previous_payload = previous_payloads.get(segment_id) or {}
+        previous_replacements = previous_payload.get("replacements") or []
+        previous_signature = (
+            str(previous_payload.get("candidate_hash") or ""),
+            bool(previous_payload.get("candidate_complete")),
+            tuple(str(value) for value in (previous_payload.get("residual_word_signals") or [])),
+        )
+        current_signature = (
+            str(payload.get("candidate_hash") or ""),
+            bool(payload.get("candidate_complete")),
+            tuple(raw_residual_signals),
+        )
+        changed_since_previous = bool(previous_payload and previous_signature != current_signature)
+        new_suggestion = bool(replacements and not previous_replacements)
+        newly_complete = bool(
+            focus_candidate_complete
+            and previous_payload
+            and not previous_payload.get("candidate_complete")
+        )
+        internal_only = bool(replacements) and all(
+            _mojibake_replacement_is_internal(replacement)
+            for replacement in replacements
+        )
+        if stale:
+            stale_count += 1
+        blockers = [str(value) for value in (payload.get("blockers") or [])]
+        if focus_candidate_complete and not current_post_issue_codes:
+            blockers = [
+                blocker
+                for blocker in blockers
+                if blocker not in {"other_issue_codes", "post_validation_issue"}
+            ]
+        for blocker in blockers:
+            blocker_counts[blocker] = blocker_counts.get(blocker, 0) + 1
+        patterns: list[str] = []
+        for replacement in replacements:
+            label = (
+                f"{replacement.get('original') or '?'} → "
+                f"{replacement.get('replacement') or '?'}"
+            )
+            if label not in patterns:
+                patterns.append(label)
+                pattern_counts[label] = pattern_counts.get(label, 0) + 1
+        decision = decisions.get(segment_id) or {}
+        decision_baseline_matches = bool(
+            decision
+            and str(decision.get("baseline_hash") or "") == baseline_hash
+        )
+        stored_decision_name = str(decision.get("decision") or "")
+        resolution_scope = str(decision.get("resolution_scope") or "")
+        try:
+            stored_residual_findings = json.loads(
+                str(decision.get("residual_findings_json") or "[]")
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            stored_residual_findings = []
+        stored_residual_findings = [
+            finding
+            for finding in stored_residual_findings
+            if isinstance(finding, dict)
+        ]
+        valid_punctuation_indexes = (
+            _mojibake_valid_punctuation_indexes(
+                raw_unresolved_signals,
+                stored_residual_findings,
+            )
+            if decision_baseline_matches
+            else set()
+        )
+        decision_candidate_matches = bool(
+            candidate_text
+            and str(decision.get("candidate_hash") or "") == rebuilt_candidate_hash
+        )
+        decision_is_current = bool(
+            decision_baseline_matches
+            and _int(decision.get("source_shadow_run_id")) == _int(shadow.get("id"))
+        )
+        decision_is_carried = bool(
+            decision_baseline_matches
+            and not decision_is_current
+            and (
+                (
+                    stored_decision_name == "accept_suggestion"
+                    and focus_candidate_complete
+                    and decision_candidate_matches
+                )
+                or (
+                    stored_decision_name == "manual_review"
+                    and resolution_scope == "partial"
+                    and decision_candidate_matches
+                )
+                or (
+                    stored_decision_name == "manual_review"
+                    and resolution_scope == "manual"
+                    and (
+                        decision_candidate_matches
+                        or not str(decision.get("candidate_hash") or "")
+                    )
+                )
+                or (
+                    stored_decision_name == "valid_question_mark"
+                    and bool(valid_punctuation_indexes)
+                )
+            )
+        )
+        decision_applies = decision_is_current or decision_is_carried
+        decision_name = (
+            "partial_correction"
+            if decision_applies
+            and stored_decision_name == "manual_review"
+            and resolution_scope == "partial"
+            else stored_decision_name if decision_applies else ""
+        )
+        structured_residual_findings: list[dict[str, Any]] = (
+            stored_residual_findings if decision_applies else []
+        )
+        filtered_signal_indexes = valid_punctuation_indexes if decision_applies else set()
+        unresolved_signals = [
+            signal
+            for signal_index, signal in enumerate(raw_unresolved_signals)
+            if signal_index not in filtered_signal_indexes
+        ]
+        residual_signals = [
+            signal
+            for signal_index, signal in enumerate(raw_residual_signals)
+            if signal_index not in filtered_signal_indexes
+        ]
+        unresolved_structured_findings = [
+            finding
+            for finding in structured_residual_findings
+            if str(finding.get("issue_family") or "") != "valid_punctuation"
+        ]
+        known_residual_issue = bool(
+            decision_applies
+            and (
+                stored_decision_name == "manual_review"
+                or unresolved_structured_findings
+            )
+        )
+        candidate_complete = bool(
+            focus_candidate_complete and not known_residual_issue
+        )
+        valid_punctuation_still_open = bool(
+            decision_name == "valid_question_mark" and residual_signals
+        )
+        if stale:
+            family = "stale_snapshot"
+        elif has_suggestion:
+            family = "complete_suggestion" if candidate_complete else "partial_suggestion"
+        else:
+            family = "unresolved_signal"
+        family_counts[family] = family_counts.get(family, 0) + 1
+        if decision_name:
+            decision_counts[decision_name] = decision_counts.get(decision_name, 0) + 1
+        items.append(
+            {
+                "segment_id": segment_id,
+                "relative_path": row.get("relative_path"),
+                "source_key": row.get("source_key"),
+                "english_preview": _mojibake_preview(row.get("english_text")),
+                "spanish_preview": _mojibake_preview(row.get("spanish_text")),
+                "output_preview": _mojibake_preview(output_text),
+                "candidate_preview": _mojibake_preview(candidate_text),
+                "candidate_available": has_suggestion,
+                "candidate_complete": candidate_complete,
+                "focus_candidate_complete": focus_candidate_complete,
+                "known_residual_issue": known_residual_issue,
+                "candidate_hash": rebuilt_candidate_hash or None,
+                "baseline_hash": baseline_hash,
+                "patterns": patterns,
+                "replacements": replacements,
+                "unresolved_signals": unresolved_signals,
+                "residual_word_signals": residual_signals,
+                "remaining_signal_count": len(residual_signals),
+                "residual_findings": unresolved_structured_findings,
+                "residual_finding_count": len(unresolved_structured_findings),
+                "validated_punctuation_count": len(filtered_signal_indexes),
+                "validated_punctuation_findings": [
+                    finding
+                    for finding in structured_residual_findings
+                    if str(finding.get("issue_family") or "") == "valid_punctuation"
+                ],
+                "residual_routes": sorted(
+                    {
+                        str(finding.get("route") or "")
+                        for finding in structured_residual_findings
+                        if str(finding.get("route") or "")
+                    }
+                ),
+                "memory_supported": memory_supported,
+                "memory_supported_replacement_count": len(memory_supported_replacements),
+                "changed_since_previous": changed_since_previous,
+                "new_suggestion": new_suggestion,
+                "newly_complete": newly_complete,
+                "family": family,
+                "blockers": blockers,
+                "human_locked": bool(payload.get("human_locked")),
+                "token_integrity_ok": bool(payload.get("token_integrity_ok")),
+                "model_safe_probability": payload.get("raw_current_score"),
+                "review_status": (
+                    "reviewed"
+                    if decision_name and not valid_punctuation_still_open
+                    else "pending"
+                ),
+                "decision": decision_name or None,
+                "decision_reason": decision.get("reason"),
+                "reviewer": decision.get("reviewer"),
+                "reviewed_at": decision.get("updated_at"),
+                "source_shadow_run_id": decision.get("source_shadow_run_id"),
+                "review_origin": (
+                    "current" if decision_is_current else "carried" if decision_is_carried else None
+                ),
+                "prior_review_available": bool(stored_decision_name and not decision_applies),
+            }
+        )
+    boundary_groups: dict[str, dict[str, Any]] = {}
+
+    def boundary_group_for(token: str) -> dict[str, Any]:
+        normalized = str(token or "").casefold()
+        group = boundary_groups.get(normalized)
+        if group is None:
+            stored = boundary_decisions.get(normalized) or {}
+            group = {
+                "normalized_pattern": normalized,
+                "display_pattern": str(stored.get("display_pattern") or token),
+                "occurrence_count": 0,
+                "unresolved_occurrence_count": 0,
+                "resolved_by_pattern_count": 0,
+                "segment_ids": set(),
+                "reason_counts": {},
+                "context_family_counts": {},
+                "diagnostic_candidate_count": 0,
+                "alternatives": {},
+                "examples": [],
+                "decision": stored.get("decision"),
+                "canonical_replacement": stored.get("canonical_replacement"),
+                "decision_reason": stored.get("reason"),
+                "reviewer": stored.get("reviewer"),
+                "reviewed_at": stored.get("updated_at"),
+                "source_shadow_run_id": stored.get("source_shadow_run_id"),
+                "review_status": "reviewed" if stored.get("decision") else "pending",
+            }
+            boundary_groups[normalized] = group
+        return group
+
+    for item in items:
+        seen_patterns: set[str] = set()
+        for signal in item.get("unresolved_signals") or []:
+            token = str(signal.get("token") or "")
+            if not token or "?" not in token:
+                continue
+            group = boundary_group_for(token)
+            group["occurrence_count"] += 1
+            group["unresolved_occurrence_count"] += 1
+            group["segment_ids"].add(_int(item.get("segment_id")))
+            reason = str(signal.get("reason") or "unresolved")
+            group["reason_counts"][reason] = group["reason_counts"].get(reason, 0) + 1
+            context_family = str(signal.get("context_family") or "unclassified")
+            group["context_family_counts"][context_family] = (
+                group["context_family_counts"].get(context_family, 0) + 1
+            )
+            group["diagnostic_candidate_count"] = max(
+                _int(group.get("diagnostic_candidate_count")),
+                _int(signal.get("diagnostic_candidate_count")),
+            )
+            for alternative in signal.get("alternatives") or []:
+                candidate = str(alternative.get("text") or "")
+                if not candidate or not _mojibake_accented_alternative_matches(token, candidate):
+                    continue
+                group["alternatives"][candidate] = max(
+                    _int(group["alternatives"].get(candidate)),
+                    _int(alternative.get("corpus_support")),
+                )
+            seen_patterns.add(token.casefold())
+        for replacement in item.get("replacements") or []:
+            if str(replacement.get("selection_reason") or "") != "supervised_boundary_pattern":
+                continue
+            token = str(replacement.get("original") or "")
+            if not token or "?" not in token:
+                continue
+            group = boundary_group_for(token)
+            group["occurrence_count"] += 1
+            group["resolved_by_pattern_count"] += 1
+            group["segment_ids"].add(_int(item.get("segment_id")))
+            seen_patterns.add(token.casefold())
+        for normalized in seen_patterns:
+            group = boundary_groups[normalized]
+            if len(group["examples"]) >= 6:
+                continue
+            group["examples"].append(
+                {
+                    "segment_id": _int(item.get("segment_id")),
+                    "relative_path": item.get("relative_path"),
+                    "source_key": item.get("source_key"),
+                    "english_preview": item.get("english_preview"),
+                    "spanish_preview": item.get("spanish_preview"),
+                    "output_preview": item.get("output_preview"),
+                    "candidate_preview": item.get("candidate_preview"),
+                    "score": item.get("model_safe_probability"),
+                }
+            )
+
+    boundary_patterns: list[dict[str, Any]] = []
+    for group in boundary_groups.values():
+        alternatives = [
+            {"text": candidate, "corpus_support": support}
+            for candidate, support in sorted(
+                group.pop("alternatives").items(),
+                key=lambda entry: (-entry[1], entry[0]),
+            )[:8]
+        ]
+        segment_ids = sorted(group.pop("segment_ids"))
+        boundary_patterns.append(
+            {
+                **group,
+                "segment_count": len(segment_ids),
+                "segment_ids": segment_ids,
+                "alternatives": alternatives,
+                "alternative_scope": "accented_unicode_only",
+            }
+        )
+    boundary_patterns.sort(
+        key=lambda group: (
+            group.get("review_status") == "reviewed",
+            -_int(group.get("unresolved_occurrence_count")),
+            -_int(group.get("segment_count")),
+            str(group.get("normalized_pattern") or ""),
+        )
+    )
+    reviewed_count = sum(item["review_status"] == "reviewed" for item in items)
+    return {
+        **empty,
+        "instrumented": True,
+        "shadow_run_id": _int(shadow.get("id")),
+        "score_run_id": _int(shadow.get("score_run_id")),
+        "is_current_score_run": _int(shadow.get("score_run_id")) == _int(score_run_id),
+        "record_count": len(items),
+        "pending_count": len(items) - reviewed_count,
+        "reviewed_count": reviewed_count,
+        "suggestion_count": sum(item["candidate_available"] for item in items),
+        "complete_suggestion_count": family_counts.get("complete_suggestion", 0),
+        "partial_suggestion_count": family_counts.get("partial_suggestion", 0),
+        "internal_suggestion_count": family_counts.get("complete_suggestion", 0),
+        "contextual_suggestion_count": family_counts.get("partial_suggestion", 0),
+        "unresolved_count": family_counts.get("unresolved_signal", 0),
+        "human_locked_count": sum(item["human_locked"] for item in items),
+        "stale_count": stale_count,
+        "previous_shadow_run_id": _int(previous_shadow.get("id")) if previous_shadow else 0,
+        "changed_segment_count": sum(item["changed_since_previous"] for item in items),
+        "unchanged_segment_count": sum(
+            not item["changed_since_previous"] for item in items
+        ) if previous_shadow else 0,
+        "new_suggestion_count": sum(item["new_suggestion"] for item in items),
+        "newly_complete_count": sum(item["newly_complete"] for item in items),
+        "memory_supported_segment_count": sum(item["memory_supported"] for item in items),
+        "memory_supported_replacement_count": sum(
+            item["memory_supported_replacement_count"] for item in items
+        ),
+        "carried_review_count": sum(item.get("review_origin") == "carried" for item in items),
+        "family_counts": family_counts,
+        "decision_counts": decision_counts,
+        "blocker_counts": blocker_counts,
+        "pattern_counts": dict(
+            sorted(pattern_counts.items(), key=lambda item: (-item[1], item[0]))
+        ),
+        "boundary_pattern_count": len(boundary_patterns),
+        "boundary_pattern_pending_count": sum(
+            group["review_status"] == "pending" for group in boundary_patterns
+        ),
+        "boundary_pattern_reviewed_count": sum(
+            group["review_status"] == "reviewed" for group in boundary_patterns
+        ),
+        "boundary_pattern_occurrence_count": sum(
+            _int(group.get("occurrence_count")) for group in boundary_patterns
+        ),
+        "boundary_patterns": boundary_patterns,
+        "items": items,
+    }
+
+
+def _record_mojibake_boundary_pattern_decision(
+    con: sqlite3.Connection,
+    *,
+    pattern: str,
+    decision: str,
+    canonical_replacement: str,
+    reason: str,
+    reviewer: str,
+    shadow_run_id: int = 0,
+) -> dict[str, Any]:
+    normalized_pattern = str(pattern or "").strip().casefold()
+    display_pattern = str(pattern or "").strip()
+    normalized_decision = str(decision or "").strip().lower()
+    replacement = str(canonical_replacement or "").strip().casefold()
+    normalized_reason = str(reason or "").strip()
+    reviewer_name = str(reviewer or "").strip() or "dashboard_human_review"
+    if normalized_decision not in MOJIBAKE_BOUNDARY_PATTERN_DECISIONS:
+        raise ValueError(
+            "Decisão inválida: use canonical_replacement, valid_punctuation ou context_required."
+        )
+    if not normalized_pattern or "?" not in normalized_pattern or not normalized_reason:
+        raise ValueError("pattern com '?' e reason são obrigatórios.")
+    if normalized_decision == "canonical_replacement":
+        if (
+            not replacement
+            or "?" in replacement
+            or len(replacement) != len(normalized_pattern)
+            or any(
+                expected != "?" and expected != actual
+                for expected, actual in zip(normalized_pattern, replacement)
+            )
+        ):
+            raise ValueError("A forma canônica precisa corresponder exatamente ao padrão selecionado.")
+    else:
+        replacement = ""
+    shadow = _one(
+        con,
+        """
+        SELECT id, score_run_id
+        FROM ml_quality_shadow_runs
+        WHERE source_rule_version = ?
+          AND status = 'completed'
+          AND (? = 0 OR id = ?)
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (
+            MOJIBAKE_LEXICON_SHADOW_RULE_VERSION,
+            _int(shadow_run_id),
+            _int(shadow_run_id),
+        ),
+    )
+    if not shadow:
+        raise ValueError("Snapshot Unicode/mojibake atual não encontrado.")
+    review_payload = _mojibake_lexicon_review_payload(
+        con,
+        score_run_id=_int(shadow.get("score_run_id")),
+    )
+    group = next(
+        (
+            item
+            for item in review_payload.get("boundary_patterns") or []
+            if str(item.get("normalized_pattern") or "").casefold() == normalized_pattern
+        ),
+        None,
+    )
+    if not group:
+        raise ValueError("O padrão não pertence ao snapshot selecionado.")
+    if normalized_decision == "canonical_replacement":
+        alternatives = {
+            str(item.get("text") or "").casefold()
+            for item in group.get("alternatives") or []
+        }
+        if replacement not in alternatives:
+            raise ValueError("A forma canônica precisa ser uma alternativa observada no corpus.")
+    now = _now_iso()
+    con.execute(
+        """
+        INSERT INTO mojibake_boundary_pattern_decisions (
+          normalized_pattern, display_pattern, decision, canonical_replacement,
+          reason, reviewer, source_shadow_run_id, source_score_run_id,
+          evidence_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(normalized_pattern) DO UPDATE SET
+          display_pattern = excluded.display_pattern,
+          decision = excluded.decision,
+          canonical_replacement = excluded.canonical_replacement,
+          reason = excluded.reason,
+          reviewer = excluded.reviewer,
+          source_shadow_run_id = excluded.source_shadow_run_id,
+          source_score_run_id = excluded.source_score_run_id,
+          evidence_json = excluded.evidence_json,
+          updated_at = excluded.updated_at
+        """,
+        (
+            normalized_pattern,
+            display_pattern,
+            normalized_decision,
+            replacement or None,
+            normalized_reason,
+            reviewer_name,
+            _int(shadow.get("id")),
+            _int(shadow.get("score_run_id")),
+            json.dumps(group, ensure_ascii=False),
+            now,
+            now,
+        ),
+    )
+    con.commit()
+    return {
+        "ok": True,
+        "pattern": display_pattern,
+        "normalized_pattern": normalized_pattern,
+        "decision": normalized_decision,
+        "canonical_replacement": replacement or None,
+        "reason": normalized_reason,
+        "reviewer": reviewer_name,
+        "shadow_run_id": _int(shadow.get("id")),
+        "score_run_id": _int(shadow.get("score_run_id")),
+        "affected_segment_count": _int(group.get("segment_count")),
+        "affected_occurrence_count": _int(group.get("occurrence_count")),
+        "operational_writes": False,
+        "output_changed": False,
+    }
+
+
+def _mojibake_unresolved_signal_signature(
+    signal: dict[str, Any],
+    index: int,
+) -> str:
+    """Stable identity for one shadow occurrence, scoped to its baseline text."""
+    signature_payload = {
+        "index": _int(index),
+        "token": str(signal.get("token") or ""),
+        "reason": str(signal.get("reason") or ""),
+        "context_family": str(signal.get("context_family") or ""),
+    }
+    return hashlib.sha256(
+        json.dumps(signature_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _normalize_mojibake_residual_findings(
+    findings: Any,
+) -> list[dict[str, Any]]:
+    if findings in (None, ""):
+        return []
+    if not isinstance(findings, list):
+        raise ValueError("residual_findings deve ser uma lista.")
+    if len(findings) > 20:
+        raise ValueError("No m\u00e1ximo 20 problemas residuais por segmento.")
+    normalized: list[dict[str, str]] = []
+    for index, raw_finding in enumerate(findings, start=1):
+        if not isinstance(raw_finding, dict):
+            raise ValueError(f"Problema residual #{index} deve ser um objeto.")
+        issue_family = str(raw_finding.get("issue_family") or "").strip().lower()
+        if issue_family not in MOJIBAKE_RESIDUAL_FINDING_FAMILIES:
+            raise ValueError(
+                f"Fam\u00edlia residual inv\u00e1lida no item #{index}: {issue_family or '-'}"
+            )
+        observed_text = str(raw_finding.get("observed_text") or "").strip()
+        controller = str(raw_finding.get("controller") or "").strip()
+        expected_strategy = str(
+            raw_finding.get("expected_strategy") or ""
+        ).strip()
+        expected_expression = str(
+            raw_finding.get("expected_expression") or ""
+        ).strip()
+        disposition = str(
+            raw_finding.get("disposition") or "repair"
+        ).strip().lower()
+        if disposition not in MOJIBAKE_RESIDUAL_FINDING_DISPOSITIONS:
+            raise ValueError(
+                f"Disposi\u00e7\u00e3o residual inv\u00e1lida no item #{index}: {disposition or '-'}"
+            )
+        if not observed_text or not expected_strategy:
+            raise ValueError(
+                f"Problema residual #{index} exige observed_text e expected_strategy."
+            )
+        if issue_family.startswith("dynamic_gender_"):
+            route = "semantic_gender"
+        elif issue_family == "redundant_select_cstring":
+            route = "token_structure"
+        elif issue_family in {"lexical_accent_loss", "valid_punctuation"}:
+            route = "unicode_occurrence"
+        else:
+            route = "semantic_structure"
+        normalized.append(
+            {
+                "issue_family": issue_family,
+                "route": route,
+                "observed_text": observed_text,
+                "controller": controller,
+                "expected_strategy": expected_strategy,
+                "expected_expression": expected_expression,
+                "disposition": disposition,
+            }
+        )
+        if issue_family == "valid_punctuation":
+            signal_index = raw_finding.get("signal_index")
+            if signal_index not in (None, ""):
+                normalized[-1]["signal_index"] = _int(signal_index)
+            signal_signature = str(raw_finding.get("signal_signature") or "").strip()
+            if signal_signature:
+                normalized[-1]["signal_signature"] = signal_signature
+    return normalized
+
+
+def _normalize_mojibake_valid_punctuation_signals(
+    signals: Any,
+    unresolved_signals: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not isinstance(signals, list) or not signals:
+        raise ValueError("Selecione ao menos uma ocorrência de pontuação válida.")
+    if len(signals) > 20:
+        raise ValueError("No máximo 20 ocorrências de pontuação válida por segmento.")
+    normalized: list[dict[str, Any]] = []
+    seen_indexes: set[int] = set()
+    for position, raw_signal in enumerate(signals, start=1):
+        if not isinstance(raw_signal, dict):
+            raise ValueError(f"Ocorrência de pontuação #{position} deve ser um objeto.")
+        signal_index = _int(raw_signal.get("signal_index"))
+        if signal_index < 0 or signal_index >= len(unresolved_signals):
+            raise ValueError(f"Ocorrência de pontuação #{position} não pertence ao shadow atual.")
+        if signal_index in seen_indexes:
+            continue
+        signal = unresolved_signals[signal_index]
+        token = str(signal.get("token") or "")
+        if "?" not in token:
+            raise ValueError("Apenas ocorrências com ponto de interrogação podem ser preservadas aqui.")
+        expected_token = str(raw_signal.get("token") or "")
+        if expected_token and expected_token != token:
+            raise ValueError("A ocorrência de pontuação não corresponde mais ao shadow atual.")
+        seen_indexes.add(signal_index)
+        normalized.append(
+            {
+                "issue_family": "valid_punctuation",
+                "route": "unicode_occurrence",
+                "observed_text": token,
+                "controller": str(signal.get("context_family") or ""),
+                "expected_strategy": "preserve_valid_punctuation",
+                "expected_expression": str(signal.get("reason") or ""),
+                "disposition": "preserve",
+                "signal_index": signal_index,
+                "signal_signature": _mojibake_unresolved_signal_signature(signal, signal_index),
+            }
+        )
+    if not normalized:
+        raise ValueError("Selecione ao menos uma ocorrência de pontuação válida.")
+    return normalized
+
+
+def _mojibake_valid_punctuation_indexes(
+    unresolved_signals: list[dict[str, Any]],
+    findings: list[dict[str, Any]],
+) -> set[int]:
+    indexes: set[int] = set()
+    for finding in findings:
+        if (
+            str(finding.get("issue_family") or "") != "valid_punctuation"
+            or str(finding.get("disposition") or "") != "preserve"
+        ):
+            continue
+        signal_index = _int(finding.get("signal_index"))
+        if signal_index < 0 or signal_index >= len(unresolved_signals):
+            continue
+        signal = unresolved_signals[signal_index]
+        if str(finding.get("signal_signature") or "") != _mojibake_unresolved_signal_signature(
+            signal, signal_index
+        ):
+            continue
+        indexes.add(signal_index)
+    return indexes
+
+
+def _record_mojibake_lexicon_review_decision(
+    con: sqlite3.Connection,
+    *,
+    segment_id: int,
+    decision: str,
+    reason: str,
+    reviewer: str,
+    shadow_run_id: int = 0,
+    residual_findings: Any = None,
+    valid_punctuation_signals: Any = None,
+) -> dict[str, Any]:
+    normalized_decision = str(decision or "").strip().lower()
+    normalized_reason = str(reason or "").strip()
+    normalized_residual_findings = _normalize_mojibake_residual_findings(
+        residual_findings
+    )
+    reviewer_name = str(reviewer or "").strip() or "dashboard_human_review"
+    if normalized_decision not in MOJIBAKE_LEXICON_REVIEW_DECISIONS:
+        raise ValueError(
+            "DecisÃ£o invÃ¡lida: use accept_suggestion, valid_question_mark ou manual_review."
+        )
+    if normalized_residual_findings and normalized_decision not in {
+        "partial_correction",
+        "manual_review",
+    }:
+        raise ValueError(
+            "Problemas residuais estruturados exigem corre\u00e7\u00e3o parcial ou revis\u00e3o manual."
+        )
+    if not _int(segment_id) or not normalized_reason:
+        raise ValueError("segment_id e reason sÃ£o obrigatÃ³rios.")
+    shadow = _one(
+        con,
+        """
+        SELECT id, score_run_id
+        FROM ml_quality_shadow_runs
+        WHERE source_rule_version = ?
+          AND status = 'completed'
+          AND (? = 0 OR id = ?)
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (
+            MOJIBAKE_LEXICON_SHADOW_RULE_VERSION,
+            _int(shadow_run_id),
+            _int(shadow_run_id),
+        ),
+    )
+    if not shadow:
+        raise ValueError("Snapshot de mojibake nÃ£o encontrado.")
+    item = _one(
+        con,
+        """
+        SELECT item.payload_json, output.portuguese_text AS output_text
+        FROM ml_quality_shadow_items item
+        JOIN output_segments output ON output.segment_id = item.segment_id
+        WHERE item.run_id = ? AND item.segment_id = ?
+        LIMIT 1
+        """,
+        (_int(shadow.get("id")), _int(segment_id)),
+    )
+    if not item:
+        raise ValueError(
+            f"O segmento {segment_id} nÃ£o pertence ao snapshot selecionado."
+        )
+    try:
+        payload = json.loads(str(item.get("payload_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("Payload shadow invÃ¡lido.") from exc
+    output_text = str(item.get("output_text") or "")
+    baseline_hash = hashlib.sha256(output_text.encode("utf-8")).hexdigest()
+    if str(payload.get("baseline_hash") or "") != baseline_hash:
+        raise ValueError("O output mudou desde o shadow; gere um novo diagnÃ³stico.")
+    replacements = [
+        replacement
+        for replacement in (payload.get("replacements") or [])
+        if isinstance(replacement, dict)
+    ]
+    candidate_text: str | None = None
+    candidate_hash: str | None = None
+    residual_signals = [
+        str(value)
+        for value in (payload.get("residual_word_signals") or [])
+        if str(value)
+    ]
+    unresolved_signals = [
+        dict(value)
+        for value in (payload.get("unresolved_signals") or [])
+        if isinstance(value, dict)
+    ]
+    valid_punctuation_findings: list[dict[str, Any]] = []
+    if normalized_decision == "valid_question_mark":
+        valid_punctuation_findings = _normalize_mojibake_valid_punctuation_signals(
+            valid_punctuation_signals,
+            unresolved_signals,
+        )
+    elif valid_punctuation_signals not in (None, "", []):
+        raise ValueError("Ocorrências de pontuação válida exigem a decisão valid_question_mark.")
+    if normalized_decision in {"accept_suggestion", "partial_correction"}:
+        has_mapped_residuals = bool(
+            residual_signals
+            or unresolved_signals
+            or normalized_residual_findings
+        )
+        if normalized_decision == "accept_suggestion" and has_mapped_residuals:
+            raise ValueError(
+                "O segmento ainda possui resíduos estruturados; confirme os resíduos antes de encerrar a revisão."
+            )
+        if normalized_decision == "partial_correction" and not has_mapped_residuals:
+            raise ValueError("Não há resíduos estruturados para confirmar.")
+        if replacements:
+            if not bool(payload.get("token_integrity_ok")):
+                raise ValueError("Este segmento nÃ£o possui proposta lexical Ã­ntegra.")
+            candidate_text = _rebuild_mojibake_candidate(output_text, replacements)
+            candidate_complete, _ = _current_mojibake_candidate_validation(
+                payload,
+                candidate_text,
+            )
+            if normalized_decision == "accept_suggestion" and not candidate_complete:
+                raise ValueError(
+                    "A proposta ainda deixa sinais sem resolução; registre-a como correção parcial."
+                )
+            candidate_hash = hashlib.sha256(candidate_text.encode("utf-8")).hexdigest()
+            if candidate_text == output_text:
+                raise ValueError("A proposta nÃ£o altera o texto atual.")
+            if str(payload.get("candidate_hash") or "") != candidate_hash:
+                raise ValueError("A proposta nÃ£o corresponde mais ao snapshot.")
+    elif normalized_decision == "manual_review" and replacements:
+        candidate_text = _rebuild_mojibake_candidate(output_text, replacements)
+        candidate_hash = hashlib.sha256(candidate_text.encode("utf-8")).hexdigest()
+        if str(payload.get("candidate_hash") or "") != candidate_hash:
+            raise ValueError("A proposta nÃ£o corresponde mais ao snapshot.")
+    patterns = [
+        {
+            "original": replacement.get("original"),
+            "replacement": replacement.get("replacement"),
+            "corpus_support": _int(replacement.get("corpus_support")),
+            "selection_reason": replacement.get("selection_reason"),
+            "confidence": replacement.get("confidence"),
+            "alternatives": replacement.get("alternatives") or [],
+        }
+        for replacement in replacements
+    ]
+    existing_decision = _one(
+        con,
+        """
+        SELECT baseline_hash, residual_findings_json
+        FROM mojibake_lexicon_review_decisions
+        WHERE segment_id = ?
+        LIMIT 1
+        """,
+        (_int(segment_id),),
+    ) if _table_exists(con, "mojibake_lexicon_review_decisions") else None
+    existing_valid_punctuation_findings: list[dict[str, Any]] = []
+    if existing_decision and str(existing_decision.get("baseline_hash") or "") == baseline_hash:
+        try:
+            existing_findings = json.loads(
+                str(existing_decision.get("residual_findings_json") or "[]")
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            existing_findings = []
+        existing_valid_punctuation_findings = [
+            finding
+            for finding in existing_findings
+            if isinstance(finding, dict)
+            and str(finding.get("issue_family") or "") == "valid_punctuation"
+            and str(finding.get("disposition") or "") == "preserve"
+        ]
+    merged_residual_findings = [
+        *normalized_residual_findings,
+        *existing_valid_punctuation_findings,
+        *valid_punctuation_findings,
+    ]
+    deduped_residual_findings: list[dict[str, Any]] = []
+    seen_residual_finding_keys: set[tuple[str, str, str]] = set()
+    for finding in merged_residual_findings:
+        finding_key = (
+            str(finding.get("issue_family") or ""),
+            str(finding.get("signal_signature") or ""),
+            str(finding.get("observed_text") or ""),
+        )
+        if finding_key in seen_residual_finding_keys:
+            continue
+        seen_residual_finding_keys.add(finding_key)
+        deduped_residual_findings.append(finding)
+    stored_decision = (
+        "manual_review" if normalized_decision == "partial_correction" else normalized_decision
+    )
+    resolution_scope = {
+        "accept_suggestion": "complete",
+        "partial_correction": "partial",
+        "valid_question_mark": "occurrence",
+        "manual_review": "manual",
+    }[normalized_decision]
+    remaining_signal_count = (
+        len(residual_signals) - len(valid_punctuation_findings)
+        if normalized_decision in {"partial_correction", "manual_review"}
+        else max(0, len(residual_signals) - len(valid_punctuation_findings))
+    )
+    now = _now_iso()
+    con.execute(
+        """
+        INSERT INTO mojibake_lexicon_review_decisions (
+          segment_id, decision, reason, reviewer,
+          source_shadow_run_id, source_score_run_id,
+          baseline_hash, candidate_hash, candidate_text,
+          patterns_json, resolution_scope, remaining_signal_count,
+          residual_findings_json,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(segment_id) DO UPDATE SET
+          decision = excluded.decision,
+          reason = excluded.reason,
+          reviewer = excluded.reviewer,
+          source_shadow_run_id = excluded.source_shadow_run_id,
+          source_score_run_id = excluded.source_score_run_id,
+          baseline_hash = excluded.baseline_hash,
+          candidate_hash = excluded.candidate_hash,
+          candidate_text = excluded.candidate_text,
+          patterns_json = excluded.patterns_json,
+          resolution_scope = excluded.resolution_scope,
+          remaining_signal_count = excluded.remaining_signal_count,
+          residual_findings_json = excluded.residual_findings_json,
+          updated_at = excluded.updated_at
+        """,
+        (
+            _int(segment_id),
+            stored_decision,
+            normalized_reason,
+            reviewer_name,
+            _int(shadow.get("id")),
+            _int(shadow.get("score_run_id")),
+            baseline_hash,
+            candidate_hash,
+            candidate_text,
+            json.dumps(patterns, ensure_ascii=False),
+            resolution_scope,
+            remaining_signal_count,
+            json.dumps(deduped_residual_findings, ensure_ascii=False),
+            now,
+            now,
+        ),
+    )
+    if _table_exists(con, "mojibake_lexicon_replacement_decisions"):
+        con.execute(
+            "DELETE FROM mojibake_lexicon_replacement_decisions WHERE segment_id = ?",
+            (_int(segment_id),),
+        )
+        replacement_outcome = {
+            "accept_suggestion": "accepted_complete",
+            "partial_correction": "accepted_partial",
+            "manual_review": "needs_context",
+        }.get(normalized_decision)
+        if replacement_outcome:
+            for replacement in patterns:
+                original = str(replacement.get("original") or "")
+                updated = str(replacement.get("replacement") or "")
+                if not original or not updated:
+                    continue
+                pattern_key = hashlib.sha256(
+                    f"{original.casefold()}\0{updated.casefold()}".encode("utf-8")
+                ).hexdigest()
+                con.execute(
+                    """
+                    INSERT INTO mojibake_lexicon_replacement_decisions (
+                      segment_id, pattern_key, original_text, replacement_text,
+                      outcome, reason, reviewer, source_shadow_run_id,
+                      source_score_run_id, evidence_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(segment_id, pattern_key) DO UPDATE SET
+                      outcome = excluded.outcome,
+                      reason = excluded.reason,
+                      reviewer = excluded.reviewer,
+                      source_shadow_run_id = excluded.source_shadow_run_id,
+                      source_score_run_id = excluded.source_score_run_id,
+                      evidence_json = excluded.evidence_json,
+                      updated_at = excluded.updated_at
+                    """,
+                    (
+                        _int(segment_id),
+                        pattern_key,
+                        original,
+                        updated,
+                        replacement_outcome,
+                        normalized_reason,
+                        reviewer_name,
+                        _int(shadow.get("id")),
+                        _int(shadow.get("score_run_id")),
+                        json.dumps(replacement, ensure_ascii=False),
+                        now,
+                        now,
+                    ),
+                )
+    con.commit()
+    return {
+        "ok": True,
+        "segment_id": _int(segment_id),
+        "decision": normalized_decision,
+        "resolution_scope": resolution_scope,
+        "remaining_signal_count": remaining_signal_count,
+        "residual_finding_count": len(deduped_residual_findings),
+        "residual_findings": deduped_residual_findings,
+        "reason": normalized_reason,
+        "reviewer": reviewer_name,
+        "shadow_run_id": _int(shadow.get("id")),
+        "score_run_id": _int(shadow.get("score_run_id")),
+        "candidate_recorded": bool(candidate_text),
+        "operational_writes": False,
+        "output_changed": False,
+    }
+
+
+def _dynamic_holdout_quotas(
+    stratum_counts: dict[tuple[str, str], int],
+    target_count: int,
+) -> dict[tuple[str, str], int]:
+    available_total = sum(max(0, _int(count)) for count in stratum_counts.values())
+    target = min(max(0, _int(target_count)), available_total)
+    if not target:
+        return {key: 0 for key in stratum_counts}
+    minimum = 3 if target >= len(stratum_counts) * 3 else 0
+    quotas = {
+        key: min(count, minimum)
+        for key, count in stratum_counts.items()
+    }
+    remaining = target - sum(quotas.values())
+    ordered_keys = sorted(stratum_counts)
+    while remaining > 0:
+        candidates = [
+            key for key in ordered_keys
+            if quotas[key] < stratum_counts[key]
+        ]
+        if not candidates:
+            break
+        key = max(
+            candidates,
+            key=lambda value: (
+                (stratum_counts[value] - quotas[value]) / stratum_counts[value],
+                stratum_counts[value] - quotas[value],
+                value,
+            ),
+        )
+        quotas[key] += 1
+        remaining -= 1
+    return quotas
+
+
+def _dynamic_holdout_select_stratum(
+    rows: list[dict[str, Any]],
+    quota: int,
+) -> list[dict[str, Any]]:
+    """Select deterministically while round-robining families inside a stratum."""
+    by_family: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_family.setdefault(str(row.get("calibration_group") or "sem-grupo"), []).append(row)
+    for family_rows in by_family.values():
+        family_rows.sort(
+            key=lambda item: hashlib.sha256(
+                (
+                    f"{DYNAMIC_SCORE_HOLDOUT_RULE_VERSION}:"
+                    f"{item.get('segment_id')}:{item.get('text_hash')}"
+                ).encode("utf-8")
+            ).hexdigest()
+        )
+    selected: list[dict[str, Any]] = []
+    family_keys = sorted(by_family, key=lambda key: (-len(by_family[key]), key))
+    while len(selected) < max(0, quota):
+        progressed = False
+        for family in family_keys:
+            if by_family[family] and len(selected) < quota:
+                selected.append(by_family[family].pop(0))
+                progressed = True
+        if not progressed:
+            break
+    return selected
+
+
+def _create_dynamic_score_holdout(
+    con: sqlite3.Connection,
+    *,
+    score_run_id: int,
+    segment_state_run_id: int,
+    target_count: int = 120,
+) -> int:
+    existing = _one(
+        con,
+        """
+        SELECT id FROM ml_dynamic_score_holdout_runs
+        WHERE rule_version = ? AND score_run_id = ? AND segment_state_run_id = ?
+        LIMIT 1
+        """,
+        (DYNAMIC_SCORE_HOLDOUT_RULE_VERSION, score_run_id, segment_state_run_id),
+    )
+    if existing:
+        return _int(existing.get("id"))
+    score_run = _one(
+        con,
+        """
+        SELECT score.id, score.model_run_id, model.dataset_run_id
+        FROM ml_score_runs score
+        JOIN ml_model_runs model ON model.id = score.model_run_id
+        WHERE score.id = ? AND score.finished_at IS NOT NULL
+        LIMIT 1
+        """,
+        (score_run_id,),
+    )
+    if not score_run:
+        raise ValueError("Score run concluído não encontrado para a fila dinâmica.")
+    score_contract = _operational_effective_score_contract(con, score_run_id)
+    calibration_run_id = (
+        _int(score_contract.get("candidate_run_id"))
+        if score_contract.get("active")
+        else 0
+    )
+    calibration_join = (
+        "LEFT JOIN ml_score_calibration_candidate_items calibrated "
+        "ON calibrated.run_id = ? AND calibrated.segment_id = score.segment_id"
+        if calibration_run_id
+        else ""
+    )
+    effective_score_select = (
+        "COALESCE(calibrated.candidate_probability, score.model_safe_probability)"
+        if calibration_run_id
+        else "score.model_safe_probability"
+    )
+    records = _all(
+        con,
+        f"""
+        SELECT
+          source.id AS segment_id,
+          source.relative_path,
+          source.source_key,
+          source.english_text,
+          source.spanish_text,
+          source.old_text,
+          output.portuguese_text AS output_text,
+          score.candidate_text,
+          score.model_safe_probability,
+          {effective_score_select} AS effective_score,
+          score.final_action,
+          score.token_status,
+          score.issue_count,
+          score.high_issue_count,
+          confirmation.confirmation_level,
+          confirmation.confirmed_text
+        FROM ml_score_items score
+        JOIN source_segments source
+          ON source.id = score.segment_id AND source.is_active = 1
+        JOIN output_segments output ON output.segment_id = source.id
+        {calibration_join}
+        JOIN segment_state_items state
+          ON state.segment_id = source.id AND state.run_id = ?
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = source.id
+        WHERE score.run_id = ?
+          AND score.model_safe_probability IS NOT NULL
+          AND score.issue_count = 0
+          AND score.high_issue_count = 0
+          AND lower(score.token_status) = 'ok'
+          AND state.is_closed = 1
+          AND state.needs_output_apply = 0
+          AND score.candidate_text = output.portuguese_text
+        """,
+        (
+            *((calibration_run_id,) if calibration_run_id else ()),
+            segment_state_run_id,
+            score_run_id,
+        ),
+    )
+    reviewed_identities = {
+        (_int(row.get("segment_id")), str(row.get("suggested_hash") or ""))
+        for row in _all(
+            con,
+            """
+            SELECT segment_id, suggested_hash
+            FROM local_learning_candidates
+            WHERE human_label <> 'pending' AND suggested_hash IS NOT NULL
+            """,
+        )
+    } if _table_exists(con, "local_learning_candidates") else set()
+    training_segments = {
+        _int(row.get("segment_id"))
+        for row in _all(
+            con,
+            "SELECT DISTINCT segment_id FROM ml_training_examples WHERE run_id = ?",
+            (_int(score_run.get("dataset_run_id")),),
+        )
+    } if _table_exists(con, "ml_training_examples") else set()
+    population_count = 0
+    excluded_reviewed_count = 0
+    excluded_training_count = 0
+    candidates: list[dict[str, Any]] = []
+    for record in records:
+        complexity, text_length, dynamic_token_count = _calibration_complexity(
+            str(record.get("output_text") or "")
+        )
+        lane = _low_score_calibration_lane(record) or f"independent_audit_{complexity}"
+        population_count += 1
+        output_text = str(record.get("output_text") or "")
+        text_hash = hashlib.sha256(output_text.encode("utf-8")).hexdigest()
+        identity = (_int(record.get("segment_id")), text_hash)
+        if identity in reviewed_identities:
+            excluded_reviewed_count += 1
+            continue
+        if _int(record.get("segment_id")) in training_segments:
+            excluded_training_count += 1
+            continue
+        candidates.append(
+            {
+                **record,
+                "text_hash": text_hash,
+                "calibration_lane": lane,
+                "calibration_group": _low_score_calibration_group(record.get("relative_path")),
+                "probability_band": _calibration_probability_band(
+                    _num(record.get("effective_score"))
+                ),
+                "text_length": text_length,
+                "dynamic_token_count": dynamic_token_count,
+            }
+        )
+    by_stratum: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        key = (
+            str(candidate.get("calibration_lane")),
+            str(candidate.get("probability_band")),
+        )
+        by_stratum.setdefault(key, []).append(candidate)
+    quotas = _dynamic_holdout_quotas(
+        {key: len(rows) for key, rows in by_stratum.items()},
+        target_count,
+    )
+    selected_by_stratum = {
+        key: _dynamic_holdout_select_stratum(rows, quotas.get(key, 0))
+        for key, rows in by_stratum.items()
+    }
+    selected: list[tuple[tuple[str, str], dict[str, Any]]] = []
+    while any(selected_by_stratum.values()):
+        for key in sorted(selected_by_stratum):
+            if selected_by_stratum[key]:
+                selected.append((key, selected_by_stratum[key].pop(0)))
+    now = _now_iso()
+    selection_summary = {
+        "population_count": population_count,
+        "unseen_candidate_count": len(candidates),
+        "excluded_reviewed_count": excluded_reviewed_count,
+        "excluded_training_count": excluded_training_count,
+        "objective": "auditoria independente por faixa de score, complexidade e família",
+        "sampling_scope": "apparently_clean_closed_output_across_all_score_bands",
+        "blind_spot_objective": "encontrar segmentos ruins que receberam score efetivo alto",
+        "score_contract": score_contract,
+        "operational_writes": False,
+        "strata": {
+            f"{key[0]}|{key[1]}": {
+                "population": len(by_stratum[key]),
+                "selected": quotas.get(key, 0),
+            }
+            for key in sorted(by_stratum)
+        },
+    }
+    cursor = con.execute(
+        """
+        INSERT INTO ml_dynamic_score_holdout_runs (
+          rule_version, model_run_id, score_run_id, segment_state_run_id,
+          population_count, excluded_reviewed_count, excluded_training_count,
+          target_count, selected_count, status, selection_json,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready_for_review', ?, ?, ?)
+        """,
+        (
+            DYNAMIC_SCORE_HOLDOUT_RULE_VERSION,
+            _int(score_run.get("model_run_id")),
+            score_run_id,
+            segment_state_run_id,
+            population_count,
+            excluded_reviewed_count,
+            excluded_training_count,
+            target_count,
+            len(selected),
+            json.dumps(selection_summary, ensure_ascii=False, sort_keys=True),
+            now,
+            now,
+        ),
+    )
+    run_id = _int(cursor.lastrowid)
+    con.executemany(
+        """
+        INSERT INTO ml_dynamic_score_holdout_items (
+          run_id, display_order, segment_id, text_hash,
+          calibration_lane, calibration_group, probability_band,
+          text_length, dynamic_token_count, stratum_population,
+          stratum_selected, sampling_weight, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                run_id,
+                index,
+                _int(item.get("segment_id")),
+                item.get("text_hash"),
+                item.get("calibration_lane"),
+                item.get("calibration_group"),
+                item.get("probability_band"),
+                _int(item.get("text_length")),
+                _int(item.get("dynamic_token_count")),
+                len(by_stratum[key]),
+                max(1, quotas.get(key, 0)),
+                round(len(by_stratum[key]) / max(1, quotas.get(key, 0)), 8),
+                now,
+            )
+            for index, (key, item) in enumerate(selected, start=1)
+        ],
+    )
+    con.commit()
+    return run_id
+
+
+def _dynamic_score_holdout_payload(
+    con: sqlite3.Connection,
+    *,
+    score_run_id: int,
+    segment_state_run_id: int,
+) -> dict[str, Any]:
+    empty = {
+        "instrumented": False,
+        "run_id": 0,
+        "score_run_id": score_run_id,
+        "segment_state_run_id": segment_state_run_id,
+        "selected_count": 0,
+        "pending_count": 0,
+        "reviewed_count": 0,
+        "items": [],
+    }
+    if not all(
+        _table_exists(con, table)
+        for table in ("ml_dynamic_score_holdout_runs", "ml_dynamic_score_holdout_items")
+    ):
+        return empty
+    run = _one(
+        con,
+        """
+        SELECT * FROM ml_dynamic_score_holdout_runs
+        WHERE rule_version = ? AND score_run_id = ?
+        ORDER BY
+          CASE WHEN segment_state_run_id = ? THEN 0 ELSE 1 END,
+          id DESC
+        LIMIT 1
+        """,
+        (DYNAMIC_SCORE_HOLDOUT_RULE_VERSION, score_run_id, segment_state_run_id),
+    )
+    if not run:
+        return empty
+    score_contract = _operational_effective_score_contract(con, score_run_id)
+    calibration_run_id = (
+        _int(score_contract.get("candidate_run_id"))
+        if score_contract.get("active")
+        else 0
+    )
+    calibration_join = (
+        "LEFT JOIN ml_score_calibration_candidate_items calibrated "
+        "ON calibrated.run_id = ? AND calibrated.segment_id = item.segment_id"
+        if calibration_run_id
+        else ""
+    )
+    effective_score_select = (
+        "COALESCE(calibrated.candidate_probability, score.model_safe_probability)"
+        if calibration_run_id
+        else "score.model_safe_probability"
+    )
+    rows = _all(
+        con,
+        f"""
+        SELECT
+          item.*,
+          source.relative_path,
+          source.source_key,
+          source.english_text,
+          source.spanish_text,
+          source.old_text,
+          output.portuguese_text AS output_text,
+          score.model_safe_probability AS raw_score,
+          {effective_score_select} AS effective_score,
+          '{'operational_calibrated_score' if calibration_run_id else 'raw_model'}' AS effective_score_source,
+          decision.human_label AS reviewer_label,
+          decision.reason AS review_reason,
+          decision.reviewer,
+          decision.reviewed_at
+        FROM ml_dynamic_score_holdout_items item
+        JOIN source_segments source ON source.id = item.segment_id
+        JOIN output_segments output ON output.segment_id = item.segment_id
+        JOIN ml_score_items score
+          ON score.segment_id = item.segment_id AND score.run_id = ?
+        {calibration_join}
+        LEFT JOIN local_learning_candidates decision
+          ON decision.id = (
+            SELECT prior.id FROM local_learning_candidates prior
+            WHERE prior.segment_id = item.segment_id
+              AND prior.origin = '{LOW_SCORE_CALIBRATION_ORIGIN}'
+              AND prior.suggested_hash = item.text_hash
+            ORDER BY prior.id DESC LIMIT 1
+          )
+        WHERE item.run_id = ?
+        ORDER BY item.display_order
+        """,
+        (
+            score_run_id,
+            *((calibration_run_id,) if calibration_run_id else ()),
+            _int(run.get("id")),
+        ),
+    )
+    reviewed_count = 0
+    lane_counts: dict[str, int] = {}
+    band_counts: dict[str, int] = {}
+    for row in rows:
+        label = str(row.get("reviewer_label") or "pending")
+        row["reviewer_label"] = label
+        row["review_status"] = "decided" if label in LOW_SCORE_CALIBRATION_LABELS else "pending"
+        reviewed_count += row["review_status"] == "decided"
+        lane = str(row.get("calibration_lane") or "nao_classificado")
+        band = str(row.get("probability_band") or "nao_classificado")
+        lane_counts[lane] = lane_counts.get(lane, 0) + 1
+        band_counts[band] = band_counts.get(band, 0) + 1
+    try:
+        selection = json.loads(str(run.get("selection_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        selection = {}
+    return {
+        **empty,
+        **run,
+        "run_id": _int(run.get("id")),
+        "requested_segment_state_run_id": _int(segment_state_run_id),
+        "segment_state_reused": _int(run.get("segment_state_run_id")) != _int(segment_state_run_id),
+        "instrumented": True,
+        "pending_count": len(rows) - reviewed_count,
+        "reviewed_count": reviewed_count,
+        "lane_counts": lane_counts,
+        "band_counts": band_counts,
+        "selection": selection,
+        "effective_score_contract": score_contract,
+        "items": rows,
+        "operational_writes": False,
+    }
+
+
+def _manual_low_score_calibration_payload(
+    con: sqlite3.Connection,
+    *,
+    score_run_id: int,
+    segment_state_run_id: int,
+    per_lane_limit: int = 80,
+) -> dict[str, Any]:
+    es_helper_repair = _manual_es_helper_repair_payload(
+        con,
+        score_run_id=score_run_id,
+        segment_state_run_id=segment_state_run_id,
+    )
+    glossary_display_case = _glossary_display_case_calibration_payload(
+        con,
+        score_run_id=score_run_id,
+    )
+    mojibake_lexicon_review = _mojibake_lexicon_review_payload(
+        con,
+        score_run_id=score_run_id,
+    )
+    dynamic_holdout_seeded = False
+    dynamic_holdout_error = ""
+    dynamic_holdout_tables = {
+        "ml_dynamic_score_holdout_runs",
+        "ml_dynamic_score_holdout_items",
+    }
+    if (
+        score_run_id
+        and segment_state_run_id
+        and all(_table_exists(con, table) for table in dynamic_holdout_tables)
+    ):
+        existing_dynamic_holdout = _one(
+            con,
+            """
+            SELECT id
+            FROM ml_dynamic_score_holdout_runs
+            WHERE rule_version = ? AND score_run_id = ? AND segment_state_run_id = ?
+            LIMIT 1
+            """,
+            (DYNAMIC_SCORE_HOLDOUT_RULE_VERSION, score_run_id, segment_state_run_id),
+        )
+        if not existing_dynamic_holdout:
+            try:
+                _create_dynamic_score_holdout(
+                    con,
+                    score_run_id=score_run_id,
+                    segment_state_run_id=segment_state_run_id,
+                )
+                dynamic_holdout_seeded = True
+            except sqlite3.Error as exc:
+                # O dashboard continua disponível mesmo se a amostra de
+                # auditoria não puder ser materializada; o erro fica visível
+                # no payload em vez de afetar output/apply.
+                dynamic_holdout_error = str(exc)
+    dynamic_holdout = _dynamic_score_holdout_payload(
+        con,
+        score_run_id=score_run_id,
+        segment_state_run_id=segment_state_run_id,
+    )
+    dynamic_holdout["auto_seeded"] = dynamic_holdout_seeded
+    if dynamic_holdout_error:
+        dynamic_holdout["provision_error"] = dynamic_holdout_error
+    empty = {
+        "instrumented": False,
+        "score_run_id": _int(score_run_id),
+        "segment_state_run_id": _int(segment_state_run_id),
+        "threshold": 0.5,
+        "eligible_count": 0,
+        "sample_count": 0,
+        "pending_count": 0,
+        "reviewed_count": 0,
+        "eligible_lane_counts": {},
+        "lane_counts": {},
+        "lane_sample_counts": {},
+        "lane_pending_counts": {},
+        "group_counts": {},
+        "group_pending_counts": {},
+        "training_pattern_counts": {},
+        "training_pattern_pending_counts": {},
+        "training_pattern_labels": LOW_SCORE_TRAINING_PATTERN_LABELS,
+        "segmented_shadow": _manual_low_score_segmented_shadow_payload(
+            con,
+            score_run_id=score_run_id,
+        ),
+        "segmented_shadows": _manual_low_score_segmented_shadows_payload(
+            con,
+            score_run_id=score_run_id,
+        ),
+        "es_helper_repair": es_helper_repair,
+        "glossary_display_case": glossary_display_case,
+        "mojibake_lexicon_review": mojibake_lexicon_review,
+        "dynamic_holdout": dynamic_holdout,
+        "items": [],
+    }
+    required = {
+        "ml_score_items",
+        "source_segments",
+        "output_segments",
+        "segment_state_items",
+    }
+    if (
+        not score_run_id
+        or not segment_state_run_id
+        or not all(_table_exists(con, table) for table in required)
+    ):
+        return empty
+
+    has_confirmations = _table_exists(con, "segment_confirmations")
+    confirmation_join = (
+        "LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = source.id"
+        if has_confirmations
+        else ""
+    )
+    confirmation_columns = (
+        "confirmation.confirmation_level, confirmation.confirmed_text"
+        if has_confirmations
+        else "NULL AS confirmation_level, NULL AS confirmed_text"
+    )
+    human_condition = (
+        """
+        lower(coalesce(confirmation_level, '')) IN ('human', 'human_confirmed')
+        AND confirmed_text = output_text
+        """
+        if has_confirmations
+        else "0"
+    )
+    has_decisions = _table_exists(con, "local_learning_candidates")
+    decision_join = (
+        f"""
+        LEFT JOIN local_learning_candidates decision
+          ON decision.id = (
+            SELECT previous.id
+            FROM local_learning_candidates previous
+            WHERE previous.segment_id = ranked.segment_id
+              AND previous.origin = '{LOW_SCORE_CALIBRATION_ORIGIN}'
+              AND previous.suggested_text = ranked.output_text
+            ORDER BY previous.id DESC
+            LIMIT 1
+          )
+        """
+        if has_decisions
+        else ""
+    )
+    decision_columns = (
+        """
+        decision.id AS decision_id,
+        decision.human_label AS reviewer_label,
+        decision.reason AS review_reason,
+        decision.reviewer,
+        decision.reviewed_at
+        """
+        if has_decisions
+        else """
+        NULL AS decision_id,
+        NULL AS reviewer_label,
+        NULL AS review_reason,
+        NULL AS reviewer,
+        NULL AS reviewed_at
+        """
+    )
+    records = _all(
+        con,
+        f"""
+        WITH eligible AS (
+          SELECT
+            source.id AS segment_id,
+            source.relative_path,
+            source.source_key,
+            source.source_line_number,
+            source.english_text,
+            source.spanish_text,
+            source.old_text,
+            output.portuguese_text AS output_text,
+            score.candidate_text,
+            score.model_safe_probability,
+            score.model_confidence,
+            score.final_action,
+            score.risk_class,
+            score.token_status,
+            score.issue_count,
+            score.high_issue_count,
+            {confirmation_columns}
+          FROM ml_score_items score
+          JOIN source_segments source
+            ON source.id = score.segment_id AND source.is_active = 1
+          JOIN output_segments output
+            ON output.segment_id = source.id
+          JOIN segment_state_items state
+            ON state.segment_id = source.id AND state.run_id = ?
+          {confirmation_join}
+          WHERE score.run_id = ?
+            AND score.model_safe_probability IS NOT NULL
+            AND score.model_safe_probability < 0.5
+            AND score.issue_count = 0
+            AND score.high_issue_count = 0
+            AND lower(score.token_status) = 'ok'
+            AND state.is_closed = 1
+            AND state.needs_output_apply = 0
+            AND score.candidate_text = output.portuguese_text
+        ),
+        classified AS (
+          SELECT
+            eligible.*,
+            CASE
+              WHEN {human_condition}
+                THEN 'human_confirmed_low_score'
+              WHEN lower(coalesce(final_action, '')) = 'auto_safe'
+                THEN 'deterministic_safe_low_score'
+              WHEN candidate_text = old_text
+                OR candidate_text = spanish_text
+                OR candidate_text = english_text
+                THEN 'preserved_text_low_score'
+              ELSE NULL
+            END AS calibration_lane
+          FROM eligible
+        ),
+        ranked AS (
+          SELECT
+            classified.*,
+            COUNT(*) OVER (PARTITION BY calibration_lane) AS lane_total,
+            ROW_NUMBER() OVER (
+              PARTITION BY calibration_lane
+              ORDER BY model_safe_probability ASC, segment_id ASC
+            ) AS lane_rank
+          FROM classified
+          WHERE calibration_lane IS NOT NULL
+        )
+        SELECT
+          ranked.*,
+          {decision_columns}
+        FROM ranked
+        {decision_join}
+        WHERE ranked.lane_rank <= ?
+        ORDER BY ranked.model_safe_probability ASC, ranked.segment_id ASC
+        """,
+        (segment_state_run_id, score_run_id, max(1, _int(per_lane_limit))),
+    )
+    lane_counts: dict[str, int] = {}
+    lane_sample_counts: dict[str, int] = {}
+    lane_pending_counts: dict[str, int] = {}
+    group_counts: dict[str, int] = {}
+    group_pending_counts: dict[str, int] = {}
+    training_pattern_counts: dict[str, int] = {}
+    training_pattern_pending_counts: dict[str, int] = {}
+    items: list[dict[str, Any]] = []
+    for record in records:
+        lane = str(record.get("calibration_lane") or "")
+        lane_counts[lane] = max(lane_counts.get(lane, 0), _int(record.get("lane_total")))
+        lane_sample_counts[lane] = lane_sample_counts.get(lane, 0) + 1
+        group = _low_score_calibration_group(record.get("relative_path"))
+        group_counts[group] = group_counts.get(group, 0) + 1
+        label = str(record.get("reviewer_label") or "pending")
+        is_pending = label not in LOW_SCORE_CALIBRATION_LABELS
+        if is_pending:
+            lane_pending_counts[lane] = lane_pending_counts.get(lane, 0) + 1
+            group_pending_counts[group] = group_pending_counts.get(group, 0) + 1
+        training_patterns = _manual_low_score_training_patterns(record)
+        for pattern in training_patterns:
+            training_pattern_counts[pattern] = (
+                training_pattern_counts.get(pattern, 0) + 1
+            )
+            if is_pending:
+                training_pattern_pending_counts[pattern] = (
+                    training_pattern_pending_counts.get(pattern, 0) + 1
+                )
+        record.update(
+            {
+                "calibration_group": group,
+                "review_status": "decided" if label in LOW_SCORE_CALIBRATION_LABELS else "pending",
+                "reviewer_label": label,
+                "training_patterns": training_patterns,
+            }
+        )
+        items.append(record)
+    reviewed_count = sum(1 for record in items if record.get("review_status") == "decided")
+    return {
+        **empty,
+        "instrumented": True,
+        "eligible_count": sum(lane_counts.values()),
+        "sample_count": len(items),
+        "pending_count": len(items) - reviewed_count,
+        "reviewed_count": reviewed_count,
+        "eligible_lane_counts": lane_counts,
+        "lane_counts": lane_counts,
+        "lane_sample_counts": lane_sample_counts,
+        "lane_pending_counts": lane_pending_counts,
+        "group_counts": dict(
+            sorted(group_counts.items(), key=lambda item: (-item[1], item[0]))
+        ),
+        "group_pending_counts": dict(
+            sorted(
+                group_pending_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ),
+        "training_pattern_counts": dict(
+            sorted(
+                training_pattern_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ),
+        "training_pattern_pending_counts": dict(
+            sorted(
+                training_pattern_pending_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ),
+        "training_pattern_labels": LOW_SCORE_TRAINING_PATTERN_LABELS,
+        "dynamic_holdout": dynamic_holdout,
+        "items": items,
+    }
+
+
+def _manual_low_score_calibration_record(
+    con: sqlite3.Connection,
+    *,
+    segment_id: int,
+    score_run_id: int,
+    segment_state_run_id: int,
+) -> dict[str, Any]:
+    record = _one(
+        con,
+        """
+        SELECT
+          source.id AS segment_id,
+          source.relative_path,
+          source.source_key,
+          source.source_line_number,
+          source.english_text,
+          source.spanish_text,
+          source.old_text,
+          output.portuguese_text AS output_text,
+          score.candidate_text,
+          score.model_safe_probability,
+          score.model_confidence,
+          score.final_action,
+          score.risk_class,
+          score.token_status,
+          score.issue_count,
+          score.high_issue_count,
+          confirmation.confirmation_level,
+          confirmation.confirmed_text
+        FROM source_segments source
+        JOIN output_segments output
+          ON output.segment_id = source.id
+        JOIN ml_score_items score
+          ON score.segment_id = source.id AND score.run_id = ?
+        JOIN segment_state_items state
+          ON state.segment_id = source.id AND state.run_id = ?
+        LEFT JOIN segment_confirmations confirmation
+          ON confirmation.segment_id = source.id
+        WHERE source.id = ?
+          AND source.is_active = 1
+          AND score.model_safe_probability IS NOT NULL
+          AND score.issue_count = 0
+          AND score.high_issue_count = 0
+          AND lower(score.token_status) = 'ok'
+          AND state.is_closed = 1
+          AND state.needs_output_apply = 0
+          AND score.candidate_text = output.portuguese_text
+        LIMIT 1
+        """,
+        (score_run_id, segment_state_run_id, segment_id),
+    )
+    if not record:
+        raise ValueError(
+            "Segmento não pertence mais à amostra limpa de auditoria de score."
+        )
+    complexity, _, _ = _calibration_complexity(str(record.get("output_text") or ""))
+    lane = _low_score_calibration_lane(record) or f"independent_audit_{complexity}"
+    record["calibration_lane"] = lane
+    record["calibration_group"] = _low_score_calibration_group(record.get("relative_path"))
+    return record
+
+
+def _record_manual_low_score_calibration_decision(
+    con: sqlite3.Connection,
+    *,
+    segment_id: int,
+    review_label: str,
+    review_reason: str,
+    reviewer: str,
+    score_run_id: int,
+    segment_state_run_id: int,
+) -> dict[str, Any]:
+    label = str(review_label or "").strip().lower()
+    reason = str(review_reason or "").strip()
+    reviewer_name = str(reviewer or "").strip() or "dashboard_human_review"
+    if label not in LOW_SCORE_CALIBRATION_LABELS:
+        raise ValueError(f"Decisão inválida para calibração de baixo score: {label or '(vazia)'}.")
+    if not reason:
+        raise ValueError("O motivo da decisão é obrigatório.")
+    record = _manual_low_score_calibration_record(
+        con,
+        segment_id=segment_id,
+        score_run_id=score_run_id,
+        segment_state_run_id=segment_state_run_id,
+    )
+    output_text = str(record.get("output_text") or "")
+    suggested_hash = hashlib.sha256(output_text.encode("utf-8")).hexdigest()
+    effective_score = _num(record.get("model_safe_probability"))
+    effective_score_source = "raw_model"
+    effective_score_candidate_run_id = 0
+    score_contract = _operational_effective_score_contract(con, score_run_id)
+    if score_contract.get("active"):
+        effective_score_candidate_run_id = _int(score_contract.get("candidate_run_id"))
+        calibrated = _one(
+            con,
+            """
+            SELECT candidate_probability
+            FROM ml_score_calibration_candidate_items
+            WHERE run_id = ? AND segment_id = ? AND text_hash = ?
+            LIMIT 1
+            """,
+            (effective_score_candidate_run_id, segment_id, suggested_hash),
+        )
+        if calibrated.get("candidate_probability") is not None:
+            effective_score = _num(calibrated.get("candidate_probability"))
+            effective_score_source = "operational_calibrated_score"
+    now = _now_iso()
+    lane = str(record["calibration_lane"])
+    group = str(record["calibration_group"])
+    reasons_json = json.dumps(
+        {
+            "origin": LOW_SCORE_CALIBRATION_ORIGIN,
+            "score_run_id": score_run_id,
+            "segment_state_run_id": segment_state_run_id,
+            "model_safe_probability": record.get("model_safe_probability"),
+            "effective_score": round(effective_score, 8),
+            "effective_score_source": effective_score_source,
+            "calibration_candidate_run_id": effective_score_candidate_run_id or None,
+            "lane": lane,
+            "group": group,
+            "operational_writes": False,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    existing = _one(
+        con,
+        """
+        SELECT id, run_id
+        FROM local_learning_candidates
+        WHERE segment_id = ?
+          AND origin = ?
+          AND suggested_hash = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (segment_id, LOW_SCORE_CALIBRATION_ORIGIN, suggested_hash),
+    )
+    try:
+        if existing:
+            candidate_id = _int(existing.get("id"))
+            con.execute(
+                """
+                UPDATE local_learning_candidates
+                SET human_label = ?,
+                    reason = ?,
+                    reviewer = ?,
+                    reviewed_at = ?,
+                    local_status = 'reviewed',
+                    suggestion_status = 'human_reviewed',
+                    reasons_json = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (label, reason, reviewer_name, now, reasons_json, now, candidate_id),
+            )
+            run_id = _int(existing.get("run_id"))
+            created = False
+        else:
+            cursor = con.execute(
+                """
+                INSERT INTO local_learning_runs (
+                  mode, limit_count, auto_confidence_threshold,
+                  candidate_count, high_confidence_count, pending_human_count,
+                  status, notes, started_at, finished_at, updated_at
+                ) VALUES (?, 1, 0.5, 1, 0, 0, 'completed', ?, ?, ?, ?)
+                """,
+                (
+                    "manual_low_score_calibration",
+                    reasons_json,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+            run_id = _int(cursor.lastrowid)
+            cursor = con.execute(
+                """
+                INSERT INTO local_learning_candidates (
+                  run_id, segment_id, relative_path, source_key, source_line_number,
+                  english_text, spanish_text, old_text, current_output_text,
+                  suggested_text, suggested_hash, queue_source, focus_group,
+                  source_language, origin, match_type, match_score, token_status,
+                  suggestion_status, local_confidence_score, local_status,
+                  human_label, corrected_text, reason, reviewer, reviewed_at,
+                  reasons_json, created_at, updated_at
+                ) VALUES (
+                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pt-BR', ?, ?, ?, ?,
+                  'human_reviewed', ?, 'reviewed', ?, NULL, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    run_id,
+                    segment_id,
+                    record.get("relative_path"),
+                    record.get("source_key"),
+                    record.get("source_line_number"),
+                    record.get("english_text"),
+                    record.get("spanish_text"),
+                    record.get("old_text"),
+                    output_text,
+                    output_text,
+                    suggested_hash,
+                    LOW_SCORE_CALIBRATION_QUEUE_SOURCE,
+                    f"{lane}:{group}",
+                    LOW_SCORE_CALIBRATION_ORIGIN,
+                    "manual_low_score_quality_review",
+                    record.get("model_safe_probability"),
+                    record.get("token_status"),
+                    effective_score,
+                    label,
+                    reason,
+                    reviewer_name,
+                    now,
+                    reasons_json,
+                    now,
+                    now,
+                ),
+            )
+            candidate_id = _int(cursor.lastrowid)
+            created = True
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    return {
+        "ok": True,
+        "candidate_id": candidate_id,
+        "run_id": run_id,
+        "segment_id": segment_id,
+        "review_label": label,
+        "review_reason": reason,
+        "reviewer": reviewer_name,
+        "calibration_lane": lane,
+        "calibration_group": group,
+        "score_run_id": score_run_id,
+        "segment_state_run_id": segment_state_run_id,
+        "created": created,
+        "learning_destinations": (
+            ["calibration_positive", "score_confidence_evidence"]
+            if label in SUPERVISED_CALIBRATION_POSITIVE_LABELS
+            else [
+                "calibration_negative",
+                "discovery_blind_spot",
+                "correction_planning",
+            ]
+        ),
+        "operational_writes": False,
+    }
+
+
+def _low_score_cohorts_for_threshold(
+    con: sqlite3.Connection,
+    *,
+    score_run_id: int,
+    segment_state_run_id: int,
+    threshold: float,
+    calibration_candidate_run_id: int = 0,
+) -> dict[str, int | float]:
+    payload = _empty_low_score_cohorts()
+    if not score_run_id:
+        return payload
+    calibration_join = (
+        "LEFT JOIN ml_score_calibration_candidate_items calibrated "
+        "ON calibrated.run_id = ? AND calibrated.segment_id = score.segment_id"
+        if calibration_candidate_run_id
+        and _table_exists(con, "ml_score_calibration_candidate_items")
+        else ""
+    )
+    effective_score = (
+        "COALESCE(calibrated.candidate_probability, score.model_safe_probability)"
+        if calibration_join
+        else "score.model_safe_probability"
+    )
+    calibration_params: tuple[Any, ...] = (
+        (calibration_candidate_run_id,) if calibration_join else ()
+    )
+    counts = _one(
+        con,
+        f"""
+        SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN cohort = 'explicit_text_issue' THEN 1 ELSE 0 END) AS explicit_text_issue,
+          SUM(CASE WHEN cohort = 'structural_block_without_issue' THEN 1 ELSE 0 END) AS structural_block_without_issue,
+          SUM(CASE WHEN cohort = 'deterministic_safe_but_low_score' THEN 1 ELSE 0 END) AS deterministic_safe_but_low_score,
+          SUM(CASE WHEN cohort = 'unchanged_or_preserved_text' THEN 1 ELSE 0 END) AS unchanged_or_preserved_text,
+          SUM(CASE WHEN cohort = 'low_confidence_without_specific_evidence' THEN 1 ELSE 0 END) AS low_confidence_without_specific_evidence
+        FROM (
+          SELECT
+            CASE
+              WHEN score.issue_count > 0 THEN 'explicit_text_issue'
+              WHEN score.token_status = 'mismatch' OR score.final_action = 'blocked_structure'
+                THEN 'structural_block_without_issue'
+              WHEN score.final_action = 'auto_safe'
+                THEN 'deterministic_safe_but_low_score'
+              WHEN score.candidate_text = source.old_text
+                OR score.candidate_text = source.spanish_text
+                OR score.candidate_text = source.english_text
+                THEN 'unchanged_or_preserved_text'
+              ELSE 'low_confidence_without_specific_evidence'
+            END AS cohort
+          FROM ml_score_items score
+          JOIN source_segments source
+            ON source.id = score.segment_id AND source.is_active = 1
+          {calibration_join}
+          WHERE score.run_id = ?
+            AND {effective_score} IS NOT NULL
+            AND {effective_score} < ?
+        )
+        """,
+        (*calibration_params, score_run_id, threshold),
+    )
+    payload.update(
+        {
+            key: _int(counts.get(key))
+            for key in (
+                "total",
+                "explicit_text_issue",
+                "structural_block_without_issue",
+                "deterministic_safe_but_low_score",
+                "unchanged_or_preserved_text",
+                "low_confidence_without_specific_evidence",
+            )
+        }
+    )
+    payload["evidence_flagged"] = (
+        _int(payload.get("explicit_text_issue"))
+        + _int(payload.get("structural_block_without_issue"))
+    )
+    payload["actionable"] = _int(payload.get("evidence_flagged"))
+    if segment_state_run_id:
+        lifecycle = _one(
+            con,
+            f"""
+            SELECT
+              COUNT(*) AS evidence_flagged,
+              SUM(CASE WHEN state.state_group = 'closed'
+                            AND COALESCE(state.needs_output_apply, 0) = 0
+                       THEN 1 ELSE 0 END) AS lifecycle_closed,
+              SUM(CASE WHEN COALESCE(state.state_group, '') <> 'closed'
+                            OR COALESCE(state.needs_output_apply, 0) = 1
+                       THEN 1 ELSE 0 END) AS operationally_open,
+              SUM(COALESCE(state.locked, 0)) AS lifecycle_locked,
+              SUM(COALESCE(state.confirmed_matches_output, 0)) AS confirmed_matches_output
+            FROM ml_score_items score
+            JOIN source_segments source
+              ON source.id = score.segment_id AND source.is_active = 1
+            {calibration_join}
+            LEFT JOIN segment_state_items state
+              ON state.segment_id = score.segment_id AND state.run_id = ?
+            WHERE score.run_id = ?
+              AND {effective_score} IS NOT NULL
+              AND {effective_score} < ?
+              AND (
+                score.issue_count > 0
+                OR score.token_status = 'mismatch'
+                OR score.final_action = 'blocked_structure'
+              )
+            """,
+            (*calibration_params, segment_state_run_id, score_run_id, threshold),
+        )
+        payload.update(
+            {
+                key: _int(lifecycle.get(key))
+                for key in (
+                    "evidence_flagged",
+                    "lifecycle_closed",
+                    "operationally_open",
+                    "lifecycle_locked",
+                    "confirmed_matches_output",
+                )
+            }
+        )
+        payload["actionable"] = _int(payload.get("operationally_open"))
+    payload["informational"] = (
+        _int(payload.get("deterministic_safe_but_low_score"))
+        + _int(payload.get("unchanged_or_preserved_text"))
+    )
+    payload["actionable_share_pct"] = (
+        round(
+            100.0 * _int(payload.get("actionable")) / _int(payload.get("total")),
+            2,
+        )
+        if _int(payload.get("total"))
+        else 0.0
+    )
+    return payload
+
+
+def _mojibake_lexicon_segment_detail(
+    con: sqlite3.Connection,
+    *,
+    segment_id: int,
+    shadow_run_id: int,
+) -> dict[str, Any]:
+    """Return the unabridged text quartet used by the focused reviewer."""
+    if not segment_id or not shadow_run_id:
+        raise ValueError("segment_id and shadow_run_id are required.")
+    source_columns = _table_columns(con, "source_segments")
+    old_text_expression = (
+        "source.old_text" if "old_text" in source_columns else "source.spanish_text"
+    )
+    line_expression = (
+        "source.source_line_number"
+        if "source_line_number" in source_columns
+        else "NULL"
+    )
+    row = _one(
+        con,
+        f"""
+        SELECT item.segment_id, item.payload_json,
+               source.relative_path, source.source_key,
+               {line_expression} AS source_line_number,
+               source.english_text, source.spanish_text,
+               {old_text_expression} AS old_text,
+               output.portuguese_text AS output_text
+        FROM ml_quality_shadow_items item
+        JOIN ml_quality_shadow_runs shadow ON shadow.id = item.run_id
+        JOIN source_segments source ON source.id = item.segment_id
+        JOIN output_segments output ON output.segment_id = item.segment_id
+        WHERE item.run_id = ?
+          AND item.segment_id = ?
+          AND shadow.source_rule_version LIKE 'quality_mojibake_lexicon_shadow_v%'
+          AND shadow.status = 'completed'
+        LIMIT 1
+        """,
+        (shadow_run_id, segment_id),
+    )
+    if not row:
+        raise ValueError(
+            f"Segment #{segment_id} was not found in Unicode shadow #{shadow_run_id}."
+        )
+    try:
+        payload = json.loads(str(row.get("payload_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid Unicode shadow payload for this segment.") from exc
+    output_text = str(row.get("output_text") or "")
+    replacements = [
+        replacement
+        for replacement in (payload.get("replacements") or [])
+        if isinstance(replacement, dict)
+    ]
+    candidate_text = output_text
+    rebuild_failed = False
+    if replacements:
+        try:
+            candidate_text = _rebuild_mojibake_candidate(output_text, replacements)
+        except ValueError:
+            candidate_text = ""
+            rebuild_failed = True
+    baseline_hash = hashlib.sha256(output_text.encode("utf-8")).hexdigest()
+    snapshot_hash = str(payload.get("baseline_hash") or "")
+    stale = bool(rebuild_failed or (snapshot_hash and snapshot_hash != baseline_hash))
+    return {
+        "segment_id": _int(row.get("segment_id")),
+        "shadow_run_id": shadow_run_id,
+        "relative_path": row.get("relative_path"),
+        "source_key": row.get("source_key"),
+        "source_line_number": row.get("source_line_number"),
+        "english_text": row.get("english_text"),
+        "spanish_text": row.get("spanish_text"),
+        "old_text": row.get("old_text"),
+        "output_text": output_text,
+        "candidate_text": candidate_text,
+        "candidate_available": bool(candidate_text != output_text),
+        "stale": stale,
+    }
 
 
 def _score_semantics_payload(
@@ -4648,6 +9040,79 @@ def _latest_materialized_pairwise_gain_payload(con: sqlite3.Connection) -> dict[
     }
 
 
+def _operational_effective_score_contract(
+    con: sqlite3.Connection,
+    score_run_id: int,
+) -> dict[str, Any]:
+    contract = {
+        "active": False,
+        "registry_key": SCORE_RECALIBRATION_REGISTRY_KEY,
+        "candidate_run_id": 0,
+        "score_run_id": _int(score_run_id),
+        "source": "raw_model",
+        "fallback": "raw_model",
+        "reason": "no_active_calibration",
+    }
+    required = (
+        "ml_score_calibration_registry",
+        "ml_score_calibration_candidate_runs",
+        "ml_score_calibration_candidate_items",
+    )
+    if not score_run_id or not all(_table_exists(con, table) for table in required):
+        return contract
+    active = _one(
+        con,
+        """
+        SELECT registry.active_candidate_run_id,
+               registry.updated_at AS registry_updated_at,
+               registry.updated_by,
+               candidate.score_run_id,
+               candidate.status,
+               candidate.item_count,
+               candidate.review_watermark,
+               candidate.candidate_tree_hash
+        FROM ml_score_calibration_registry registry
+        LEFT JOIN ml_score_calibration_candidate_runs candidate
+          ON candidate.id = registry.active_candidate_run_id
+        WHERE registry.registry_key = ?
+        LIMIT 1
+        """,
+        (SCORE_RECALIBRATION_REGISTRY_KEY,),
+    )
+    candidate_run_id = _int(active.get("active_candidate_run_id"))
+    contract.update(
+        {
+            "candidate_run_id": candidate_run_id,
+            "candidate_score_run_id": _int(active.get("score_run_id")),
+            "status": active.get("status"),
+            "item_count": _int(active.get("item_count")),
+            "review_watermark": active.get("review_watermark"),
+            "candidate_tree_hash": active.get("candidate_tree_hash"),
+            "registry_updated_at": active.get("registry_updated_at"),
+            "registry_updated_by": active.get("updated_by"),
+        }
+    )
+    if not candidate_run_id:
+        return contract
+    if str(active.get("status") or "") != "promoted":
+        contract["reason"] = "active_candidate_not_promoted"
+        return contract
+    if _int(active.get("score_run_id")) != _int(score_run_id):
+        contract["reason"] = "score_context_changed"
+        return contract
+    if _int(active.get("item_count")) <= 0:
+        contract["reason"] = "calibrated_corpus_empty"
+        return contract
+    contract.update(
+        {
+            "active": True,
+            "source": "operational_calibrated_score",
+            "reason": "active_versioned_calibration",
+        }
+    )
+    return contract
+
+
 def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: int | None) -> dict[str, Any]:
     empty = {
         "instrumented": False,
@@ -4677,6 +9142,13 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
             "low_score_deterministic_safe": 0,
             "low_score_preserved": 0,
             "low_score_unexplained": 0,
+            "critical_low_score": 0,
+            "critical_low_score_evidence_flagged": 0,
+            "critical_low_score_lifecycle_closed": 0,
+            "critical_low_score_lifecycle_locked": 0,
+            "critical_low_score_explicit_issue": 0,
+            "critical_low_score_structural_block": 0,
+            "critical_low_score_informational": 0,
             "score_regressions": 0,
             "unhandled_by_network": 0,
             "calibrated_score_exceptions": 0,
@@ -4695,9 +9167,107 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
         "output_apply_segments": [],
         "low_score_segments": [],
         "low_score_cohorts": _empty_low_score_cohorts(),
+        "critical_low_score_segments": [],
+        "critical_low_score_cohorts": _empty_low_score_cohorts(),
         "score_regression_segments": [],
         "calibration_review_segments": [],
         "calibration_review": _pairwise_calibration_review_payload(con),
+        "manual_low_score_calibration": {
+            "instrumented": False,
+            "score_run_id": 0,
+            "segment_state_run_id": 0,
+            "threshold": 0.5,
+            "eligible_count": 0,
+            "sample_count": 0,
+            "pending_count": 0,
+            "reviewed_count": 0,
+            "eligible_lane_counts": {},
+            "lane_counts": {},
+            "lane_sample_counts": {},
+            "lane_pending_counts": {},
+            "group_counts": {},
+            "group_pending_counts": {},
+            "training_pattern_counts": {},
+            "training_pattern_pending_counts": {},
+            "training_pattern_labels": LOW_SCORE_TRAINING_PATTERN_LABELS,
+            "segmented_shadow": {
+                "available": False,
+                "status": "not_evaluated",
+                "operational_writes": False,
+            },
+            "segmented_shadows": [],
+            "es_helper_repair": {
+                "instrumented": False,
+                "pattern": "contract_es_article_preposition_helper",
+                "total_count": 0,
+                "sample_count": 0,
+                "high_risk_count": 0,
+                "medium_risk_count": 0,
+                "helper_counts": {},
+                "route_counts": {},
+                "issue_code_counts": {},
+                "issue_labels": ES_HELPER_REPAIR_ISSUE_LABELS,
+                "route_labels": ES_HELPER_REPAIR_ROUTE_LABELS,
+                "repair_dry_run": {
+                    "available": False,
+                    "run_id": 0,
+                    "score_run_id": 0,
+                    "status": "not_evaluated",
+                    "record_count": 0,
+                    "proposal_ready_count": 0,
+                    "blocked_count": 0,
+                    "repair_count": 0,
+                    "post_validation_clean_count": 0,
+                    "token_integrity_ok_count": 0,
+                    "ready_for_apply_count": 0,
+                    "apply_count": 0,
+                    "candidate_generation_only": True,
+                    "operational_writes": False,
+                    "blocker_counts": {},
+                    "blocker_labels": ES_HELPER_LITERAL_DRY_RUN_BLOCKER_LABELS,
+                    "items": [],
+                },
+                "literal_dry_run": {
+                    "available": False,
+                    "run_id": 0,
+                    "score_run_id": 0,
+                    "status": "not_evaluated",
+                    "record_count": 0,
+                    "proposal_ready_count": 0,
+                    "blocked_count": 0,
+                    "repair_count": 0,
+                    "post_validation_clean_count": 0,
+                    "token_integrity_ok_count": 0,
+                    "ready_for_apply_count": 0,
+                    "apply_count": 0,
+                    "candidate_generation_only": True,
+                    "operational_writes": False,
+                    "blocker_counts": {},
+                    "blocker_labels": ES_HELPER_LITERAL_DRY_RUN_BLOCKER_LABELS,
+                    "items": [],
+                },
+                "operational_writes": False,
+                "items": [],
+            },
+            "glossary_display_case": {
+                "instrumented": False,
+                "shadow_run_id": 0,
+                "score_run_id": 0,
+                "is_current_score_run": False,
+                "record_count": 0,
+                "occurrence_count": 0,
+                "key_count": 0,
+                "pending_key_count": 0,
+                "reviewed_key_count": 0,
+                "pending_segment_count": 0,
+                "reviewed_segment_count": 0,
+                "lane_counts": {},
+                "policy_counts": {},
+                "operational_writes": False,
+                "groups": [],
+            },
+            "items": [],
+        },
         "unhandled_segments": [],
     }
     required = ("source_segments", "output_segments")
@@ -4727,6 +9297,15 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
         _int(state_run.get("candidate_score_run_id"))
         or (_int(latest_score.get("id")) if has_score else 0)
     )
+    effective_score_contract = _operational_effective_score_contract(
+        con,
+        latest_score_run_id,
+    )
+    active_calibration_candidate_run_id = (
+        _int(effective_score_contract.get("candidate_run_id"))
+        if effective_score_contract.get("active")
+        else 0
+    )
     pairwise_evidence_by_segment: dict[int, dict[str, Any]] = {}
     if _table_exists(con, "ml_pairwise_quality_evidence"):
         for evidence in _all(
@@ -4744,6 +9323,17 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
 
     old_score_join = "LEFT JOIN ml_score_items oldscore ON oldscore.run_id = ? AND oldscore.segment_id = s.id" if has_score and old_score_run_id else ""
     score_join = "LEFT JOIN ml_score_items score ON score.run_id = ? AND score.segment_id = s.id" if has_score and latest_score_run_id else ""
+    operational_score_join = (
+        "LEFT JOIN ml_score_calibration_candidate_items operational_score "
+        "ON operational_score.run_id = ? AND operational_score.segment_id = s.id"
+        if active_calibration_candidate_run_id
+        else ""
+    )
+    operational_effective_score_sql = (
+        "COALESCE(operational_score.candidate_probability, score.model_safe_probability)"
+        if active_calibration_candidate_run_id
+        else "score.model_safe_probability"
+    )
     state_join = "LEFT JOIN segment_state_items state ON state.run_id = ? AND state.segment_id = s.id" if has_state else ""
     confirmation_join = "LEFT JOIN segment_confirmations conf ON conf.segment_id = s.id" if has_confirmations else ""
     join_params: tuple[Any, ...] = tuple(
@@ -4751,6 +9341,7 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
         for enabled, value in (
             (has_score and old_score_run_id > 0, old_score_run_id),
             (has_score and latest_score_run_id > 0, latest_score_run_id),
+            (active_calibration_candidate_run_id > 0, active_calibration_candidate_run_id),
             (has_state, current_state_run_id),
         )
         if enabled
@@ -4758,9 +9349,16 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
     score_columns = (
         "score.model_safe_probability, score.model_confidence, score.final_action AS score_action, "
         "score.risk_class, score.token_status, score.issue_count, score.high_issue_count, "
-        "score.candidate_text AS score_candidate_text"
+        "score.candidate_text AS score_candidate_text, "
+        + (
+            "operational_score.candidate_probability AS operational_effective_score, "
+            "operational_score.current_probability AS operational_previous_score, "
+            "operational_score.delta AS operational_calibration_delta"
+            if active_calibration_candidate_run_id
+            else "NULL AS operational_effective_score, NULL AS operational_previous_score, NULL AS operational_calibration_delta"
+        )
         if has_score
-        else "NULL AS model_safe_probability, NULL AS model_confidence, NULL AS score_action, NULL AS risk_class, NULL AS token_status, NULL AS issue_count, NULL AS high_issue_count, NULL AS score_candidate_text"
+        else "NULL AS model_safe_probability, NULL AS model_confidence, NULL AS score_action, NULL AS risk_class, NULL AS token_status, NULL AS issue_count, NULL AS high_issue_count, NULL AS score_candidate_text, NULL AS operational_effective_score, NULL AS operational_previous_score, NULL AS operational_calibration_delta"
     )
     old_score_columns = (
         "oldscore.model_safe_probability AS old_model_safe_probability, "
@@ -4802,6 +9400,7 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
         LEFT JOIN output_segments o ON o.segment_id = s.id
         {old_score_join}
         {score_join}
+        {operational_score_join}
         {state_join}
         {confirmation_join}
     """
@@ -4833,116 +9432,17 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
     )
     low_score_count = 0
     low_score_cohorts = _empty_low_score_cohorts()
+    critical_low_score_cohorts = _empty_low_score_cohorts()
     unhandled_count = 0
     if has_score and latest_score_run_id:
-        low_score_counts = _one(
+        low_score_cohorts = _low_score_cohorts_for_threshold(
             con,
-            """
-            SELECT
-              COUNT(*) AS total,
-              SUM(CASE WHEN cohort = 'explicit_text_issue' THEN 1 ELSE 0 END) AS explicit_text_issue,
-              SUM(CASE WHEN cohort = 'structural_block_without_issue' THEN 1 ELSE 0 END) AS structural_block_without_issue,
-              SUM(CASE WHEN cohort = 'deterministic_safe_but_low_score' THEN 1 ELSE 0 END) AS deterministic_safe_but_low_score,
-              SUM(CASE WHEN cohort = 'unchanged_or_preserved_text' THEN 1 ELSE 0 END) AS unchanged_or_preserved_text,
-              SUM(CASE WHEN cohort = 'low_confidence_without_specific_evidence' THEN 1 ELSE 0 END) AS low_confidence_without_specific_evidence
-            FROM (
-              SELECT
-                CASE
-                  WHEN score.issue_count > 0 THEN 'explicit_text_issue'
-                  WHEN score.token_status = 'mismatch' OR score.final_action = 'blocked_structure'
-                    THEN 'structural_block_without_issue'
-                  WHEN score.final_action = 'auto_safe'
-                    THEN 'deterministic_safe_but_low_score'
-                  WHEN score.candidate_text = s.old_text
-                    OR score.candidate_text = s.spanish_text
-                    OR score.candidate_text = s.english_text
-                    THEN 'unchanged_or_preserved_text'
-                  ELSE 'low_confidence_without_specific_evidence'
-                END AS cohort
-              FROM ml_score_items score
-              JOIN source_segments s ON s.id = score.segment_id
-              WHERE score.run_id = ?
-                AND s.is_active = 1
-                AND score.model_safe_probability IS NOT NULL
-                AND score.model_safe_probability < 0.5
-            )
-            """,
-            (latest_score_run_id,),
+            score_run_id=latest_score_run_id,
+            segment_state_run_id=current_state_run_id,
+            threshold=0.5,
+            calibration_candidate_run_id=active_calibration_candidate_run_id,
         )
-        low_score_count = _int(low_score_counts.get("total"))
-        low_score_cohorts.update(
-            {
-                key: _int(low_score_counts.get(key))
-                for key in (
-                    "total",
-                    "explicit_text_issue",
-                    "structural_block_without_issue",
-                    "deterministic_safe_but_low_score",
-                    "unchanged_or_preserved_text",
-                    "low_confidence_without_specific_evidence",
-                )
-            }
-        )
-        low_score_cohorts["actionable"] = (
-            _int(low_score_cohorts.get("explicit_text_issue"))
-            + _int(low_score_cohorts.get("structural_block_without_issue"))
-        )
-        low_score_cohorts["evidence_flagged"] = low_score_cohorts["actionable"]
-        if has_state and current_state_run_id:
-            lifecycle_counts = _one(
-                con,
-                """
-                SELECT
-                  COUNT(*) AS evidence_flagged,
-                  SUM(CASE WHEN state.state_group = 'closed'
-                                AND COALESCE(state.needs_output_apply, 0) = 0
-                           THEN 1 ELSE 0 END) AS lifecycle_closed,
-                  SUM(CASE WHEN COALESCE(state.state_group, '') <> 'closed'
-                                OR COALESCE(state.needs_output_apply, 0) = 1
-                           THEN 1 ELSE 0 END) AS operationally_open,
-                  SUM(COALESCE(state.locked, 0)) AS lifecycle_locked,
-                  SUM(COALESCE(state.confirmed_matches_output, 0)) AS confirmed_matches_output
-                FROM ml_score_items score
-                JOIN source_segments source
-                  ON source.id = score.segment_id AND source.is_active = 1
-                LEFT JOIN segment_state_items state
-                  ON state.segment_id = score.segment_id AND state.run_id = ?
-                WHERE score.run_id = ?
-                  AND score.model_safe_probability IS NOT NULL
-                  AND score.model_safe_probability < 0.5
-                  AND (
-                    score.issue_count > 0
-                    OR score.token_status = 'mismatch'
-                    OR score.final_action = 'blocked_structure'
-                  )
-                """,
-                (current_state_run_id, latest_score_run_id),
-            )
-            low_score_cohorts.update(
-                {
-                    key: _int(lifecycle_counts.get(key))
-                    for key in (
-                        "evidence_flagged",
-                        "lifecycle_closed",
-                        "operationally_open",
-                        "lifecycle_locked",
-                        "confirmed_matches_output",
-                    )
-                }
-            )
-            # "Actionable" is an operational term: a closed risk observation is
-            # still useful discovery evidence, but it is not an open work item.
-            low_score_cohorts["actionable"] = _int(
-                low_score_cohorts.get("operationally_open")
-            )
-        low_score_cohorts["informational"] = (
-            _int(low_score_cohorts.get("deterministic_safe_but_low_score"))
-            + _int(low_score_cohorts.get("unchanged_or_preserved_text"))
-        )
-        low_score_cohorts["actionable_share_pct"] = round(
-            100.0 * _int(low_score_cohorts.get("actionable")) / low_score_count,
-            2,
-        ) if low_score_count else 0.0
+        low_score_count = _int(low_score_cohorts.get("total"))
         if has_state and current_state_run_id:
             unhandled_count = _int(
                 _one(
@@ -4974,17 +9474,39 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
                     (latest_score_run_id,),
                 ).get("total")
             )
+        critical_low_score_cohorts = _low_score_cohorts_for_threshold(
+            con,
+            score_run_id=latest_score_run_id,
+            segment_state_run_id=current_state_run_id,
+            threshold=0.10,
+            calibration_candidate_run_id=active_calibration_candidate_run_id,
+        )
 
     def rows(sql_suffix: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         records = _all(con, f"{base_select} {sql_suffix}", (*join_params, *params))
         for record in records:
             record["low_score_cohort"] = _low_score_cohort(record)
-            record["score_tier"] = _score_tier(record.get("model_safe_probability"))
             record["new_score"] = record.get("model_safe_probability")
             record["old_score"] = record.get("old_model_safe_probability")
             record["raw_new_score"] = record.get("model_safe_probability")
             record["raw_old_score"] = record.get("old_model_safe_probability")
             record["effective_new_score"] = record.get("model_safe_probability")
+            operational_score = record.get("operational_effective_score")
+            record["effective_score"] = (
+                operational_score
+                if operational_score is not None
+                else record.get("model_safe_probability")
+            )
+            record["effective_score_source"] = (
+                "operational_calibrated_score"
+                if operational_score is not None
+                else "raw_model"
+            )
+            record["effective_score_candidate_run_id"] = (
+                active_calibration_candidate_run_id
+                if operational_score is not None
+                else 0
+            )
             record["score_calibration"] = None
             record["score_used_kind"] = "raw_model"
             if record.get("model_safe_probability") is None:
@@ -5147,6 +9669,11 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
                     if pairwise_match
                     else "effective_calibrated"
                 )
+                record["effective_score"] = record.get("effective_new_score")
+                record["effective_score_source"] = str(record.get("score_calibration"))
+            elif operational_score is not None:
+                record["score_used_kind"] = "operational_calibrated_score"
+            record["score_tier"] = _score_tier(record.get("effective_score"))
             _annotate_package_integrity(record, has_state=has_state)
             record["promotion_gate"] = (
                 "allow_new_segment"
@@ -5289,6 +9816,11 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
     for record in adjusted_non_improving_records:
         score_review_by_segment[_int(record.get("segment_id"))] = record
     calibration_review = _pairwise_calibration_review_payload(con)
+    manual_low_score_calibration = _manual_low_score_calibration_payload(
+        con,
+        score_run_id=latest_score_run_id,
+        segment_state_run_id=current_state_run_id,
+    )
     calibration_by_segment = {
         _int(item.get("segment_id")): item
         for item in calibration_review.get("items") or []
@@ -5481,6 +10013,24 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
         )
     else:
         output_apply_segments = []
+    output_apply_total_count = (
+        _int(
+            _one(
+                con,
+                """
+                SELECT COUNT(*) AS total
+                FROM segment_state_items state
+                JOIN source_segments s ON s.id = state.segment_id
+                WHERE state.run_id = ?
+                  AND s.is_active = 1
+                  AND COALESCE(state.needs_output_apply, 0) = 1
+                """,
+                (current_state_run_id,),
+            ).get("total")
+        )
+        if has_state and current_state_run_id
+        else 0
+    )
     for record in output_apply_segments:
         record["apply_kind"] = "output_write"
         record["apply_reason"] = "legacy_needs_output_apply"
@@ -5520,11 +10070,11 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
     )[:80]
     if has_score and latest_score_run_id:
         low_score_segments = rows(
-            """
+            f"""
             WHERE s.is_active = 1
               AND score.run_id = ?
-              AND score.model_safe_probability IS NOT NULL
-              AND score.model_safe_probability < 0.5
+              AND {operational_effective_score_sql} IS NOT NULL
+              AND {operational_effective_score_sql} < 0.5
             ORDER BY
               CASE
                 WHEN score.issue_count > 0 THEN 0
@@ -5546,6 +10096,47 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
         low_score_segments = [
             record for record in low_score_segments if not record.get("score_calibration")
         ][:80]
+        critical_explicit_segments = rows(
+            f"""
+            WHERE s.is_active = 1
+              AND score.run_id = ?
+              AND {operational_effective_score_sql} IS NOT NULL
+              AND {operational_effective_score_sql} < 0.10
+              AND score.issue_count > 0
+            ORDER BY
+              {operational_effective_score_sql} ASC,
+              score.high_issue_count DESC,
+              s.relative_path,
+              s.source_line_number
+            LIMIT 80
+            """,
+            (latest_score_run_id,),
+        )
+        critical_structural_segments = rows(
+            f"""
+            WHERE s.is_active = 1
+              AND score.run_id = ?
+              AND {operational_effective_score_sql} IS NOT NULL
+              AND {operational_effective_score_sql} < 0.10
+              AND score.issue_count = 0
+              AND (
+                score.token_status = 'mismatch'
+                OR score.final_action = 'blocked_structure'
+              )
+            ORDER BY
+              {operational_effective_score_sql} ASC,
+              score.high_issue_count DESC,
+              s.relative_path,
+              s.source_line_number
+            LIMIT 40
+            """,
+            (latest_score_run_id,),
+        )
+        critical_low_score_segments = [
+            record
+            for record in [*critical_explicit_segments, *critical_structural_segments]
+            if not record.get("score_calibration")
+        ][:120]
         if has_state and current_state_run_id:
             unhandled_segments = rows(
                 """
@@ -5577,6 +10168,7 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
             )
     else:
         low_score_segments = []
+        critical_low_score_segments = []
         unhandled_segments = []
 
     if lifecycle_apply_ids:
@@ -5694,8 +10286,31 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
 
         old_aggregate = aggregate_score_run(old_score_run_id)
         new_aggregate = aggregate_score_run(latest_score_run_id)
+        operational_aggregate = (
+            _one(
+                con,
+                """
+                SELECT
+                    COUNT(*) AS measured_count,
+                    AVG(item.candidate_probability) AS avg_score,
+                    SUM(CASE WHEN item.candidate_probability < 0.20 THEN 1 ELSE 0 END) AS critical_count,
+                    SUM(CASE WHEN item.candidate_probability >= 0.20 AND item.candidate_probability < 0.50 THEN 1 ELSE 0 END) AS low_count,
+                    SUM(CASE WHEN item.candidate_probability >= 0.50 AND item.candidate_probability < 0.75 THEN 1 ELSE 0 END) AS moderate_count,
+                    SUM(CASE WHEN item.candidate_probability >= 0.75 AND item.candidate_probability < 0.90 THEN 1 ELSE 0 END) AS good_count,
+                    SUM(CASE WHEN item.candidate_probability >= 0.90 THEN 1 ELSE 0 END) AS high_count
+                FROM ml_score_calibration_candidate_items item
+                JOIN source_segments source
+                  ON source.id = item.segment_id AND source.is_active = 1
+                WHERE item.run_id = ?
+                """,
+                (active_calibration_candidate_run_id,),
+            )
+            if active_calibration_candidate_run_id
+            else {}
+        )
         old_measured = _int(old_aggregate.get("measured_count"))
         new_measured = _int(new_aggregate.get("measured_count"))
+        operational_measured = _int(operational_aggregate.get("measured_count"))
         measured = min(old_measured, new_measured)
 
         old_run = _one(
@@ -5794,6 +10409,7 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
 
         old_avg = rounded(old_aggregate, "avg_score")
         raw_new_avg = rounded(new_aggregate, "avg_score")
+        operational_avg = rounded(operational_aggregate, "avg_score")
         adjustment_sum = _num(pairwise_overlay.get("score_adjustment_sum"), 0.0)
         new_avg = (
             round(raw_new_avg + (adjustment_sum / new_measured), 6)
@@ -5838,6 +10454,13 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
             "avg_old_score": old_avg,
             "avg_new_score": new_avg,
             "raw_avg_new_score": raw_new_avg,
+            "operational_effective_avg_score": (
+                operational_avg if operational_avg is not None else new_avg
+            ),
+            "operational_effective_measured_count": (
+                operational_measured if operational_measured else new_measured
+            ),
+            "effective_score_contract": effective_score_contract,
             "pairwise_calibrated_count": _int(pairwise_overlay.get("calibrated_count")),
             "pairwise_score_adjustment_sum": round(adjustment_sum, 6),
             "avg_delta": avg_delta,
@@ -5852,7 +10475,11 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
             "regressed_count": regressed_count if comparable_contract else None,
             "equal_count": max(0, measured - improved_count - regressed_count) if comparable_contract else None,
             "quality_bands": {
-                "score_kind": "raw_model",
+                "score_kind": (
+                    "operational_calibrated_score"
+                    if active_calibration_candidate_run_id
+                    else "raw_model"
+                ),
                 "thresholds": {
                     "critical": "score < 0.20",
                     "low": "0.20 <= score < 0.50",
@@ -5861,7 +10488,12 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
                     "high": "score >= 0.90",
                 },
                 "old": bands(old_aggregate, old_measured),
-                "output": bands(new_aggregate, new_measured),
+                "raw_output": bands(new_aggregate, new_measured),
+                "output": (
+                    bands(operational_aggregate, operational_measured)
+                    if operational_measured
+                    else bands(new_aggregate, new_measured)
+                ),
             },
         }
 
@@ -5874,6 +10506,43 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
         "segment_state_run_id": current_state_run_id,
         "old_score_run_id": old_score_run_id,
         "score_run_id": latest_score_run_id,
+        "effective_score_contract": effective_score_contract,
+        "human_queue_contract": {
+            "version": "single_decision_queue_v1",
+            "principle": "only_items_requiring_human_decision_are_visible",
+            "views": {
+                "validation": {
+                    "purpose": "decide_if_a_finding_or_correction_is_valid",
+                    "sources": ["repair", "discovery", "proposal", "unicode", "pairwise"],
+                },
+                "promoted": {
+                    "purpose": "show_accepted_segments_and_materialized_outcomes",
+                    "sources": ["promotion"],
+                },
+                "audit_calibration": {
+                    "purpose": "measure_score_confidence_and_reveal_discovery_blind_spots",
+                    "sources": ["dynamic_score_holdout"],
+                },
+            },
+            "discovery_policy": {
+                "visibility": "internal_until_human_decision_is_required",
+                "selection": "one_progressive_representative_per_family",
+                "required_confirmations": "one_to_three_by_reach_confidence_and_severity",
+            },
+            "feedback_routes": {
+                "confirmed_discovery": ["correction_lane", "provider_learning", "calibration"],
+                "false_positive": ["protected_boundary", "detector_suppression"],
+                "audit_defect": ["discovery_blind_spot", "correction_planning", "calibration"],
+                "audit_safe": ["calibration", "score_confidence_evidence"],
+            },
+            "internal_only_signals": [
+                "automatic_discovery",
+                "low_score_monitoring",
+                "provider_monitoring",
+                "score_regression_monitoring",
+            ],
+            "score_contract": effective_score_contract,
+        },
         "summary": {
             "changed_vs_old": changed_count,
             "raw_output_diff_count": changed_count,
@@ -5882,36 +10551,10 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
             "promotions_vs_old": len(promotion_records),
             "promotion_candidates_vs_old": len(promotion_candidate_records),
             "new_vs_old": new_count,
-            "needs_apply": len(lifecycle_apply_records) + len(output_apply_segments),
+            "needs_apply": len(lifecycle_apply_records) + output_apply_total_count,
             "lifecycle_apply_count": len(lifecycle_apply_records),
-            "output_apply_count": _int(
-                _one(
-                    con,
-                    """
-                    SELECT COUNT(*) AS total
-                    FROM segment_state_items state
-                    JOIN source_segments s ON s.id = state.segment_id
-                    WHERE state.run_id = ?
-                      AND s.is_active = 1
-                      AND COALESCE(state.needs_output_apply, 0) = 1
-                    """,
-                    (current_state_run_id,),
-                ).get("total")
-            ) if has_state and current_state_run_id else 0,
-            "legacy_needs_output_apply": _int(
-                _one(
-                    con,
-                    """
-                    SELECT COUNT(*) AS total
-                    FROM segment_state_items state
-                    JOIN source_segments s ON s.id = state.segment_id
-                    WHERE state.run_id = ?
-                      AND s.is_active = 1
-                      AND COALESCE(state.needs_output_apply, 0) = 1
-                    """,
-                    (current_state_run_id,),
-                ).get("total")
-            ) if has_state and current_state_run_id else 0,
+            "output_apply_count": output_apply_total_count,
+            "legacy_needs_output_apply": output_apply_total_count,
             "low_score": low_score_count,
             "low_score_actionable": _int(low_score_cohorts.get("actionable")),
             "low_score_evidence_flagged": _int(low_score_cohorts.get("evidence_flagged")),
@@ -5923,6 +10566,13 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
             "low_score_deterministic_safe": _int(low_score_cohorts.get("deterministic_safe_but_low_score")),
             "low_score_preserved": _int(low_score_cohorts.get("unchanged_or_preserved_text")),
             "low_score_unexplained": _int(low_score_cohorts.get("low_confidence_without_specific_evidence")),
+            "critical_low_score": _int(critical_low_score_cohorts.get("total")),
+            "critical_low_score_evidence_flagged": _int(critical_low_score_cohorts.get("evidence_flagged")),
+            "critical_low_score_lifecycle_closed": _int(critical_low_score_cohorts.get("lifecycle_closed")),
+            "critical_low_score_lifecycle_locked": _int(critical_low_score_cohorts.get("lifecycle_locked")),
+            "critical_low_score_explicit_issue": _int(critical_low_score_cohorts.get("explicit_text_issue")),
+            "critical_low_score_structural_block": _int(critical_low_score_cohorts.get("structural_block_without_issue")),
+            "critical_low_score_informational": _int(critical_low_score_cohorts.get("informational")),
             "score_regressions": len(score_review_records),
             "raw_score_regressions": len(score_review_records),
             "reviewed_raw_score_regressions": reviewed_raw_score_regressions,
@@ -5987,10 +10637,13 @@ def _compute_release_diff_review_payload(con: sqlite3.Connection, segment_state_
         "output_apply_segments": output_apply_segments[:80],
         "low_score_segments": low_score_segments,
         "low_score_cohorts": low_score_cohorts,
+        "critical_low_score_segments": critical_low_score_segments,
+        "critical_low_score_cohorts": critical_low_score_cohorts,
         "score_regression_segments": score_regression_segments,
         "effective_score_regression_segments": effective_score_regression_segments,
         "calibration_review_segments": calibration_review.get("items") or [],
         "calibration_review": calibration_review,
+        "manual_low_score_calibration": manual_low_score_calibration,
         "unhandled_segments": unhandled_segments,
     }
 
@@ -6029,6 +10682,20 @@ def _release_diff_review_cache_key(
         if _table_exists(con, "quality_epochs")
         else 0
     )
+    materialized_package_version = (
+        _one(
+            con,
+            """
+            SELECT *
+            FROM package_versions
+            WHERE status = 'materialized'
+            ORDER BY version_number DESC, id DESC
+            LIMIT 1
+            """,
+        )
+        if _table_exists(con, "package_versions")
+        else {}
+    )
     calibration_review = (
         _one(
             con,
@@ -6055,6 +10722,183 @@ def _release_diff_review_cache_key(
         if _table_exists(con, "ml_pairwise_calibration_policy_decisions")
         else {}
     )
+    operational_calibration = (
+        _one(
+            con,
+            """
+            SELECT active_candidate_run_id, previous_candidate_run_id, updated_at
+            FROM ml_score_calibration_registry
+            WHERE registry_key = ?
+            LIMIT 1
+            """,
+            (SCORE_RECALIBRATION_REGISTRY_KEY,),
+        )
+        if _table_exists(con, "ml_score_calibration_registry")
+        else {}
+    )
+    manual_low_score_decision = (
+        _one(
+            con,
+            """
+            SELECT id, updated_at
+            FROM local_learning_candidates
+            WHERE origin = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (LOW_SCORE_CALIBRATION_ORIGIN,),
+        )
+        if _table_exists(con, "local_learning_candidates")
+        else {}
+    )
+    glossary_display_case_policy = (
+        _one(
+            con,
+            """
+            SELECT COUNT(*) AS total, MAX(id) AS id, MAX(updated_at) AS updated_at
+            FROM glossary_display_case_policies
+            """,
+        )
+        if _table_exists(con, "glossary_display_case_policies")
+        else {}
+    )
+    mojibake_lexicon_review_decision = (
+        _one(
+            con,
+            """
+            SELECT COUNT(*) AS total, MAX(id) AS id, MAX(updated_at) AS updated_at
+            FROM mojibake_lexicon_review_decisions
+            """,
+        )
+        if _table_exists(con, "mojibake_lexicon_review_decisions")
+        else {}
+    )
+    mojibake_lexicon_replacement_decision = (
+        _one(
+            con,
+            """
+            SELECT COUNT(*) AS total, MAX(id) AS id, MAX(updated_at) AS updated_at
+            FROM mojibake_lexicon_replacement_decisions
+            """,
+        )
+        if _table_exists(con, "mojibake_lexicon_replacement_decisions")
+        else {}
+    )
+    mojibake_boundary_pattern_decision = (
+        _one(
+            con,
+            """
+            SELECT COUNT(*) AS total, MAX(id) AS id, MAX(updated_at) AS updated_at
+            FROM mojibake_boundary_pattern_decisions
+            """,
+        )
+        if _table_exists(con, "mojibake_boundary_pattern_decisions")
+        else {}
+    )
+    regenerative_review_decision = (
+        _one(
+            con,
+            """
+            SELECT COUNT(*) AS total, MAX(id) AS id, MAX(updated_at) AS updated_at
+            FROM ml_regenerative_review_decisions
+            """,
+        )
+        if _table_exists(con, "ml_regenerative_review_decisions")
+        else {}
+    )
+    segmented_shadow_id = (
+        _int(
+            _one(
+                con,
+                """
+                SELECT MAX(id) AS id
+                FROM ml_quality_shadow_runs
+                WHERE source_rule_version = ?
+                  AND score_run_id = ?
+                """,
+                (
+                    LOW_SCORE_SEGMENTED_SHADOW_RULE_VERSION,
+                    _int(state.get("candidate_score_run_id"))
+                    or _int(state.get("active_score_run_id")),
+                ),
+            ).get("id")
+        )
+        if _table_exists(con, "ml_quality_shadow_runs")
+        else 0
+    )
+    es_helper_repair_dry_run_id = (
+        _int(
+            _one(
+                con,
+                """
+                SELECT MAX(id) AS id
+                FROM ml_quality_shadow_runs
+                WHERE source_rule_version IN (?, ?)
+                  AND score_run_id = ?
+                """,
+                (
+                    ES_HELPER_REPAIR_DRY_RUN_RULE_VERSION,
+                    ES_HELPER_LITERAL_DRY_RUN_RULE_VERSION,
+                    _int(state.get("candidate_score_run_id"))
+                    or _int(state.get("active_score_run_id")),
+                ),
+            ).get("id")
+        )
+        if _table_exists(con, "ml_quality_shadow_runs")
+        else 0
+    )
+    glossary_display_case_shadow_id = (
+        _int(
+            _one(
+                con,
+                """
+                SELECT MAX(id) AS id
+                FROM ml_quality_shadow_runs
+                WHERE source_rule_version = ?
+                """,
+                (GLOSSARY_DISPLAY_CASE_SHADOW_RULE_VERSION,),
+            ).get("id")
+        )
+        if _table_exists(con, "ml_quality_shadow_runs")
+        else 0
+    )
+    mojibake_lexicon_shadow_id = (
+        _int(
+            _one(
+                con,
+                """
+                SELECT MAX(id) AS id
+                FROM ml_quality_shadow_runs
+                WHERE source_rule_version = ?
+                """,
+                (MOJIBAKE_LEXICON_SHADOW_RULE_VERSION,),
+            ).get("id")
+        )
+        if _table_exists(con, "ml_quality_shadow_runs")
+        else 0
+    )
+    dynamic_score_holdout_id = (
+        _int(
+            _one(
+                con,
+                """
+                SELECT MAX(id) AS id
+                FROM ml_dynamic_score_holdout_runs
+                WHERE rule_version = ?
+                  AND score_run_id = ?
+                  AND segment_state_run_id = ?
+                """,
+                (
+                    DYNAMIC_SCORE_HOLDOUT_RULE_VERSION,
+                    _int(state.get("candidate_score_run_id"))
+                    or _int(state.get("active_score_run_id")),
+                    _int(state.get("id")),
+                ),
+            ).get("id")
+        )
+        if _table_exists(con, "ml_dynamic_score_holdout_runs")
+        else 0
+    )
     payload = {
         "schema_version": RELEASE_DIFF_REVIEW_SCHEMA_VERSION,
         "segment_state_run_id": _int(state.get("id")),
@@ -6066,44 +10910,143 @@ def _release_diff_review_cache_key(
         "pairwise_evidence_id": evidence_id,
         "confirmation_id": confirmation_id,
         "quality_epoch_id": epoch_id,
+        # A materializacao troca a baseline sem necessariamente criar outro
+        # segment-state. Ela precisa invalidar o comparativo old vs output;
+        # caso contrario a fila Pacote continua exibindo a versao anterior.
+        "materialized_package_version_id": _int(
+            materialized_package_version.get("id")
+        ),
+        "materialized_package_version_number": _int(
+            materialized_package_version.get("version_number")
+        ),
+        "materialized_package_hash": materialized_package_version.get(
+            "package_hash"
+        ),
+        "materialized_package_frozen_at": materialized_package_version.get(
+            "frozen_at"
+        ),
         "calibration_review_run_id": _int(calibration_review.get("id")),
         "calibration_review_updated_at": calibration_review.get("updated_at"),
         "calibration_policy_decision_id": _int(calibration_policy.get("id")),
         "calibration_policy_updated_at": calibration_policy.get("updated_at"),
+        "operational_calibration_candidate_run_id": _int(
+            operational_calibration.get("active_candidate_run_id")
+        ),
+        "operational_calibration_previous_run_id": _int(
+            operational_calibration.get("previous_candidate_run_id")
+        ),
+        "operational_calibration_updated_at": operational_calibration.get("updated_at"),
+        "manual_low_score_decision_id": _int(manual_low_score_decision.get("id")),
+        "manual_low_score_decision_updated_at": manual_low_score_decision.get("updated_at"),
+        "glossary_display_case_policy_count": _int(
+            glossary_display_case_policy.get("total")
+        ),
+        "glossary_display_case_policy_id": _int(
+            glossary_display_case_policy.get("id")
+        ),
+        "glossary_display_case_policy_updated_at": (
+            glossary_display_case_policy.get("updated_at")
+        ),
+        "mojibake_lexicon_review_count": _int(
+            mojibake_lexicon_review_decision.get("total")
+        ),
+        "mojibake_lexicon_review_id": _int(
+            mojibake_lexicon_review_decision.get("id")
+        ),
+        "mojibake_lexicon_review_updated_at": (
+            mojibake_lexicon_review_decision.get("updated_at")
+        ),
+        "mojibake_lexicon_replacement_count": _int(
+            mojibake_lexicon_replacement_decision.get("total")
+        ),
+        "mojibake_lexicon_replacement_id": _int(
+            mojibake_lexicon_replacement_decision.get("id")
+        ),
+        "mojibake_lexicon_replacement_updated_at": (
+            mojibake_lexicon_replacement_decision.get("updated_at")
+        ),
+        "mojibake_boundary_pattern_count": _int(
+            mojibake_boundary_pattern_decision.get("total")
+        ),
+        "mojibake_boundary_pattern_id": _int(
+            mojibake_boundary_pattern_decision.get("id")
+        ),
+        "mojibake_boundary_pattern_updated_at": (
+            mojibake_boundary_pattern_decision.get("updated_at")
+        ),
+        "regenerative_review_count": _int(
+            regenerative_review_decision.get("total")
+        ),
+        "regenerative_review_id": _int(
+            regenerative_review_decision.get("id")
+        ),
+        "regenerative_review_updated_at": (
+            regenerative_review_decision.get("updated_at")
+        ),
+        "manual_low_score_segmented_shadow_id": segmented_shadow_id,
+        "es_helper_repair_dry_run_id": es_helper_repair_dry_run_id,
+        "es_helper_literal_dry_run_id": es_helper_repair_dry_run_id,
+        "glossary_display_case_shadow_id": glossary_display_case_shadow_id,
+        "mojibake_lexicon_shadow_id": mojibake_lexicon_shadow_id,
+        "dynamic_score_holdout_id": dynamic_score_holdout_id,
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
+def _write_release_diff_review_disk_cache(cache_record: dict[str, Any]) -> bool:
+    serialized = json.dumps(cache_record, ensure_ascii=False, separators=(",", ":"))
+    RELEASE_DIFF_REVIEW_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    for attempt in range(RELEASE_DIFF_REVIEW_CACHE_WRITE_ATTEMPTS):
+        temporary_file = RELEASE_DIFF_REVIEW_CACHE_FILE.with_name(
+            f".{RELEASE_DIFF_REVIEW_CACHE_FILE.name}.{os.getpid()}."
+            f"{threading.get_ident()}.{attempt}.tmp"
+        )
+        try:
+            temporary_file.write_text(serialized, encoding="utf-8")
+            os.replace(temporary_file, RELEASE_DIFF_REVIEW_CACHE_FILE)
+            return True
+        except OSError:
+            try:
+                temporary_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if attempt + 1 < RELEASE_DIFF_REVIEW_CACHE_WRITE_ATTEMPTS:
+                time.sleep(
+                    min(
+                        RELEASE_DIFF_REVIEW_CACHE_WRITE_RETRY_SECONDS * (2**attempt),
+                        0.5,
+                    )
+                )
+    return False
+
+
 def _release_diff_review_payload(con: sqlite3.Connection, segment_state_run_id: int | None) -> dict[str, Any]:
     global RELEASE_DIFF_REVIEW_CACHE
-    cache_key = _release_diff_review_cache_key(con, segment_state_run_id)
-    if RELEASE_DIFF_REVIEW_CACHE.get("key") == cache_key:
-        cached = RELEASE_DIFF_REVIEW_CACHE.get("payload")
-        if isinstance(cached, dict):
-            return cached
-    if RELEASE_DIFF_REVIEW_CACHE_FILE.exists():
-        try:
-            disk_cache = json.loads(RELEASE_DIFF_REVIEW_CACHE_FILE.read_text(encoding="utf-8"))
-            if disk_cache.get("key") == cache_key and isinstance(disk_cache.get("payload"), dict):
-                RELEASE_DIFF_REVIEW_CACHE = disk_cache
-                return disk_cache["payload"]
-        except (OSError, json.JSONDecodeError):
-            pass
-    payload = _compute_release_diff_review_payload(con, segment_state_run_id)
-    cache_record = {
-        "key": cache_key,
-        "generated_at": _now_iso(),
-        "payload": payload,
-    }
-    RELEASE_DIFF_REVIEW_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    temp_file = RELEASE_DIFF_REVIEW_CACHE_FILE.with_suffix(".tmp")
-    temp_file.write_text(
-        json.dumps(cache_record, ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
-    )
-    temp_file.replace(RELEASE_DIFF_REVIEW_CACHE_FILE)
-    RELEASE_DIFF_REVIEW_CACHE = cache_record
-    return payload
+    with RELEASE_DIFF_REVIEW_CACHE_LOCK:
+        cache_key = _release_diff_review_cache_key(con, segment_state_run_id)
+        if RELEASE_DIFF_REVIEW_CACHE.get("key") == cache_key:
+            cached = RELEASE_DIFF_REVIEW_CACHE.get("payload")
+            if isinstance(cached, dict):
+                return cached
+        if RELEASE_DIFF_REVIEW_CACHE_FILE.exists():
+            try:
+                disk_cache = json.loads(RELEASE_DIFF_REVIEW_CACHE_FILE.read_text(encoding="utf-8"))
+                if disk_cache.get("key") == cache_key and isinstance(disk_cache.get("payload"), dict):
+                    RELEASE_DIFF_REVIEW_CACHE = disk_cache
+                    return disk_cache["payload"]
+            except (OSError, json.JSONDecodeError):
+                pass
+        payload = _compute_release_diff_review_payload(con, segment_state_run_id)
+        cache_record = {
+            "key": cache_key,
+            "generated_at": _now_iso(),
+            "payload": payload,
+        }
+        # Disk persistence is an optimization. A transient OneDrive/antivirus
+        # lock must never block an evaluation from starting.
+        _write_release_diff_review_disk_cache(cache_record)
+        RELEASE_DIFF_REVIEW_CACHE = cache_record
+        return payload
 
 
 def _decision_record(record: dict[str, Any], queue: str) -> dict[str, Any]:
@@ -6457,15 +11400,43 @@ def _apply_pairwise_calibration_gate(
         return
     decision = str(calibration.get("policy_decision") or "not_evaluated")
     pending_count = _int(calibration.get("pending_count"))
-    if decision not in {"sample", "required"} or pending_count <= 0:
-        return
     evaluation_gate = safety_status.setdefault("evaluation_gate", {})
-    evaluation_gate["status"] = "bloqueada"
-    evaluation_gate["can_start_evaluation_full_production_now"] = False
     evaluation_gate["calibration_pending_count"] = pending_count
-    reasons = evaluation_gate.setdefault("blocking_reasons", [])
-    if "pairwise_calibration_review_pending" not in reasons:
-        reasons.append("pairwise_calibration_review_pending")
+    evaluation_gate["calibration_review_status"] = (
+        "pending" if decision in {"sample", "required"} and pending_count > 0 else "clear"
+    )
+    # Calibration samples are evidence produced and consumed by Evaluation. They
+    # must remain visible in the unified human queue, but cannot block the cycle
+    # that refreshes that queue and learns from its decisions. Publication keeps
+    # its own stricter gates for applying confirmed changes to the output.
+    advisory_reasons = evaluation_gate.setdefault("advisory_reasons", [])
+    if decision in {"sample", "required"} and pending_count > 0:
+        if "pairwise_calibration_review_pending" not in advisory_reasons:
+            advisory_reasons.append("pairwise_calibration_review_pending")
+    else:
+        evaluation_gate["advisory_reasons"] = [
+            reason
+            for reason in advisory_reasons
+            if reason != "pairwise_calibration_review_pending"
+        ]
+
+
+def _quality_epoch_has_scores(status: Any) -> bool:
+    """Published is a terminal superset of scored/evaluated, not an invalid state."""
+    return str(status or "") in {"scored", "evaluated", "published"}
+
+
+def _quality_epoch_has_evaluation(status: Any) -> bool:
+    """A published epoch remains eligible for subsequent protected apply cycles."""
+    return str(status or "") in {"evaluated", "published"}
+
+
+def _evaluation_requires_score_preparation(quality_epoch: dict[str, Any]) -> bool:
+    """The unified evaluation diagnoses and scores a newly materialized baseline."""
+    return (
+        quality_epoch.get("status") == "stale"
+        and quality_epoch.get("invalidation_reason") == "baseline_materialized"
+    )
 
 
 def _now_iso() -> str:
@@ -6492,6 +11463,144 @@ def _db_mtime(db_path: Path) -> str:
         return datetime.fromtimestamp(db_path.stat().st_mtime).isoformat(timespec="seconds")
     except OSError:
         return ""
+
+
+def _latest_low_score_segmented_shadow_run_id(db_path: Path) -> int | None:
+    try:
+        con = sqlite3.connect(db_path, timeout=5)
+        con.row_factory = sqlite3.Row
+        try:
+            if not _table_exists(con, "ml_quality_shadow_runs"):
+                return 0
+            row = con.execute(
+                """
+                SELECT MAX(id) AS id
+                FROM ml_quality_shadow_runs
+                WHERE source_rule_version = ?
+                """,
+                (LOW_SCORE_SEGMENTED_SHADOW_RULE_VERSION,),
+            ).fetchone()
+            return _int(row["id"] if row else 0)
+        finally:
+            con.close()
+    except (OSError, sqlite3.Error):
+        return None
+
+
+def _latest_dynamic_score_holdout_id(db_path: Path) -> int | None:
+    """Fingerprint the score-audit queue so the dashboard cache stays live."""
+    try:
+        con = sqlite3.connect(db_path, timeout=5)
+        con.row_factory = sqlite3.Row
+        try:
+            if not _table_exists(con, "ml_dynamic_score_holdout_runs"):
+                return 0
+            row = con.execute(
+                "SELECT MAX(id) AS id FROM ml_dynamic_score_holdout_runs"
+            ).fetchone()
+            return _int(row["id"] if row else 0)
+        finally:
+            con.close()
+    except (OSError, sqlite3.Error):
+        return None
+
+
+def _glossary_display_case_policy_signature(db_path: Path) -> str | None:
+    try:
+        con = sqlite3.connect(db_path, timeout=5)
+        con.row_factory = sqlite3.Row
+        try:
+            if not _table_exists(con, "glossary_display_case_policies"):
+                return json.dumps(
+                    {"count": 0, "id": 0, "updated_at": None},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            row = con.execute(
+                """
+                SELECT COUNT(*) AS total, MAX(id) AS id, MAX(updated_at) AS updated_at
+                FROM glossary_display_case_policies
+                """
+            ).fetchone()
+            return json.dumps(
+                {
+                    "count": _int(row["total"] if row else 0),
+                    "id": _int(row["id"] if row else 0),
+                    "updated_at": row["updated_at"] if row else None,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        finally:
+            con.close()
+    except (OSError, sqlite3.Error):
+        return None
+
+
+def _mojibake_lexicon_review_signature(db_path: Path) -> str | None:
+    try:
+        con = sqlite3.connect(db_path, timeout=5)
+        con.row_factory = sqlite3.Row
+        try:
+            if not _table_exists(con, "mojibake_lexicon_review_decisions"):
+                return json.dumps(
+                    {"count": 0, "id": 0, "updated_at": None},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            row = con.execute(
+                """
+                SELECT COUNT(*) AS total, MAX(id) AS id, MAX(updated_at) AS updated_at
+                FROM mojibake_lexicon_review_decisions
+                """
+            ).fetchone()
+            replacement_row = (
+                con.execute(
+                    """
+                    SELECT COUNT(*) AS total, MAX(id) AS id, MAX(updated_at) AS updated_at
+                    FROM mojibake_lexicon_replacement_decisions
+                    """
+                ).fetchone()
+                if _table_exists(con, "mojibake_lexicon_replacement_decisions")
+                else None
+            )
+            boundary_row = (
+                con.execute(
+                    """
+                    SELECT COUNT(*) AS total, MAX(id) AS id, MAX(updated_at) AS updated_at
+                    FROM mojibake_boundary_pattern_decisions
+                    """
+                ).fetchone()
+                if _table_exists(con, "mojibake_boundary_pattern_decisions")
+                else None
+            )
+            return json.dumps(
+                {
+                    "count": _int(row["total"] if row else 0),
+                    "id": _int(row["id"] if row else 0),
+                    "updated_at": row["updated_at"] if row else None,
+                    "replacement_count": _int(
+                        replacement_row["total"] if replacement_row else 0
+                    ),
+                    "replacement_id": _int(
+                        replacement_row["id"] if replacement_row else 0
+                    ),
+                    "replacement_updated_at": (
+                        replacement_row["updated_at"] if replacement_row else None
+                    ),
+                    "boundary_count": _int(boundary_row["total"] if boundary_row else 0),
+                    "boundary_id": _int(boundary_row["id"] if boundary_row else 0),
+                    "boundary_updated_at": (
+                        boundary_row["updated_at"] if boundary_row else None
+                    ),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        finally:
+            con.close()
+    except (OSError, sqlite3.Error):
+        return None
 
 
 def _latest_ledger_run_id(
@@ -6691,6 +11800,154 @@ def _production_run_progress(run: dict[str, Any], stages: list[dict[str, Any]]) 
     return round(((done_stages + running_progress) / len(stages)) * 100)
 
 
+def _production_run_for_current_state(
+    app_state: dict[str, Any],
+    run: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Separa uma falha historica do estado operacional ja reconciliado.
+
+    A run gravada em disco e um registro historico imutavel. Depois de uma
+    recuperacao manual/automatica, um segment-state mais novo pode provar que
+    todos os itens foram fechados. Nesse caso o dashboard recebe uma run
+    sintetica concluida e mantem a falha original em ``last_failed_run``.
+    """
+    if run.get("status") != "failed":
+        return run, None
+
+    validation = run.get("publication_closure_validation")
+    validation = validation if isinstance(validation, dict) else {}
+    failure = run.get("failure")
+    failure = failure if isinstance(failure, dict) else {}
+    failure_message = str(failure.get("message") or run.get("message") or "")
+    blocked_ids = [
+        _int(segment_id)
+        for segment_id in (validation.get("blocked_ids") or [])
+        if _int(segment_id) > 0
+    ]
+    is_publication_closure_failure = bool(blocked_ids) and (
+        "lifecycle closure mismatch" in failure_message.lower()
+        or run.get("failed_stage") in {"segment_state_after", "segment_state_after_write"}
+        or failure.get("stage") in {"segment_state_after", "segment_state_after_write"}
+    )
+    if not is_publication_closure_failure:
+        return run, None
+
+    release = app_state.get("release")
+    release = release if isinstance(release, dict) else {}
+    closure = release.get("operational_closure")
+    closure = closure if isinstance(closure, dict) else {}
+    failed_state_run_id = (
+        _int(validation.get("segment_state_run_id"))
+        or _int(run.get("new_segment_state_run_id"))
+        or _int(run.get("segment_state_run_id"))
+    )
+    current_state_run_id = (
+        _int(release.get("latest_segment_state_run_id"))
+        or _int(closure.get("segment_state_run_id"))
+    )
+    pending_count = _int(release.get("pending_count"), _int(closure.get("pending_count")))
+    needs_apply = _int(release.get("needs_apply"), _int(closure.get("needs_apply")))
+    state_is_closed = closure.get("is_closed") is True or (
+        release.get("readiness") == "ready_for_release"
+        and pending_count == 0
+        and needs_apply == 0
+    )
+    if (
+        not failed_state_run_id
+        or current_state_run_id <= failed_state_run_id
+        or not state_is_closed
+        or pending_count != 0
+        or needs_apply != 0
+    ):
+        return run, None
+
+    post_release = release.get("post_release")
+    post_release = post_release if isinstance(post_release, dict) else {}
+    diff_review = post_release.get("diff_review")
+    diff_review = diff_review if isinstance(diff_review, dict) else {}
+    diff_summary = diff_review.get("summary")
+    diff_summary = diff_summary if isinstance(diff_summary, dict) else {}
+    package_diff_count = _int(
+        diff_summary.get("package_diff_count"),
+        _int(diff_summary.get("raw_output_diff_count"), _int(diff_summary.get("changed_vs_old"))),
+    )
+    reconciled_at = str((app_state.get("cache") or {}).get("generated_at") or _now_iso())
+    next_action = "materialize_version" if package_diff_count > 0 else "await_new_applies"
+    next_action_message = (
+        f"Apply zerado; {package_diff_count} alteracoes prontas para materializar."
+        if package_diff_count > 0
+        else "Apply e pacote zerados; aguardando novas promocoes confirmadas."
+    )
+    stage_specs = (
+        ("publication_preflight", "Preflight publicavel"),
+        ("apply_confirmed_write", "Apply confirmado"),
+        ("segment_state_after_write", "Validacao reconciliada"),
+        ("production_report", "Relatorio final"),
+    )
+    stages = [
+        {
+            "id": stage_id,
+            "label": label,
+            "status": "done",
+            "started_at": reconciled_at,
+            "updated_at": reconciled_at,
+            "finished_at": reconciled_at,
+            "exit_code": 0,
+            "progress_pct": 100,
+            "metrics": {
+                "segment_state_run_id": current_state_run_id,
+                "reconciled_run_id": run.get("run_id"),
+            },
+        }
+        for stage_id, label in stage_specs
+    ]
+    reconciliation = {
+        "status": "resolved",
+        "run_id": run.get("run_id"),
+        "reconciled_at": reconciled_at,
+        "reason": "newer_segment_state_closed",
+        "failed_segment_state_run_id": failed_state_run_id,
+        "current_segment_state_run_id": current_state_run_id,
+        "blocked_ids": blocked_ids,
+        "pending_count": pending_count,
+        "needs_apply": needs_apply,
+        "package_diff_count": package_diff_count,
+        "next_action": next_action,
+    }
+    display_run = {
+        "run_id": f"{run.get('run_id')}-reconciled-{current_state_run_id}",
+        "status": "completed",
+        "mode": "publication_apply_reconciled",
+        "run_mode": "publication",
+        "started_at": run.get("started_at") or reconciled_at,
+        "updated_at": reconciled_at,
+        "finished_at": reconciled_at,
+        "current_stage": "production_report",
+        "current_label": "Estado reconciliado",
+        "stages": stages,
+        "message": (
+            f"A falha da run {run.get('run_id')} foi reconciliada pelo "
+            f"segment-state #{current_state_run_id}. {next_action_message}"
+        ),
+        "new_segment_state_run_id": current_state_run_id,
+        "output_changed": bool(run.get("output_changed")),
+        "output_written_count": _int(run.get("output_written_count")),
+        "materialization_started": False,
+        "next_action": next_action,
+        "reconciled": True,
+        "reconciliation": reconciliation,
+        "last_failed_run": run,
+        "historical_failure": {
+            "run_id": run.get("run_id"),
+            "status": run.get("status"),
+            "failed_stage": run.get("failed_stage") or failure.get("stage"),
+            "message": failure_message,
+            "finished_at": run.get("finished_at"),
+        },
+    }
+    return display_run, reconciliation
+
+
 def _pending_by_family_payload(con: sqlite3.Connection, segment_state_run_id: int | None) -> list[dict[str, Any]]:
     ledger_run_id = _latest_ledger_run_id(con, segment_state_run_id)
     if not segment_state_run_id or not ledger_run_id:
@@ -6880,7 +12137,11 @@ def _quality_pattern_discovery_payload(con: sqlite3.Connection) -> dict[str, Any
     except (TypeError, json.JSONDecodeError):
         run_summary = {}
     if isinstance(run_summary, dict):
-        for key in ("monitoring_family_count", "closed_family_count"):
+        for key in (
+            "monitoring_family_count",
+            "closed_family_count",
+            "audit_blind_spot_count",
+        ):
             if key in run_summary:
                 run[key] = run_summary[key]
     run.pop("summary_json", None)
@@ -6926,9 +12187,340 @@ def _quality_pattern_discovery_payload(con: sqlite3.Connection) -> dict[str, Any
                 if key in metrics:
                     family[key] = metrics[key]
         family.pop("metrics_json", None)
+
+    segment_ids = sorted(
+        {
+            _int(sample.get("segment_id"))
+            for family in families
+            for sample in family.get("samples") or []
+            if isinstance(sample, dict) and _int(sample.get("segment_id"))
+        }
+    )
+    segment_context_by_id: dict[int, dict[str, Any]] = {}
+    if segment_ids:
+        discovery_score_contract = _operational_effective_score_contract(
+            con,
+            _int(run.get("score_run_id")),
+        )
+        discovery_calibration_run_id = (
+            _int(discovery_score_contract.get("candidate_run_id"))
+            if discovery_score_contract.get("active")
+            else 0
+        )
+        discovery_calibration_join = (
+            "LEFT JOIN ml_score_calibration_candidate_items calibrated "
+            "ON calibrated.run_id = ? AND calibrated.segment_id = source.id"
+            if discovery_calibration_run_id
+            else ""
+        )
+        discovery_raw_score_sql = (
+            "score.model_safe_probability"
+            if "model_safe_probability" in _table_columns(con, "ml_score_items")
+            else "NULL"
+        )
+        discovery_score_select = (
+            "calibrated.candidate_probability AS effective_score, "
+            f"{discovery_raw_score_sql} AS raw_score"
+            if discovery_calibration_run_id
+            else f"{discovery_raw_score_sql} AS effective_score, {discovery_raw_score_sql} AS raw_score"
+        )
+        placeholders = ", ".join("?" for _ in segment_ids)
+        segment_context_by_id = {
+            _int(row.get("segment_id")): row
+            for row in _all(
+                con,
+                f"""
+                SELECT source.id AS segment_id, source.relative_path,
+                       source.source_key, source.english_text,
+                       source.spanish_text, source.old_text,
+                       output.portuguese_text AS output_text,
+                       score.candidate_text AS score_candidate_text,
+                       {discovery_score_select}
+                FROM source_segments source
+                LEFT JOIN output_segments output ON output.segment_id = source.id
+                LEFT JOIN ml_score_items score
+                  ON score.segment_id = source.id AND score.run_id = ?
+                {discovery_calibration_join}
+                WHERE source.id IN ({placeholders})
+                """,
+                (
+                    _int(run.get("score_run_id")),
+                    *((discovery_calibration_run_id,) if discovery_calibration_run_id else ()),
+                    *segment_ids,
+                ),
+            )
+        }
+
+    discovery_review_lookup = _regenerative_review_lookup(con, "discovery")
+    discovery_batch_count = 0
+    for family in families:
+        pattern_guidance = _discovery_pattern_guidance(
+            family.get("issue_type"),
+            family.get("token_context"),
+            family.get("file_family"),
+        )
+        family["pattern_guidance"] = pattern_guidance
+        reviewed_samples: list[dict[str, Any]] = []
+        for sample_index, sample in enumerate(family["samples"]):
+            if not isinstance(sample, dict):
+                continue
+            segment_id = _int(sample.get("segment_id"))
+            context = segment_context_by_id.get(segment_id, {})
+            for key in (
+                "relative_path",
+                "source_key",
+                "english_text",
+                "spanish_text",
+                "old_text",
+                "output_text",
+            ):
+                if not sample.get(key) and context.get(key) is not None:
+                    sample[key] = context[key]
+            if context.get("score_candidate_text") is not None:
+                sample["candidate_text"] = context["score_candidate_text"]
+            if context.get("effective_score") is not None:
+                sample["raw_score"] = context.get("raw_score")
+                sample["effective_score"] = context.get("effective_score")
+                sample["score"] = context.get("effective_score")
+                sample["effective_score_source"] = (
+                    "operational_calibrated_score"
+                    if discovery_calibration_run_id
+                    else "raw_model"
+                )
+            # Display-only guidance stays outside evidence so wording changes do not
+            # invalidate hashes or reopen previously recorded human decisions.
+            sample["pattern_guidance"] = pattern_guidance
+            sample_identity = f"segment:{segment_id}" if segment_id else f"sample:{sample_index}"
+            item_key = f"family:{family.get('family_key')}:{sample_identity}"
+            candidate_text = str(
+                sample.get("candidate_text")
+                or sample.get("output_text")
+                or ""
+            )
+            evidence = {
+                "family_key": str(family.get("family_key") or ""),
+                "segment_id": segment_id,
+                "candidate_hash": hashlib.sha256(
+                    candidate_text.encode("utf-8")
+                ).hexdigest(),
+                "issue_type": str(family.get("issue_type") or ""),
+                "token_context": str(family.get("token_context") or ""),
+                "file_family": str(family.get("file_family") or ""),
+                "evidence_kind": str(family.get("evidence_kind") or ""),
+                "score": sample.get("score"),
+            }
+            reviewed_samples.append(
+                _attach_regenerative_review_contract(
+                    sample,
+                    queue_type="discovery",
+                    item_key=item_key,
+                    snapshot_id=run_id,
+                    evidence=evidence,
+                    decisions_by_evidence=discovery_review_lookup,
+                )
+            )
+        family["samples"] = reviewed_samples
+        decisions = [
+            str(sample.get("review_decision") or "")
+            for sample in reviewed_samples
+            if isinstance(sample, dict) and sample.get("review_status") == "reviewed"
+        ]
+        supports = decisions.count("supports_pattern")
+        contradicts = decisions.count("contradicts_pattern")
+        boundaries = decisions.count("boundary_case")
+        issue_signal = (
+            f"{family.get('issue_type') or ''} {family.get('token_context') or ''}"
+        ).casefold()
+        if any(
+            token in issue_signal
+            for token in ("punctuation", "angular_quote", "guillemet", "aspas")
+        ):
+            lane_id, lane_label = "ptbr_punctuation", "Aspas e pontuação PT-BR"
+        elif any(
+            token in issue_signal
+            for token in ("spanish", "espanhol", "untranslated", "residual")
+        ):
+            lane_id, lane_label = "spanish_residual", "Espanhol residual"
+        elif any(
+            token in issue_signal
+            for token in ("mojibake", "unicode", "encoding", "garbled")
+        ):
+            lane_id, lane_label = "mojibake_unicode", "Unicode / mojibake"
+        elif any(
+            token in issue_signal
+            for token in (
+                "gender",
+                "genero",
+                "article",
+                "pronoun",
+                "meu",
+                "minha",
+                "seu",
+                "sua",
+            )
+        ):
+            lane_id, lane_label = (
+                "dynamic_gender",
+                "Gênero e concordância dinâmica",
+            )
+        elif any(
+            token in issue_signal
+            for token in (
+                "token",
+                "structure",
+                "syntax",
+                "boundary",
+                "bracket",
+                "quote",
+                "escape",
+            )
+        ):
+            lane_id, lane_label = "structure_tokens", "Estrutura e tokens"
+        elif "glossary" in issue_signal:
+            lane_id, lane_label = "glossary_terms", "Glossário e termos"
+        else:
+            lane_id, lane_label = "other_patterns", "Outros padrões confirmados"
+        required_confirmations = _discovery_required_confirmation_count(family)
+        if supports >= required_confirmations and supports > max(contradicts, boundaries):
+            routing_status = (
+                "ready_with_boundary_guard"
+                if boundaries
+                else "ready_for_correction"
+            )
+        elif contradicts >= required_confirmations and contradicts > max(supports, boundaries):
+            routing_status = "rejected_by_human_evidence"
+        elif boundaries >= required_confirmations and boundaries >= max(supports, contradicts):
+            routing_status = "boundary_only"
+        else:
+            routing_status = "awaiting_review"
+        pending_samples = [
+            sample
+            for sample in reviewed_samples
+            if sample.get("review_status") == "pending"
+        ]
+        selected_representative: dict[str, Any] | None = None
+        if routing_status == "awaiting_review" and pending_samples:
+            if discovery_batch_count < REGENERATIVE_REVIEW_BATCH_LIMIT:
+                selected_representative = pending_samples[0]
+                discovery_batch_count += 1
+            for sample in pending_samples:
+                contract = sample.get("review_contract") or {}
+                if sample is selected_representative:
+                    contract["representative"] = True
+                    contract["representative_rank"] = len(decisions) + 1
+                    contract["required_confirmations"] = required_confirmations
+                else:
+                    contract["available"] = False
+                    contract["representative"] = False
+                    contract["reason"] = (
+                        "batch_limit"
+                        if discovery_batch_count >= REGENERATIVE_REVIEW_BATCH_LIMIT
+                        and selected_representative is None
+                        else "waiting_for_family_representative"
+                    )
+                sample["review_contract"] = contract
+                if sample is not selected_representative:
+                    sample["review_status"] = "not_selected"
+        else:
+            for sample in pending_samples:
+                contract = sample.get("review_contract") or {}
+                contract["available"] = False
+                contract["representative"] = False
+                contract["reason"] = "family_decision_complete"
+                sample["review_contract"] = contract
+                sample["review_status"] = "not_selected"
+        family["human_review"] = {
+            "reviewed_count": len(decisions),
+            "supports_pattern": supports,
+            "contradicts_pattern": contradicts,
+            "boundary_case": boundaries,
+            "required_confirmations": required_confirmations,
+            "next_representative_segment_id": (
+                _int(selected_representative.get("segment_id"))
+                if selected_representative
+                else None
+            ),
+        }
+        family["representative_policy"] = {
+            "mode": "progressive_family_review",
+            "visible_at_once": 1,
+            "required_confirmations": required_confirmations,
+            "sample_count": len(reviewed_samples),
+            "decision_complete": routing_status != "awaiting_review",
+        }
+        family["routing_status"] = routing_status
+        family["correction_lane"] = {
+            "id": lane_id,
+            "label": lane_label,
+        }
+    sample_rows = [
+        sample
+        for family in families
+        for sample in family.get("samples") or []
+        if isinstance(sample, dict) and sample.get("review_contract", {}).get("available")
+    ]
+    lane_rows: dict[str, dict[str, Any]] = {}
+    for family in families:
+        lane = family.get("correction_lane") or {}
+        lane_id = str(lane.get("id") or "other_patterns")
+        row = lane_rows.setdefault(
+            lane_id,
+            {
+                "id": lane_id,
+                "label": lane.get("label") or lane_id.replace("_", " "),
+                "family_count": 0,
+                "segment_count": 0,
+                "ready_segment_count": 0,
+                "ready_family_count": 0,
+                "boundary_family_count": 0,
+                "rejected_family_count": 0,
+                "pending_family_count": 0,
+            },
+        )
+        row["family_count"] += 1
+        row["segment_count"] += _int(family.get("segment_count"))
+        status = str(family.get("routing_status") or "awaiting_review")
+        if status in {"ready_for_correction", "ready_with_boundary_guard"}:
+            row["ready_family_count"] += 1
+            row["ready_segment_count"] += _int(family.get("segment_count"))
+        elif status == "boundary_only":
+            row["boundary_family_count"] += 1
+        elif status == "rejected_by_human_evidence":
+            row["rejected_family_count"] += 1
+        else:
+            row["pending_family_count"] += 1
+    correction_lanes = sorted(
+        lane_rows.values(),
+        key=lambda item: (
+            -_int(item.get("ready_family_count")),
+            -_int(item.get("segment_count")),
+            str(item.get("label") or ""),
+        ),
+    )
     return {
         "instrumented": True,
         **run,
+        "review_pending_count": sum(
+            1 for sample in sample_rows if sample.get("review_status") != "reviewed"
+        ),
+        "reviewed_count": sum(
+            1 for sample in sample_rows if sample.get("review_status") == "reviewed"
+        ),
+        "routing_summary": {
+            "ready_family_count": sum(
+                _int(item.get("ready_family_count")) for item in correction_lanes
+            ),
+            "boundary_family_count": sum(
+                _int(item.get("boundary_family_count")) for item in correction_lanes
+            ),
+            "rejected_family_count": sum(
+                _int(item.get("rejected_family_count")) for item in correction_lanes
+            ),
+            "pending_family_count": sum(
+                _int(item.get("pending_family_count")) for item in correction_lanes
+            ),
+        },
+        "correction_lanes": correction_lanes,
         "families": families,
     }
 
@@ -6978,6 +12570,7 @@ def _quality_provider_proposals_payload(con: sqlite3.Connection) -> dict[str, An
         """,
         (run_id,),
     )
+    proposal_review_lookup = _regenerative_review_lookup(con, "proposal")
     for proposal in proposals:
         proposal_id = _int(proposal.get("id"))
         try:
@@ -6991,20 +12584,35 @@ def _quality_provider_proposals_payload(con: sqlite3.Connection) -> dict[str, An
         except (TypeError, json.JSONDecodeError):
             contract = {}
         proposal["contract"] = contract if isinstance(contract, dict) else {}
+        proposal["correction_lane"] = (
+            proposal["contract"].get("correction_lane")
+            if isinstance(proposal["contract"].get("correction_lane"), dict)
+            else {"id": "other_patterns", "label": "Outros padrões confirmados"}
+        )
+        proposal["human_review"] = (
+            proposal["contract"].get("human_evidence")
+            if isinstance(proposal["contract"].get("human_evidence"), dict)
+            else {}
+        )
         proposal.pop("contract_json", None)
         cases = _all(
             con,
             """
-            SELECT case_kind, segment_id, relative_path, source_key,
-                   input_text, expected_behavior, assertions_json
-            FROM ml_quality_provider_proposal_cases
-            WHERE proposal_id = ?
-            ORDER BY CASE case_kind
+            SELECT item.id AS case_id, item.case_key, item.case_kind,
+                   item.segment_id, item.relative_path, item.source_key,
+                   item.input_text, item.expected_behavior, item.assertions_json,
+                   source.english_text, source.spanish_text, source.old_text,
+                   output.portuguese_text AS output_text
+            FROM ml_quality_provider_proposal_cases item
+            LEFT JOIN source_segments source ON source.id = item.segment_id
+            LEFT JOIN output_segments output ON output.segment_id = item.segment_id
+            WHERE item.proposal_id = ?
+            ORDER BY CASE item.case_kind
                        WHEN 'positive' THEN 0
                        WHEN 'boundary' THEN 1
                        ELSE 2
                      END,
-                     id
+                     item.id
             LIMIT 6
             """,
             (proposal_id,),
@@ -7016,12 +12624,49 @@ def _quality_provider_proposals_payload(con: sqlite3.Connection) -> dict[str, An
                 assertions = []
             item["assertions"] = assertions if isinstance(assertions, list) else []
             item.pop("assertions_json", None)
+            case_key = str(item.get("case_key") or item.get("case_id") or "case")
+            item_key = f"proposal:{proposal.get('proposal_key')}:case:{case_key}"
+            evidence = {
+                "proposal_key": str(proposal.get("proposal_key") or ""),
+                "case_key": case_key,
+                "case_kind": str(item.get("case_kind") or ""),
+                "segment_id": _int(item.get("segment_id")),
+                "input_hash": hashlib.sha256(
+                    str(item.get("input_text") or "").encode("utf-8")
+                ).hexdigest(),
+                "expected_behavior_hash": hashlib.sha256(
+                    str(item.get("expected_behavior") or "").encode("utf-8")
+                ).hexdigest(),
+                "assertions": item["assertions"],
+                "provider_id": str(proposal.get("provider_id") or ""),
+                "evidence_type": str(proposal.get("evidence_type") or ""),
+            }
+            _attach_regenerative_review_contract(
+                item,
+                queue_type="proposal",
+                item_key=item_key,
+                snapshot_id=run_id,
+                evidence=evidence,
+                decisions_by_evidence=proposal_review_lookup,
+            )
         proposal["sample_cases"] = cases
+    case_rows = [
+        case
+        for proposal in proposals
+        for case in proposal.get("sample_cases") or []
+        if isinstance(case, dict)
+    ]
     return {
         "instrumented": True,
         **run,
         "draft_count": sum(
             1 for item in proposals if item.get("status") == "draft_review_required"
+        ),
+        "review_pending_count": sum(
+            1 for case in case_rows if case.get("review_status") != "reviewed"
+        ),
+        "reviewed_count": sum(
+            1 for case in case_rows if case.get("review_status") == "reviewed"
         ),
         "proposals": proposals,
     }
@@ -7856,6 +13501,242 @@ def _pending_next_focus_payload(
     }
 
 
+def _source_update_readiness_payload(con: sqlite3.Connection) -> dict[str, Any]:
+    required_tables = {
+        "source_tree_snapshots",
+        "source_tree_snapshot_files",
+        "source_segments",
+    }
+    if not all(_table_exists(con, table_name) for table_name in required_tables):
+        return {
+            "instrumented": False,
+            "status": "not_instrumented",
+            "reason": "source_snapshot_tables_missing",
+            "lanes": [],
+        }
+    snapshots = _all(
+        con,
+        """
+        SELECT id, snapshot_label, game_version, english_tree_hash,
+               spanish_tree_hash, english_file_count, spanish_file_count,
+               english_total_bytes, spanish_total_bytes, metadata_json,
+               created_at
+        FROM source_tree_snapshots
+        ORDER BY id DESC
+        LIMIT 2
+        """,
+    )
+    if not snapshots:
+        return {
+            "instrumented": True,
+            "status": "awaiting_baseline_snapshot",
+            "reason": "no_source_snapshot",
+            "lanes": [],
+        }
+    current = dict(snapshots[0])
+    previous = dict(snapshots[1]) if len(snapshots) > 1 else None
+    for snapshot in (current, previous):
+        if not snapshot:
+            continue
+        try:
+            snapshot["metadata"] = json.loads(snapshot.pop("metadata_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            snapshot["metadata"] = {}
+
+    def snapshot_files(snapshot_id: int, source_kind: str) -> dict[str, dict[str, Any]]:
+        return {
+            str(row.get("relative_path") or ""): row
+            for row in _all(
+                con,
+                """
+                SELECT relative_path, file_hash, size_bytes, source_mtime_ns
+                FROM source_tree_snapshot_files
+                WHERE snapshot_id = ? AND source_kind = ?
+                ORDER BY relative_path
+                """,
+                (snapshot_id, source_kind),
+            )
+            if row.get("relative_path")
+        }
+
+    def file_delta(source_kind: str) -> dict[str, Any]:
+        current_files = snapshot_files(_int(current.get("id")), source_kind)
+        previous_files = (
+            snapshot_files(_int(previous.get("id")), source_kind)
+            if previous
+            else {}
+        )
+        current_paths = set(current_files)
+        previous_paths = set(previous_files)
+        new_paths = sorted(current_paths - previous_paths) if previous else []
+        removed_paths = sorted(previous_paths - current_paths) if previous else []
+        changed_paths = sorted(
+            path
+            for path in current_paths & previous_paths
+            if current_files[path].get("file_hash")
+            != previous_files[path].get("file_hash")
+        ) if previous else []
+        preserved_paths = sorted(
+            path
+            for path in current_paths & previous_paths
+            if current_files[path].get("file_hash")
+            == previous_files[path].get("file_hash")
+        ) if previous else sorted(current_paths)
+        return {
+            "source_kind": source_kind,
+            "new_count": len(new_paths),
+            "changed_count": len(changed_paths),
+            "removed_count": len(removed_paths),
+            "preserved_count": len(preserved_paths),
+            "new_paths": new_paths,
+            "changed_paths": changed_paths,
+            "removed_paths": removed_paths,
+            "sample_paths": {
+                "new": new_paths[:8],
+                "changed": changed_paths[:8],
+                "removed": removed_paths[:8],
+            },
+        }
+
+    english_delta = file_delta("english")
+    spanish_delta = file_delta("spanish")
+
+    def segment_count(paths: list[str], active: int | None = None) -> int:
+        if not paths:
+            return 0
+        placeholders = ", ".join("?" for _ in paths)
+        active_sql = "" if active is None else " AND is_active = ?"
+        params: tuple[Any, ...] = (*paths, *(() if active is None else (active,)))
+        row = _one(
+            con,
+            f"""
+            SELECT COUNT(*) AS total
+            FROM source_segments
+            WHERE relative_path IN ({placeholders}){active_sql}
+            """,
+            params,
+        )
+        return _int(row.get("total"))
+
+    active_total = _int(
+        _one(
+            con,
+            "SELECT COUNT(*) AS total FROM source_segments WHERE is_active = 1",
+        ).get("total")
+    )
+    new_segments = segment_count(spanish_delta["new_paths"], active=1)
+    changed_segments = segment_count(spanish_delta["changed_paths"], active=1)
+    removed_segments = segment_count(spanish_delta["removed_paths"], active=0)
+    preserved_segments = max(active_total - new_segments - changed_segments, 0)
+    file_change_count = sum(
+        _int(delta.get(key))
+        for delta in (english_delta, spanish_delta)
+        for key in ("new_count", "changed_count", "removed_count")
+    )
+    has_previous = previous is not None
+    has_delta = has_previous and file_change_count > 0
+    current_snapshot_id = _int(current.get("id"))
+    adopted_epoch = (
+        _one(
+            con,
+            """
+            SELECT id, status, source_snapshot_id, segment_state_run_id,
+                   evaluated_at, published_at, updated_at
+            FROM quality_epochs
+            WHERE source_snapshot_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (current_snapshot_id,),
+        )
+        if current_snapshot_id and _table_exists(con, "quality_epochs")
+        else {}
+    )
+    snapshot_evaluated = bool(
+        adopted_epoch
+        and str(adopted_epoch.get("status") or "") in {"evaluated", "published"}
+    )
+    pending_source_evaluation = bool(has_delta and not snapshot_evaluated)
+    status = (
+        "change_pending_evaluation"
+        if pending_source_evaluation
+        else "change_evaluated"
+        if has_delta
+        else "source_stable"
+        if has_previous
+        else "baseline_ready"
+    )
+    lanes = [
+        {
+            "id": "new",
+            "label": "Novos",
+            "segment_count": new_segments,
+            "file_count": _int(spanish_delta.get("new_count")),
+            "action": "translate_from_zero",
+            "description": "Entram sem herdar decisão textual; podem reutilizar apenas conhecimento e contratos compatíveis.",
+        },
+        {
+            "id": "changed",
+            "label": "Alterados",
+            "segment_count": changed_segments,
+            "file_count": _int(spanish_delta.get("changed_count")),
+            "action": "revalidate_and_retranslate",
+            "description": "Preservam o histórico, mas score, evidências e tradução precisam ser revalidados contra o novo source.",
+        },
+        {
+            "id": "removed",
+            "label": "Removidos",
+            "segment_count": removed_segments,
+            "file_count": _int(spanish_delta.get("removed_count")),
+            "action": "archive_without_output",
+            "description": "Saem do pacote ativo e permanecem apenas no histórico para auditoria e possível retorno futuro.",
+        },
+        {
+            "id": "preserved",
+            "label": "Preservados",
+            "segment_count": preserved_segments,
+            "file_count": _int(spanish_delta.get("preserved_count")),
+            "action": "inherit_validated_state",
+            "description": "Herdam tradução, decisões e score ativo quando hashes e contratos continuam compatíveis.",
+        },
+    ]
+    return {
+        "instrumented": True,
+        "status": status,
+        "has_previous_snapshot": has_previous,
+        "has_delta": has_delta,
+        "can_prepare_incremental_cycle": has_delta,
+        "requires_full_evaluation": pending_source_evaluation,
+        "pending_source_evaluation": pending_source_evaluation,
+        "current_snapshot_evaluated": snapshot_evaluated,
+        "adopted_quality_epoch": adopted_epoch,
+        "current_snapshot": current,
+        "previous_snapshot": previous,
+        "file_delta": {
+            "total_changed": file_change_count,
+            "english": english_delta,
+            "spanish": spanish_delta,
+        },
+        "segment_delta": {
+            "contract": "file_exact_segment_affected_v1",
+            "new": new_segments,
+            "changed": changed_segments,
+            "removed": removed_segments,
+            "preserved": preserved_segments,
+            "active_total": active_total,
+            "note": "Arquivos são comparados por hash exato; segmentos alterados representam o conjunto afetado nos arquivos espanhóis modificados.",
+        },
+        "lanes": lanes,
+        "gates": {
+            "snapshot_frozen": True,
+            "raw_score_preserved": True,
+            "human_history_preserved": True,
+            "output_write_allowed": False,
+            "full_evaluation_required_before_publish": pending_source_evaluation,
+        },
+    }
+
+
 def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
@@ -7874,6 +13755,7 @@ def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
         quality_pattern_discovery = _quality_pattern_discovery_payload(con)
         quality_provider_proposals = _quality_provider_proposals_payload(con)
         quality_closed_observation_audit = _quality_closed_observation_audit_payload(con)
+        source_update_readiness = _source_update_readiness_payload(con)
         quality_epoch = (
             _one(
                 con,
@@ -7915,7 +13797,18 @@ def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
         quality_epoch["active_model_run_id"] = active_model_run_id or None
         quality_epoch["active_model_version"] = active_model.get("active_model_version")
         quality_epoch["model_is_active"] = epoch_model_is_active
-        if epoch_status not in {"scored", "evaluated"}:
+        score_preparation_required = _evaluation_requires_score_preparation(quality_epoch)
+        if score_preparation_required:
+            evaluation_gate = safety_status.setdefault("evaluation_gate", {})
+            evaluation_gate["preparation_required"] = True
+            evaluation_gate["blocking_reasons"] = [
+                reason for reason in evaluation_gate.get("blocking_reasons", [])
+                if reason != "quality_epoch_not_scored"
+            ]
+            if not evaluation_gate["blocking_reasons"]:
+                evaluation_gate["status"] = "liberada"
+                evaluation_gate["can_start_evaluation_full_production_now"] = True
+        if not _quality_epoch_has_scores(epoch_status) and not score_preparation_required:
             evaluation_gate = safety_status.setdefault("evaluation_gate", {})
             evaluation_gate["status"] = "bloqueada"
             evaluation_gate["can_start_evaluation_full_production_now"] = False
@@ -7936,7 +13829,7 @@ def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
             publication_reasons = publication_gate.setdefault("blocking_reasons", [])
             if "quality_epoch_model_not_active" not in publication_reasons:
                 publication_reasons.append("quality_epoch_model_not_active")
-        if segment_state["needs_apply"] and epoch_status != "evaluated":
+        if segment_state["needs_apply"] and not _quality_epoch_has_evaluation(epoch_status):
             publication_gate = safety_status.setdefault("publication_gate", {})
             publication_gate["status"] = "bloqueada"
             publication_gate["can_publish_after_full_production"] = False
@@ -8004,6 +13897,7 @@ def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
                 "promotion_provider_health": promotion_provider_health,
                 "provider_proposals": quality_provider_proposals,
                 "closed_observation_audit": quality_closed_observation_audit,
+                "source_update_readiness": source_update_readiness,
                 "latest_segment_state_run_id": segment_state["run_id"],
                 "latest_ledger_run_id": _latest_ledger_run_id(con, segment_state["run_id"]),
                 "quality_epoch": quality_epoch,
@@ -8068,6 +13962,7 @@ def _build_app_state_payload(db_path: Path) -> dict[str, Any]:
                 "source_output_update": {
                     **post_release_status.get("source_output_update", {}),
                     **safety_status.get("source_output_update", {}),
+                    "readiness": source_update_readiness,
                 },
                 "disk_preflight": disk_preflight,
                 "operational_integrity": {
@@ -8114,6 +14009,16 @@ def _refresh_dashboard_cache(db_path: Path) -> dict[str, Any]:
         "schema_version": DASHBOARD_CACHE_SCHEMA_VERSION,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "source_db_mtime": _db_mtime(db_path),
+        "source_low_score_segmented_shadow_run_id": (
+            _latest_low_score_segmented_shadow_run_id(db_path)
+        ),
+        "source_dynamic_score_holdout_id": _latest_dynamic_score_holdout_id(db_path),
+        "source_glossary_display_case_policy_signature": (
+            _glossary_display_case_policy_signature(db_path)
+        ),
+        "source_mojibake_lexicon_review_signature": (
+            _mojibake_lexicon_review_signature(db_path)
+        ),
         "app_state": payload,
     }
     cache_file = _dashboard_cache_file()
@@ -8126,17 +14031,62 @@ def _refresh_dashboard_cache(db_path: Path) -> dict[str, Any]:
 def _get_dashboard_cache(db_path: Path, *, force: bool = False) -> dict[str, Any]:
     global DASHBOARD_CACHE
     with DASHBOARD_CACHE_LOCK:
+        current_shadow_run_id = _latest_low_score_segmented_shadow_run_id(db_path)
+        current_dynamic_holdout_id = _latest_dynamic_score_holdout_id(db_path)
+        current_glossary_policy_signature = (
+            _glossary_display_case_policy_signature(db_path)
+        )
+        current_mojibake_review_signature = (
+            _mojibake_lexicon_review_signature(db_path)
+        )
+
+        def cache_is_current(candidate: dict[str, Any]) -> bool:
+            if int(candidate.get("schema_version") or 0) != DASHBOARD_CACHE_SCHEMA_VERSION:
+                return False
+            cached_shadow_run_id = candidate.get(
+                "source_low_score_segmented_shadow_run_id"
+            )
+            shadow_is_current = (
+                current_shadow_run_id is None
+                or _int(cached_shadow_run_id) == current_shadow_run_id
+            )
+            dynamic_holdout_is_current = (
+                current_dynamic_holdout_id is None
+                or _int(candidate.get("source_dynamic_score_holdout_id"))
+                == current_dynamic_holdout_id
+            )
+            glossary_policy_is_current = (
+                current_glossary_policy_signature is None
+                or candidate.get(
+                    "source_glossary_display_case_policy_signature"
+                )
+                == current_glossary_policy_signature
+            )
+            mojibake_review_is_current = (
+                current_mojibake_review_signature is None
+                or candidate.get(
+                    "source_mojibake_lexicon_review_signature"
+                )
+                == current_mojibake_review_signature
+            )
+            return (
+                shadow_is_current
+                and dynamic_holdout_is_current
+                and glossary_policy_is_current
+                and mojibake_review_is_current
+            )
+
         if (
             not force
             and DASHBOARD_CACHE is not None
-            and int(DASHBOARD_CACHE.get("schema_version") or 0) == DASHBOARD_CACHE_SCHEMA_VERSION
+            and cache_is_current(DASHBOARD_CACHE)
         ):
             return DASHBOARD_CACHE
         cache_file = _dashboard_cache_file()
         if not force and cache_file.exists():
             try:
                 candidate = json.loads(cache_file.read_text(encoding="utf-8"))
-                if int(candidate.get("schema_version") or 0) == DASHBOARD_CACHE_SCHEMA_VERSION:
+                if cache_is_current(candidate):
                     DASHBOARD_CACHE = candidate
                     return DASHBOARD_CACHE
             except json.JSONDecodeError:
@@ -8152,14 +14102,16 @@ DIAGNOSTIC_PHASE_BLUEPRINT = (
 )
 
 DIAGNOSTIC_STAGE_METADATA = {
-    "source_tree_snapshot": ("state", "Fotografar árvore de fontes"),
+    "source_update_sync": ("state", "Verificar e sincronizar arquivos de origem"),
     "quality_epoch_open": ("state", "Abrir ou reutilizar epoch"),
     "score_package_old": ("state", "Pontuar baseline"),
     "score_package_output": ("state", "Pontuar output"),
     "score_package_policy": ("state", "Calibrar política de score"),
     "quality_epoch_finalize": ("state", "Fixar scores da epoch"),
     "quality_epoch_contract": ("state", "Validar contrato da epoch"),
+    "supervised_learning_apply": ("state", "Consolidar decisões humanas no aprendizado"),
     "segment_state": ("state", "Recalcular segment-state"),
+    "offline_correction_candidates": ("suggestions", "Gerar novas correções determinísticas"),
     "quality_promotion_discovery": ("discovery", "Descobrir e registrar sugestões"),
     "quality_epoch_noop_close": ("consolidation", "Fechar epoch sem alterações"),
     "dashboard_cache": ("consolidation", "Consolidar cache e painel"),
@@ -8334,7 +14286,9 @@ DIAGNOSTIC_STAGE_EXPECTED_SECONDS = {
     "score_package_output": 300,
     "score_package_policy": 60,
     "quality_epoch_finalize": 30,
+    "supervised_learning_apply": 60,
     "segment_state": 600,
+    "offline_correction_candidates": 300,
     "quality_promotion_discovery": 120,
     "quality_epoch_noop_close": 30,
 }
@@ -8353,6 +14307,7 @@ def _run_diagnostic_command(
     timeout: int,
     heartbeat_interval: float = 5.0,
 ) -> subprocess.CompletedProcess[str]:
+    command = _normalize_pipeline_command(command)
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     process = subprocess.Popen(
@@ -8525,7 +14480,7 @@ def _resumable_diagnostic_segment_state_run_id(
 def _diagnostic_stage_timeout(stage_id: str) -> int:
     if stage_id.startswith("score_package_"):
         return 7200
-    if stage_id == "segment_state":
+    if stage_id in {"segment_state", "offline_correction_candidates"}:
         return 1800
     return 900
 
@@ -8543,8 +14498,8 @@ def _run_diagnostic_segment_state(db_path: Path) -> dict[str, Any]:
 
     epoch_bootstrap_commands = [
         (
-            "source_tree_snapshot",
-            [sys.executable, "pipeline/source_tree_snapshot.py", "--label", "diagnostic_quality_epoch"],
+            "source_update_sync",
+            [sys.executable, "pipeline/source_update_sync.py", "--label", "diagnostic_quality_epoch"],
         ),
         (
             "quality_epoch_open",
@@ -8554,8 +14509,16 @@ def _run_diagnostic_segment_state(db_path: Path) -> dict[str, Any]:
     scoring_commands: list[tuple[str, list[str]]] = []
     analysis_commands = [
         (
+            "supervised_learning_apply",
+            [sys.executable, "pipeline/main.py", "learn-feedback"],
+        ),
+        (
             "segment_state",
             [sys.executable, "pipeline/main.py", "segment-state"],
+        ),
+        (
+            "offline_correction_candidates",
+            [sys.executable, "pipeline/offline_residual_proposals.py", "--limit", "5000"],
         ),
         (
             "quality_promotion_discovery",
@@ -8754,7 +14717,7 @@ def _run_diagnostic_segment_state(db_path: Path) -> dict[str, Any]:
                         ["--segment-state-run-id", str(resumed_segment_state_run_id)]
                     )
                 attach_process = subprocess.run(
-                    attach_command,
+                    _normalize_pipeline_command(attach_command),
                     cwd=str(ROOT),
                     capture_output=True,
                     text=True,
@@ -8851,8 +14814,9 @@ def _app_state_payload(db_path: Path, *, force: bool = False) -> dict[str, Any]:
     # mas a run atual é pequena e persistida separadamente. Sobrepor somente esse
     # estado evita que o frontend volte a exibir uma run concluída/placeholder no
     # meio de Diagnóstico, Avaliação ou Publicação.
-    run = _read_production_run_status()
-    if run.get("run_id"):
+    historical_run = _read_production_run_status()
+    if historical_run.get("run_id"):
+        run, reconciliation = _production_run_for_current_state(app_state, historical_run)
         stages = run.get("stages")
         stages = stages if isinstance(stages, list) else []
         production = dict(app_state.get("production") or {})
@@ -8865,6 +14829,18 @@ def _app_state_payload(db_path: Path, *, force: bool = False) -> dict[str, Any]:
                 "stages_compact": _cache_stage_compact(stages),
             }
         )
+        if reconciliation:
+            production["last_failed_run"] = historical_run
+            production["run_reconciliation"] = reconciliation
+        elif run.get("reconciled"):
+            persisted_failure = run.get("last_failed_run")
+            if isinstance(persisted_failure, dict) and persisted_failure.get("run_id"):
+                production["last_failed_run"] = persisted_failure
+            persisted_reconciliation = run.get("reconciliation")
+            if isinstance(persisted_reconciliation, dict):
+                production["run_reconciliation"] = persisted_reconciliation
+        else:
+            production.pop("run_reconciliation", None)
         app_state["production"] = production
     return app_state
 
@@ -8927,7 +14903,11 @@ def _publication_lifecycle_apply_readiness(
         con.execute("PRAGMA query_only = ON")
         try:
             selected_state_run_id = _int(state_run_id) or _int(_latest_segment_state_summary(con).get("run_id"))
-            ledger_run_id = _latest_ledger_run_id(con, selected_state_run_id)
+            # O segment-state intermediario existe apenas para confirmar a escrita
+            # por segmento e nao materializa um novo issue-ledger. O proprio
+            # materializador governa evidencias pelo ultimo ledger concluido;
+            # a pre-validacao deve usar exatamente o mesmo contrato.
+            ledger_run_id = bridge.latest_finished_ledger_run_id(con)
             if not selected_state_run_id or not ledger_run_id:
                 return {
                     "available": False,
@@ -8961,30 +14941,50 @@ def _publication_lifecycle_apply_readiness(
 
     result_counts: dict[str, int] = {}
     ready = 0
+    ready_ids: list[int] = []
+    blocked_items: list[dict[str, Any]] = []
     for row in rows:
         if row.get("policy_allowed"):
             ready += 1
+            ready_ids.append(_int(row.get("segment_id")))
             result_counts["ready"] = result_counts.get("ready", 0) + 1
         else:
             reason = str(row.get("block_reason") or "blocked")
             result_counts[reason] = result_counts.get(reason, 0) + 1
+            blocked_items.append(
+                {
+                    "segment_id": _int(row.get("segment_id")),
+                    "reason": reason,
+                    "relative_path": row.get("relative_path"),
+                    "source_key": row.get("source_key"),
+                }
+            )
     missing = max(0, len(segment_ids) - len(rows))
     if missing:
         result_counts["missing_from_materializer"] = result_counts.get("missing_from_materializer", 0) + missing
+        returned_ids = {_int(row.get("segment_id")) for row in rows}
+        blocked_items.extend(
+            {"segment_id": segment_id, "reason": "missing_from_materializer", "relative_path": None, "source_key": None}
+            for segment_id in segment_ids
+            if segment_id not in returned_ids
+        )
     return {
         "available": True,
         "state_run_id": state_run_id,
+        "ledger_run_id": ledger_run_id,
         "candidates": len(segment_ids),
         "materializer_rows": len(rows),
         "ready": ready,
+        "ready_ids": ready_ids,
         "blocked": max(0, len(segment_ids) - ready),
+        "blocked_items": blocked_items,
         "result_counts": result_counts,
         "policy_name": getattr(bridge, "POLICY_NAME", "human_confirmed_post_apply_repair_lifecycle_bridge"),
         "policy_action": getattr(bridge, "POLICY_ACTION", "close_reopen_human_confirmed_post_apply_repair_lifecycle"),
     }
 
 
-def _publication_preflight_payload(db_path: Path, *, force: bool = False) -> dict[str, Any]:
+def _publication_preflight_payload(db_path: Path, *, force: bool = True) -> dict[str, Any]:
     app_state = _app_state_payload(db_path, force=force)
     release = app_state.get("release") or {}
     post_release = release.get("post_release") or {}
@@ -8996,18 +14996,30 @@ def _publication_preflight_payload(db_path: Path, *, force: bool = False) -> dic
 
     state_run_id = _int(release.get("latest_segment_state_run_id")) or None
     apply_records = diff_review.get("apply_segments") if isinstance(diff_review.get("apply_segments"), list) else []
-    apply_count = _int(diff_summary.get("needs_apply"), len(apply_records))
     apply_preview_count = len(apply_records)
-    apply_segment_ids = _publication_apply_segment_ids({"app_state": app_state})
     apply_kind_counts: dict[str, int] = {}
     for record in apply_records:
         if not isinstance(record, dict):
             continue
         kind = str(record.get("apply_kind") or "unknown")
         apply_kind_counts[kind] = apply_kind_counts.get(kind, 0) + 1
-    lifecycle_apply_count = apply_kind_counts.get("lifecycle_closure", 0)
-    output_apply_count = apply_kind_counts.get("output_write", 0)
-    mixed_apply_kind = len([count for count in apply_kind_counts.values() if count > 0]) > 1
+    lifecycle_apply_count = _int(
+        diff_summary.get("lifecycle_apply_count"),
+        apply_kind_counts.get("lifecycle_closure", 0),
+    )
+    output_apply_count = _int(
+        diff_summary.get("output_apply_count"),
+        apply_kind_counts.get("output_write", 0),
+    )
+    apply_count = lifecycle_apply_count + output_apply_count
+    apply_segment_ids = _publication_apply_segment_ids(
+        {"app_state": app_state},
+        db_path=db_path,
+        state_run_id=state_run_id,
+        output_apply_count=output_apply_count,
+    )
+    apply_population_count = len(apply_segment_ids)
+    mixed_apply_kind = lifecycle_apply_count > 0 and output_apply_count > 0
     token_policy_run_id = _latest_apply_token_policy_run_id(db_path, state_run_id) if output_apply_count > 0 else None
     apply_readiness = (
         _publication_lifecycle_apply_readiness(
@@ -9130,25 +15142,25 @@ def _publication_preflight_payload(db_path: Path, *, force: bool = False) -> dic
     can_publish_now = not blocking_reasons and publication_gate.get("can_publish_after_full_production_now") is True
     can_apply_normal = (
         apply_count > 0
-        and apply_preview_count == apply_count
+        and apply_population_count == apply_count
         and output_apply_count == apply_count
         and apply_ready_count == apply_count
     )
     can_apply_token_policy = (
         apply_count > 0
-        and apply_preview_count == apply_count
+        and apply_population_count == apply_count
         and output_apply_count == apply_count
         and apply_policy_ready_count == apply_count
     )
     can_apply_mixed_token_policy = (
         apply_count > 0
-        and apply_preview_count == apply_count
+        and apply_population_count == apply_count
         and output_apply_count == apply_count
         and apply_mixed_ready_count == apply_count
     )
     can_apply_lifecycle = (
         apply_count > 0
-        and apply_preview_count == apply_count
+        and apply_population_count == apply_count
         and lifecycle_apply_count == apply_count
         and apply_ready_count == apply_count
     )
@@ -9195,6 +15207,7 @@ def _publication_preflight_payload(db_path: Path, *, force: bool = False) -> dic
         "counts": {
             "needs_apply": apply_count,
             "apply_preview": apply_preview_count,
+            "apply_population": apply_population_count,
             "apply_lifecycle": lifecycle_apply_count,
             "apply_output_write": output_apply_count,
             "apply_kind_mixed": 1 if mixed_apply_kind else 0,
@@ -9274,7 +15287,13 @@ def _compact_publication_preflight_payload(payload: dict[str, Any]) -> dict[str,
     }
 
 
-def _publication_apply_segment_ids(preflight_payload: dict[str, Any]) -> list[int]:
+def _publication_apply_segment_ids(
+    preflight_payload: dict[str, Any],
+    *,
+    db_path: Path | None = None,
+    state_run_id: int | None = None,
+    output_apply_count: int | None = None,
+) -> list[int]:
     app_state = preflight_payload.get("app_state") if isinstance(preflight_payload, dict) else {}
     release = app_state.get("release") if isinstance(app_state, dict) else {}
     post_release = release.get("post_release") if isinstance(release, dict) else {}
@@ -9283,9 +15302,43 @@ def _publication_apply_segment_ids(preflight_payload: dict[str, Any]) -> list[in
     for item in diff_review.get("apply_segments") or []:
         if not isinstance(item, dict):
             continue
+        if db_path is not None and output_apply_count and item.get("apply_kind") == "output_write":
+            continue
         segment_id = _int(item.get("segment_id"))
         if segment_id:
             segment_ids.append(segment_id)
+    if db_path is not None and state_run_id and output_apply_count:
+        try:
+            con = sqlite3.connect(db_path)
+            try:
+                rows = con.execute(
+                    """
+                    SELECT state.segment_id
+                    FROM segment_state_items state
+                    JOIN source_segments source
+                      ON source.id = state.segment_id
+                     AND source.is_active = 1
+                    WHERE state.run_id = ?
+                      AND COALESCE(state.needs_output_apply, 0) = 1
+                    ORDER BY
+                      COALESCE(state.priority_score, 0) DESC,
+                      state.relative_path,
+                      state.source_line_number,
+                      state.segment_id
+                    """,
+                    (state_run_id,),
+                ).fetchall()
+            finally:
+                con.close()
+            segment_ids.extend(int(row[0]) for row in rows)
+        except sqlite3.Error:
+            # Preserve the preview fallback; the population mismatch blocks apply.
+            for item in diff_review.get("apply_segments") or []:
+                if not isinstance(item, dict) or item.get("apply_kind") != "output_write":
+                    continue
+                segment_id = _int(item.get("segment_id"))
+                if segment_id:
+                    segment_ids.append(segment_id)
     return list(dict.fromkeys(segment_ids))
 
 
@@ -9413,10 +15466,92 @@ def _publication_apply_readiness(
     }
 
 
-def _write_production_run_status(status: dict[str, Any]) -> None:
+def _write_production_run_status(status: dict[str, Any]) -> bool:
     status["updated_at"] = _now_iso()
     PRODUCTION_RUN_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PRODUCTION_RUN_STATUS_FILE.write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    status.pop("status_persistence_warning", None)
+    status.pop("status_persistence_error_at", None)
+    serialized = json.dumps(status, ensure_ascii=False, indent=2) + "\n"
+    last_error: OSError | None = None
+
+    # OneDrive and antivirus scanners can briefly hold the destination file on
+    # Windows.  Keep the last valid JSON intact, serialize concurrent heartbeat
+    # writers, and retry an atomic replace instead of truncating the live file.
+    with PRODUCTION_STATUS_WRITE_LOCK:
+        for attempt in range(PRODUCTION_STATUS_WRITE_ATTEMPTS):
+            temporary_path = PRODUCTION_RUN_STATUS_FILE.with_name(
+                f".{PRODUCTION_RUN_STATUS_FILE.name}.{os.getpid()}."
+                f"{threading.get_ident()}.{attempt}.tmp"
+            )
+            try:
+                temporary_path.write_text(serialized, encoding="utf-8")
+                os.replace(temporary_path, PRODUCTION_RUN_STATUS_FILE)
+                return True
+            except OSError as exc:
+                last_error = exc
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                if attempt + 1 < PRODUCTION_STATUS_WRITE_ATTEMPTS:
+                    delay = min(
+                        PRODUCTION_STATUS_WRITE_RETRY_SECONDS * (2**attempt),
+                        0.5,
+                    )
+                    time.sleep(delay)
+
+    # Status persistence is telemetry and must not terminate an otherwise safe
+    # pipeline command.  A later heartbeat will retry and persist this warning.
+    status["status_persistence_warning"] = str(last_error or "status write failed")
+    status["status_persistence_error_at"] = _now_iso()
+    return False
+
+
+def _recover_orphaned_production_run_on_startup() -> dict[str, Any]:
+    """Close a run whose in-process worker disappeared with the previous API."""
+    status = _read_production_run_status()
+    if status.get("status") not in {"starting", "running"}:
+        return status
+
+    interrupted_at = _now_iso()
+    previous_event_at = str(
+        status.get("last_event_at")
+        or status.get("updated_at")
+        or status.get("started_at")
+        or ""
+    )
+    current_stage_id = str(status.get("current_stage") or "")
+    current_stage = next(
+        (
+            stage
+            for stage in status.get("stages") or []
+            if isinstance(stage, dict)
+            and (
+                stage.get("id") == current_stage_id
+                or (not current_stage_id and stage.get("status") == "running")
+            )
+        ),
+        None,
+    )
+    if current_stage is not None and current_stage.get("status") in {"pending", "starting", "running"}:
+        current_stage["status"] = "cancelled"
+        current_stage["finished_at"] = interrupted_at
+        current_stage["updated_at"] = interrupted_at
+        current_stage["interruption_reason"] = "backend_restarted_without_live_worker"
+
+    status["status"] = "cancelled"
+    status["finished_at"] = interrupted_at
+    status["interrupted_at"] = interrupted_at
+    status["last_worker_event_at"] = previous_event_at
+    status["interruption_reason"] = "backend_restarted_without_live_worker"
+    status["message"] = "Execução anterior interrompida pelo encerramento do sistema."
+    status["current_label"] = "Execução interrompida"
+    _append_run_log(
+        status,
+        "[recovery] Execução órfã encerrada na inicialização; nenhum worker foi retomado.",
+    )
+    _write_production_run_status(status)
+    return status
 
 
 def _production_run_active() -> bool:
@@ -9496,6 +15631,9 @@ def _new_publication_apply_status(run_id: str) -> dict[str, Any]:
         {"id": "apply_confirmed_dry_run", "label": "Dry-run apply confirmado", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "apply_confirmed_write", "label": "Aplicar fila confirmada", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "pairwise_lifecycle_bridge", "label": "Consolidar reparos pareados", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "segment_state_after_write", "label": "Verificar escrita por segmento", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "human_lifecycle_dry_run", "label": "Validar confirmações humanas", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
+        {"id": "human_lifecycle_bridge", "label": "Consolidar confirmações humanas", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "segment_state_after", "label": "Segment-state pos-apply", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "publication_preflight_after", "label": "Preflight pos-apply", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
         {"id": "production_report", "label": "Relatorio final", "status": "pending", "started_at": "", "finished_at": "", "exit_code": None},
@@ -9521,6 +15659,75 @@ def _new_publication_apply_status(run_id: str) -> dict[str, Any]:
         "logs_tail": [],
         "message": "Publication apply run queued.",
         "publication_apply_segment_ids": [],
+    }
+
+
+def _completed_materialization_status(payload: dict[str, Any]) -> dict[str, Any]:
+    """Expose synchronous materialization as its own completed UI run."""
+    now = _now_iso()
+    version_number = _int(payload.get("version_number"))
+    changed_count = _int(payload.get("changed_count"))
+    item_count = _int(payload.get("item_count"))
+    state_run_id = _int(payload.get("segment_state_run_id"))
+    run_id = f"{_production_run_id()}_materialize_v{version_number}"
+    stage_specs = (
+        ("publication_preflight", "Gates de materialização"),
+        ("apply_confirmed_write", "Baseline atualizada"),
+        ("segment_state_after", "Output validado"),
+        ("production_report", "Nova versão registrada"),
+    )
+    stages = [
+        {
+            "id": stage_id,
+            "label": label,
+            "status": "done",
+            "started_at": now,
+            "updated_at": now,
+            "finished_at": now,
+            "exit_code": 0,
+            "progress_pct": 100,
+            "metrics": {
+                "version_number": version_number,
+                "changed_count": changed_count,
+                "item_count": item_count,
+                "segment_state_run_id": state_run_id,
+            },
+        }
+        for stage_id, label in stage_specs
+    ]
+    return {
+        "run_id": run_id,
+        "status": "completed",
+        "mode": "publication_materialize_version",
+        "run_mode": "publication",
+        "apply_output": False,
+        "started_at": now,
+        "updated_at": now,
+        "finished_at": now,
+        "last_event_at": now,
+        "current_stage": "production_report",
+        "current_label": "Nova versão materializada",
+        "stages": stages,
+        "message": (
+            f"Baseline materializada v{version_number} concluída; "
+            f"{changed_count} alterações incorporadas e fila Pacote limpa."
+        ),
+        "version_number": version_number,
+        "version_id": _int(payload.get("version_id")),
+        "changed_count": changed_count,
+        "item_count": item_count,
+        "new_segment_state_run_id": state_run_id,
+        "materialization_started": True,
+        "output_changed": changed_count > 0,
+        "next_action": "await_new_applies",
+        "report_path": str(payload.get("manifest_path") or ""),
+        "report_paths": [str(payload.get("manifest_path"))]
+        if payload.get("manifest_path")
+        else [],
+        "logs_tail": [
+            f"[materialization] v{version_number} materializada com {changed_count} alterações.",
+            "[materialization] Apply=0; Pacote=0; aguardando novas promoções.",
+        ],
     }
 
 
@@ -10045,6 +16252,7 @@ def _run_package_score_recalibration_stage(status: dict[str, Any], log_handle) -
 
 
 def _run_production_command(status: dict[str, Any], *, stage_id: str, command: list[str], log_handle) -> int:
+    command = _normalize_pipeline_command(command)
     stage_started_at = _now_iso()
     _update_stage(status, stage_id, status="running", started_at=stage_started_at, updated_at=stage_started_at, progress_pct=0)
     status["status"] = "running"
@@ -10341,7 +16549,7 @@ def _stage_metrics(status: dict[str, Any], stage_id: str) -> dict[str, Any]:
 
 def _quality_epoch_command(*args: str) -> dict[str, Any]:
     process = subprocess.run(
-        [sys.executable, "pipeline/quality_epoch.py", *args],
+        [PIPELINE_PYTHON, "pipeline/quality_epoch.py", *args],
         cwd=str(ROOT),
         capture_output=True,
         text=True,
@@ -10363,7 +16571,7 @@ def _quality_epoch_command(*args: str) -> dict[str, Any]:
 
 
 def _materialize_version_command(*, apply: bool) -> dict[str, Any]:
-    command = [sys.executable, "pipeline/materialize_package_version.py"]
+    command = [PIPELINE_PYTHON, "pipeline/materialize_package_version.py"]
     if apply:
         command.append("--apply")
     process = subprocess.run(
@@ -10404,8 +16612,13 @@ def _run_publication_preflight_stage(
     if not isinstance(preflight, dict):
         preflight = {}
     counts = preflight.get("counts") if isinstance(preflight.get("counts"), dict) else {}
-    segment_ids = _publication_apply_segment_ids(payload)
     expected_apply_count = _int(counts.get("needs_apply"))
+    segment_ids = _publication_apply_segment_ids(
+        payload,
+        db_path=ACTIVE_DB_PATH,
+        state_run_id=_int(preflight.get("segment_state_run_id")) or None,
+        output_apply_count=_int(counts.get("apply_output_write")),
+    )
     status["publication_preflight"] = preflight
     status["publication_apply_segment_ids"] = segment_ids
     metrics = {
@@ -10474,7 +16687,8 @@ def _publication_pairwise_segment_ids(db_path: Path, segment_ids: list[int]) -> 
     if not segment_ids:
         return []
     placeholders = ",".join("?" for _ in segment_ids)
-    with sqlite3.connect(db_path) as con:
+    con = sqlite3.connect(db_path)
+    try:
         rows = con.execute(
             f"""
             SELECT segment_id
@@ -10485,14 +16699,58 @@ def _publication_pairwise_segment_ids(db_path: Path, segment_ids: list[int]) -> 
             """,
             segment_ids,
         ).fetchall()
+    finally:
+        con.close()
+    return [int(row[0]) for row in rows]
+
+
+def _publication_human_lifecycle_segment_ids(db_path: Path, segment_ids: list[int]) -> list[int]:
+    """Return applied confirmations governed by the human-learning lifecycle bridge."""
+
+    if not segment_ids:
+        return []
+    placeholders = ",".join("?" for _ in segment_ids)
+    con = sqlite3.connect(db_path)
+    try:
+        rows = con.execute(
+            f"""
+            SELECT segment_id
+            FROM segment_confirmations
+            WHERE segment_id IN ({placeholders})
+              AND confirmation_level = 'human_confirmed'
+              AND COALESCE(locked, 0) = 1
+              AND confirmation_source IN (
+                'codex_release_promotion_review',
+                'codex_release_readiness_human_review',
+                'local_learning',
+                'post_apply_human_correction'
+              )
+            ORDER BY segment_id
+            """,
+            segment_ids,
+        ).fetchall()
+    finally:
+        con.close()
     return [int(row[0]) for row in rows]
 
 
 def _validate_publication_segments_closed(db_path: Path, segment_ids: list[int]) -> dict[str, Any]:
     if not segment_ids:
-        return {"segment_state_run_id": 0, "expected": 0, "closed": 0, "blocked": 0, "blocked_ids": []}
+        return {
+            "segment_state_run_id": 0,
+            "expected": 0,
+            "closed": 0,
+            "blocked": 0,
+            "blocked_ids": [],
+            "write_failed": 0,
+            "write_failed_ids": [],
+            "lifecycle_blocked": 0,
+            "lifecycle_blocked_ids": [],
+            "items": [],
+        }
     placeholders = ",".join("?" for _ in segment_ids)
-    with sqlite3.connect(db_path) as con:
+    con = sqlite3.connect(db_path)
+    try:
         con.row_factory = sqlite3.Row
         run_row = con.execute(
             "SELECT id FROM segment_state_runs WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1"
@@ -10507,9 +16765,14 @@ def _validate_publication_segments_closed(db_path: Path, segment_ids: list[int])
               state.state_group,
               state.final_state,
               COALESCE(state.needs_output_apply, 0) AS needs_output_apply,
+              source.relative_path,
+              source.source_key,
               output.portuguese_text AS output_text,
-              confirmation.confirmed_text
+              confirmation.confirmed_text,
+              confirmation.confirmation_source,
+              confirmation.confirmation_label
             FROM segment_state_items state
+            LEFT JOIN source_segments source ON source.id = state.segment_id
             LEFT JOIN output_segments output ON output.segment_id = state.segment_id
             LEFT JOIN segment_confirmations confirmation ON confirmation.segment_id = state.segment_id
             WHERE state.run_id = ?
@@ -10517,23 +16780,58 @@ def _validate_publication_segments_closed(db_path: Path, segment_ids: list[int])
             """,
             (state_run_id, *segment_ids),
         ).fetchall()
+    finally:
+        con.close()
     by_id = {int(row["segment_id"]): row for row in rows}
-    blocked_ids = []
+    closed_ids: list[int] = []
+    write_failed_ids: list[int] = []
+    lifecycle_blocked_ids: list[int] = []
+    items: list[dict[str, Any]] = []
     for segment_id in segment_ids:
         row = by_id.get(segment_id)
-        if (
-            row is None
-            or row["state_group"] != "closed"
-            or int(row["needs_output_apply"] or 0) != 0
-            or row["output_text"] != row["confirmed_text"]
-        ):
-            blocked_ids.append(segment_id)
+        output_matches_confirmation = bool(
+            row is not None
+            and row["confirmed_text"] is not None
+            and _package_compare_text(row["output_text"]) == _package_compare_text(row["confirmed_text"])
+        )
+        needs_output_apply = int(row["needs_output_apply"] or 0) if row is not None else 1
+        if row is not None and output_matches_confirmation and needs_output_apply == 0:
+            if row["state_group"] == "closed":
+                result = "closed"
+                closed_ids.append(segment_id)
+            else:
+                result = "lifecycle_blocked"
+                lifecycle_blocked_ids.append(segment_id)
+        else:
+            result = "write_failed"
+            write_failed_ids.append(segment_id)
+        items.append(
+            {
+                "segment_id": segment_id,
+                "result": result,
+                "relative_path": row["relative_path"] if row is not None else None,
+                "source_key": row["source_key"] if row is not None else None,
+                "state_group": row["state_group"] if row is not None else None,
+                "final_state": row["final_state"] if row is not None else None,
+                "needs_output_apply": needs_output_apply,
+                "output_matches_confirmation": output_matches_confirmation,
+                "confirmation_source": row["confirmation_source"] if row is not None else None,
+                "confirmation_label": row["confirmation_label"] if row is not None else None,
+            }
+        )
+    blocked_ids = [*write_failed_ids, *lifecycle_blocked_ids]
     return {
         "segment_state_run_id": state_run_id,
         "expected": len(segment_ids),
-        "closed": len(segment_ids) - len(blocked_ids),
+        "closed": len(closed_ids),
+        "closed_ids": closed_ids,
         "blocked": len(blocked_ids),
         "blocked_ids": blocked_ids,
+        "write_failed": len(write_failed_ids),
+        "write_failed_ids": write_failed_ids,
+        "lifecycle_blocked": len(lifecycle_blocked_ids),
+        "lifecycle_blocked_ids": lifecycle_blocked_ids,
+        "items": items,
     }
 
 
@@ -10550,7 +16848,7 @@ def _publication_apply_worker(run_id: str) -> None:
                 status,
                 log_handle,
                 stage_id="publication_preflight",
-                force=False,
+                force=True,
                 require_apply_queue=True,
             )
             segment_ids_csv = ",".join(str(segment_id) for segment_id in segment_ids)
@@ -10692,6 +16990,116 @@ def _publication_apply_worker(run_id: str) -> None:
                     metrics={"expected": 0, "released": 0, "blocked": 0},
                     message="Pairwise lifecycle bridge not required.",
                 )
+            human_lifecycle_ids = (
+                _publication_human_lifecycle_segment_ids(ACTIVE_DB_PATH, segment_ids)
+                if apply_strategy != "lifecycle_closure"
+                else []
+            )
+            if human_lifecycle_ids:
+                state_exit = _run_production_command(
+                    status,
+                    stage_id="segment_state_after_write",
+                    command=[sys.executable, "pipeline/main.py", "segment-state"],
+                    log_handle=log_handle,
+                )
+                if state_exit != 0:
+                    raise RuntimeError("Publication per-segment write verification failed.")
+                intermediate_state_run_id = _int(
+                    _validate_publication_segments_closed(ACTIVE_DB_PATH, human_lifecycle_ids).get(
+                        "segment_state_run_id"
+                    )
+                )
+                learning_run_id = _latest_local_learning_run_id(ACTIVE_DB_PATH)
+                if not intermediate_state_run_id:
+                    raise RuntimeError("Publication human lifecycle blocked: missing post-write segment-state run id.")
+                if not learning_run_id:
+                    raise RuntimeError("Publication human lifecycle blocked: missing learning run id.")
+                lifecycle_readiness = _publication_lifecycle_apply_readiness(
+                    ACTIVE_DB_PATH,
+                    state_run_id=intermediate_state_run_id,
+                    segment_ids=human_lifecycle_ids,
+                )
+                status["publication_human_lifecycle_readiness"] = lifecycle_readiness
+                ready_human_ids = [
+                    _int(segment_id)
+                    for segment_id in lifecycle_readiness.get("ready_ids") or []
+                    if _int(segment_id)
+                ]
+                if ready_human_ids:
+                    ready_human_ids_csv = ",".join(str(segment_id) for segment_id in ready_human_ids)
+                    human_lifecycle_command = [
+                        sys.executable,
+                        "pipeline/human_confirmed_local_learning_lifecycle_policy_materializer.py",
+                        "--learning-run-id",
+                        str(learning_run_id),
+                        "--segment-state-run-id",
+                        str(intermediate_state_run_id),
+                        "--segment-ids",
+                        ready_human_ids_csv,
+                    ]
+                    human_dry_exit = _run_production_command(
+                        status,
+                        stage_id="human_lifecycle_dry_run",
+                        command=human_lifecycle_command,
+                        log_handle=log_handle,
+                    )
+                    if human_dry_exit != 0:
+                        raise RuntimeError("Publication human lifecycle dry-run failed.")
+                    human_dry_metrics = _stage_metrics(status, "human_lifecycle_dry_run")
+                    human_released = _int(human_dry_metrics.get("released"))
+                    human_blocked = _int(human_dry_metrics.get("blocked"))
+                    if human_released != len(ready_human_ids) or human_blocked:
+                        raise RuntimeError(
+                            "Publication human lifecycle dry-run mismatch: "
+                            f"released {human_released}, blocked {human_blocked}, "
+                            f"expected {len(ready_human_ids)}."
+                        )
+                    human_bridge_exit = _run_production_command(
+                        status,
+                        stage_id="human_lifecycle_bridge",
+                        command=[*human_lifecycle_command, "--apply"],
+                        log_handle=log_handle,
+                    )
+                    if human_bridge_exit != 0:
+                        raise RuntimeError("Publication human lifecycle consolidation failed.")
+                    human_bridge_metrics = _stage_metrics(status, "human_lifecycle_bridge")
+                    human_released = _int(human_bridge_metrics.get("released"))
+                    human_blocked = _int(human_bridge_metrics.get("blocked"))
+                    if human_released != len(ready_human_ids) or human_blocked:
+                        raise RuntimeError(
+                            "Publication human lifecycle consolidation mismatch: "
+                            f"released {human_released}, blocked {human_blocked}, "
+                            f"expected {len(ready_human_ids)}."
+                        )
+                else:
+                    for stage_id, message in (
+                        ("human_lifecycle_dry_run", "No human confirmation passed lifecycle readiness."),
+                        ("human_lifecycle_bridge", "No human confirmation was consolidated."),
+                    ):
+                        _start_inline_stage(status, stage_id, message, log_handle)
+                        _finish_inline_stage(
+                            status,
+                            stage_id,
+                            metrics={
+                                "expected": len(human_lifecycle_ids),
+                                "released": 0,
+                                "blocked": len(human_lifecycle_ids),
+                            },
+                            message=message,
+                        )
+            else:
+                for stage_id, message in (
+                    ("segment_state_after_write", "Intermediate segment-state is not required."),
+                    ("human_lifecycle_dry_run", "No human confirmations require lifecycle validation."),
+                    ("human_lifecycle_bridge", "No human confirmations require lifecycle consolidation."),
+                ):
+                    _start_inline_stage(status, stage_id, message, log_handle)
+                    _finish_inline_stage(
+                        status,
+                        stage_id,
+                        metrics={"expected": 0, "released": 0, "blocked": 0},
+                        message=message,
+                    )
             state_exit = _run_production_command(
                 status,
                 stage_id="segment_state_after",
@@ -10712,7 +17120,8 @@ def _publication_apply_worker(run_id: str) -> None:
                 raise RuntimeError(
                     "Publication lifecycle closure mismatch: "
                     f"closed {closure_validation['closed']} / expected {closure_validation['expected']}; "
-                    f"blocked ids {closure_validation['blocked_ids'][:20]}."
+                    f"write failures {closure_validation['write_failed_ids'][:20]}; "
+                    f"lifecycle blocks {closure_validation['lifecycle_blocked_ids'][:20]}."
                 )
             _run_publication_preflight_stage(
                 status,
@@ -10737,7 +17146,25 @@ def _publication_apply_worker(run_id: str) -> None:
             status["quality_epoch"] = published_epoch
             _append_run_log(status, f"[quality_epoch] published epoch {quality_epoch_id}")
             status["status"] = "completed"
-            status["message"] = "Publication apply run completed."
+            post_apply_preflight = status.get("publication_preflight") or {}
+            post_apply_counts = post_apply_preflight.get("counts") or {}
+            remaining_apply = _int(post_apply_counts.get("needs_apply"))
+            package_diff = _int(post_apply_counts.get("package_diff"))
+            status["materialization_started"] = False
+            status["next_action"] = (
+                "review_apply_failures"
+                if remaining_apply > 0
+                else "materialize_version"
+                if package_diff > 0
+                else "await_new_applies"
+            )
+            status["message"] = (
+                "Apply completed. Materialization awaits an explicit user action."
+                if package_diff > 0 and remaining_apply == 0
+                else "Apply completed. Remaining items stay in Apply for review."
+                if remaining_apply > 0
+                else "Apply completed. No package changes are waiting for materialization."
+            )
             _refresh_run_effect_summary(status)
             _attach_evaluation_decision_report(status)
             status["finished_at"] = _now_iso()
@@ -12137,6 +18564,3288 @@ def _lab_payload(con: sqlite3.Connection) -> dict[str, Any]:
             "auto_safe_gap_pct_points": round(_num(summary.get("active_auto_safe_pct")) - _num(summary.get("candidate_auto_safe_pct")), 2),
         },
     }
+
+
+SUPERVISED_CALIBRATION_METRIC_VERSION = "supervised_score_calibration_v2"
+STRATIFIED_CALIBRATION_SHADOW_VERSION = "stratified_score_calibration_shadow_v3"
+STRATIFIED_CALIBRATION_FOLD_VERSION = "stratified_score_calibration_shadow_v2"
+DISCREPANCY_FEEDBACK_SHADOW_VERSION = "stratified_score_calibration_feedback_v3"
+DYNAMIC_SCORE_HOLDOUT_RULE_VERSION = "dynamic_score_representative_holdout_v3_120_all_bands"
+SUPERVISED_CALIBRATION_POSITIVE_LABELS = {
+    "correct",
+    "contextual_exception",
+}
+SUPERVISED_CALIBRATION_NEGATIVE_LABELS = {
+    "semantic_error",
+    "residual_spanish",
+    "structure_error",
+}
+
+
+def _calibration_complexity(text: str) -> tuple[str, int, int]:
+    value = str(text or "")
+    dynamic_tokens = len(re.findall(r"\[[^\]]+\]|#[^#\r\n]+#", value))
+    visible_text = re.sub(r"\[[^\]]+\]|#[^#\r\n]+#", " ", value)
+    visible_chars = len(re.sub(r"\s+", " ", visible_text).strip())
+    if visible_chars <= 12 and dynamic_tokens >= 1:
+        bucket = "predominantemente_dinamico"
+    elif len(value) >= 280 or dynamic_tokens >= 4:
+        bucket = "longo_complexo"
+    elif len(value) >= 120 or dynamic_tokens >= 2:
+        bucket = "medio_dinamico"
+    else:
+        bucket = "curto_simples"
+    return bucket, len(value), dynamic_tokens
+
+
+def _calibration_issue_profile(
+    issues_value: Any,
+    *,
+    issue_count: int = 0,
+    high_issue_count: int = 0,
+) -> dict[str, Any]:
+    """Normalize deterministic score issues into calibration evidence.
+
+    The score model already sees these issues, but earlier calibration versions
+    discarded them and could let a broad, positive cohort wash out an explicit
+    defect. Keep a small vocabulary here so the calibrator learns useful slices
+    without overfitting every individual detector code.
+    """
+    parsed: Any = issues_value
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = []
+    if isinstance(parsed, dict):
+        parsed = parsed.get("issues") if isinstance(parsed.get("issues"), list) else [parsed]
+    issues = [item for item in (parsed or []) if isinstance(item, dict)] if isinstance(parsed, list) else []
+    severity_rank = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+    codes: list[str] = []
+    families: set[str] = set()
+    max_severity = "none"
+    for issue in issues:
+        code = str(issue.get("code") or issue.get("rule") or "unknown_issue").strip().lower()
+        if code:
+            codes.append(code)
+        severity = str(issue.get("severity") or "medium").strip().lower()
+        if severity not in severity_rank:
+            severity = "medium"
+        if severity_rank[severity] > severity_rank[max_severity]:
+            max_severity = severity
+        if any(token in code for token in ("spanish", "castilian", "residual_es")):
+            families.add("spanish_residual")
+        elif any(token in code for token in ("mojibake", "unicode", "encoding")):
+            families.add("unicode_mojibake")
+        elif any(token in code for token in ("structure", "syntax", "token", "placeholder", "bracket")):
+            families.add("structure")
+        elif any(token in code for token in ("gender", "select_cstring", "agreement")):
+            families.add("gender_dynamic")
+        else:
+            families.add("other_issue")
+    normalized_count = max(_int(issue_count), len(issues))
+    normalized_high_count = max(
+        _int(high_issue_count),
+        sum(severity_rank.get(str(item.get("severity") or "medium").lower(), 2) >= 3 for item in issues),
+    )
+    if not families and normalized_count:
+        families.add("unclassified_issue")
+    family = "+".join(sorted(families)) if families else "clean"
+    if max_severity == "none" and normalized_high_count:
+        max_severity = "high"
+    elif max_severity == "none" and normalized_count:
+        max_severity = "medium"
+    blocking_families = {"spanish_residual", "unicode_mojibake", "structure"}
+    blocking = bool(
+        severity_rank.get(max_severity, 0) >= severity_rank["high"]
+        and (families & blocking_families or normalized_high_count)
+    )
+    return {
+        "issue_family": family,
+        "issue_severity": max_severity,
+        "issue_codes": sorted(set(codes)),
+        "issue_count": normalized_count,
+        "high_issue_count": normalized_high_count,
+        "blocking_issue": blocking,
+    }
+
+
+def _calibration_summary(
+    observations: list[dict[str, Any]],
+    *,
+    probability_key: str = "probability",
+) -> dict[str, Any]:
+    usable = [
+        item
+        for item in observations
+        if item.get(probability_key) is not None
+        and 0.0 <= _num(item.get(probability_key)) <= 1.0
+        and item.get("outcome") in (0, 1)
+    ]
+    if not usable:
+        return {
+            "observation_count": 0,
+            "positive_count": 0,
+            "negative_count": 0,
+            "mean_confidence": None,
+            "observed_safe_rate": None,
+            "calibration_gap": None,
+            "ece": None,
+            "mce": None,
+            "brier": None,
+            "bands": [],
+        }
+    bins: list[list[dict[str, Any]]] = [[] for _ in range(10)]
+    for item in usable:
+        probability = min(max(_num(item.get(probability_key)), 0.0), 1.0)
+        bins[min(int(probability * 10), 9)].append(item)
+    bands: list[dict[str, Any]] = []
+    weighted_gap = 0.0
+    max_gap = 0.0
+    for index, rows in enumerate(bins):
+        if not rows:
+            continue
+        predicted = sum(_num(row.get(probability_key)) for row in rows) / len(rows)
+        observed = sum(_int(row.get("outcome")) for row in rows) / len(rows)
+        absolute_gap = abs(predicted - observed)
+        brier = sum(
+            (_num(row.get(probability_key)) - _int(row.get("outcome"))) ** 2
+            for row in rows
+        ) / len(rows)
+        weighted_gap += (len(rows) / len(usable)) * absolute_gap
+        max_gap = max(max_gap, absolute_gap)
+        bands.append(
+            {
+                "band": f"{index * 10}-{(index + 1) * 10}%",
+                "lower": index / 10,
+                "upper": (index + 1) / 10,
+                "midpoint": (index + 0.5) / 10,
+                "observation_count": len(rows),
+                "positive_count": sum(_int(row.get("outcome")) for row in rows),
+                "predicted_rate": round(predicted, 6),
+                "observed_safe_rate": round(observed, 6),
+                "calibration_gap": round(predicted - observed, 6),
+                "absolute_gap": round(absolute_gap, 6),
+                "brier": round(brier, 6),
+            }
+        )
+    mean_confidence = sum(_num(row.get(probability_key)) for row in usable) / len(usable)
+    observed_safe_rate = sum(_int(row.get("outcome")) for row in usable) / len(usable)
+    brier = sum(
+        (_num(row.get(probability_key)) - _int(row.get("outcome"))) ** 2
+        for row in usable
+    ) / len(usable)
+    return {
+        "observation_count": len(usable),
+        "positive_count": sum(_int(row.get("outcome")) for row in usable),
+        "negative_count": sum(1 - _int(row.get("outcome")) for row in usable),
+        "mean_confidence": round(mean_confidence, 6),
+        "observed_safe_rate": round(observed_safe_rate, 6),
+        "calibration_gap": round(mean_confidence - observed_safe_rate, 6),
+        "ece": round(weighted_gap, 6),
+        "mce": round(max_gap, 6),
+        "brier": round(brier, 6),
+        "bands": bands,
+    }
+
+
+def _calibration_slices(
+    observations: list[dict[str, Any]],
+    key: str,
+    *,
+    probability_key: str = "probability",
+) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in observations:
+        label = str(item.get(key) or "nao_classificado")
+        grouped.setdefault(label, []).append(item)
+    rows = []
+    for label, items in grouped.items():
+        summary = _calibration_summary(items, probability_key=probability_key)
+        rows.append({"label": label, **{name: value for name, value in summary.items() if name != "bands"}})
+    rows.sort(key=lambda row: (-_int(row.get("observation_count")), str(row.get("label"))))
+    return rows
+
+
+def _calibration_probability_band(probability: float) -> str:
+    value = min(max(float(probability), 0.0), 1.0)
+    lower = min(int(value * 10), 9) * 10
+    return f"{lower}-{lower + 10}%"
+
+
+def _deduplicate_calibration_observations(
+    observations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep the latest exact evidence for the shadow table's unique identity."""
+    latest_by_identity: dict[tuple[int, str, str], dict[str, Any]] = {}
+    for observation in observations:
+        identity = (
+            _int(observation.get("segment_id")),
+            str(observation.get("text_hash") or ""),
+            str(observation.get("source") or "nao_classificado"),
+        )
+        previous = latest_by_identity.get(identity)
+        if previous is None or str(observation.get("reviewed_at") or "") >= str(
+            previous.get("reviewed_at") or ""
+        ):
+            latest_by_identity[identity] = observation
+    return list(latest_by_identity.values())
+
+
+def _shadow_fold_by_segment(
+    observations: list[dict[str, Any]],
+    *,
+    fold_count: int = 5,
+) -> dict[int, int]:
+    """Assign every segment to one deterministic, approximately stratified fold."""
+    groups: dict[int, list[int]] = {}
+    for item in observations:
+        groups.setdefault(_int(item.get("segment_id")), []).append(_int(item.get("outcome")))
+    segment_context: dict[int, dict[str, Any]] = {}
+    for item in observations:
+        segment_context.setdefault(_int(item.get("segment_id")), item)
+    buckets: dict[str, list[int]] = {}
+    has_issue_strata = any(
+        str(item.get("issue_family") or "clean") != "clean"
+        for item in observations
+    )
+    for segment_id, outcomes in groups.items():
+        label = 1 if sum(outcomes) * 2 >= len(outcomes) else 0
+        context = segment_context.get(segment_id) or {}
+        stratum_parts = [
+            str(label),
+            _calibration_probability_band(_num(context.get("probability"))),
+            str(context.get("complexity") or "nao_classificado"),
+        ]
+        if has_issue_strata:
+            stratum_parts.append(str(context.get("issue_family") or "clean"))
+        stratum = "|".join(stratum_parts)
+        buckets.setdefault(stratum, []).append(segment_id)
+    assignment: dict[int, int] = {}
+    for stratum, segment_ids in buckets.items():
+        ordered = sorted(
+            segment_ids,
+            key=lambda value: hashlib.sha256(
+                f"{STRATIFIED_CALIBRATION_FOLD_VERSION}:{stratum}:{value}".encode("utf-8")
+            ).hexdigest(),
+        )
+        for index, segment_id in enumerate(ordered):
+            assignment[segment_id] = index % max(2, fold_count)
+    return assignment
+
+
+def _fit_shadow_calibrator(
+    observations: list[dict[str, Any]],
+    *,
+    safe_threshold: float,
+) -> dict[str, Any]:
+    """Fit a conservative hierarchical target encoder for score calibration."""
+    usable = [item for item in observations if item.get("outcome") in (0, 1)]
+    positives = sum(_int(item.get("outcome")) for item in usable)
+    global_rate = (positives + 1.0) / (len(usable) + 2.0)
+    specifications = {
+        "complexity": {"strength": 18.0, "minimum": 10},
+        "source": {"strength": 22.0, "minimum": 10},
+        "family": {"strength": 30.0, "minimum": 12},
+        "probability_band": {"strength": 24.0, "minimum": 12},
+        "issue_family": {"strength": 14.0, "minimum": 4},
+        "issue_severity": {"strength": 18.0, "minimum": 8},
+    }
+    levels: dict[str, dict[str, dict[str, float | int]]] = {}
+    for key, specification in specifications.items():
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in usable:
+            if key == "issue_family" and str(item.get(key) or "clean") == "clean":
+                continue
+            if key == "issue_severity" and str(item.get(key) or "none") == "none":
+                continue
+            label = (
+                _calibration_probability_band(_num(item.get("probability")))
+                if key == "probability_band"
+                else str(item.get(key) or "nao_classificado")
+            )
+            grouped.setdefault(label, []).append(item)
+        encoded: dict[str, dict[str, float | int]] = {}
+        for label, rows in grouped.items():
+            count = len(rows)
+            if count < _int(specification["minimum"]):
+                continue
+            strength = float(specification["strength"])
+            positive_count = sum(_int(row.get("outcome")) for row in rows)
+            rate = (positive_count + strength * global_rate) / (count + strength)
+            encoded[label] = {
+                "count": count,
+                "positive_count": positive_count,
+                "rate": round(rate, 8),
+                "reliability": round(count / (count + strength), 8),
+            }
+        levels[key] = encoded
+    return {
+        "global_rate": round(global_rate, 8),
+        "safe_threshold": float(safe_threshold),
+        # The old cap sat one point below the safe threshold, which made the
+        # zero-false-safe gate true by construction and left it unmeasurable.
+        # Keep a ceiling for numerical safety, but allow the calibrated model
+        # to produce genuinely high-confidence predictions.
+        "probability_cap": round(min(0.99, max(0.95, float(safe_threshold) + 0.08)), 8),
+        "raw_probability_weight": 2.0,
+        "levels": levels,
+        "specifications": specifications,
+    }
+
+
+def _discrepancy_feedback_adjustment(
+    feedback: dict[str, Any],
+    observation: dict[str, Any],
+    direction: str,
+) -> dict[str, Any]:
+    """Resolve ordinal feedback without confusing direction and magnitude.
+
+    Exact slices always win. A well-supported package-wide downward rejection
+    may conservatively shrink unseen downward moves; upward feedback remains
+    local so positive evidence is not generalized beyond reviewed slices.
+    """
+    current_probability = min(max(_num(observation.get("current_probability")), 0.0), 1.0)
+    current_band = str(
+        observation.get("current_band")
+        or _calibration_probability_band(current_probability)
+    )
+    slice_key = "|".join((
+        str(observation.get("complexity") or "nao_classificado"),
+        str(observation.get("family") or "nao_classificado"),
+        current_band,
+        direction,
+    ))
+    slice_adjustment = (feedback.get("by_slice") or {}).get(slice_key) or {}
+    slice_count = _int(slice_adjustment.get("count"))
+    if slice_count:
+        return {
+            "multiplier": min(max(_num(slice_adjustment.get("multiplier", 1.0)), 0.0), 1.0),
+            "source": "exact_slice",
+            "support": slice_count,
+            "slice_key": slice_key,
+        }
+
+    direction_adjustment = (feedback.get("by_direction") or {}).get(direction) or {}
+    direction_count = _int(direction_adjustment.get("count"))
+    minimum_support = _int(
+        (feedback.get("direction_policy") or {}).get("minimum_down_support")
+    ) or 20
+    if direction == "down" and direction_count >= minimum_support:
+        learned = min(max(_num(direction_adjustment.get("multiplier", 1.0)), 0.0), 1.0)
+        # Ten virtual neutral reviews prevent a global policy from snapping to
+        # zero after a small batch while still reacting strongly to 100+ votes.
+        prior_support = 10
+        shrunk = ((learned * direction_count) + prior_support) / (direction_count + prior_support)
+        return {
+            "multiplier": min(max(shrunk, 0.0), 1.0),
+            "source": "conservative_downward_policy",
+            "support": direction_count,
+            "slice_key": slice_key,
+        }
+    return {
+        "multiplier": 1.0,
+        "source": "unreviewed_slice",
+        "support": direction_count,
+        "slice_key": slice_key,
+    }
+
+
+def _blocking_issue_adjustment(
+    model: dict[str, Any],
+    observation: dict[str, Any],
+    probability: float,
+) -> dict[str, Any]:
+    """Keep explicit high-severity defects from being hidden by broad cohorts."""
+    profile = observation.get("issue_profile")
+    if not isinstance(profile, dict):
+        profile = {
+            "issue_family": observation.get("issue_family") or "clean",
+            "issue_severity": observation.get("issue_severity") or "none",
+            "issue_codes": observation.get("issue_codes") or [],
+            "issue_count": _int(observation.get("issue_count")),
+            "high_issue_count": _int(observation.get("high_issue_count")),
+            "blocking_issue": bool(observation.get("blocking_issue")),
+        }
+    if not profile.get("blocking_issue"):
+        return {
+            "applied": False,
+            "probability": round(min(max(probability, 0.0), 1.0), 8),
+            "profile": profile,
+        }
+
+    raw_probability = min(max(_num(observation.get("probability")), 0.0), 1.0)
+    issue_family = str(profile.get("issue_family") or "unclassified_issue")
+    issue_level = ((model.get("levels") or {}).get("issue_family") or {}).get(issue_family) or {}
+    support = _int(issue_level.get("count"))
+    observed_rate = _num(issue_level.get("rate")) if support else None
+    # With reviewed support, the observed safe rate controls how much of a
+    # positive uplift survives. Until then, retain only a conservative third.
+    uplift_multiplier = (
+        min(max(_num(observed_rate), 0.10), 0.65)
+        if observed_rate is not None
+        else 0.35
+    )
+    adjusted = probability
+    if probability > raw_probability:
+        adjusted = raw_probability + ((probability - raw_probability) * uplift_multiplier)
+    safe_threshold = _num(model.get("safe_threshold") or 0.86)
+    safety_cap = max(0.0, min(0.99, safe_threshold - 0.01))
+    adjusted = min(adjusted, safety_cap)
+    return {
+        "applied": True,
+        "probability": round(min(max(adjusted, 0.0), 1.0), 8),
+        "effect_pp": round((adjusted - probability) * 100.0, 4),
+        "uplift_multiplier": round(uplift_multiplier, 8),
+        "observed_rate": round(observed_rate, 8) if observed_rate is not None else None,
+        "support": support,
+        "source": "learned_issue_family" if support else "explicit_issue_guard",
+        "safety_cap": round(safety_cap, 8),
+        "profile": profile,
+    }
+
+
+def _shadow_calibrated_probability(
+    model: dict[str, Any],
+    observation: dict[str, Any],
+) -> float:
+    global_rate = _num(model.get("global_rate"))
+    weighted_total = global_rate
+    total_weight = 1.0
+    # Preserve a small amount of the model ranking while allowing reviewed evidence
+    # to correct the severe global under-confidence.
+    raw_probability_weight = _num(model.get("raw_probability_weight") or 0.35)
+    weighted_total += raw_probability_weight * _num(observation.get("probability"))
+    total_weight += raw_probability_weight
+    for key in (
+        "complexity",
+        "source",
+        "family",
+        "probability_band",
+        "issue_family",
+        "issue_severity",
+    ):
+        if key == "issue_family" and str(observation.get(key) or "clean") == "clean":
+            continue
+        if key == "issue_severity" and str(observation.get(key) or "none") == "none":
+            continue
+        label = (
+            _calibration_probability_band(_num(observation.get("probability")))
+            if key == "probability_band"
+            else str(observation.get(key) or "nao_classificado")
+        )
+        level = ((model.get("levels") or {}).get(key) or {}).get(label)
+        if not level:
+            continue
+        weight = max(_num(level.get("reliability")), 0.05)
+        weighted_total += weight * _num(level.get("rate"))
+        total_weight += weight
+    probability = min(
+        max(weighted_total / total_weight, 0.0),
+        _num(model.get("probability_cap")),
+    )
+    issue_adjustment = _blocking_issue_adjustment(model, observation, probability)
+    probability = _num(issue_adjustment.get("probability"))
+    feedback = model.get("discrepancy_feedback") or {}
+    current_value = observation.get("current_probability")
+    if feedback and current_value is not None:
+        current_probability = min(max(_num(current_value), 0.0), 1.0)
+        direction = "up" if probability >= current_probability else "down"
+        adjustment = _discrepancy_feedback_adjustment(feedback, observation, direction)
+        multiplier = _num(adjustment.get("multiplier", 1.0))
+        probability = current_probability + ((probability - current_probability) * multiplier)
+    return round(min(max(probability, 0.0), 1.0), 8)
+
+
+def _shadow_calibration_explanation(
+    model: dict[str, Any],
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    """Expose the exact additive evidence behind one calibrated probability."""
+    raw_probability = _num(observation.get("probability"))
+    factors: list[dict[str, Any]] = []
+    weighted_factors: list[tuple[str, str, float, float, dict[str, Any]]] = []
+    weighted_factors.append(("global", "global", _num(model.get("global_rate")), 1.0, {}))
+    for key in (
+        "complexity",
+        "source",
+        "family",
+        "probability_band",
+        "issue_family",
+        "issue_severity",
+    ):
+        if key == "issue_family" and str(observation.get(key) or "clean") == "clean":
+            continue
+        if key == "issue_severity" and str(observation.get(key) or "none") == "none":
+            continue
+        label = (
+            _calibration_probability_band(raw_probability)
+            if key == "probability_band"
+            else str(observation.get(key) or "nao_classificado")
+        )
+        level = ((model.get("levels") or {}).get(key) or {}).get(label)
+        if not level:
+            continue
+        weighted_factors.append((
+            key,
+            label,
+            _num(level.get("rate")),
+            max(_num(level.get("reliability")), 0.05),
+            level,
+        ))
+
+    raw_probability_weight = _num(model.get("raw_probability_weight") or 0.35)
+    total_weight = 1.0 + raw_probability_weight + sum(item[3] for item in weighted_factors[1:])
+    weighted_total = _num(model.get("global_rate")) + (raw_probability_weight * raw_probability)
+    for key, label, rate, weight, level in weighted_factors:
+        if key == "global":
+            pass
+        else:
+            weighted_total += weight * rate
+        effect_pp = ((rate - raw_probability) * weight / total_weight) * 100.0
+        factors.append({
+            "key": key,
+            "label": label,
+            "rate": round(rate, 8),
+            "weight": round(weight, 8),
+            "effect_pp": round(effect_pp, 4),
+            "direction": "up" if effect_pp > 0.0001 else "down" if effect_pp < -0.0001 else "neutral",
+            "count": _int(level.get("count")) if level else None,
+            "positive_count": _int(level.get("positive_count")) if level else None,
+        })
+
+    uncapped_probability = weighted_total / total_weight if total_weight else raw_probability
+    probability_cap = _num(model.get("probability_cap"))
+    base_candidate_probability = min(max(uncapped_probability, 0.0), probability_cap)
+    issue_adjustment = _blocking_issue_adjustment(
+        model,
+        observation,
+        base_candidate_probability,
+    )
+    issue_candidate_probability = _num(issue_adjustment.get("probability"))
+    candidate_probability = _shadow_calibrated_probability(model, observation)
+    cap_adjustment_pp = (base_candidate_probability - uncapped_probability) * 100.0
+    issue_adjustment_pp = (issue_candidate_probability - base_candidate_probability) * 100.0
+    feedback_adjustment_pp = (candidate_probability - issue_candidate_probability) * 100.0
+    if issue_adjustment.get("applied"):
+        issue_profile = issue_adjustment.get("profile") or {}
+        factors.append({
+            "key": "blocking_issue_guard",
+            "label": " · ".join((
+                str(issue_profile.get("issue_family") or "falha explícita").replace("_", " "),
+                str(issue_profile.get("issue_severity") or "alta").replace("_", " "),
+            )),
+            "rate": issue_adjustment.get("observed_rate"),
+            "weight": issue_adjustment.get("uplift_multiplier"),
+            "effect_pp": round(issue_adjustment_pp, 4),
+            "direction": "up" if issue_adjustment_pp > 0.0001 else "down" if issue_adjustment_pp < -0.0001 else "neutral",
+            "count": _int(issue_adjustment.get("support")),
+            "positive_count": None,
+            "source": issue_adjustment.get("source"),
+            "issue_codes": issue_profile.get("issue_codes") or [],
+            "detail": (
+                "Evidência determinística de alta severidade; "
+                f"preservados {round(_num(issue_adjustment.get('uplift_multiplier')) * 100)}% do ganho sugerido."
+            ),
+        })
+    feedback = model.get("discrepancy_feedback") or {}
+    if feedback and observation.get("current_probability") is not None:
+        current_probability = min(max(_num(observation.get("current_probability")), 0.0), 1.0)
+        feedback_direction = "up" if issue_candidate_probability >= current_probability else "down"
+        feedback_contract = _discrepancy_feedback_adjustment(
+            feedback,
+            observation,
+            feedback_direction,
+        )
+        factors.append({
+            "key": "discrepancy_feedback",
+            "label": " · ".join((
+                str(feedback.get("rule_version") or "feedback ordinal"),
+                str(feedback_contract.get("source") or "sem política"),
+            )),
+            "rate": candidate_probability,
+            "weight": round(_num(feedback_contract.get("multiplier", 1.0)), 8),
+            "effect_pp": round(feedback_adjustment_pp, 4),
+            "direction": "up" if feedback_adjustment_pp > 0.0001 else "down" if feedback_adjustment_pp < -0.0001 else "neutral",
+            "count": _int(feedback_contract.get("support")),
+            "positive_count": None,
+        })
+    return {
+        "raw_probability": round(raw_probability, 8),
+        "uncapped_probability": round(uncapped_probability, 8),
+        "candidate_probability": round(candidate_probability, 8),
+        "probability_cap": round(probability_cap, 8),
+        "total_weight": round(total_weight, 8),
+        "explained_delta_pp": round((candidate_probability - raw_probability) * 100.0, 4),
+        "cap_adjustment_pp": round(cap_adjustment_pp, 4),
+        "issue_adjustment_pp": round(issue_adjustment_pp, 4),
+        "feedback_adjustment_pp": round(feedback_adjustment_pp, 4),
+        "blocking_issue": bool(issue_adjustment.get("applied")),
+        "issue_profile": issue_adjustment.get("profile") or {},
+        "factors": factors,
+    }
+
+
+def _stratified_calibration_shadow(
+    observations: list[dict[str, Any]],
+    *,
+    safe_threshold: float,
+    fold_count: int = 5,
+) -> dict[str, Any]:
+    usable = [item for item in observations if item.get("outcome") in (0, 1)]
+    if len(usable) < 20 or len({_int(item.get("outcome")) for item in usable}) < 2:
+        return {
+            "available": False,
+            "status": "amostra_insuficiente",
+            "message": "O shadow exige ao menos 20 observacoes e as duas classes humanas.",
+        }
+    fold_by_segment = _shadow_fold_by_segment(usable, fold_count=fold_count)
+    oof_rows: list[dict[str, Any]] = []
+    effective_fold_count = max(fold_by_segment.values(), default=-1) + 1
+    for fold in range(effective_fold_count):
+        train = [
+            item for item in usable
+            if fold_by_segment.get(_int(item.get("segment_id"))) != fold
+        ]
+        test = [
+            item for item in usable
+            if fold_by_segment.get(_int(item.get("segment_id"))) == fold
+        ]
+        if not test or len({_int(item.get("outcome")) for item in train}) < 2:
+            continue
+        fold_model = _fit_shadow_calibrator(train, safe_threshold=safe_threshold)
+        for item in test:
+            oof_rows.append(
+                {
+                    **item,
+                    "fold": fold,
+                    "shadow_probability": _shadow_calibrated_probability(fold_model, item),
+                }
+            )
+    current = _calibration_summary(oof_rows)
+    candidate = _calibration_summary(oof_rows, probability_key="shadow_probability")
+    current_false_safe = sum(
+        1
+        for item in oof_rows
+        if _int(item.get("outcome")) == 0
+        and _num(item.get("probability")) >= safe_threshold
+    )
+    candidate_false_safe = sum(
+        1
+        for item in oof_rows
+        if _int(item.get("outcome")) == 0
+        and _num(item.get("shadow_probability")) >= safe_threshold
+    )
+    current_safe_count = sum(
+        _num(item.get("probability")) >= safe_threshold for item in oof_rows
+    )
+    candidate_safe_count = sum(
+        _num(item.get("shadow_probability")) >= safe_threshold for item in oof_rows
+    )
+    current_safe_precision = (
+        (current_safe_count - current_false_safe) / current_safe_count
+        if current_safe_count else None
+    )
+    candidate_safe_precision = (
+        (candidate_safe_count - candidate_false_safe) / candidate_safe_count
+        if candidate_safe_count else None
+    )
+
+    # A rank-based audit remains measurable even when no score reaches the
+    # operational safe threshold. This replaces the former gate that reported
+    # zero false-safe simply because every candidate was capped below 86%.
+    high_confidence_count = min(len(oof_rows), max(10, (len(oof_rows) + 49) // 50))
+
+    def high_confidence_audit(probability_key: str) -> dict[str, Any]:
+        ranked = sorted(
+            oof_rows,
+            key=lambda item: (
+                -_num(item.get(probability_key)),
+                _int(item.get("segment_id")),
+                str(item.get("text_hash") or ""),
+            ),
+        )[:high_confidence_count]
+        false_count = sum(_int(item.get("outcome")) == 0 for item in ranked)
+        return {
+            "count": len(ranked),
+            "false_count": false_count,
+            "precision": round((len(ranked) - false_count) / len(ranked), 8) if ranked else None,
+            "threshold": round(min((_num(item.get(probability_key)) for item in ranked), default=0.0), 8),
+        }
+
+    current_high_confidence = high_confidence_audit("probability")
+    candidate_high_confidence = high_confidence_audit("shadow_probability")
+    ece_delta = _num(candidate.get("ece")) - _num(current.get("ece"))
+    brier_delta = _num(candidate.get("brier")) - _num(current.get("brier"))
+    minimum_sample_ok = len(oof_rows) >= 100
+    gate_passed = (
+        minimum_sample_ok
+        and ece_delta < 0
+        and brier_delta < 0
+        and _int(candidate_high_confidence.get("false_count")) == 0
+        and _int(candidate_high_confidence.get("false_count"))
+        <= _int(current_high_confidence.get("false_count"))
+        and (
+            not candidate_safe_count
+            or (
+                candidate_false_safe <= current_false_safe
+                and _num(candidate_safe_precision) >= 0.98
+            )
+        )
+    )
+    full_model = _fit_shadow_calibrator(usable, safe_threshold=safe_threshold)
+    full_model["base_shadow_rule_version"] = STRATIFIED_CALIBRATION_SHADOW_VERSION
+    return {
+        "available": bool(oof_rows),
+        "rule_version": STRATIFIED_CALIBRATION_SHADOW_VERSION,
+        "status": "qualificado_shadow" if gate_passed else "bloqueado",
+        "gate_passed": gate_passed,
+        "gate_reasons": {
+            "minimum_sample_ok": minimum_sample_ok,
+            "ece_improved": ece_delta < 0,
+            "brier_improved": brier_delta < 0,
+            "safe_threshold_coverage_measured": candidate_safe_count > 0,
+            "safe_threshold_precision_ok": (
+                candidate_safe_count == 0
+                or (
+                    candidate_false_safe <= current_false_safe
+                    and _num(candidate_safe_precision) >= 0.98
+                )
+            ),
+            "high_confidence_audit_clean": _int(candidate_high_confidence.get("false_count")) == 0,
+            "high_confidence_non_regression": (
+                _int(candidate_high_confidence.get("false_count"))
+                <= _int(current_high_confidence.get("false_count"))
+            ),
+        },
+        "contract": {
+            "mode": "shadow_only",
+            "split": "out-of-fold estratificado por classe, faixa, complexidade e evidência de falha; agrupado por segment_id",
+            "fold_count": effective_fold_count,
+            "minimum_observations": 100,
+            "safe_threshold": safe_threshold,
+            "probability_cap": full_model.get("probability_cap"),
+            "operational_score_changed": False,
+        },
+        "current": current,
+        "candidate": candidate,
+        "deltas": {
+            "ece": round(ece_delta, 6),
+            "brier": round(brier_delta, 6),
+        },
+        "guardrails": {
+            "current_false_safe_count": current_false_safe,
+            "candidate_false_safe_count": candidate_false_safe,
+            "current_safe_count": current_safe_count,
+            "candidate_safe_count": candidate_safe_count,
+            "current_safe_coverage": round(current_safe_count / len(oof_rows), 8) if oof_rows else 0.0,
+            "candidate_safe_coverage": round(candidate_safe_count / len(oof_rows), 8) if oof_rows else 0.0,
+            "current_safe_precision": current_safe_precision,
+            "candidate_safe_precision": candidate_safe_precision,
+            "safe_threshold_measurable": candidate_safe_count > 0,
+            "current_high_confidence_audit": current_high_confidence,
+            "candidate_high_confidence_audit": candidate_high_confidence,
+        },
+        "by_complexity": _calibration_slices(
+            oof_rows,
+            "complexity",
+            probability_key="shadow_probability",
+        ),
+        "by_source": _calibration_slices(
+            oof_rows,
+            "source",
+            probability_key="shadow_probability",
+        ),
+        "by_family": _calibration_slices(
+            oof_rows,
+            "family",
+            probability_key="shadow_probability",
+        )[:16],
+        "by_issue_family": _calibration_slices(
+            oof_rows,
+            "issue_family",
+            probability_key="shadow_probability",
+        )[:16],
+        "by_issue_severity": _calibration_slices(
+            oof_rows,
+            "issue_severity",
+            probability_key="shadow_probability",
+        ),
+        "model": full_model,
+        "oof_observations": oof_rows,
+    }
+
+
+def _persist_supervised_calibration_payload(
+    con: sqlite3.Connection,
+    payload: dict[str, Any],
+) -> int:
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_supervised_calibration_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          metric_version TEXT NOT NULL,
+          model_run_id INTEGER NOT NULL,
+          score_run_id INTEGER NOT NULL,
+          review_watermark TEXT NOT NULL,
+          observation_count INTEGER NOT NULL DEFAULT 0,
+          positive_count INTEGER NOT NULL DEFAULT 0,
+          negative_count INTEGER NOT NULL DEFAULT 0,
+          ece REAL,
+          brier REAL,
+          mean_confidence REAL,
+          observed_safe_rate REAL,
+          calibration_gap REAL,
+          payload_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(metric_version, model_run_id, score_run_id, review_watermark)
+        )
+        """
+    )
+    overall = payload.get("overall") or {}
+    now = _now_iso()
+    con.execute(
+        """
+        INSERT OR IGNORE INTO ml_supervised_calibration_runs (
+          metric_version, model_run_id, score_run_id, review_watermark,
+          observation_count, positive_count, negative_count,
+          ece, brier, mean_confidence, observed_safe_rate, calibration_gap,
+          payload_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            payload.get("metric_version"),
+            _int(payload.get("model_run_id")),
+            _int(payload.get("score_run_id")),
+            str(payload.get("review_watermark") or "none"),
+            _int(overall.get("observation_count")),
+            _int(overall.get("positive_count")),
+            _int(overall.get("negative_count")),
+            overall.get("ece"),
+            overall.get("brier"),
+            overall.get("mean_confidence"),
+            overall.get("observed_safe_rate"),
+            overall.get("calibration_gap"),
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            now,
+        ),
+    )
+    row = con.execute(
+        """
+        SELECT id
+        FROM ml_supervised_calibration_runs
+        WHERE metric_version = ? AND model_run_id = ?
+          AND score_run_id = ? AND review_watermark = ?
+        LIMIT 1
+        """,
+        (
+            payload.get("metric_version"),
+            _int(payload.get("model_run_id")),
+            _int(payload.get("score_run_id")),
+            str(payload.get("review_watermark") or "none"),
+        ),
+    ).fetchone()
+    con.commit()
+    return _int(dict(row).get("id")) if row else 0
+
+
+def _persist_stratified_calibration_shadow(
+    con: sqlite3.Connection,
+    payload: dict[str, Any],
+    shadow: dict[str, Any],
+) -> int:
+    con.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS ml_score_calibration_shadow_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          rule_version TEXT NOT NULL,
+          metric_run_id INTEGER NOT NULL,
+          model_run_id INTEGER NOT NULL,
+          score_run_id INTEGER NOT NULL,
+          review_watermark TEXT NOT NULL,
+          observation_count INTEGER NOT NULL DEFAULT 0,
+          fold_count INTEGER NOT NULL DEFAULT 0,
+          current_ece REAL,
+          candidate_ece REAL,
+          current_brier REAL,
+          candidate_brier REAL,
+          current_false_safe_count INTEGER NOT NULL DEFAULT 0,
+          candidate_false_safe_count INTEGER NOT NULL DEFAULT 0,
+          gate_passed INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL,
+          model_json TEXT NOT NULL,
+          metrics_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(rule_version, model_run_id, score_run_id, review_watermark)
+        );
+        CREATE TABLE IF NOT EXISTS ml_score_calibration_shadow_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          run_id INTEGER NOT NULL,
+          segment_id INTEGER NOT NULL,
+          text_hash TEXT NOT NULL,
+          source TEXT NOT NULL,
+          complexity TEXT NOT NULL,
+          family TEXT NOT NULL,
+          fold INTEGER NOT NULL,
+          human_outcome INTEGER NOT NULL,
+          current_probability REAL NOT NULL,
+          shadow_probability REAL NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(run_id, segment_id, text_hash, source)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ml_score_calibration_shadow_items_run
+        ON ml_score_calibration_shadow_items(run_id, complexity, human_outcome);
+        """
+    )
+    current = shadow.get("current") or {}
+    candidate = shadow.get("candidate") or {}
+    guardrails = shadow.get("guardrails") or {}
+    contract = shadow.get("contract") or {}
+    metric_run_id = _int(payload.get("persisted_run_id"))
+    now = _now_iso()
+    public_shadow = {
+        key: value
+        for key, value in shadow.items()
+        if key not in {"model", "oof_observations"}
+    }
+    con.execute(
+        """
+        INSERT INTO ml_score_calibration_shadow_runs (
+          rule_version, metric_run_id, model_run_id, score_run_id,
+          review_watermark, observation_count, fold_count,
+          current_ece, candidate_ece, current_brier, candidate_brier,
+          current_false_safe_count, candidate_false_safe_count,
+          gate_passed, status, model_json, metrics_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(rule_version, model_run_id, score_run_id, review_watermark)
+        DO UPDATE SET
+          metric_run_id = excluded.metric_run_id,
+          observation_count = excluded.observation_count,
+          fold_count = excluded.fold_count,
+          current_ece = excluded.current_ece,
+          candidate_ece = excluded.candidate_ece,
+          current_brier = excluded.current_brier,
+          candidate_brier = excluded.candidate_brier,
+          current_false_safe_count = excluded.current_false_safe_count,
+          candidate_false_safe_count = excluded.candidate_false_safe_count,
+          gate_passed = excluded.gate_passed,
+          status = excluded.status,
+          model_json = excluded.model_json,
+          metrics_json = excluded.metrics_json,
+          created_at = excluded.created_at
+        """,
+        (
+            shadow.get("rule_version"),
+            metric_run_id,
+            _int(payload.get("model_run_id")),
+            _int(payload.get("score_run_id")),
+            str(payload.get("review_watermark") or "none"),
+            _int(candidate.get("observation_count")),
+            _int(contract.get("fold_count")),
+            current.get("ece"),
+            candidate.get("ece"),
+            current.get("brier"),
+            candidate.get("brier"),
+            _int(guardrails.get("current_false_safe_count")),
+            _int(guardrails.get("candidate_false_safe_count")),
+            1 if shadow.get("gate_passed") else 0,
+            str(shadow.get("status") or "bloqueado"),
+            json.dumps(shadow.get("model") or {}, ensure_ascii=False, sort_keys=True),
+            json.dumps(public_shadow, ensure_ascii=False, sort_keys=True),
+            now,
+        ),
+    )
+    row = con.execute(
+        """
+        SELECT id FROM ml_score_calibration_shadow_runs
+        WHERE rule_version = ? AND model_run_id = ?
+          AND score_run_id = ? AND review_watermark = ?
+        LIMIT 1
+        """,
+        (
+            shadow.get("rule_version"),
+            _int(payload.get("model_run_id")),
+            _int(payload.get("score_run_id")),
+            str(payload.get("review_watermark") or "none"),
+        ),
+    ).fetchone()
+    run_id = _int(dict(row).get("id")) if row else 0
+    if run_id:
+        con.execute("DELETE FROM ml_score_calibration_shadow_items WHERE run_id = ?", (run_id,))
+        con.executemany(
+            """
+            INSERT INTO ml_score_calibration_shadow_items (
+              run_id, segment_id, text_hash, source, complexity, family,
+              fold, human_outcome, current_probability, shadow_probability,
+              created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    run_id,
+                    _int(item.get("segment_id")),
+                    str(item.get("text_hash") or ""),
+                    str(item.get("source") or "nao_classificado"),
+                    str(item.get("complexity") or "nao_classificado"),
+                    str(item.get("family") or "nao_classificado"),
+                    _int(item.get("fold")),
+                    _int(item.get("outcome")),
+                    _num(item.get("probability")),
+                    _num(item.get("shadow_probability")),
+                    now,
+                )
+                for item in shadow.get("oof_observations") or []
+            ],
+        )
+    con.commit()
+    return run_id
+
+
+SCORE_RECALIBRATION_CANDIDATE_VERSION = "score_recalibration_candidate_v3"
+SCORE_RECALIBRATION_REGISTRY_KEY = "operational_calibrated_score"
+SCORE_RECALIBRATION_REVIEW_TARGET = 20
+SCORE_RECALIBRATION_MAX_MAGNITUDE_ISSUE_RATE = 0.10
+SCORE_RECALIBRATION_MONITORING_MIN_OBSERVATIONS = 20
+SCORE_RECALIBRATION_STRONG_MIN_SCORE_AUDITS = 40
+SCORE_RECALIBRATION_STRONG_MISMATCH_RATE = 0.20
+SCORE_RECALIBRATION_STRONG_FALSE_SAFE_COUNT = 3
+
+
+def _score_recalibration_recommendation(
+    feedback_monitoring: dict[str, Any],
+    *,
+    training_context_changed: bool = False,
+) -> dict[str, Any]:
+    """Turn post-promotion human evidence into one operational signal."""
+    observation_count = _int(feedback_monitoring.get("calibration_observation_count"))
+    score_audit_count = _int(feedback_monitoring.get("score_audit_count"))
+    mismatch_count = _int(feedback_monitoring.get("score_mismatch_count"))
+    false_safe_count = _int(feedback_monitoring.get("false_safe_count"))
+    mismatch_rate = mismatch_count / score_audit_count if score_audit_count else 0.0
+    sample_ready = observation_count >= SCORE_RECALIBRATION_MONITORING_MIN_OBSERVATIONS
+    strongly_recommended = bool(
+        false_safe_count >= SCORE_RECALIBRATION_STRONG_FALSE_SAFE_COUNT
+        or (
+            score_audit_count >= SCORE_RECALIBRATION_STRONG_MIN_SCORE_AUDITS
+            and mismatch_rate >= SCORE_RECALIBRATION_STRONG_MISMATCH_RATE
+        )
+    )
+    available = bool(training_context_changed or sample_ready)
+    level = "recommended" if strongly_recommended else "available" if available else "monitoring"
+    reasons: list[str] = []
+    if training_context_changed:
+        reasons.append("novo contexto de score qualificado")
+    if sample_ready:
+        reasons.append(f"{observation_count} novas evidências supervisionadas")
+    if mismatch_count:
+        mismatch_label = "divergência" if mismatch_count == 1 else "divergências"
+        audit_label = "auditoria" if score_audit_count == 1 else "auditorias"
+        reasons.append(
+            f"{mismatch_count} {mismatch_label} conservadora em "
+            f"{score_audit_count} {audit_label}"
+        )
+    if false_safe_count:
+        reasons.append(
+            f"{false_safe_count} "
+            f"{'falso seguro observado' if false_safe_count == 1 else 'falsos seguros observados'}"
+        )
+    if not reasons:
+        remaining = max(
+            SCORE_RECALIBRATION_MONITORING_MIN_OBSERVATIONS - observation_count,
+            0,
+        )
+        reasons.append(f"faltam {remaining} evidências supervisionadas")
+    return {
+        "level": level,
+        "tone": "red" if strongly_recommended else "amber" if available else "pink",
+        "label": (
+            "recalibração recomendada"
+            if strongly_recommended
+            else "recalibração disponível"
+            if available
+            else "monitorando"
+        ),
+        "can_recalibrate": available,
+        "strongly_recommended": strongly_recommended,
+        "training_context_changed": bool(training_context_changed),
+        "observation_count": observation_count,
+        "minimum_observation_count": SCORE_RECALIBRATION_MONITORING_MIN_OBSERVATIONS,
+        "remaining_observation_count": max(
+            SCORE_RECALIBRATION_MONITORING_MIN_OBSERVATIONS - observation_count,
+            0,
+        ),
+        "score_audit_count": score_audit_count,
+        "score_mismatch_count": mismatch_count,
+        "score_mismatch_rate": round(mismatch_rate, 8),
+        "false_safe_count": false_safe_count,
+        "reasons": reasons,
+    }
+
+
+def _ensure_score_recalibration_operational_schema(con: sqlite3.Connection) -> None:
+    """Keep the operational recalibration contract available on older local DBs."""
+    con.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS ml_score_calibration_candidate_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          rule_version TEXT NOT NULL,
+          shadow_run_id INTEGER NOT NULL,
+          model_run_id INTEGER NOT NULL,
+          score_run_id INTEGER NOT NULL,
+          source_snapshot_id INTEGER,
+          candidate_tree_hash TEXT NOT NULL,
+          review_watermark TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'generated',
+          item_count INTEGER NOT NULL DEFAULT 0,
+          raw_mean_probability REAL,
+          current_mean_probability REAL,
+          candidate_mean_probability REAL,
+          improved_count INTEGER NOT NULL DEFAULT 0,
+          degraded_count INTEGER NOT NULL DEFAULT 0,
+          unchanged_count INTEGER NOT NULL DEFAULT 0,
+          band_change_count INTEGER NOT NULL DEFAULT 0,
+          required_review_count INTEGER NOT NULL DEFAULT 0,
+          gate_json TEXT NOT NULL DEFAULT '{}',
+          summary_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(shadow_run_id, score_run_id, candidate_tree_hash)
+        );
+        CREATE TABLE IF NOT EXISTS ml_score_calibration_candidate_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          run_id INTEGER NOT NULL,
+          segment_id INTEGER NOT NULL,
+          text_hash TEXT NOT NULL,
+          relative_path TEXT NOT NULL,
+          source_key TEXT NOT NULL,
+          complexity TEXT NOT NULL,
+          family TEXT NOT NULL,
+          raw_probability REAL NOT NULL,
+          current_probability REAL NOT NULL,
+          candidate_probability REAL NOT NULL,
+          delta REAL NOT NULL,
+          raw_band TEXT NOT NULL,
+          current_band TEXT NOT NULL,
+          candidate_band TEXT NOT NULL,
+          review_required INTEGER NOT NULL DEFAULT 0,
+          review_rank INTEGER,
+          created_at TEXT NOT NULL,
+          UNIQUE(run_id, segment_id, text_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ml_score_calibration_candidate_items_run
+        ON ml_score_calibration_candidate_items(run_id, review_required, review_rank, ABS(delta) DESC);
+        CREATE TABLE IF NOT EXISTS ml_score_calibration_discrepancy_reviews (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          candidate_run_id INTEGER NOT NULL,
+          segment_id INTEGER NOT NULL,
+          text_hash TEXT NOT NULL,
+          decision TEXT NOT NULL,
+          reason TEXT,
+          reviewer TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(candidate_run_id, segment_id, text_hash)
+        );
+        CREATE TABLE IF NOT EXISTS ml_score_calibration_registry (
+          registry_key TEXT PRIMARY KEY,
+          active_candidate_run_id INTEGER,
+          previous_candidate_run_id INTEGER,
+          updated_at TEXT NOT NULL,
+          updated_by TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS ml_score_calibration_promotion_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          candidate_run_id INTEGER,
+          previous_candidate_run_id INTEGER,
+          action TEXT NOT NULL,
+          reason TEXT,
+          actor TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        """
+    )
+
+
+def _score_recalibration_json(value: Any, fallback: Any) -> Any:
+    try:
+        parsed = json.loads(str(value or ""))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return fallback
+    return parsed
+
+
+def _score_recalibration_gate_state(
+    con: sqlite3.Connection,
+    candidate_run_id: int,
+) -> dict[str, Any]:
+    run = _one(
+        con,
+        "SELECT * FROM ml_score_calibration_candidate_runs WHERE id = ?",
+        (candidate_run_id,),
+    )
+    if not run:
+        return {"passed": False, "reasons": {"candidate_exists": False}}
+    stored_gate = _score_recalibration_json(run.get("gate_json"), {})
+    reviews = _one(
+        con,
+        """
+        SELECT
+          COUNT(*) AS reviewed_count,
+          SUM(CASE WHEN decision IN (
+            'incorrect_change',
+            'correct_direction_excessive',
+            'correct_direction_insufficient',
+            'incorrect_direction'
+          ) THEN 1 ELSE 0 END) AS incorrect_count,
+          SUM(CASE WHEN decision = 'correct_direction_excessive' THEN 1 ELSE 0 END) AS excessive_count,
+          SUM(CASE WHEN decision = 'correct_direction_insufficient' THEN 1 ELSE 0 END) AS insufficient_count,
+          SUM(CASE WHEN decision IN ('incorrect_change', 'incorrect_direction') THEN 1 ELSE 0 END) AS wrong_direction_count,
+          SUM(CASE WHEN decision = 'needs_review' THEN 1 ELSE 0 END) AS deferred_count
+        FROM ml_score_calibration_discrepancy_reviews
+        WHERE candidate_run_id = ?
+        """,
+        (candidate_run_id,),
+    )
+    required = _int(run.get("required_review_count"))
+    reviewed = _int(reviews.get("reviewed_count"))
+    incorrect = _int(reviews.get("incorrect_count"))
+    excessive = _int(reviews.get("excessive_count"))
+    insufficient = _int(reviews.get("insufficient_count"))
+    wrong_direction = _int(reviews.get("wrong_direction_count"))
+    deferred = _int(reviews.get("deferred_count"))
+    magnitude_issue_count = excessive + insufficient
+    magnitude_issue_rate = magnitude_issue_count / reviewed if reviewed else 0.0
+    direction_ok = wrong_direction == 0
+    magnitude_ok = magnitude_issue_rate <= SCORE_RECALIBRATION_MAX_MAGNITUDE_ISSUE_RATE
+    reasons = {
+        "shadow_qualified": bool(stored_gate.get("shadow_qualified")),
+        "same_score_context": bool(stored_gate.get("same_score_context")),
+        "corpus_materialized": _int(run.get("item_count")) > 0,
+        "discrepancies_reviewed": reviewed >= required,
+        "direction_validated": direction_ok,
+        "magnitude_validated": magnitude_ok,
+        "zero_deferred_reviews": deferred == 0,
+    }
+    required_reason_keys = (
+        "shadow_qualified",
+        "same_score_context",
+        "corpus_materialized",
+        "discrepancies_reviewed",
+        "direction_validated",
+        "magnitude_validated",
+        "zero_deferred_reviews",
+    )
+    return {
+        "passed": all(bool(reasons.get(key)) for key in required_reason_keys),
+        "reasons": reasons,
+        "required_review_count": required,
+        "reviewed_count": reviewed,
+        "pending_review_count": max(required - reviewed, 0),
+        "incorrect_count": incorrect,
+        "all_feedback_coherent": incorrect == 0,
+        "actionable_feedback_count": incorrect,
+        "excessive_count": excessive,
+        "insufficient_count": insufficient,
+        "magnitude_issue_count": magnitude_issue_count,
+        "magnitude_issue_rate": round(magnitude_issue_rate, 8),
+        "wrong_direction_count": wrong_direction,
+        "direction_error_count": wrong_direction,
+        "deferred_count": deferred,
+    }
+
+
+def _score_recalibration_discrepancy_items(
+    con: sqlite3.Connection,
+    candidate_run_id: int,
+    *,
+    limit: int = 40,
+) -> list[dict[str, Any]]:
+    if not candidate_run_id:
+        return []
+    rows = _all(
+        con,
+        """
+        SELECT
+          ci.id AS item_id,
+          ci.run_id AS candidate_run_id,
+          ci.segment_id,
+          ci.text_hash,
+          ci.relative_path,
+          ci.source_key,
+          ci.complexity,
+          ci.family,
+          ci.raw_probability,
+          ci.current_probability,
+          ci.candidate_probability,
+          ci.delta,
+          ci.raw_band,
+          ci.current_band,
+          ci.candidate_band,
+          ci.review_required,
+          ci.review_rank,
+          sr.candidate_text,
+          sr.issues_json,
+          sr.issue_count,
+          sr.high_issue_count,
+          os.portuguese_text AS output_text,
+          ss.english_text,
+          ss.spanish_text,
+          ss.old_text,
+          rv.decision AS review_decision,
+          rv.reason AS review_reason,
+          rv.reviewer,
+          rv.updated_at AS reviewed_at
+        FROM ml_score_calibration_candidate_items ci
+        JOIN ml_score_calibration_candidate_runs cr ON cr.id = ci.run_id
+        JOIN ml_score_items sr
+          ON sr.run_id = cr.score_run_id AND sr.segment_id = ci.segment_id
+        JOIN source_segments ss ON ss.id = ci.segment_id
+        LEFT JOIN output_segments os ON os.segment_id = ci.segment_id
+        LEFT JOIN ml_score_calibration_discrepancy_reviews rv
+          ON rv.candidate_run_id = ci.run_id
+         AND rv.segment_id = ci.segment_id
+         AND rv.text_hash = ci.text_hash
+        WHERE ci.run_id = ?
+          AND ci.review_required = 1
+          AND rv.id IS NULL
+        ORDER BY ci.review_rank, ci.segment_id
+        LIMIT ?
+        """,
+        (candidate_run_id, max(1, min(limit, 200))),
+    )
+    candidate_run = _one(
+        con,
+        "SELECT shadow_run_id FROM ml_score_calibration_candidate_runs WHERE id = ?",
+        (candidate_run_id,),
+    )
+    shadow = _one(
+        con,
+        "SELECT model_json FROM ml_score_calibration_shadow_runs WHERE id = ?",
+        (_int(candidate_run.get("shadow_run_id")),),
+    ) if candidate_run and _table_exists(con, "ml_score_calibration_shadow_runs") else {}
+    model = _score_recalibration_json(shadow.get("model_json"), {}) if shadow else {}
+    for row in rows:
+        raw_probability = _num(row.get("raw_probability"))
+        current_probability = _num(row.get("current_probability"))
+        issue_profile = _calibration_issue_profile(
+            row.get("issues_json"),
+            issue_count=_int(row.get("issue_count")),
+            high_issue_count=_int(row.get("high_issue_count")),
+        )
+        explanation = _shadow_calibration_explanation(
+            model,
+            {
+                "probability": raw_probability,
+                "current_probability": current_probability,
+                "current_band": row.get("current_band"),
+                "complexity": row.get("complexity"),
+                "source": "pacote_atual",
+                "family": row.get("family"),
+                **issue_profile,
+                "issue_profile": issue_profile,
+            },
+        ) if model else {"factors": []}
+        explanation["current_probability"] = round(current_probability, 8)
+        explanation["current_to_candidate_delta_pp"] = round(
+            (_num(row.get("candidate_probability")) - current_probability) * 100.0,
+            4,
+        )
+        explanation["active_overlay_adjustment_pp"] = round(
+            (raw_probability - current_probability) * 100.0,
+            4,
+        )
+        row["calibration_explanation"] = explanation
+    return rows
+
+
+def _score_recalibration_operational_payload(con: sqlite3.Connection) -> dict[str, Any]:
+    _ensure_score_recalibration_operational_schema(con)
+    shadow = _one(
+        con,
+        """
+        SELECT * FROM ml_score_calibration_shadow_runs
+        ORDER BY id DESC LIMIT 1
+        """,
+    ) if _table_exists(con, "ml_score_calibration_shadow_runs") else {}
+    supervised = _one(
+        con,
+        """
+        SELECT * FROM ml_supervised_calibration_runs
+        ORDER BY id DESC LIMIT 1
+        """,
+    ) if _table_exists(con, "ml_supervised_calibration_runs") else {}
+    candidate = _one(
+        con,
+        """
+        SELECT * FROM ml_score_calibration_candidate_runs
+        ORDER BY id DESC LIMIT 1
+        """,
+    )
+    registry = _one(
+        con,
+        """
+        SELECT * FROM ml_score_calibration_registry
+        WHERE registry_key = ?
+        """,
+        (SCORE_RECALIBRATION_REGISTRY_KEY,),
+    )
+    active_candidate = _one(
+        con,
+        "SELECT * FROM ml_score_calibration_candidate_runs WHERE id = ?",
+        (_int(registry.get("active_candidate_run_id")),),
+    ) if registry else {}
+    active_candidate_summary = _score_recalibration_json(
+        active_candidate.get("summary_json"),
+        {},
+    ) if active_candidate else {}
+    candidate_id = _int(candidate.get("id"))
+    gate = _score_recalibration_gate_state(con, candidate_id) if candidate_id else {
+        "passed": False,
+        "reasons": {"candidate_generated": False},
+        "required_review_count": 0,
+        "reviewed_count": 0,
+        "pending_review_count": 0,
+        "incorrect_count": 0,
+        "deferred_count": 0,
+    }
+    summary = _score_recalibration_json(candidate.get("summary_json"), {}) if candidate else {}
+    shadow_metrics = _score_recalibration_json(shadow.get("metrics_json"), {}) if shadow else {}
+    shadow_guardrails = shadow_metrics.get("guardrails") or {}
+    candidate_matches_training_context = bool(
+        candidate_id
+        and _int(candidate.get("shadow_run_id")) == _int(shadow.get("id"))
+        and _int(candidate.get("score_run_id")) == _int(shadow.get("score_run_id"))
+        and str(candidate.get("review_watermark") or "none")
+        == str(shadow.get("review_watermark") or "none")
+    )
+    discrepancy_feedback_ready = bool(
+        candidate_matches_training_context
+        and gate.get("reasons", {}).get("discrepancies_reviewed")
+        and _int(gate.get("incorrect_count")) > 0
+    )
+    active_candidate_id = _int(registry.get("active_candidate_run_id")) if registry else 0
+    active_promoted_at = None
+    if active_candidate_id and _table_exists(
+        con, "ml_score_calibration_promotion_events"
+    ):
+        active_promoted_at = _one(
+            con,
+            """
+            SELECT created_at
+            FROM ml_score_calibration_promotion_events
+            WHERE candidate_run_id = ? AND action = 'promote'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (active_candidate_id,),
+        ).get("created_at")
+    feedback_monitoring = {
+        "promoted_at": active_promoted_at,
+        "new_observation_count": 0,
+        "calibration_observation_count": 0,
+        "score_audit_count": 0,
+        "score_mismatch_count": 0,
+        "underconfident_count": 0,
+        "false_safe_count": 0,
+        "pattern_confirmation_count": 0,
+        "source_counts": {},
+    }
+    if active_promoted_at:
+        if _table_exists(con, "local_learning_candidates"):
+            score_audits = _all(
+                con,
+                """
+                SELECT decision.human_label,
+                       decision.local_confidence_score,
+                       decision.reasons_json,
+                       calibrated.candidate_probability AS operational_effective_score
+                FROM local_learning_candidates decision
+                LEFT JOIN ml_score_calibration_candidate_items calibrated
+                  ON calibrated.run_id = ?
+                 AND calibrated.segment_id = decision.segment_id
+                 AND calibrated.text_hash = decision.suggested_hash
+                WHERE decision.origin = ?
+                  AND decision.human_label <> 'pending'
+                  AND decision.updated_at > ?
+                """,
+                (
+                    active_candidate_id,
+                    LOW_SCORE_CALIBRATION_ORIGIN,
+                    active_promoted_at,
+                ),
+            )
+            underconfident_count = 0
+            false_safe_count = 0
+            for audit in score_audits:
+                label = str(audit.get("human_label") or "")
+                reasons = _score_recalibration_json(audit.get("reasons_json"), {})
+                effective_score = audit.get("operational_effective_score")
+                if effective_score is None:
+                    effective_score = reasons.get("effective_score")
+                if effective_score is None:
+                    effective_score = audit.get("local_confidence_score")
+                score_value = _num(effective_score)
+                if label in SUPERVISED_CALIBRATION_POSITIVE_LABELS and score_value < 0.50:
+                    underconfident_count += 1
+                elif label in SUPERVISED_CALIBRATION_NEGATIVE_LABELS and score_value >= 0.86:
+                    false_safe_count += 1
+            score_audit_count = len(score_audits)
+            feedback_monitoring["source_counts"]["score_audit"] = score_audit_count
+            feedback_monitoring["score_audit_count"] = score_audit_count
+            feedback_monitoring["underconfident_count"] = underconfident_count
+            feedback_monitoring["false_safe_count"] = false_safe_count
+            feedback_monitoring["score_mismatch_count"] = (
+                underconfident_count + false_safe_count
+            )
+            feedback_monitoring["new_observation_count"] += score_audit_count
+            feedback_monitoring["calibration_observation_count"] += score_audit_count
+
+        if _table_exists(con, "ml_regenerative_review_decisions"):
+            regenerative = _all(
+                con,
+                """
+                SELECT queue_type, decision
+                FROM ml_regenerative_review_decisions
+                WHERE is_active = 1 AND updated_at > ?
+                """,
+                (active_promoted_at,),
+            )
+            calibration_decisions = {
+                ("repair", "candidate_valid"),
+                ("repair", "issue_confirmed"),
+                ("discovery", "supports_pattern"),
+            }
+            confirmed_count = sum(
+                1
+                for decision in regenerative
+                if (
+                    str(decision.get("queue_type") or ""),
+                    str(decision.get("decision") or ""),
+                ) in calibration_decisions
+            )
+            feedback_monitoring["source_counts"]["human_validation"] = len(regenerative)
+            feedback_monitoring["pattern_confirmation_count"] = confirmed_count
+            feedback_monitoring["new_observation_count"] += len(regenerative)
+            feedback_monitoring["calibration_observation_count"] += confirmed_count
+
+        if _table_exists(con, "mojibake_lexicon_review_decisions"):
+            unicode_rows = _all(
+                con,
+                """
+                SELECT decision, resolution_scope
+                FROM mojibake_lexicon_review_decisions
+                WHERE updated_at > ?
+                """,
+                (active_promoted_at,),
+            )
+            unicode_calibration_count = sum(
+                1
+                for decision in unicode_rows
+                if (
+                    str(decision.get("decision") or "") == "accept_suggestion"
+                    and str(decision.get("resolution_scope") or "") == "complete"
+                )
+                or (
+                    str(decision.get("decision") or "") == "manual_review"
+                    and str(decision.get("resolution_scope") or "") in {"partial", "manual"}
+                )
+            )
+            feedback_monitoring["source_counts"]["unicode_validation"] = len(unicode_rows)
+            feedback_monitoring["new_observation_count"] += len(unicode_rows)
+            feedback_monitoring["calibration_observation_count"] += unicode_calibration_count
+    training_context_changed = bool(
+        active_candidate_id
+        and _int(shadow.get("gate_passed"))
+        and not candidate_matches_training_context
+    )
+    recalibration_recommendation = _score_recalibration_recommendation(
+        feedback_monitoring,
+        training_context_changed=training_context_changed,
+    )
+    new_calibration_context_ready = bool(
+        active_candidate_id and recalibration_recommendation.get("can_recalibrate")
+    )
+    lifecycle_state = (
+        "active_monitoring"
+        if active_candidate_id
+        else "raw_monitoring"
+        if registry and _table_exists(con, "ml_score_calibration_promotion_events") and _int(
+            _one(
+                con,
+                "SELECT COUNT(*) AS total FROM ml_score_calibration_promotion_events WHERE action = 'promote'",
+            ).get("total")
+        )
+        else "candidate_review"
+        if candidate_id
+        else "ready"
+        if _int(shadow.get("gate_passed"))
+        else "blocked"
+    )
+    history_has_shadow_metrics = _table_exists(con, "ml_score_calibration_shadow_runs")
+    history_shadow_columns = (
+        """shadow.current_ece, shadow.candidate_ece,
+               shadow.current_brier, shadow.candidate_brier,
+               shadow.current_false_safe_count, shadow.candidate_false_safe_count,"""
+        if history_has_shadow_metrics
+        else """NULL AS current_ece, NULL AS candidate_ece,
+               NULL AS current_brier, NULL AS candidate_brier,
+               0 AS current_false_safe_count, 0 AS candidate_false_safe_count,"""
+    )
+    history_shadow_join = (
+        "LEFT JOIN ml_score_calibration_shadow_runs shadow ON shadow.id = candidate.shadow_run_id"
+        if history_has_shadow_metrics
+        else ""
+    )
+    history = _all(
+        con,
+        f"""
+        SELECT candidate.id AS candidate_run_id, candidate.status,
+               candidate.shadow_run_id, candidate.score_run_id, candidate.item_count,
+               candidate.raw_mean_probability, candidate.current_mean_probability,
+               candidate.candidate_mean_probability, candidate.improved_count,
+               candidate.degraded_count, candidate.band_change_count,
+               candidate.required_review_count, candidate.created_at, candidate.updated_at,
+               {history_shadow_columns}
+               (
+                 SELECT event.created_at
+                 FROM ml_score_calibration_promotion_events event
+                 WHERE event.candidate_run_id = candidate.id AND event.action = 'promote'
+                 ORDER BY event.id DESC LIMIT 1
+               ) AS promoted_at
+        FROM ml_score_calibration_candidate_runs candidate
+        {history_shadow_join}
+        WHERE candidate.id = ? OR EXISTS (
+          SELECT 1 FROM ml_score_calibration_promotion_events promoted
+          WHERE promoted.candidate_run_id = candidate.id AND promoted.action = 'promote'
+        )
+        ORDER BY candidate.id DESC LIMIT 10
+        """,
+        (active_candidate_id,),
+    )
+    current_score_context_id = _int(shadow.get("score_run_id"))
+    score_versions = [
+        {
+            **version,
+            "kind": "calibrated",
+            "label": f"Score calibrado #{_int(version.get('candidate_run_id'))}",
+            "mean_probability": version.get("candidate_mean_probability"),
+            "ece": version.get("candidate_ece"),
+            "brier": version.get("candidate_brier"),
+            "false_safe_count": _int(version.get("candidate_false_safe_count")),
+            "active": _int(version.get("candidate_run_id")) == active_candidate_id,
+            "compatible": (
+                not current_score_context_id
+                or _int(version.get("score_run_id")) == current_score_context_id
+            ),
+            "restorable": bool(
+                _int(version.get("candidate_run_id")) != active_candidate_id
+                and (
+                    not current_score_context_id
+                    or _int(version.get("score_run_id")) == current_score_context_id
+                )
+            ),
+        }
+        for version in history
+    ]
+    compatible_history = [
+        version
+        for version in history
+        if not current_score_context_id
+        or _int(version.get("score_run_id")) == current_score_context_id
+    ]
+    raw_reference = compatible_history[-1] if compatible_history else (history[-1] if history else {})
+    if history or registry:
+        score_versions.append(
+            {
+                "kind": "raw",
+                "candidate_run_id": None,
+                "label": "Score bruto original",
+                "score_run_id": current_score_context_id or _int(raw_reference.get("score_run_id")),
+                "item_count": _int(raw_reference.get("item_count")),
+                "mean_probability": (
+                    raw_reference.get("raw_mean_probability")
+                    if raw_reference.get("raw_mean_probability") is not None
+                    else raw_reference.get("current_mean_probability")
+                ),
+                "ece": raw_reference.get("current_ece"),
+                "brier": raw_reference.get("current_brier"),
+                "false_safe_count": _int(raw_reference.get("current_false_safe_count")),
+                "created_at": raw_reference.get("created_at"),
+                "active": not active_candidate_id,
+                "compatible": True,
+                "restorable": bool(active_candidate_id),
+            }
+        )
+    return {
+        "available": bool(shadow),
+        "rule_version": SCORE_RECALIBRATION_CANDIDATE_VERSION,
+        "lifecycle_state": lifecycle_state,
+        "training": {
+            "shadow_run_id": _int(shadow.get("id")),
+            "metric_run_id": _int(shadow.get("metric_run_id")),
+            "model_run_id": _int(shadow.get("model_run_id")),
+            "score_run_id": _int(shadow.get("score_run_id")),
+            "review_watermark": shadow.get("review_watermark"),
+            "observation_count": _int(shadow.get("observation_count")),
+            "positive_count": _int(supervised.get("positive_count")),
+            "negative_count": _int(supervised.get("negative_count")),
+            "fold_count": _int(shadow.get("fold_count")),
+            "current_ece": shadow.get("current_ece"),
+            "candidate_ece": shadow.get("candidate_ece"),
+            "current_brier": shadow.get("current_brier"),
+            "candidate_brier": shadow.get("candidate_brier"),
+            "candidate_false_safe_count": _int(shadow.get("candidate_false_safe_count")),
+            "candidate_safe_count": _int(shadow_guardrails.get("candidate_safe_count")),
+            "candidate_safe_coverage": _num(shadow_guardrails.get("candidate_safe_coverage")),
+            "candidate_safe_precision": shadow_guardrails.get("candidate_safe_precision"),
+            "safe_threshold_measurable": bool(shadow_guardrails.get("safe_threshold_measurable")),
+            "candidate_high_confidence_audit": shadow_guardrails.get("candidate_high_confidence_audit") or {},
+            "shadow_qualified": bool(_int(shadow.get("gate_passed"))),
+            "shadow_status": shadow.get("status"),
+            "metrics": shadow_metrics,
+        },
+        "candidate": {
+            **candidate,
+            "summary": summary,
+            "gate": gate,
+            "discrepancies": _score_recalibration_discrepancy_items(con, candidate_id),
+        } if candidate else None,
+        "registry": {
+            **registry,
+            "active_candidate": active_candidate or None,
+            "active_candidate_summary": active_candidate_summary,
+        } if registry else {
+            "registry_key": SCORE_RECALIBRATION_REGISTRY_KEY,
+            "active_candidate_run_id": None,
+            "previous_candidate_run_id": None,
+            "active_candidate": None,
+            "active_candidate_summary": {},
+        },
+        "history": history,
+        "score_versions": score_versions,
+        "feedback_monitoring": feedback_monitoring,
+        "recommendation": recalibration_recommendation,
+        "actions": {
+            "can_generate": bool(
+                _int(shadow.get("gate_passed"))
+                and (
+                    not candidate_matches_training_context
+                    or discrepancy_feedback_ready
+                )
+            ),
+            "candidate_matches_training_context": candidate_matches_training_context,
+            "generation_mode": "discrepancy_feedback" if discrepancy_feedback_ready else "new_context",
+            "regeneration_blocker": None if discrepancy_feedback_ready else (
+                "same_context_already_materialized"
+                if candidate_matches_training_context
+                else None
+            ),
+            "can_promote": bool(candidate_id and gate.get("passed") and candidate.get("status") != "promoted"),
+            "can_revert": bool(registry and _int(registry.get("active_candidate_run_id"))),
+            "can_start_new_cycle": new_calibration_context_ready,
+            "new_cycle_blocker": None if new_calibration_context_ready else (
+                "no_new_training_context"
+                if active_candidate_id
+                else "no_active_calibrated_score"
+            ),
+        },
+        "stages": [
+            {"id": "inputs", "label": "Insumos e travas", "status": "done" if shadow else "blocked"},
+            {"id": "candidate", "label": "Gerar candidato", "status": "done" if candidate else "pending"},
+            {"id": "review", "label": "Validar discrepâncias", "status": "done" if gate.get("reasons", {}).get("discrepancies_reviewed") else "pending"},
+            {"id": "promotion", "label": "Promover score", "status": "done" if lifecycle_state in {"active_monitoring", "raw_monitoring"} else "pending" if gate.get("passed") else "blocked"},
+        ],
+    }
+
+
+def _discrepancy_feedback_multiplier(decision: str) -> float | None:
+    """Translate an ordinal movement verdict into a conservative delta weight."""
+    return {
+        "coherent_change": 1.0,
+        "correct_direction_excessive": 0.5,
+        # An insufficient move is not extrapolated without an absolute human
+        # target. Keeping the proposed delta is safer than manufacturing one.
+        "correct_direction_insufficient": 1.0,
+        "incorrect_direction": 0.0,
+        "incorrect_change": 0.0,
+    }.get(str(decision or ""))
+
+
+def _merge_discrepancy_feedback_aggregates(
+    previous: dict[str, Any],
+    current: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Accumulate reviewed evidence without letting the latest batch erase history."""
+    merged: dict[str, dict[str, Any]] = {}
+    for label in sorted(set(previous) | set(current)):
+        old = previous.get(label) or {}
+        new = current.get(label) or {}
+        old_count = _int(old.get("count"))
+        new_count = _int(new.get("count"))
+        count = old_count + new_count
+        if not count:
+            continue
+        decisions: dict[str, int] = {}
+        for source in (old.get("decisions") or {}, new.get("decisions") or {}):
+            for decision, value in source.items():
+                decisions[str(decision)] = decisions.get(str(decision), 0) + _int(value)
+        merged[label] = {
+            "count": count,
+            "multiplier": round(
+                (
+                    (_num(old.get("multiplier")) * old_count)
+                    + (_num(new.get("multiplier")) * new_count)
+                ) / count,
+                8,
+            ),
+            "decisions": decisions,
+        }
+    return merged
+
+
+def _materialize_discrepancy_feedback_shadow(
+    con: sqlite3.Connection,
+    parent_candidate: dict[str, Any],
+) -> dict[str, Any]:
+    """Create a versioned conservative shadow from completed ordinal reviews.
+
+    The layer only shrinks a base candidate movement toward the current score.
+    It never extrapolates beyond either endpoint, so the new candidate cannot
+    manufacture a more extreme confidence from a magnitude-only review.
+    """
+    parent_id = _int(parent_candidate.get("id"))
+    gate = _score_recalibration_gate_state(con, parent_id)
+    if not gate.get("reasons", {}).get("discrepancies_reviewed"):
+        raise ValueError("Finalize a amostra obrigatória antes de gerar o candidato seguinte.")
+    if _int(gate.get("incorrect_count")) <= 0:
+        raise ValueError("O candidato atual não possui divergências para alimentar uma nova versão.")
+    parent_shadow = _one(
+        con,
+        "SELECT * FROM ml_score_calibration_shadow_runs WHERE id = ?",
+        (_int(parent_candidate.get("shadow_run_id")),),
+    )
+    if not parent_shadow:
+        raise ValueError("O shadow do candidato rejeitado não está mais disponível.")
+    rows = _all(
+        con,
+        """
+        SELECT
+          rv.decision, rv.updated_at,
+          ci.complexity, ci.family, ci.current_band, ci.delta
+        FROM ml_score_calibration_discrepancy_reviews rv
+        JOIN ml_score_calibration_candidate_items ci
+          ON ci.run_id = rv.candidate_run_id
+         AND ci.segment_id = rv.segment_id
+         AND ci.text_hash = rv.text_hash
+        WHERE rv.candidate_run_id = ?
+        ORDER BY ci.review_rank, ci.segment_id
+        """,
+        (parent_id,),
+    )
+    weighted_rows = []
+    for row in rows:
+        multiplier = _discrepancy_feedback_multiplier(str(row.get("decision") or ""))
+        if multiplier is None:
+            continue
+        direction = "up" if _num(row.get("delta")) >= 0 else "down"
+        slice_key = "|".join((
+            str(row.get("complexity") or "nao_classificado"),
+            str(row.get("family") or "nao_classificado"),
+            str(row.get("current_band") or "nao_classificado"),
+            direction,
+        ))
+        weighted_rows.append({
+            "decision": str(row.get("decision") or ""),
+            "direction": direction,
+            "slice_key": slice_key,
+            "multiplier": multiplier,
+            "updated_at": str(row.get("updated_at") or ""),
+        })
+    if not weighted_rows:
+        raise ValueError("As decisões concluídas não produziram feedback ordinal utilizável.")
+
+    def aggregate(key: str) -> dict[str, dict[str, Any]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in weighted_rows:
+            grouped.setdefault(str(row[key]), []).append(row)
+        return {
+            label: {
+                "count": len(items),
+                "multiplier": round(
+                    sum(_num(item.get("multiplier")) for item in items) / len(items),
+                    8,
+                ),
+                "decisions": {
+                    decision: sum(1 for item in items if item.get("decision") == decision)
+                    for decision in sorted({str(item.get("decision")) for item in items})
+                },
+            }
+            for label, items in grouped.items()
+        }
+
+    watermark = max(
+        (row["updated_at"] for row in weighted_rows if row.get("updated_at")),
+        default=_now_iso(),
+    )
+    model = _score_recalibration_json(parent_shadow.get("model_json"), {})
+    previous_feedback = model.get("discrepancy_feedback") or {}
+    previous_candidate_ids = [
+        _int(value)
+        for value in (previous_feedback.get("feedback_candidate_run_ids") or [])
+        if _int(value)
+    ]
+    legacy_parent_id = _int(previous_feedback.get("parent_candidate_run_id"))
+    if legacy_parent_id and legacy_parent_id not in previous_candidate_ids:
+        previous_candidate_ids.append(legacy_parent_id)
+    if parent_id not in previous_candidate_ids:
+        previous_candidate_ids.append(parent_id)
+    current_by_direction = aggregate("direction")
+    current_by_slice = aggregate("slice_key")
+    feedback = {
+        "rule_version": DISCREPANCY_FEEDBACK_SHADOW_VERSION,
+        "parent_candidate_run_id": parent_id,
+        "feedback_candidate_run_ids": previous_candidate_ids,
+        "review_count": _int(previous_feedback.get("review_count")) + len(weighted_rows),
+        "incorrect_count": _int(previous_feedback.get("incorrect_count")) + _int(gate.get("incorrect_count")),
+        "review_watermark": watermark,
+        "contract": "convex_shrink_toward_current_score",
+        "direction_policy": {
+            "minimum_down_support": 20,
+            "unseen_downward_slices": "shrink_from_direction_evidence",
+            "unseen_upward_slices": "retain_base_calibrator",
+        },
+        "learning_axes": {
+            "direction_errors": _int(gate.get("wrong_direction_count")),
+            "magnitude_excessive": _int(gate.get("excessive_count")),
+            "magnitude_insufficient": _int(gate.get("insufficient_count")),
+        },
+        "by_direction": _merge_discrepancy_feedback_aggregates(
+            previous_feedback.get("by_direction") or {},
+            current_by_direction,
+        ),
+        "by_slice": _merge_discrepancy_feedback_aggregates(
+            previous_feedback.get("by_slice") or {},
+            current_by_slice,
+        ),
+    }
+    model["discrepancy_feedback"] = feedback
+    metrics = _score_recalibration_json(parent_shadow.get("metrics_json"), {})
+    metrics["discrepancy_feedback"] = feedback
+    now = _now_iso()
+    feedback_watermark = f"{watermark}#candidate-{parent_id}"
+    con.execute(
+        """
+        INSERT INTO ml_score_calibration_shadow_runs (
+          rule_version, metric_run_id, model_run_id, score_run_id,
+          review_watermark, observation_count, fold_count,
+          current_ece, candidate_ece, current_brier, candidate_brier,
+          current_false_safe_count, candidate_false_safe_count,
+          gate_passed, status, model_json, metrics_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1,
+                  'qualificado_feedback', ?, ?, ?)
+        ON CONFLICT(rule_version, model_run_id, score_run_id, review_watermark)
+        DO UPDATE SET model_json = excluded.model_json,
+                      metrics_json = excluded.metrics_json,
+                      gate_passed = 1,
+                      status = excluded.status,
+                      created_at = excluded.created_at
+        """,
+        (
+            DISCREPANCY_FEEDBACK_SHADOW_VERSION,
+            _int(parent_shadow.get("metric_run_id")),
+            _int(parent_shadow.get("model_run_id")),
+            _int(parent_shadow.get("score_run_id")),
+            feedback_watermark,
+            _int(parent_shadow.get("observation_count")),
+            _int(parent_shadow.get("fold_count")),
+            parent_shadow.get("current_ece"),
+            parent_shadow.get("candidate_ece"),
+            parent_shadow.get("current_brier"),
+            parent_shadow.get("candidate_brier"),
+            _int(parent_shadow.get("current_false_safe_count")),
+            _int(parent_shadow.get("candidate_false_safe_count")),
+            json.dumps(model, ensure_ascii=False, sort_keys=True),
+            json.dumps(metrics, ensure_ascii=False, sort_keys=True),
+            now,
+        ),
+    )
+    con.commit()
+    return _one(
+        con,
+        """
+        SELECT * FROM ml_score_calibration_shadow_runs
+        WHERE rule_version = ? AND model_run_id = ?
+          AND score_run_id = ? AND review_watermark = ?
+        LIMIT 1
+        """,
+        (
+            DISCREPANCY_FEEDBACK_SHADOW_VERSION,
+            _int(parent_shadow.get("model_run_id")),
+            _int(parent_shadow.get("score_run_id")),
+            feedback_watermark,
+        ),
+    )
+
+
+def _score_recalibration_stratified_review_sample(
+    rows: list[dict[str, Any]],
+    *,
+    previously_reviewed: set[tuple[int, str]],
+    previously_reviewed_hashes: set[str],
+    target: int = SCORE_RECALIBRATION_REVIEW_TARGET,
+) -> list[tuple[int, str]]:
+    """Select balanced movement evidence across meaningful score strata."""
+    eligible: list[dict[str, Any]] = []
+    seen_hashes: set[str] = set()
+    for row in sorted(
+        rows,
+        key=lambda item: (-abs(_num(item.get("delta"))), _int(item.get("segment_id"))),
+    ):
+        segment_id = _int(row.get("segment_id"))
+        text_hash = str(row.get("text_hash") or "")
+        key = (segment_id, text_hash)
+        if key in previously_reviewed or text_hash in previously_reviewed_hashes:
+            continue
+        if text_hash and text_hash in seen_hashes:
+            continue
+        seen_hashes.add(text_hash)
+        eligible.append({**row, "segment_id": segment_id, "text_hash": text_hash})
+
+    selected: list[tuple[int, str]] = []
+    selected_keys: set[tuple[int, str]] = set()
+    direction_quota = {
+        "up": (target + 1) // 2,
+        "down": target // 2,
+    }
+    for direction in ("up", "down"):
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in eligible:
+            row_direction = "up" if _num(row.get("delta")) >= 0 else "down"
+            if row_direction != direction:
+                continue
+            stratum = "|".join((
+                str(row.get("complexity") or "nao_classificado"),
+                str(row.get("family") or "nao_classificado"),
+                str(row.get("current_band") or "nao_classificado"),
+            ))
+            grouped.setdefault(stratum, []).append(row)
+        strata = sorted(
+            grouped,
+            key=lambda label: (
+                -abs(_num(grouped[label][0].get("delta"))),
+                label,
+            ),
+        )
+        while strata and sum(
+            1
+            for segment_id, text_hash in selected
+            if any(
+                _int(row.get("segment_id")) == segment_id
+                and str(row.get("text_hash") or "") == text_hash
+                and ("up" if _num(row.get("delta")) >= 0 else "down") == direction
+                for row in eligible
+            )
+        ) < direction_quota[direction]:
+            next_strata: list[str] = []
+            for label in strata:
+                if not grouped[label]:
+                    continue
+                row = grouped[label].pop(0)
+                key = (_int(row.get("segment_id")), str(row.get("text_hash") or ""))
+                if key not in selected_keys:
+                    selected.append(key)
+                    selected_keys.add(key)
+                if grouped[label]:
+                    next_strata.append(label)
+                direction_total = sum(
+                    1
+                    for chosen in selected
+                    if any(
+                        (_int(item.get("segment_id")), str(item.get("text_hash") or "")) == chosen
+                        and ("up" if _num(item.get("delta")) >= 0 else "down") == direction
+                        for item in eligible
+                    )
+                )
+                if direction_total >= direction_quota[direction]:
+                    break
+            strata = next_strata
+
+    if len(selected) < target:
+        for row in eligible:
+            key = (_int(row.get("segment_id")), str(row.get("text_hash") or ""))
+            if key not in selected_keys:
+                selected.append(key)
+                selected_keys.add(key)
+            if len(selected) >= target:
+                break
+    return selected[:target]
+
+
+def _generate_score_recalibration_candidate(con: sqlite3.Connection) -> dict[str, Any]:
+    _ensure_score_recalibration_operational_schema(con)
+    calibration = _supervised_calibration_payload(con, persist=True)
+    shadow_payload = calibration.get("shadow_calibration") or {}
+    shadow_run_id = _int(shadow_payload.get("persisted_run_id"))
+    shadow = _one(
+        con,
+        "SELECT * FROM ml_score_calibration_shadow_runs WHERE id = ?",
+        (shadow_run_id,),
+    ) if shadow_run_id else _one(
+        con,
+        "SELECT * FROM ml_score_calibration_shadow_runs ORDER BY id DESC LIMIT 1",
+    )
+    if not shadow or not _int(shadow.get("gate_passed")):
+        raise ValueError("O shadow atual ainda não passou pelas travas de ECE, Brier e falso seguro.")
+    score_run_id = _int(shadow.get("score_run_id"))
+    score_run = _one(con, "SELECT * FROM ml_score_runs WHERE id = ?", (score_run_id,))
+    if not score_run:
+        raise ValueError("A run de score usada pelo shadow não está mais disponível.")
+    latest_score = _one(
+        con,
+        "SELECT id, model_run_id, candidate_tree_hash FROM ml_score_runs ORDER BY id DESC LIMIT 1",
+    )
+    same_score_context = (
+        _int(latest_score.get("id")) == score_run_id
+        and _int(latest_score.get("model_run_id")) == _int(shadow.get("model_run_id"))
+    )
+    if not same_score_context:
+        raise ValueError("O shadow não corresponde à run de score mais recente; rode Avaliação e Diagnóstico antes de gerar o candidato.")
+    tree_hash = str(score_run.get("candidate_tree_hash") or "sem_hash")
+    # The supervised payload owns the immutable base shadow, but an iterative
+    # recalibration cycle may already have a newer feedback shadow derived from
+    # it. Continue from the latest live candidate in this score/tree lineage;
+    # otherwise every click would restart from the base and collide with the
+    # first feedback candidate's unique key.
+    lineage_candidate = _one(
+        con,
+        """
+        SELECT * FROM ml_score_calibration_candidate_runs
+        WHERE score_run_id = ? AND candidate_tree_hash = ?
+          AND status NOT IN ('superseded', 'reverted')
+        ORDER BY id DESC LIMIT 1
+        """,
+        (score_run_id, tree_hash),
+    )
+    if lineage_candidate:
+        lineage_shadow = _one(
+            con,
+            "SELECT * FROM ml_score_calibration_shadow_runs WHERE id = ?",
+            (_int(lineage_candidate.get("shadow_run_id")),),
+        )
+        lineage_model = _score_recalibration_json(
+            lineage_shadow.get("model_json"),
+            {},
+        ) if lineage_shadow else {}
+        lineage_feedback = lineage_model.get("discrepancy_feedback") or {}
+        lineage_base_version = str(
+            lineage_model.get("base_shadow_rule_version") or ""
+        )
+        if (
+            lineage_shadow
+            and _int(lineage_shadow.get("gate_passed"))
+            and _int(lineage_shadow.get("model_run_id")) == _int(shadow.get("model_run_id"))
+            and str(lineage_shadow.get("rule_version") or "").startswith("stratified_score_calibration_feedback_")
+            and lineage_base_version == STRATIFIED_CALIBRATION_SHADOW_VERSION
+        ):
+            shadow = lineage_shadow
+        elif (
+            lineage_feedback
+            and str(shadow.get("rule_version") or "") == STRATIFIED_CALIBRATION_SHADOW_VERSION
+        ):
+            # Rebase accumulated ordinal feedback onto the new base calibrator.
+            # This preserves all human learning while allowing a new scoring
+            # contract (such as explicit issue guards) to take effect.
+            rebased_model = _score_recalibration_json(shadow.get("model_json"), {})
+            rebased_model["discrepancy_feedback"] = lineage_feedback
+            shadow["model_json"] = json.dumps(
+                rebased_model,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            con.execute(
+                "UPDATE ml_score_calibration_shadow_runs SET model_json = ? WHERE id = ?",
+                (shadow["model_json"], _int(shadow.get("id"))),
+            )
+            con.commit()
+    existing = _one(
+        con,
+        """
+        SELECT * FROM ml_score_calibration_candidate_runs
+        WHERE shadow_run_id = ? AND score_run_id = ? AND candidate_tree_hash = ?
+        """,
+        (_int(shadow.get("id")), score_run_id, tree_hash),
+    )
+    if existing:
+        existing_gate = _score_recalibration_gate_state(con, _int(existing.get("id")))
+        stale_feedback_model = _score_recalibration_json(shadow.get("model_json"), {})
+        stale_feedback = stale_feedback_model.get("discrepancy_feedback") or {}
+        feedback_contract_upgrade = bool(
+            stale_feedback
+            and str(shadow.get("rule_version") or "")
+            != DISCREPANCY_FEEDBACK_SHADOW_VERSION
+        )
+        should_learn_from_feedback = bool(
+            existing_gate.get("reasons", {}).get("discrepancies_reviewed")
+            and _int(existing_gate.get("incorrect_count")) > 0
+        )
+        if not should_learn_from_feedback and not feedback_contract_upgrade:
+            return _score_recalibration_operational_payload(con)
+        feedback_parent = existing
+        if feedback_contract_upgrade:
+            feedback_parent_id = _int(stale_feedback.get("parent_candidate_run_id"))
+            feedback_parent = _one(
+                con,
+                "SELECT * FROM ml_score_calibration_candidate_runs WHERE id = ?",
+                (feedback_parent_id,),
+            )
+            if not feedback_parent:
+                raise ValueError("O candidato que originou o feedback não está mais disponível.")
+            con.execute(
+                "UPDATE ml_score_calibration_candidate_runs SET status = 'superseded', updated_at = ? WHERE id = ?",
+                (_now_iso(), _int(existing.get("id"))),
+            )
+            con.commit()
+        shadow = _materialize_discrepancy_feedback_shadow(con, feedback_parent)
+        score_run_id = _int(shadow.get("score_run_id"))
+
+    model = _score_recalibration_json(shadow.get("model_json"), {})
+    if not model:
+        raise ValueError("O calibrador persistido não possui parâmetros utilizáveis.")
+    now = _now_iso()
+    shadow_metrics = _score_recalibration_json(shadow.get("metrics_json"), {})
+    shadow_guardrails = shadow_metrics.get("guardrails") or {}
+    gate_seed = {
+        "shadow_qualified": True,
+        "same_score_context": same_score_context,
+        "shadow_run_id": _int(shadow.get("id")),
+        "score_run_id": score_run_id,
+        "candidate_false_safe_count": _int(shadow.get("candidate_false_safe_count")),
+        "candidate_safe_count": _int(shadow_guardrails.get("candidate_safe_count")),
+        "candidate_safe_coverage": _num(shadow_guardrails.get("candidate_safe_coverage")),
+        "candidate_safe_precision": shadow_guardrails.get("candidate_safe_precision"),
+        "safe_threshold_measurable": bool(shadow_guardrails.get("safe_threshold_measurable")),
+        "candidate_high_confidence_audit": shadow_guardrails.get("candidate_high_confidence_audit") or {},
+    }
+    cursor = con.execute(
+        """
+        INSERT INTO ml_score_calibration_candidate_runs (
+          rule_version, shadow_run_id, model_run_id, score_run_id,
+          source_snapshot_id, candidate_tree_hash, review_watermark,
+          status, gate_json, summary_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'generating', ?, '{}', ?, ?)
+        """,
+        (
+            SCORE_RECALIBRATION_CANDIDATE_VERSION,
+            _int(shadow.get("id")),
+            _int(shadow.get("model_run_id")),
+            score_run_id,
+            _int(score_run.get("source_snapshot_id")) or None,
+            tree_hash,
+            str(shadow.get("review_watermark") or "none"),
+            json.dumps(gate_seed, ensure_ascii=False, sort_keys=True),
+            now,
+            now,
+        ),
+    )
+    candidate_run_id = _int(cursor.lastrowid)
+    registry = _one(
+        con,
+        "SELECT active_candidate_run_id FROM ml_score_calibration_registry WHERE registry_key = ?",
+        (SCORE_RECALIBRATION_REGISTRY_KEY,),
+    )
+    active_run_id = _int(registry.get("active_candidate_run_id"))
+    active_context = _one(
+        con,
+        "SELECT score_run_id, candidate_tree_hash FROM ml_score_calibration_candidate_runs WHERE id = ?",
+        (active_run_id,),
+    ) if active_run_id else {}
+    if _int(active_context.get("score_run_id")) != score_run_id or str(active_context.get("candidate_tree_hash") or "") != tree_hash:
+        active_run_id = 0
+
+    rows = con.execute(
+        """
+        SELECT
+          si.segment_id, si.relative_path, si.source_key, si.candidate_text,
+          si.raw_model_safe_probability, si.model_safe_probability,
+          si.issues_json, si.issue_count, si.high_issue_count,
+          active_ci.candidate_probability AS active_probability,
+          ss.english_text, ss.spanish_text, ss.old_text,
+          os.portuguese_text AS output_text
+        FROM ml_score_items si
+        JOIN source_segments ss ON ss.id = si.segment_id
+        LEFT JOIN output_segments os ON os.segment_id = si.segment_id
+        LEFT JOIN ml_score_calibration_candidate_items active_ci
+          ON active_ci.run_id = ? AND active_ci.segment_id = si.segment_id
+        WHERE si.run_id = ?
+        ORDER BY si.segment_id
+        """,
+        (active_run_id, score_run_id),
+    )
+    batch: list[tuple[Any, ...]] = []
+    item_count = improved = degraded = unchanged = band_changes = 0
+    raw_total = current_total = candidate_total = 0.0
+    for row in rows:
+        item = dict(row)
+        text = str(item.get("candidate_text") or item.get("output_text") or item.get("old_text") or item.get("spanish_text") or "")
+        raw_probability = _num(item.get("raw_model_safe_probability") if item.get("raw_model_safe_probability") is not None else item.get("model_safe_probability"))
+        current_probability = _num(item.get("active_probability") if item.get("active_probability") is not None else item.get("model_safe_probability"))
+        complexity = _calibration_complexity(text)[0]
+        family = _low_score_calibration_group(item.get("relative_path"))
+        issue_profile = _calibration_issue_profile(
+            item.get("issues_json"),
+            issue_count=_int(item.get("issue_count")),
+            high_issue_count=_int(item.get("high_issue_count")),
+        )
+        observation = {
+            "probability": raw_probability,
+            "current_probability": current_probability,
+            "current_band": _calibration_probability_band(current_probability),
+            "complexity": complexity,
+            "source": "pacote_atual",
+            "family": family,
+            **issue_profile,
+            "issue_profile": issue_profile,
+        }
+        candidate_probability = _shadow_calibrated_probability(model, observation)
+        delta = round(candidate_probability - current_probability, 8)
+        raw_band = _calibration_probability_band(raw_probability)
+        current_band = _calibration_probability_band(current_probability)
+        candidate_band = _calibration_probability_band(candidate_probability)
+        item_count += 1
+        raw_total += raw_probability
+        current_total += current_probability
+        candidate_total += candidate_probability
+        if delta > 0.000001:
+            improved += 1
+        elif delta < -0.000001:
+            degraded += 1
+        else:
+            unchanged += 1
+        if current_band != candidate_band:
+            band_changes += 1
+        text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        batch.append((
+            candidate_run_id,
+            _int(item.get("segment_id")),
+            text_hash,
+            str(item.get("relative_path") or ""),
+            str(item.get("source_key") or ""),
+            complexity,
+            family,
+            raw_probability,
+            current_probability,
+            candidate_probability,
+            delta,
+            raw_band,
+            current_band,
+            candidate_band,
+            now,
+        ))
+        if len(batch) >= 5000:
+            con.executemany(
+                """
+                INSERT INTO ml_score_calibration_candidate_items (
+                  run_id, segment_id, text_hash, relative_path, source_key,
+                  complexity, family, raw_probability, current_probability,
+                  candidate_probability, delta, raw_band, current_band,
+                  candidate_band, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                batch,
+            )
+            batch.clear()
+    if batch:
+        con.executemany(
+            """
+            INSERT INTO ml_score_calibration_candidate_items (
+              run_id, segment_id, text_hash, relative_path, source_key,
+              complexity, family, raw_probability, current_probability,
+              candidate_probability, delta, raw_band, current_band,
+              candidate_band, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            batch,
+        )
+    if not item_count:
+        raise ValueError("A run de score não contém segmentos para materializar.")
+
+    previously_reviewed = {
+        (_int(row.get("segment_id")), str(row.get("text_hash") or ""))
+        for row in _all(
+            con,
+            """
+            SELECT rv.segment_id, rv.text_hash
+            FROM ml_score_calibration_discrepancy_reviews rv
+            JOIN ml_score_calibration_candidate_runs previous
+              ON previous.id = rv.candidate_run_id
+            WHERE previous.score_run_id = ?
+              AND previous.id <> ?
+            """,
+            (score_run_id, candidate_run_id),
+        )
+    }
+    previously_reviewed_hashes = {
+        text_hash for _, text_hash in previously_reviewed if text_hash
+    }
+    review_pool = [
+        dict(row)
+        for row in con.execute(
+            """
+            SELECT segment_id, text_hash, complexity, family, current_band, delta
+            FROM ml_score_calibration_candidate_items
+            WHERE run_id = ? AND ABS(delta) > 0.000001
+            ORDER BY ABS(delta) DESC, segment_id
+            LIMIT ?
+            """,
+            (candidate_run_id, SCORE_RECALIBRATION_REVIEW_TARGET * 100),
+        ).fetchall()
+    ]
+    selected = _score_recalibration_stratified_review_sample(
+        review_pool,
+        previously_reviewed=previously_reviewed,
+        previously_reviewed_hashes=previously_reviewed_hashes,
+    )
+    for rank, (segment_id, text_hash) in enumerate(selected, start=1):
+        con.execute(
+            """
+            UPDATE ml_score_calibration_candidate_items
+            SET review_required = 1, review_rank = ?
+            WHERE run_id = ? AND segment_id = ? AND text_hash = ?
+            """,
+            (rank, candidate_run_id, segment_id, text_hash),
+        )
+    summary = {
+        "item_count": item_count,
+        "raw_mean_probability": round(raw_total / item_count, 8),
+        "current_mean_probability": round(current_total / item_count, 8),
+        "candidate_mean_probability": round(candidate_total / item_count, 8),
+        "mean_delta": round((candidate_total - current_total) / item_count, 8),
+        "improved_count": improved,
+        "degraded_count": degraded,
+        "unchanged_count": unchanged,
+        "band_change_count": band_changes,
+        "review_sample_count": len(selected),
+        "review_sample_contract": "balanced_direction_round_robin_complexity_family_band",
+    }
+    con.execute(
+        """
+        UPDATE ml_score_calibration_candidate_runs
+        SET status = 'awaiting_review', item_count = ?,
+            raw_mean_probability = ?, current_mean_probability = ?,
+            candidate_mean_probability = ?, improved_count = ?,
+            degraded_count = ?, unchanged_count = ?, band_change_count = ?,
+            required_review_count = ?, summary_json = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            item_count,
+            summary["raw_mean_probability"],
+            summary["current_mean_probability"],
+            summary["candidate_mean_probability"],
+            improved,
+            degraded,
+            unchanged,
+            band_changes,
+            len(selected),
+            json.dumps(summary, ensure_ascii=False, sort_keys=True),
+            now,
+            candidate_run_id,
+        ),
+    )
+    # A score/tree context has a single actionable candidate. Older unfinished
+    # materializations remain auditable in history, but must not look like a
+    # second live review queue after a replacement is generated.
+    con.execute(
+        """
+        UPDATE ml_score_calibration_candidate_runs
+        SET status = 'superseded', updated_at = ?
+        WHERE id <> ? AND score_run_id = ? AND candidate_tree_hash = ?
+          AND status IN ('generating', 'awaiting_review', 'ready')
+        """,
+        (now, candidate_run_id, score_run_id, tree_hash),
+    )
+    con.commit()
+    return _score_recalibration_operational_payload(con)
+
+
+def _record_score_recalibration_discrepancy_review(
+    con: sqlite3.Connection,
+    *,
+    candidate_run_id: int,
+    segment_id: int,
+    decision: str,
+    reason: str | None,
+    reviewer: str,
+) -> dict[str, Any]:
+    _ensure_score_recalibration_operational_schema(con)
+    allowed = {
+        "coherent_change",
+        "correct_direction_excessive",
+        "correct_direction_insufficient",
+        "incorrect_direction",
+        "needs_review",
+        # Compatibility with reviews recorded before the ordinal contract.
+        "incorrect_change",
+    }
+    if decision not in allowed:
+        raise ValueError(
+            "decision must classify the movement as coherent, excessive, "
+            "insufficient, wrong-direction or deferred."
+        )
+    item = _one(
+        con,
+        """
+        SELECT text_hash FROM ml_score_calibration_candidate_items
+        WHERE run_id = ? AND segment_id = ? AND review_required = 1
+        """,
+        (candidate_run_id, segment_id),
+    )
+    if not item:
+        raise ValueError("O segmento não pertence à amostra obrigatória deste candidato.")
+    now = _now_iso()
+    con.execute(
+        """
+        INSERT INTO ml_score_calibration_discrepancy_reviews (
+          candidate_run_id, segment_id, text_hash, decision, reason,
+          reviewer, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(candidate_run_id, segment_id, text_hash)
+        DO UPDATE SET decision = excluded.decision, reason = excluded.reason,
+                      reviewer = excluded.reviewer, updated_at = excluded.updated_at
+        """,
+        (
+            candidate_run_id,
+            segment_id,
+            str(item.get("text_hash") or ""),
+            decision,
+            reason,
+            reviewer,
+            now,
+            now,
+        ),
+    )
+    gate = _score_recalibration_gate_state(con, candidate_run_id)
+    status = "ready" if gate.get("passed") else "blocked" if gate.get("incorrect_count") else "awaiting_review"
+    con.execute(
+        "UPDATE ml_score_calibration_candidate_runs SET status = ?, updated_at = ? WHERE id = ?",
+        (status, now, candidate_run_id),
+    )
+    con.commit()
+    # A review is an interactive hot path. Returning the full operational payload
+    # here would rebuild every discrepancy and its explanation after each click.
+    return {
+        "candidate_run_id": candidate_run_id,
+        "segment_id": segment_id,
+        "text_hash": str(item.get("text_hash") or ""),
+        "decision": decision,
+        "reason": reason,
+        "reviewer": reviewer,
+        "reviewed_at": now,
+        "candidate_status": status,
+        "gate": gate,
+    }
+
+
+def _promote_score_recalibration_candidate(
+    con: sqlite3.Connection,
+    *,
+    candidate_run_id: int,
+    actor: str,
+    reason: str,
+) -> dict[str, Any]:
+    _ensure_score_recalibration_operational_schema(con)
+    gate = _score_recalibration_gate_state(con, candidate_run_id)
+    if not gate.get("passed"):
+        raise ValueError("O candidato ainda não passou por todas as travas e revisões obrigatórias.")
+    registry = _one(
+        con,
+        "SELECT active_candidate_run_id FROM ml_score_calibration_registry WHERE registry_key = ?",
+        (SCORE_RECALIBRATION_REGISTRY_KEY,),
+    )
+    previous_id = _int(registry.get("active_candidate_run_id")) or None
+    now = _now_iso()
+    con.execute(
+        """
+        INSERT INTO ml_score_calibration_registry (
+          registry_key, active_candidate_run_id, previous_candidate_run_id,
+          updated_at, updated_by
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(registry_key) DO UPDATE SET
+          previous_candidate_run_id = ml_score_calibration_registry.active_candidate_run_id,
+          active_candidate_run_id = excluded.active_candidate_run_id,
+          updated_at = excluded.updated_at,
+          updated_by = excluded.updated_by
+        """,
+        (SCORE_RECALIBRATION_REGISTRY_KEY, candidate_run_id, previous_id, now, actor),
+    )
+    con.execute(
+        "UPDATE ml_score_calibration_candidate_runs SET status = 'promoted', updated_at = ? WHERE id = ?",
+        (now, candidate_run_id),
+    )
+    con.execute(
+        """
+        INSERT INTO ml_score_calibration_promotion_events (
+          candidate_run_id, previous_candidate_run_id, action, reason, actor, created_at
+        ) VALUES (?, ?, 'promote', ?, ?, ?)
+        """,
+        (candidate_run_id, previous_id, reason, actor, now),
+    )
+    con.commit()
+    return _score_recalibration_operational_payload(con)
+
+
+def _revert_score_recalibration_candidate(
+    con: sqlite3.Connection,
+    *,
+    actor: str,
+    reason: str,
+) -> dict[str, Any]:
+    _ensure_score_recalibration_operational_schema(con)
+    registry = _one(
+        con,
+        "SELECT * FROM ml_score_calibration_registry WHERE registry_key = ?",
+        (SCORE_RECALIBRATION_REGISTRY_KEY,),
+    )
+    active_id = _int(registry.get("active_candidate_run_id"))
+    previous_id = _int(registry.get("previous_candidate_run_id")) or None
+    if not active_id:
+        raise ValueError("Não há score calibrado ativo para reverter.")
+    now = _now_iso()
+    con.execute(
+        """
+        UPDATE ml_score_calibration_registry
+        SET active_candidate_run_id = ?, previous_candidate_run_id = NULL,
+            updated_at = ?, updated_by = ?
+        WHERE registry_key = ?
+        """,
+        (previous_id, now, actor, SCORE_RECALIBRATION_REGISTRY_KEY),
+    )
+    con.execute(
+        "UPDATE ml_score_calibration_candidate_runs SET status = 'reverted', updated_at = ? WHERE id = ?",
+        (now, active_id),
+    )
+    con.execute(
+        """
+        INSERT INTO ml_score_calibration_promotion_events (
+          candidate_run_id, previous_candidate_run_id, action, reason, actor, created_at
+        ) VALUES (?, ?, 'revert', ?, ?, ?)
+        """,
+        (active_id, previous_id, reason, actor, now),
+    )
+    con.commit()
+    return _score_recalibration_operational_payload(con)
+
+
+def _restore_score_recalibration_version(
+    con: sqlite3.Connection,
+    *,
+    candidate_run_id: int | None,
+    actor: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Restore one promoted calibration, or the immutable raw-score baseline."""
+    _ensure_score_recalibration_operational_schema(con)
+    registry = _one(
+        con,
+        "SELECT * FROM ml_score_calibration_registry WHERE registry_key = ?",
+        (SCORE_RECALIBRATION_REGISTRY_KEY,),
+    )
+    active_id = _int(registry.get("active_candidate_run_id"))
+    target_id = _int(candidate_run_id) or None
+    if target_id == (active_id or None):
+        raise ValueError("Esta versão já governa o score operacional.")
+    if target_id:
+        target = _one(
+            con,
+            "SELECT * FROM ml_score_calibration_candidate_runs WHERE id = ?",
+            (target_id,),
+        )
+        if not target:
+            raise ValueError("A versão calibrada selecionada não existe.")
+        promotion = _one(
+            con,
+            """
+            SELECT id FROM ml_score_calibration_promotion_events
+            WHERE candidate_run_id = ? AND action = 'promote'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (target_id,),
+        )
+        if not promotion:
+            raise ValueError("Somente versões que já passaram pela promoção podem ser restauradas.")
+        current_context = _one(
+            con,
+            "SELECT score_run_id FROM ml_score_calibration_shadow_runs ORDER BY id DESC LIMIT 1",
+        ) if _table_exists(con, "ml_score_calibration_shadow_runs") else {}
+        if (
+            _int(current_context.get("score_run_id"))
+            and _int(target.get("score_run_id")) != _int(current_context.get("score_run_id"))
+        ):
+            raise ValueError("Esta versão pertence a outro contexto de score e não pode governar o pacote atual.")
+    elif not active_id:
+        raise ValueError("O score bruto já governa a confiança operacional.")
+
+    now = _now_iso()
+    if active_id:
+        con.execute(
+            "UPDATE ml_score_calibration_candidate_runs SET status = 'reverted', updated_at = ? WHERE id = ?",
+            (now, active_id),
+        )
+    if target_id:
+        con.execute(
+            "UPDATE ml_score_calibration_candidate_runs SET status = 'promoted', updated_at = ? WHERE id = ?",
+            (now, target_id),
+        )
+    con.execute(
+        """
+        INSERT INTO ml_score_calibration_registry (
+          registry_key, active_candidate_run_id, previous_candidate_run_id,
+          updated_at, updated_by
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(registry_key) DO UPDATE SET
+          active_candidate_run_id = excluded.active_candidate_run_id,
+          previous_candidate_run_id = excluded.previous_candidate_run_id,
+          updated_at = excluded.updated_at,
+          updated_by = excluded.updated_by
+        """,
+        (SCORE_RECALIBRATION_REGISTRY_KEY, target_id, active_id or None, now, actor),
+    )
+    con.execute(
+        """
+        INSERT INTO ml_score_calibration_promotion_events (
+          candidate_run_id, previous_candidate_run_id, action, reason, actor, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            target_id,
+            active_id or None,
+            "restore" if target_id else "restore_raw",
+            reason,
+            actor,
+            now,
+        ),
+    )
+    con.commit()
+    return _score_recalibration_operational_payload(con)
+
+
+def _supervised_calibration_payload(
+    con: sqlite3.Connection,
+    *,
+    model_run_id: int = 0,
+    persist: bool = False,
+) -> dict[str, Any]:
+    required = {"ml_model_runs", "ml_model_registry", "ml_score_runs", "ml_score_items"}
+    if not all(_table_exists(con, table) for table in required):
+        return {"available": False, "message": "Estrutura de score ainda nao instrumentada."}
+    if not model_run_id:
+        registry = _one(
+            con,
+            """
+            SELECT active_model_run_id
+            FROM ml_model_registry
+            WHERE model_kind = 'risk_action_classifier'
+            LIMIT 1
+            """,
+        )
+        model_run_id = _int(registry.get("active_model_run_id"))
+    model = _one(
+        con,
+        """
+        SELECT * FROM ml_model_runs
+        WHERE id = ? AND model_kind = 'risk_action_classifier'
+        LIMIT 1
+        """,
+        (model_run_id,),
+    )
+    if not model:
+        return {"available": False, "message": "Modelo ativo nao encontrado."}
+    latest_score = _one(
+        con,
+        """
+        SELECT id, started_at, finished_at
+        FROM ml_score_runs
+        WHERE model_run_id = ? AND finished_at IS NOT NULL
+        ORDER BY id DESC LIMIT 1
+        """,
+        (model_run_id,),
+    )
+    operational_score_contract = _operational_effective_score_contract(
+        con,
+        _int(latest_score.get("id")),
+    )
+    observations: list[dict[str, Any]] = []
+    exclusions = {
+        "reviewed_total": 0,
+        "exact_observations": 0,
+        "missing_exact_score": 0,
+        "invalid_or_stale_hash": 0,
+        "unsupported_label": 0,
+        "duplicate_exact_observations": 0,
+    }
+    review_timestamps: list[str] = []
+
+    if _table_exists(con, "local_learning_candidates"):
+        low_score_rows = _all(
+            con,
+            """
+            SELECT * FROM local_learning_candidates
+            WHERE origin = ? AND human_label <> 'pending'
+            ORDER BY id DESC
+            """,
+            (LOW_SCORE_CALIBRATION_ORIGIN,),
+        )
+        seen_low_score: set[tuple[int, str]] = set()
+        for row in low_score_rows:
+            exclusions["reviewed_total"] += 1
+            label = str(row.get("human_label") or "")
+            if label in SUPERVISED_CALIBRATION_POSITIVE_LABELS:
+                outcome = 1
+            elif label in SUPERVISED_CALIBRATION_NEGATIVE_LABELS:
+                outcome = 0
+            else:
+                exclusions["unsupported_label"] += 1
+                continue
+            reviewed_text = str(row.get("suggested_text") or "")
+            expected_hash = str(row.get("suggested_hash") or "")
+            actual_hash = hashlib.sha256(reviewed_text.encode("utf-8")).hexdigest()
+            identity = (_int(row.get("segment_id")), actual_hash)
+            if identity in seen_low_score:
+                continue
+            seen_low_score.add(identity)
+            if not expected_hash or expected_hash != actual_hash:
+                exclusions["invalid_or_stale_hash"] += 1
+                continue
+            try:
+                reasons = json.loads(str(row.get("reasons_json") or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                reasons = {}
+            source_score_run_id = _int(reasons.get("score_run_id"))
+            score = _one(
+                con,
+                """
+                SELECT item.model_safe_probability,
+                       item.raw_model_safe_probability,
+                       item.candidate_text,
+                       item.issues_json,
+                       item.issue_count,
+                       item.high_issue_count,
+                       run.model_run_id
+                FROM ml_score_items item
+                JOIN ml_score_runs run ON run.id = item.run_id
+                WHERE item.run_id = ? AND item.segment_id = ?
+                LIMIT 1
+                """,
+                (source_score_run_id, _int(row.get("segment_id"))),
+            )
+            if (
+                not score
+                or _int(score.get("model_run_id")) != model_run_id
+                or str(score.get("candidate_text") or "") != reviewed_text
+                or score.get("model_safe_probability") is None
+            ):
+                exclusions["missing_exact_score"] += 1
+                continue
+            complexity, text_length, dynamic_token_count = _calibration_complexity(reviewed_text)
+            raw_probability = score.get("raw_model_safe_probability")
+            issue_profile = _calibration_issue_profile(
+                score.get("issues_json"),
+                issue_count=_int(score.get("issue_count")),
+                high_issue_count=_int(score.get("high_issue_count")),
+            )
+            observations.append(
+                {
+                    "source": "baixo_score_manual",
+                    "segment_id": _int(row.get("segment_id")),
+                    "text_hash": actual_hash,
+                    "label": label,
+                    "outcome": outcome,
+                    "probability": round(_num(score.get("model_safe_probability")), 6),
+                    "raw_probability": round(
+                        _num(raw_probability if raw_probability is not None else score.get("model_safe_probability")),
+                        6,
+                    ),
+                    "score_run_id": source_score_run_id,
+                    "family": str(reasons.get("group") or row.get("focus_group") or "nao_classificado"),
+                    "complexity": complexity,
+                    "text_length": text_length,
+                    "dynamic_token_count": dynamic_token_count,
+                    **issue_profile,
+                    "issue_profile": issue_profile,
+                    "reviewed_at": row.get("reviewed_at") or row.get("updated_at"),
+                }
+            )
+            if observations[-1]["reviewed_at"]:
+                review_timestamps.append(str(observations[-1]["reviewed_at"]))
+
+    if all(
+        _table_exists(con, table)
+        for table in (
+            "mojibake_lexicon_review_decisions",
+            "ml_quality_shadow_runs",
+            "ml_quality_shadow_items",
+            "source_segments",
+        )
+    ):
+        mojibake_rows = _all(
+            con,
+            """
+            SELECT decision.*, item.payload_json, source.relative_path,
+                   score_run.model_run_id, scored.issues_json,
+                   scored.issue_count, scored.high_issue_count
+            FROM mojibake_lexicon_review_decisions decision
+            LEFT JOIN ml_quality_shadow_items item
+              ON item.run_id = decision.source_shadow_run_id
+             AND item.segment_id = decision.segment_id
+            LEFT JOIN ml_quality_shadow_runs shadow
+              ON shadow.id = decision.source_shadow_run_id
+            LEFT JOIN ml_score_runs score_run
+              ON score_run.id = shadow.score_run_id
+            LEFT JOIN ml_score_items scored
+              ON scored.run_id = decision.source_score_run_id
+             AND scored.segment_id = decision.segment_id
+             AND scored.candidate_text = decision.candidate_text
+            LEFT JOIN source_segments source ON source.id = decision.segment_id
+            ORDER BY decision.id DESC
+            """,
+        )
+        for row in mojibake_rows:
+            exclusions["reviewed_total"] += 1
+            decision = str(row.get("decision") or "")
+            resolution_scope = str(row.get("resolution_scope") or "")
+            if decision == "accept_suggestion" and resolution_scope == "complete":
+                outcome = 1
+            elif decision == "manual_review" and resolution_scope in {"partial", "manual"}:
+                outcome = 0
+            else:
+                exclusions["unsupported_label"] += 1
+                continue
+            try:
+                shadow_payload = json.loads(str(row.get("payload_json") or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                shadow_payload = {}
+            candidate_text = str(row.get("candidate_text") or "")
+            stored_hash = str(row.get("candidate_hash") or "")
+            shadow_hash = str(shadow_payload.get("candidate_hash") or "")
+            actual_hash = hashlib.sha256(candidate_text.encode("utf-8")).hexdigest() if candidate_text else ""
+            raw_probability = shadow_payload.get("raw_candidate_score")
+            calibrated_probability = shadow_payload.get("calibrated_candidate_score")
+            if (
+                _int(row.get("model_run_id")) != model_run_id
+                or not candidate_text
+                or not stored_hash
+                or stored_hash != actual_hash
+                or shadow_hash != actual_hash
+            ):
+                exclusions["invalid_or_stale_hash"] += 1
+                continue
+            if raw_probability is None and calibrated_probability is None:
+                exclusions["missing_exact_score"] += 1
+                continue
+            effective_probability = calibrated_probability if calibrated_probability is not None else raw_probability
+            complexity, text_length, dynamic_token_count = _calibration_complexity(candidate_text)
+            issue_profile = _calibration_issue_profile(
+                row.get("issues_json"),
+                issue_count=_int(row.get("issue_count")),
+                high_issue_count=_int(row.get("high_issue_count")),
+            )
+            observations.append(
+                {
+                    "source": "mojibake_proposta",
+                    "segment_id": _int(row.get("segment_id")),
+                    "text_hash": actual_hash,
+                    "label": "accepted_complete" if outcome else "incomplete_or_rejected",
+                    "outcome": outcome,
+                    "probability": round(_num(effective_probability), 6),
+                    "raw_probability": round(_num(raw_probability if raw_probability is not None else effective_probability), 6),
+                    "score_run_id": _int(row.get("source_score_run_id")),
+                    "family": _low_score_calibration_group(row.get("relative_path")),
+                    "complexity": complexity,
+                    "text_length": text_length,
+                    "dynamic_token_count": dynamic_token_count,
+                    **issue_profile,
+                    "issue_profile": issue_profile,
+                    "reviewed_at": row.get("updated_at") or row.get("created_at"),
+                }
+            )
+            if observations[-1]["reviewed_at"]:
+                review_timestamps.append(str(observations[-1]["reviewed_at"]))
+
+    if (
+        _table_exists(con, "ml_regenerative_review_decisions")
+        and _int(latest_score.get("id"))
+    ):
+        regenerative_rows = _all(
+            con,
+            """
+            SELECT decision.*,
+                   score.candidate_text,
+                   score.model_safe_probability,
+                   score.raw_model_safe_probability,
+                   score.issues_json,
+                   score.issue_count,
+                   score.high_issue_count,
+                   source.relative_path
+            FROM ml_regenerative_review_decisions decision
+            JOIN ml_score_items score
+              ON score.run_id = ? AND score.segment_id = decision.segment_id
+            LEFT JOIN source_segments source ON source.id = decision.segment_id
+            WHERE decision.is_active = 1
+            ORDER BY decision.id
+            """,
+            (_int(latest_score.get("id")),),
+        )
+        regenerative_outcomes = {
+            ("repair", "candidate_valid"): (1, "reparo_validado"),
+            ("repair", "issue_confirmed"): (0, "reparo_incompleto"),
+            ("discovery", "supports_pattern"): (0, "falha_confirmada"),
+        }
+        for row in regenerative_rows:
+            exclusions["reviewed_total"] += 1
+            outcome_contract = regenerative_outcomes.get(
+                (str(row.get("queue_type") or ""), str(row.get("decision") or ""))
+            )
+            if not outcome_contract:
+                exclusions["unsupported_label"] += 1
+                continue
+            try:
+                evidence = json.loads(str(row.get("evidence_json") or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                evidence = {}
+            candidate_text = str(row.get("candidate_text") or "")
+            actual_hash = (
+                hashlib.sha256(candidate_text.encode("utf-8")).hexdigest()
+                if candidate_text
+                else ""
+            )
+            expected_hash = str(evidence.get("candidate_hash") or "")
+            if not candidate_text or not expected_hash or expected_hash != actual_hash:
+                exclusions["invalid_or_stale_hash"] += 1
+                continue
+            outcome, label = outcome_contract
+            complexity, text_length, dynamic_token_count = _calibration_complexity(
+                candidate_text
+            )
+            issue_profile = _calibration_issue_profile(
+                row.get("issues_json"),
+                issue_count=_int(row.get("issue_count")),
+                high_issue_count=_int(row.get("high_issue_count")),
+            )
+            probability = _num(row.get("model_safe_probability"))
+            raw_probability = row.get("raw_model_safe_probability")
+            observations.append(
+                {
+                    "source": label,
+                    "segment_id": _int(row.get("segment_id")),
+                    "text_hash": actual_hash,
+                    "label": str(row.get("decision") or label),
+                    "outcome": outcome,
+                    "probability": round(probability, 6),
+                    "raw_probability": round(
+                        _num(raw_probability if raw_probability is not None else probability),
+                        6,
+                    ),
+                    "score_run_id": _int(latest_score.get("id")),
+                    "family": str(
+                        evidence.get("issue_type")
+                        or evidence.get("file_family")
+                        or _low_score_calibration_group(row.get("relative_path"))
+                    ),
+                    "complexity": complexity,
+                    "text_length": text_length,
+                    "dynamic_token_count": dynamic_token_count,
+                    **issue_profile,
+                    "issue_profile": issue_profile,
+                    "reviewed_at": row.get("updated_at") or row.get("created_at"),
+                }
+            )
+            if observations[-1]["reviewed_at"]:
+                review_timestamps.append(str(observations[-1]["reviewed_at"]))
+
+    original_observation_count = len(observations)
+    observations = _deduplicate_calibration_observations(observations)
+    exclusions["duplicate_exact_observations"] = (
+        original_observation_count - len(observations)
+    )
+
+    active_candidate_run_id = (
+        _int(operational_score_contract.get("candidate_run_id"))
+        if operational_score_contract.get("active")
+        else 0
+    )
+    if active_candidate_run_id and observations:
+        operational_probability_cache: dict[tuple[int, str], float | None] = {}
+        for observation in observations:
+            identity = (
+                _int(observation.get("segment_id")),
+                str(observation.get("text_hash") or ""),
+            )
+            if identity not in operational_probability_cache:
+                calibrated = _one(
+                    con,
+                    """
+                    SELECT candidate_probability
+                    FROM ml_score_calibration_candidate_items
+                    WHERE run_id = ? AND segment_id = ? AND text_hash = ?
+                    LIMIT 1
+                    """,
+                    (active_candidate_run_id, identity[0], identity[1]),
+                )
+                operational_probability_cache[identity] = (
+                    _num(calibrated.get("candidate_probability"))
+                    if calibrated.get("candidate_probability") is not None
+                    else None
+                )
+            operational_probability = operational_probability_cache[identity]
+            observation["probability_source"] = "raw_model"
+            if operational_probability is not None:
+                observation["probability"] = round(operational_probability, 6)
+                observation["probability_source"] = "operational_calibrated_score"
+                observation["calibration_candidate_run_id"] = active_candidate_run_id
+
+    exclusions["exact_observations"] = len(observations)
+    overall = _calibration_summary(observations)
+    raw_overall = _calibration_summary(observations, probability_key="raw_probability")
+    try:
+        stored_metrics = json.loads(str(model.get("metrics_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        stored_metrics = {}
+    raw_report = stored_metrics.get("raw_classification_report") or {}
+    raw_auto_safe = raw_report.get("auto_safe") or {}
+    raw_macro = raw_report.get("macro avg") or {}
+    ece = overall.get("ece")
+    if overall.get("observation_count", 0) < 100:
+        status = "amostra_insuficiente"
+    elif ece is not None and ece <= 0.05:
+        status = "calibrado"
+    elif ece is not None and ece <= 0.10:
+        status = "atencao"
+    else:
+        status = "recalibrar"
+    active_promoted_at = None
+    if active_candidate_run_id and _table_exists(
+        con, "ml_score_calibration_promotion_events"
+    ):
+        active_promoted_at = _one(
+            con,
+            """
+            SELECT created_at
+            FROM ml_score_calibration_promotion_events
+            WHERE candidate_run_id = ? AND action = 'promote'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (active_candidate_run_id,),
+        ).get("created_at")
+    feedback_source_counts: dict[str, int] = {}
+    new_feedback_count = 0
+    for observation in observations:
+        source = str(observation.get("source") or "nao_classificado")
+        feedback_source_counts[source] = feedback_source_counts.get(source, 0) + 1
+        reviewed_at = str(observation.get("reviewed_at") or "")
+        if active_promoted_at and reviewed_at > str(active_promoted_at):
+            new_feedback_count += 1
+    monitoring_observations = [
+        observation
+        for observation in observations
+        if active_promoted_at
+        and str(observation.get("reviewed_at") or "") > str(active_promoted_at)
+    ]
+    monitoring_overall = _calibration_summary(monitoring_observations)
+    if active_candidate_run_id:
+        monitoring_ece = monitoring_overall.get("ece")
+        monitoring_count = _int(monitoring_overall.get("observation_count"))
+        if monitoring_count == 0:
+            status = "monitorando_sem_nova_amostra"
+        elif monitoring_count < 100:
+            status = "amostra_pos_promocao_insuficiente"
+        elif monitoring_ece is not None and monitoring_ece <= 0.05:
+            status = "calibrado"
+        elif monitoring_ece is not None and monitoring_ece <= 0.10:
+            status = "atencao"
+        else:
+            status = "recalibrar"
+    payload = {
+        "available": bool(observations),
+        "metric_version": SUPERVISED_CALIBRATION_METRIC_VERSION,
+        "metric_name": "ECE supervisionado",
+        "model_run_id": model_run_id,
+        "score_run_id": _int(latest_score.get("id")),
+        "effective_score_contract": operational_score_contract,
+        "review_watermark": max(review_timestamps) if review_timestamps else "none",
+        "generated_at": _now_iso(),
+        "status": status,
+        "contract": {
+            "target": "ECE <= 5 p.p.",
+            "attention": "ECE entre 5 e 10 p.p.",
+            "minimum_observations": 100,
+            "minimum_slice_observations": 20,
+            "population": "textos com decisao humana e score do mesmo hash",
+            "direction": "menor e melhor",
+            "caveat": "A amostra e enriquecida em baixo score e propostas revisadas; mede coerencia supervisionada, nao prevalencia global.",
+        },
+        "model": {
+            "version": model.get("model_version"),
+            "threshold": model.get("safe_threshold"),
+            "operational": {
+                "accuracy": model.get("accuracy"),
+                "macro_f1": model.get("macro_f1"),
+                "safe_precision": model.get("safe_precision"),
+                "safe_recall": model.get("safe_recall"),
+                "false_safe_count": model.get("false_safe_count"),
+                "test_examples": model.get("test_examples"),
+            },
+            "raw": {
+                "accuracy": raw_report.get("accuracy"),
+                "macro_f1": raw_macro.get("f1-score"),
+                "safe_precision": raw_auto_safe.get("precision"),
+                "safe_recall": raw_auto_safe.get("recall"),
+            },
+        },
+        "overall": overall,
+        "post_promotion_monitoring": monitoring_overall,
+        "raw_overall": raw_overall,
+        "by_source": _calibration_slices(observations, "source"),
+        "by_complexity": _calibration_slices(observations, "complexity"),
+        "by_family": _calibration_slices(observations, "family")[:16],
+        "by_issue_family": _calibration_slices(observations, "issue_family")[:16],
+        "by_issue_severity": _calibration_slices(observations, "issue_severity"),
+        "exclusions": exclusions,
+        "feedback_loop": {
+            "single_human_queue": True,
+            "visible_views": ["audit", "promotions"],
+            "hidden_signal_sources": [
+                "automatic_discovery",
+                "low_score_monitoring",
+                "provider_monitoring",
+                "score_regression_monitoring",
+            ],
+            "observation_count": len(observations),
+            "source_counts": feedback_source_counts,
+            "active_candidate_run_id": active_candidate_run_id,
+            "active_promoted_at": active_promoted_at,
+            "new_observation_count_since_promotion": new_feedback_count,
+            "new_context_ready": new_feedback_count > 0,
+            "promotion_semantics": (
+                "A promoção inicia um novo watermark; somente validações posteriores "
+                "medem a precisão da versão ativa."
+            ),
+        },
+    }
+    shadow = _stratified_calibration_shadow(
+        observations,
+        safe_threshold=_num(model.get("safe_threshold") or 0.86),
+    )
+    payload["shadow_calibration"] = {
+        key: value
+        for key, value in shadow.items()
+        if key not in {"model", "oof_observations"}
+    }
+    if persist and payload["available"]:
+        payload["persisted_run_id"] = _persist_supervised_calibration_payload(con, payload)
+        if shadow.get("available"):
+            payload["shadow_calibration"]["persisted_run_id"] = (
+                _persist_stratified_calibration_shadow(con, payload, shadow)
+            )
+    return payload
 
 
 def _specialists_payload(con: sqlite3.Connection) -> dict[str, Any]:
@@ -14791,6 +24500,7 @@ def _build_full_dashboard_payload(db_path: Path) -> dict[str, Any]:
         active_model = _active_model(con)
         latest_model = _latest_model(con)
         latest_dataset = _latest_dataset(con)
+        supervised_calibration = _supervised_calibration_payload(con, persist=True)
 
         scored = _int(latest_score.get("scored_count"))
         auto_safe = _int(latest_score.get("final_auto_safe_count"))
@@ -15139,6 +24849,7 @@ def _build_full_dashboard_payload(db_path: Path) -> dict[str, Any]:
                 "modelComparison": model_comparison,
                 "candidateDecision": "promote" if latest_model.get("id") == active_model.get("active_model_run_id") else "review",
                 "candidateDeltaSafePrecision": round(candidate_delta, 4),
+                "supervisedCalibration": supervised_calibration,
             },
             "pipeline": {
                 "kpis": {
@@ -15349,7 +25060,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._send_json(204, {})
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
         if path in ("", "/", "/api"):
             self._send_html(
                 200,
@@ -15387,12 +25099,38 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as exc:  # pragma: no cover - server diagnostic path
                 self._send_json(500, {"error": str(exc)})
             return
+        if path == "/api/ml/calibration":
+            if not self.db_path.exists():
+                self._send_json(500, {"error": f"SQLite not found: {self.db_path}"})
+                return
+            con = sqlite3.connect(self.db_path, timeout=300)
+            con.row_factory = sqlite3.Row
+            try:
+                con.execute("PRAGMA busy_timeout = 300000")
+                self._send_json(
+                    200,
+                    _supervised_calibration_payload(con, persist=True),
+                )
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"error": str(exc)})
+            finally:
+                con.close()
+            return
         if path == "/api/app-state":
             if not self.db_path.exists():
                 self._send_json(500, {"error": f"SQLite not found: {self.db_path}"})
                 return
             try:
-                self._send_json(200, _app_state_payload(self.db_path))
+                query = parse_qs(parsed_url.query)
+                force_refresh = str(query.get("force", ["0"])[0]).lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                }
+                self._send_json(
+                    200,
+                    _app_state_payload(self.db_path, force=force_refresh),
+                )
             except Exception as exc:  # pragma: no cover - server diagnostic path
                 self._send_json(500, {"error": str(exc)})
             return
@@ -15440,6 +25178,48 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as exc:  # pragma: no cover - server diagnostic path
                 self._send_json(500, {"error": str(exc)})
             return
+        if path == "/api/production/score-recalibration":
+            if not self.db_path.exists():
+                self._send_json(500, {"ok": False, "error": f"SQLite not found: {self.db_path}"})
+                return
+            con = sqlite3.connect(self.db_path, timeout=300)
+            con.row_factory = sqlite3.Row
+            try:
+                con.execute("PRAGMA busy_timeout = 300000")
+                self._send_json(200, {"ok": True, "recalibration": _score_recalibration_operational_payload(con)})
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"ok": False, "error": str(exc)})
+            finally:
+                con.close()
+            return
+        if path == "/api/production/mojibake-lexicon/segment":
+            if not self.db_path.exists():
+                self._send_json(
+                    500,
+                    {"ok": False, "error": f"SQLite not found: {self.db_path}"},
+                )
+                return
+            try:
+                query = parse_qs(parsed_url.query)
+                segment_id = _int((query.get("segment_id") or [0])[0])
+                shadow_run_id = _int((query.get("shadow_run_id") or [0])[0])
+                con = sqlite3.connect(self.db_path, timeout=300)
+                con.row_factory = sqlite3.Row
+                try:
+                    con.execute("PRAGMA busy_timeout = 300000")
+                    detail = _mojibake_lexicon_segment_detail(
+                        con,
+                        segment_id=segment_id,
+                        shadow_run_id=shadow_run_id,
+                    )
+                finally:
+                    con.close()
+                self._send_json(200, {"ok": True, "item": detail})
+            except ValueError as exc:
+                self._send_json(400, {"ok": False, "error": str(exc)})
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"ok": False, "error": str(exc)})
+            return
         if path == "/api/production/preflight/disk":
             try:
                 self._send_json(200, {"disk_preflight": _production_disk_preflight_payload(force=True)})
@@ -15447,7 +25227,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"error": str(exc)})
             return
         if path in ("/api/production/runs/latest", "/api/production/run/latest"):
-            self._send_json(200, {"run": _read_production_run_status()})
+            # O polling deve enxergar o mesmo estado reconciliado do app-state;
+            # caso contrario a falha historica reaparece no frontend a cada ciclo.
+            app_state = _app_state_payload(self.db_path)
+            production = app_state.get("production")
+            production = production if isinstance(production, dict) else {}
+            self._send_json(200, {"run": production.get("last_run") or _read_production_run_status()})
             return
         if path == "/api/learning/status":
             if not self.db_path.exists():
@@ -15467,12 +25252,234 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path == "/api/production/source-update/inspect":
+            if not self.db_path.exists():
+                self._send_json(
+                    500,
+                    {"ok": False, "error": f"SQLite not found: {self.db_path}"},
+                )
+                return
+            try:
+                request = self._read_json_body()
+                game_version = str(request.get("game_version") or "").strip() or None
+                label = str(request.get("label") or "").strip()
+                if not label:
+                    label = (
+                        "dashboard_source_inspection_"
+                        + datetime.now().strftime("%Y%m%d_%H%M%S")
+                    )
+                if len(label) > 160:
+                    raise ValueError("label must have at most 160 characters.")
+                sync_requested = request.get("sync") is True
+                sync_result: dict[str, Any] = {
+                    "requested": sync_requested,
+                    "executed": False,
+                    "index_updated": False,
+                    "exit_code": 0,
+                }
+                pipeline_dir = str(ROOT / "pipeline")
+                if pipeline_dir not in sys.path:
+                    sys.path.insert(0, pipeline_dir)
+                from source_tree_snapshot import create_snapshot
+                if sync_requested:
+                    from source_update_sync import sync_source_update
+
+                    synchronized = sync_source_update(
+                        label=label,
+                        game_version=game_version,
+                        metadata={"consumer": "dashboard"},
+                        force=request.get("force") is True,
+                    )
+                    snapshot = synchronized["snapshot"]
+                    process_payload = synchronized.get("process") or {}
+                    sync_result = {
+                        "requested": True,
+                        "executed": bool(process_payload.get("executed")),
+                        "index_updated": bool(synchronized.get("index_updated")),
+                        "index_current_before": bool(synchronized.get("index_current_before")),
+                        "index_current_after": bool(synchronized.get("index_current_after")),
+                        "verification_reused": bool(synchronized.get("verification_reused")),
+                        "exit_code": int(process_payload.get("exit_code") or 0),
+                        "stdout_tail": process_payload.get("stdout_tail") or [],
+                        "stderr_tail": process_payload.get("stderr_tail") or [],
+                    }
+                else:
+                    snapshot = create_snapshot(
+                        label=label,
+                        game_version=game_version,
+                        metadata={
+                            "source": "dashboard_source_update_inspection_v1",
+                            "notes": "Read-only source comparison; no output or score write.",
+                        },
+                    )
+                con = sqlite3.connect(self.db_path, timeout=300)
+                con.row_factory = sqlite3.Row
+                try:
+                    readiness = _source_update_readiness_payload(con)
+                finally:
+                    con.close()
+                self._send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "snapshot": snapshot,
+                        "readiness": readiness,
+                        "sync": sync_result,
+                        "operational_writes": bool(sync_requested),
+                        "output_writes": 0,
+                        "score_writes": 0,
+                    },
+                )
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json(400, {"ok": False, "error": str(exc)})
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        if path in {
+            "/api/production/score-recalibration/generate",
+            "/api/production/score-recalibration/review",
+            "/api/production/score-recalibration/promote",
+            "/api/production/score-recalibration/revert",
+            "/api/production/score-recalibration/restore",
+        }:
+            if not self.db_path.exists():
+                self._send_json(500, {"ok": False, "error": f"SQLite not found: {self.db_path}"})
+                return
+            try:
+                request = self._read_json_body()
+                review_result: dict[str, Any] | None = None
+                con = sqlite3.connect(self.db_path, timeout=300)
+                con.row_factory = sqlite3.Row
+                try:
+                    con.execute("PRAGMA busy_timeout = 300000")
+                    con.execute("PRAGMA foreign_keys = ON")
+                    if path.endswith("/generate"):
+                        recalibration = _generate_score_recalibration_candidate(con)
+                    elif path.endswith("/review"):
+                        candidate_run_id = _int(request.get("candidate_run_id"))
+                        segment_id = _int(request.get("segment_id"))
+                        decision = str(request.get("decision") or "").strip()
+                        if not candidate_run_id or not segment_id or not decision:
+                            raise ValueError("candidate_run_id, segment_id and decision are required.")
+                        review_result = _record_score_recalibration_discrepancy_review(
+                            con,
+                            candidate_run_id=candidate_run_id,
+                            segment_id=segment_id,
+                            decision=decision,
+                            reason=str(request.get("reason") or "").strip() or None,
+                            reviewer=str(request.get("reviewer") or "dashboard_human_review").strip(),
+                        )
+                    elif path.endswith("/promote"):
+                        candidate_run_id = _int(request.get("candidate_run_id"))
+                        reason = str(request.get("reason") or "").strip()
+                        if not candidate_run_id or not reason:
+                            raise ValueError("candidate_run_id and reason are required.")
+                        recalibration = _promote_score_recalibration_candidate(
+                            con,
+                            candidate_run_id=candidate_run_id,
+                            actor=str(request.get("actor") or "dashboard_human_review").strip(),
+                            reason=reason,
+                        )
+                    elif path.endswith("/restore"):
+                        reason = str(request.get("reason") or "").strip()
+                        if not reason:
+                            raise ValueError("reason is required.")
+                        recalibration = _restore_score_recalibration_version(
+                            con,
+                            candidate_run_id=_int(request.get("candidate_run_id")) or None,
+                            actor=str(request.get("actor") or "dashboard_human_review").strip(),
+                            reason=reason,
+                        )
+                    else:
+                        reason = str(request.get("reason") or "").strip()
+                        if not reason:
+                            raise ValueError("reason is required.")
+                        recalibration = _revert_score_recalibration_candidate(
+                            con,
+                            actor=str(request.get("actor") or "dashboard_human_review").strip(),
+                            reason=reason,
+                        )
+                finally:
+                    con.close()
+                if review_result is not None:
+                    self._send_json(200, {"ok": True, "review": review_result})
+                else:
+                    self._send_json(200, {"ok": True, "recalibration": recalibration})
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json(400, {"ok": False, "error": str(exc)})
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        if path == "/api/production/regenerative-review":
+            if not self.db_path.exists():
+                self._send_json(
+                    500,
+                    {"ok": False, "error": f"SQLite not found: {self.db_path}"},
+                )
+                return
+            try:
+                request = self._read_json_body()
+                client_request_id = str(request.get("client_request_id") or "").strip()
+                queue_type = str(request.get("queue_type") or "").strip()
+                item_key = str(request.get("item_key") or "").strip()
+                segment_id = _int(request.get("segment_id")) or None
+                snapshot_id = _int(request.get("snapshot_id"))
+                evidence_hash = str(request.get("evidence_hash") or "").strip()
+                evidence = request.get("evidence")
+                decision = str(request.get("decision") or "").strip()
+                reason = str(request.get("reason") or "").strip() or None
+                reviewer = str(
+                    request.get("reviewer") or "dashboard_human_review"
+                ).strip()
+                if not queue_type or not item_key or not snapshot_id or not decision:
+                    raise ValueError(
+                        "queue_type, item_key, snapshot_id and decision are required."
+                    )
+                pipeline_dir = str(ROOT / "pipeline")
+                if pipeline_dir not in sys.path:
+                    sys.path.insert(0, pipeline_dir)
+                from db import ensure_database as ensure_pipeline_database
+
+                con = sqlite3.connect(self.db_path, timeout=300)
+                con.row_factory = sqlite3.Row
+                try:
+                    con.execute("PRAGMA foreign_keys = ON")
+                    ensure_pipeline_database(con)
+                    result = _record_regenerative_review_decision(
+                        con,
+                        queue_type=queue_type,
+                        item_key=item_key,
+                        segment_id=segment_id,
+                        snapshot_id=snapshot_id,
+                        evidence_hash=evidence_hash,
+                        evidence=evidence,
+                        decision=decision,
+                        reason=reason,
+                        reviewer=reviewer,
+                    )
+                finally:
+                    con.close()
+                result["client_request_id"] = client_request_id
+                result["cache_refresh_required"] = True
+                result["queue_delta"] = {
+                    "queue_type": queue_type,
+                    "item_key": item_key,
+                    "effect": "removed",
+                    "review_status": "reviewed",
+                }
+                self._send_json(200, result)
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json(400, {"ok": False, "error": str(exc)})
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"ok": False, "error": str(exc)})
+            return
         if path == "/api/production/pairwise-calibration/review":
             if not self.db_path.exists():
                 self._send_json(500, {"ok": False, "error": f"SQLite not found: {self.db_path}"})
                 return
             try:
                 request = self._read_json_body()
+                client_request_id = str(request.get("client_request_id") or "").strip()
                 item_id = _int(request.get("item_id"))
                 label = str(request.get("review_label") or "").strip()
                 reason = str(request.get("review_reason") or "").strip() or None
@@ -15501,6 +25508,241 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     con.close()
                 cache = _get_dashboard_cache(self.db_path, force=True)
                 result["app_state"] = cache.get("app_state", {})
+                self._send_json(200, result)
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json(400, {"ok": False, "error": str(exc)})
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        if path == "/api/production/glossary-display-case/review":
+            if not self.db_path.exists():
+                self._send_json(
+                    500,
+                    {"ok": False, "error": f"SQLite not found: {self.db_path}"},
+                )
+                return
+            try:
+                request = self._read_json_body()
+                glossary_key = str(request.get("glossary_key") or "").strip()
+                policy = str(request.get("policy") or "").strip()
+                reason = str(request.get("reason") or "").strip()
+                reviewer = str(
+                    request.get("reviewer") or "dashboard_human_review"
+                ).strip()
+                shadow_run_id = _int(request.get("shadow_run_id"))
+                if not glossary_key or not policy or not reason:
+                    raise ValueError(
+                        "glossary_key, policy and reason are required."
+                    )
+                pipeline_dir = str(ROOT / "pipeline")
+                if pipeline_dir not in sys.path:
+                    sys.path.insert(0, pipeline_dir)
+                from db import ensure_database as ensure_pipeline_database
+
+                con = sqlite3.connect(self.db_path, timeout=300)
+                con.row_factory = sqlite3.Row
+                try:
+                    con.execute("PRAGMA foreign_keys = ON")
+                    ensure_pipeline_database(con)
+                    result = _record_glossary_display_case_policy(
+                        con,
+                        glossary_key=glossary_key,
+                        policy=policy,
+                        reason=reason,
+                        reviewer=reviewer,
+                        shadow_run_id=shadow_run_id,
+                    )
+                finally:
+                    con.close()
+                result["client_request_id"] = client_request_id
+                result["cache_refresh_required"] = True
+                result["queue_delta"] = {
+                    "item_id": item_id,
+                    "effect": "removed",
+                    "review_status": "decided",
+                }
+                self._send_json(200, result)
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json(400, {"ok": False, "error": str(exc)})
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        if path == "/api/production/mojibake-boundary-pattern/review":
+            if not self.db_path.exists():
+                self._send_json(
+                    500,
+                    {"ok": False, "error": f"SQLite not found: {self.db_path}"},
+                )
+                return
+            try:
+                request = self._read_json_body()
+                pattern = str(request.get("pattern") or "").strip()
+                decision = str(request.get("decision") or "").strip()
+                canonical_replacement = str(
+                    request.get("canonical_replacement") or ""
+                ).strip()
+                reason = str(request.get("reason") or "").strip()
+                reviewer = str(
+                    request.get("reviewer") or "dashboard_human_review"
+                ).strip()
+                shadow_run_id = _int(request.get("shadow_run_id"))
+                if not pattern or not decision or not reason:
+                    raise ValueError("pattern, decision and reason are required.")
+                pipeline_dir = str(ROOT / "pipeline")
+                if pipeline_dir not in sys.path:
+                    sys.path.insert(0, pipeline_dir)
+                from db import ensure_database as ensure_pipeline_database
+
+                con = sqlite3.connect(self.db_path, timeout=300)
+                con.row_factory = sqlite3.Row
+                try:
+                    con.execute("PRAGMA foreign_keys = ON")
+                    ensure_pipeline_database(con)
+                    result = _record_mojibake_boundary_pattern_decision(
+                        con,
+                        pattern=pattern,
+                        decision=decision,
+                        canonical_replacement=canonical_replacement,
+                        reason=reason,
+                        reviewer=reviewer,
+                        shadow_run_id=shadow_run_id,
+                    )
+                finally:
+                    con.close()
+                cache = _get_dashboard_cache(self.db_path, force=True)
+                result["app_state"] = cache.get("app_state", {})
+                self._send_json(200, result)
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json(400, {"ok": False, "error": str(exc)})
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        if path == "/api/production/mojibake-lexicon/review":
+            if not self.db_path.exists():
+                self._send_json(
+                    500,
+                    {"ok": False, "error": f"SQLite not found: {self.db_path}"},
+                )
+                return
+            try:
+                request = self._read_json_body()
+                segment_id = _int(request.get("segment_id"))
+                decision = str(request.get("decision") or "").strip()
+                reason = str(request.get("reason") or "").strip()
+                residual_findings = request.get("residual_findings")
+                valid_punctuation_signals = request.get("valid_punctuation_signals")
+                client_request_id = str(request.get("client_request_id") or "").strip()
+                reviewer = str(
+                    request.get("reviewer") or "dashboard_human_review"
+                ).strip()
+                shadow_run_id = _int(request.get("shadow_run_id"))
+                if not segment_id or not decision or not reason:
+                    raise ValueError(
+                        "segment_id, decision and reason are required."
+                    )
+                pipeline_dir = str(ROOT / "pipeline")
+                if pipeline_dir not in sys.path:
+                    sys.path.insert(0, pipeline_dir)
+                from db import ensure_database as ensure_pipeline_database
+
+                con = sqlite3.connect(self.db_path, timeout=300)
+                con.row_factory = sqlite3.Row
+                try:
+                    con.execute("PRAGMA foreign_keys = ON")
+                    ensure_pipeline_database(con)
+                    result = _record_mojibake_lexicon_review_decision(
+                        con,
+                        segment_id=segment_id,
+                        decision=decision,
+                        reason=reason,
+                        reviewer=reviewer,
+                        shadow_run_id=shadow_run_id,
+                        residual_findings=residual_findings,
+                        valid_punctuation_signals=valid_punctuation_signals,
+                    )
+                finally:
+                    con.close()
+                remaining_signal_count = _int(result.get("remaining_signal_count"))
+                requeue_at_tail = bool(
+                    decision == "valid_question_mark" and remaining_signal_count > 0
+                )
+                result["client_request_id"] = client_request_id
+                result["cache_refresh_required"] = True
+                result["queue_delta"] = {
+                    "segment_id": segment_id,
+                    "decision": decision,
+                    "effect": "requeued" if requeue_at_tail else "removed",
+                    "position": "tail" if requeue_at_tail else None,
+                    "remaining_signal_count": remaining_signal_count,
+                    "review_status": "pending" if requeue_at_tail else "reviewed",
+                }
+                self._send_json(200, result)
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json(400, {"ok": False, "error": str(exc)})
+            except Exception as exc:  # pragma: no cover - server diagnostic path
+                self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        if path == "/api/production/low-score-calibration/review":
+            if not self.db_path.exists():
+                self._send_json(500, {"ok": False, "error": f"SQLite not found: {self.db_path}"})
+                return
+            try:
+                request = self._read_json_body()
+                client_request_id = str(request.get("client_request_id") or "").strip()
+                segment_id = _int(request.get("segment_id"))
+                label = str(request.get("review_label") or "").strip()
+                reason = str(request.get("review_reason") or "").strip()
+                reviewer = str(request.get("reviewer") or "dashboard_human_review").strip()
+                if not segment_id or not label or not reason:
+                    raise ValueError(
+                        "segment_id, review_label and review_reason are required."
+                    )
+                pipeline_dir = str(ROOT / "pipeline")
+                if pipeline_dir not in sys.path:
+                    sys.path.insert(0, pipeline_dir)
+                from db import ensure_database as ensure_pipeline_database
+
+                con = sqlite3.connect(self.db_path, timeout=300)
+                con.row_factory = sqlite3.Row
+                try:
+                    con.execute("PRAGMA foreign_keys = ON")
+                    ensure_pipeline_database(con)
+                    state = _one(
+                        con,
+                        """
+                        SELECT id, active_score_run_id, candidate_score_run_id
+                        FROM segment_state_runs
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                    )
+                    state_run_id = _int(state.get("id"))
+                    score_run_id = (
+                        _int(state.get("candidate_score_run_id"))
+                        or _int(state.get("active_score_run_id"))
+                    )
+                    if not state_run_id or not score_run_id:
+                        raise ValueError(
+                            "Não há snapshot operacional pontuado para calibrar."
+                        )
+                    result = _record_manual_low_score_calibration_decision(
+                        con,
+                        segment_id=segment_id,
+                        review_label=label,
+                        review_reason=reason,
+                        reviewer=reviewer,
+                        score_run_id=score_run_id,
+                        segment_state_run_id=state_run_id,
+                    )
+                finally:
+                    con.close()
+                result["client_request_id"] = client_request_id
+                result["cache_refresh_required"] = True
+                result["queue_delta"] = {
+                    "segment_id": segment_id,
+                    "effect": "removed",
+                    "review_status": "decided",
+                }
                 self._send_json(200, result)
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json(400, {"ok": False, "error": str(exc)})
@@ -15599,6 +25841,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 _apply_pairwise_calibration_gate(safety_status, diff_review)
                 evaluation_gate = safety_status.get("evaluation_gate", {})
                 if evaluation_gate.get("can_start_evaluation_full_production_now") is not True:
+                    blocking_reasons = evaluation_gate.get("blocking_reasons") or []
                     self._send_json(
                         423,
                         {
@@ -15606,7 +25849,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             "status": "blocked",
                             "gate": "evaluation",
                             "evaluation_gate": evaluation_gate,
-                            "message": "Production evaluation is blocked by safety preflight.",
+                            "message": (
+                                "A avaliação foi bloqueada pelas travas de segurança"
+                                + (f": {', '.join(str(reason) for reason in blocking_reasons)}" if blocking_reasons else ".")
+                            ),
                         },
                     )
                     return
@@ -15638,7 +25884,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 # an empty object for every POST; leaving it unread can reset a
                 # keep-alive connection while the response is being delivered.
                 self._read_json_body()
-                payload = _publication_preflight_payload(self.db_path)
+                payload = _publication_preflight_payload(self.db_path, force=True)
                 self._send_json(200, _compact_publication_preflight_payload(payload))
             except Exception as exc:  # pragma: no cover - server diagnostic path
                 self._send_json(500, {"ok": False, "error": str(exc)})
@@ -15663,7 +25909,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         },
                     )
                     return
-                preflight_payload = _publication_preflight_payload(self.db_path)
+                preflight_payload = _publication_preflight_payload(
+                    self.db_path,
+                    force=True,
+                )
                 preflight = preflight_payload.get("publication_preflight") or {}
                 if preflight.get("can_apply_pending") is not True:
                     self._send_json(
@@ -15700,8 +25949,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         return
                     payload = _materialize_version_command(apply=apply)
                     if apply:
-                        cache = _get_dashboard_cache(self.db_path, force=True)
-                        payload["app_state"] = cache.get("app_state", {})
+                        run_status = _completed_materialization_status(payload)
+                        _write_production_run_status(run_status)
+                        payload["run"] = run_status
+                        payload["app_state"] = _app_state_payload(
+                            self.db_path,
+                            force=True,
+                        )
                     self._send_json(200, payload)
             except Exception as exc:  # pragma: no cover - filesystem materialization path
                 self._send_json(423 if not apply else 500, {"ok": False, "status": "blocked", "error": str(exc)})
@@ -15710,6 +25964,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:
         print(f"[dashboard] {self.address_string()} - {format % args}")
+
+
+class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
+    """Prevent two dashboard backends from sharing the same Windows port."""
+
+    allow_reuse_address = False
+
+    def server_bind(self) -> None:
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(
+                socket.SOL_SOCKET,
+                socket.SO_EXCLUSIVEADDRUSE,
+                1,
+            )
+        super().server_bind()
 
 
 def main() -> None:
@@ -15722,12 +25991,18 @@ def main() -> None:
     global ACTIVE_DB_PATH
     DashboardHandler.db_path = Path(args.db).resolve()
     ACTIVE_DB_PATH = DashboardHandler.db_path
+    recovered_run = _recover_orphaned_production_run_on_startup()
+    if recovered_run.get("interruption_reason") == "backend_restarted_without_live_worker":
+        print(
+            "Recovered interrupted production run: "
+            f"{recovered_run.get('run_id') or 'unknown'}"
+        )
     try:
         if DashboardHandler.db_path.exists():
             _get_dashboard_cache(DashboardHandler.db_path)
     except Exception as exc:
         print(f"Dashboard cache warmup failed: {exc}")
-    server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
+    server = ExclusiveThreadingHTTPServer((args.host, args.port), DashboardHandler)
     print(f"Dashboard API: http://{args.host}:{args.port}/api/dashboard")
     print(f"SQLite: {DashboardHandler.db_path}")
     server.serve_forever()

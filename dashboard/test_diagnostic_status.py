@@ -233,6 +233,42 @@ class DiagnosticStatusTest(unittest.TestCase):
         self.assertEqual(backend._diagnostic_stage_timeout("score_package_output"), 7200)
         self.assertEqual(backend._diagnostic_stage_timeout("quality_epoch_open"), 900)
 
+    def test_pipeline_python_prefers_project_virtual_environment(self) -> None:
+        root = Path(self.temp_dir.name)
+        python_path = root / ".venv" / "Scripts" / "python.exe"
+        python_path.parent.mkdir(parents=True)
+        python_path.touch()
+
+        resolved = backend._resolve_pipeline_python(
+            root,
+            environ={},
+            fallback="fallback-python",
+        )
+
+        self.assertEqual(Path(resolved), python_path.resolve())
+
+    def test_pipeline_python_override_takes_precedence(self) -> None:
+        root = Path(self.temp_dir.name)
+        override = root / "custom" / "python.exe"
+        override.parent.mkdir(parents=True)
+        override.touch()
+
+        resolved = backend._resolve_pipeline_python(
+            root,
+            environ={"CK3_PIPELINE_PYTHON": str(override)},
+            fallback="fallback-python",
+        )
+
+        self.assertEqual(Path(resolved), override.resolve())
+
+    def test_pipeline_command_replaces_only_api_interpreter(self) -> None:
+        normalized = backend._normalize_pipeline_command(
+            [sys.executable, "pipeline/quality_promotion_cycle.py", "diagnostic"]
+        )
+
+        self.assertEqual(normalized[0], backend.PIPELINE_PYTHON)
+        self.assertEqual(normalized[1:], ["pipeline/quality_promotion_cycle.py", "diagnostic"])
+
 
 if __name__ == "__main__":
     unittest.main()

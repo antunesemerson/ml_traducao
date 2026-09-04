@@ -13,10 +13,120 @@ from typing import Any
 import db
 
 
-RULE_VERSION = "quality_provider_proposal_generator_v1"
+RULE_VERSION = "quality_provider_proposal_generator_v3_punctuation_routing"
 ACTIONABLE_STATUSES = ("new_candidate", "recurring_candidate")
 MAX_POSITIVE_CASES = 3
 MAX_NEGATIVE_CASES = 3
+
+
+def _correction_lane(issue_type: str, token_context: str) -> dict[str, str]:
+    signal = f"{issue_type} {token_context}".casefold()
+    if any(token in signal for token in ("punctuation", "angular_quote", "guillemet", "aspas")):
+        return {
+            "id": "ptbr_punctuation",
+            "label": "Aspas e pontuação PT-BR",
+            "objective": "Normalizar aspas e pontuação visível para o padrão PT-BR sem alterar tokens CK3.",
+        }
+    if any(token in signal for token in ("spanish", "espanhol", "untranslated", "residual")):
+        return {
+            "id": "spanish_residual",
+            "label": "Espanhol residual",
+            "objective": "Remover espanhol residual sem alterar tokens ou estruturas dinâmicas.",
+        }
+    if any(token in signal for token in ("mojibake", "unicode", "encoding", "garbled")):
+        return {
+            "id": "mojibake_unicode",
+            "label": "Unicode / mojibake",
+            "objective": "Restaurar caracteres corrompidos preservando a intenção e a pontuação legítima.",
+        }
+    if any(token in signal for token in ("gender", "genero", "article", "pronoun", "meu", "minha", "seu", "sua")):
+        return {
+            "id": "dynamic_gender",
+            "label": "Gênero e concordância dinâmica",
+            "objective": "Aplicar gênero, artigo e posse conforme o escopo dinâmico do segmento.",
+        }
+    if any(token in signal for token in ("token", "structure", "syntax", "boundary", "bracket", "quote", "escape")):
+        return {
+            "id": "structure_tokens",
+            "label": "Estrutura e tokens",
+            "objective": "Corrigir fronteiras e sintaxe mantendo o multiconjunto de tokens protegido.",
+        }
+    if "glossary" in signal:
+        return {
+            "id": "glossary_terms",
+            "label": "Glossário e termos",
+            "objective": "Aplicar o termo aprovado sem modificar a estrutura que o contém.",
+        }
+    return {
+        "id": "other_patterns",
+        "label": "Outros padrões confirmados",
+        "objective": "Materializar um reparo determinístico com controles positivos, negativos e de fronteira.",
+    }
+
+
+def _discovery_review_by_family(
+    conn: sqlite3.Connection,
+    discovery_run_id: int,
+) -> dict[str, dict[str, Any]]:
+    if not _table_exists(conn, "ml_regenerative_review_decisions"):
+        return {}
+    rows = conn.execute(
+        """
+        SELECT id, segment_id, decision, evidence_json
+        FROM ml_regenerative_review_decisions
+        WHERE queue_type = 'discovery'
+          AND is_active = 1
+          AND snapshot_id <= ?
+        ORDER BY id DESC
+        """,
+        (discovery_run_id,),
+    ).fetchall()
+    summaries: dict[str, dict[str, Any]] = {}
+    seen_examples: set[tuple[str, int]] = set()
+    for row in rows:
+        evidence = _json_object(row["evidence_json"])
+        family_key = str(evidence.get("family_key") or "").strip()
+        if not family_key:
+            continue
+        example_key = (
+            family_key,
+            int(row["segment_id"] or evidence.get("segment_id") or 0),
+        )
+        if example_key in seen_examples:
+            continue
+        seen_examples.add(example_key)
+        summary = summaries.setdefault(
+            family_key,
+            {
+                "reviewed_count": 0,
+                "supports_pattern": 0,
+                "contradicts_pattern": 0,
+                "boundary_case": 0,
+            },
+        )
+        decision = str(row["decision"] or "")
+        summary["reviewed_count"] += 1
+        if decision in summary:
+            summary[decision] += 1
+    for summary in summaries.values():
+        supports = int(summary["supports_pattern"])
+        contradicts = int(summary["contradicts_pattern"])
+        boundaries = int(summary["boundary_case"])
+        if supports > contradicts:
+            summary["routing_status"] = (
+                "ready_with_boundary_guard" if boundaries else "ready_for_correction"
+            )
+            summary["route_to_correction"] = True
+        elif contradicts >= supports and contradicts > 0:
+            summary["routing_status"] = "rejected_by_human_evidence"
+            summary["route_to_correction"] = False
+        elif boundaries:
+            summary["routing_status"] = "boundary_only"
+            summary["route_to_correction"] = False
+        else:
+            summary["routing_status"] = "awaiting_review"
+            summary["route_to_correction"] = False
+    return summaries
 
 
 def _json_list(value: Any) -> list[Any]:
@@ -112,11 +222,29 @@ def _actionable_families(
         """,
         (discovery_run_id,),
     ).fetchall()
+    reviews_by_family = _discovery_review_by_family(conn, discovery_run_id)
+    supervised_contract_available = _table_exists(
+        conn, "ml_regenerative_review_decisions"
+    )
     families: list[dict[str, Any]] = []
     for row in rows:
         family = dict(row)
         family["samples"] = _json_list(family.pop("samples_json", "[]"))
         family["metrics"] = _json_object(family.pop("metrics_json", "{}"))
+        review = reviews_by_family.get(str(family.get("family_key") or ""), {})
+        family["human_review"] = review or {
+            "reviewed_count": 0,
+            "routing_status": "awaiting_review",
+            "route_to_correction": not supervised_contract_available,
+        }
+        if supervised_contract_available and not family["human_review"].get(
+            "route_to_correction"
+        ):
+            continue
+        family["correction_lane"] = _correction_lane(
+            str(family.get("issue_type") or ""),
+            str(family.get("token_context") or ""),
+        )
         families.append(family)
     return families
 
@@ -307,6 +435,25 @@ def generate_provider_proposals(
         )
         file_families = sorted({str(item.get("file_family") or "") for item in proposal_families})
         text_relations = sorted({str(item.get("text_relation") or "") for item in proposal_families})
+        correction_lane = _correction_lane(issue_type, token_context)
+        human_review = {
+            "reviewed_count": sum(
+                int((item.get("human_review") or {}).get("reviewed_count") or 0)
+                for item in proposal_families
+            ),
+            "supports_pattern": sum(
+                int((item.get("human_review") or {}).get("supports_pattern") or 0)
+                for item in proposal_families
+            ),
+            "contradicts_pattern": sum(
+                int((item.get("human_review") or {}).get("contradicts_pattern") or 0)
+                for item in proposal_families
+            ),
+            "boundary_case": sum(
+                int((item.get("human_review") or {}).get("boundary_case") or 0)
+                for item in proposal_families
+            ),
+        }
         manifest_draft = {
             "schema_version": 1,
             "provider_id": provider_id,
@@ -320,8 +467,11 @@ def generate_provider_proposals(
             "evidence_script": f"pipeline/quality_{slug}_pairwise_evidence.py",
             "evidence_args": [],
             "proposal_status": "draft_review_required",
+            "correction_lane": correction_lane,
         }
         contract = {
+            "correction_lane": correction_lane,
+            "human_evidence": human_review,
             "selector": {
                 "issue_types": [issue_type],
                 "token_context": token_context,
@@ -369,6 +519,8 @@ def generate_provider_proposals(
                 "issue_type": issue_type,
                 "token_context": token_context,
                 "status": "draft_review_required",
+                "correction_lane": correction_lane,
+                "human_review": human_review,
                 "priority": round(priority, 3),
                 "confidence": round(confidence, 6),
                 "family_count": len(proposal_families),
@@ -400,6 +552,15 @@ def generate_provider_proposals(
         "discovery_run_id": run_id,
         "score_run_id": score_run_id,
         "actionable_family_count": len(families),
+        "supervised_routing": _table_exists(
+            conn, "ml_regenerative_review_decisions"
+        ),
+        "correction_lane_count": len(
+            {
+                str(item.get("correction_lane", {}).get("id") or "other_patterns")
+                for item in proposals
+            }
+        ),
         "proposal_count": len(proposals),
         "positive_case_count": case_counts["positive"],
         "negative_case_count": case_counts["negative"],

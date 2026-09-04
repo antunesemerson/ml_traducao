@@ -20,7 +20,7 @@ import db
 import local_quality_validator
 
 
-RULE_VERSION = "ml_train_risk_v9_orthographic_microrepairs"
+RULE_VERSION = "ml_train_risk_v10_calibration_boundary_features"
 MODEL_KIND = "risk_action_classifier"
 DEFAULT_FEATURE_SET = "legacy_v1"
 STRUCTURAL_FEATURE_SET = "structural_v2"
@@ -143,6 +143,8 @@ LANGUAGE_BLOCKING_FEATURES = {
     "RISK_DEBUG_MID_SENTENCE_CAPITALIZATION",
     "RISK_EVENT_INCOMPLETE_WHEN_CLAUSE",
     "RISK_EVENT_LITERAL_FOREVER_STYLE",
+    "RISK_EXACT_SPANISH_VISIBLE",
+    "RISK_ACCENT_SENSITIVE_SPANISH_RESIDUE",
     "RISK_CONCEPT_CAPITALIZATION_STYLE",
     "RISK_IMPORTANT_ACTION_CAPITALIZATION_STYLE",
     "RISK_ADVENTURER_WARD_TRANSLATION",
@@ -160,6 +162,7 @@ LANGUAGE_BLOCKING_FEATURES = {
     "RISK_RELIGION_TEACHINGS_STYLE",
     "RISK_RELIGION_TO_NAME_TRANSLATED",
     "RISK_REVIEWED_SHORT_SOURCE_CONFLICT",
+    "RISK_REDUNDANT_SELECT_CSTRING_OPTIONS",
     "RISK_SAHEL_ARTICLE_TRANSLATION",
     "RISK_SPANISH_LOCALIZATION_HELPER",
     "RISK_SPANISH_FORMATTED_LITERAL",
@@ -526,6 +529,10 @@ def has_reviewed_short_source_conflict(row: dict[str, Any]) -> bool:
     return candidate_visible in {old_visible, output_visible}
 
 
+def is_exact_shared_glossary_token(row: dict[str, Any]) -> bool:
+    return local_quality_validator.is_exact_shared_glossary_token(row)
+
+
 def language_features(row: dict[str, Any]) -> list[str]:
     relative_path = row.get("relative_path") or ""
     source_key = row.get("source_key") or ""
@@ -560,6 +567,8 @@ def language_features(row: dict[str, Any]) -> list[str]:
     ]
     if candidate_visible == english_visible == spanish_visible and group in {"names", "dynasties", "mottos"}:
         features.append("SAFE_SHARED_NAME_OR_MOTTO")
+    if is_exact_shared_glossary_token(row):
+        features.append("SAFE_EXACT_SHARED_GLOSSARY_TOKEN")
     if has_bold_no_to_nao_microrepair(row):
         features.append("SAFE_BOLD_NO_TO_NAO_MICROREPAIR")
     if has_confirmed_title_adjective_lexical_repair(row):
@@ -570,6 +579,13 @@ def language_features(row: dict[str, Any]) -> list[str]:
         features.append("SAFE_FORMATTED_PORTUGUESE_LITERAL")
     if candidate_visible == english_visible and candidate_visible != spanish_visible and group not in {"names", "dynasties"}:
         features.append("RISK_EXACT_ENGLISH_VISIBLE")
+    if (
+        candidate_visible
+        and candidate_visible == spanish_visible
+        and candidate_visible != english_visible
+        and group not in {"names", "dynasties", "titles"}
+    ):
+        features.append("RISK_EXACT_SPANISH_VISIBLE")
     if source_key.endswith("_WITH_SPACE") and (spanish or "").startswith(" ") and not (candidate or "").startswith(" "):
         features.append("RISK_STRUCTURAL_LEADING_SPACE_LOSS")
     if (
@@ -644,6 +660,10 @@ def language_features(row: dict[str, Any]) -> list[str]:
         or local_quality_validator.QUESTION_MARK_MOJIBAKE_PATTERN.search(candidate or "")
     ):
         features.append("RISK_MOJIBAKE_OR_UNEXPECTED_SCRIPT")
+    if local_quality_validator.count_accent_sensitive_spanish_residue(candidate)[0]:
+        features.append("RISK_ACCENT_SENSITIVE_SPANISH_RESIDUE")
+    if local_quality_validator.redundant_select_cstring_literals(candidate):
+        features.append("RISK_REDUNDANT_SELECT_CSTRING_OPTIONS")
     if (
         EXTENDED_LATIN_PATTERN.search(candidate or "")
         and candidate_visible not in {english_visible, spanish_visible}
@@ -773,6 +793,8 @@ def comparison_features(row: dict[str, Any]) -> list[str]:
         features.append("CANDIDATE_DIVERGES_FROM_CONFIRMED_OUTPUT")
     if candidate_norm == output_norm and output_norm == old_norm:
         features.append("CANDIDATE_MATCHES_CONFIRMED_OUTPUT")
+    if is_exact_shared_glossary_token(row):
+        features.append("SAFE_EXACT_SHARED_GLOSSARY_TOKEN")
     return features
 
 

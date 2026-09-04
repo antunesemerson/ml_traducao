@@ -3,9 +3,12 @@ from __future__ import annotations
 import re
 
 
-RULE_VERSION = "local_quality_validator_v6"
+RULE_VERSION = "local_quality_validator_v12_ptbr_quote_family"
 
 WORD_PATTERN = re.compile(r"[A-Za-z\u00c0-\u00ff]+", re.UNICODE)
+EXACT_GLOSSARY_TOKEN_PATTERN = re.compile(
+    r"""^\s*\[\s*Glossary\s*\(\s*(['"])(.+?)\1\s*,\s*(['"])([A-Z][A-Z0-9_]*)\3\s*\)\s*\]\s*$"""
+)
 PROTECTED_TOKEN_PATTERN = re.compile(
     r"\$[^$\s]+\$|\[[^\]]+\]|#[A-Za-z0-9_]+|#!|@[A-Za-z0-9_]+!|\\n"
 )
@@ -26,7 +29,12 @@ QUESTION_MARK_MOJIBAKE_PATTERN = re.compile(
     r"|\b(?:conseguir|poder|custar|ficar|receber|ter|dar|tomar|ecoar|curvar|ir)\?(?=\s+[a-z\u00e0-\u00ff#\[])"
 )
 GENDER_SUFFIX_QUESTION_PATTERN = re.compile(
-    r"\[[^\]]*Custom\(\s*['\"]ES_(?:OA|AO|XA)['\"]\s*\)\]$",
+    r"\[[^\]]*Custom\(\s*['\"]ES_(?:OA|AO|XA)['\"]\s*\)\][ \t]*$",
+    re.IGNORECASE,
+)
+GENDER_TOKEN_SEPARATED_PLURAL_SUFFIX_PATTERN = re.compile(
+    r"\[[^\]]*Custom\(\s*['\"]ES_(?:OA|AO|XA)['\"]\s*\)\]"
+    r"[ \t]+s(?=[\s,.;:!?]|$)",
     re.IGNORECASE,
 )
 
@@ -35,6 +43,41 @@ SPANISH_PUNCTUATION = (
     "\u00a1",
     "\u00c2\u00bf",
     "\u00c2\u00a1",
+)
+SPANISH_ANGULAR_QUOTES = ("\u00ab", "\u00bb", "\u00c2\u00ab", "\u00c2\u00bb")
+
+
+def is_exact_shared_glossary_token(row: dict[str, object]) -> bool:
+    matches = [
+        EXACT_GLOSSARY_TOKEN_PATTERN.fullmatch(str(row.get(field) or ""))
+        for field in ("candidate_text", "english_text", "spanish_text")
+    ]
+    if any(match is None for match in matches):
+        return False
+    visible_terms = {match.group(2).strip().casefold() for match in matches if match}
+    internal_keys = {match.group(4) for match in matches if match}
+    return len(visible_terms) == 1 and len(internal_keys) == 1
+
+ACCENT_SENSITIVE_SPANISH_RESIDUE_PATTERNS = (
+    (
+        "escoria",
+        re.compile(r"(?<![A-Za-z\u00c0-\u00ff])escoria(?![A-Za-z\u00c0-\u00ff])", re.IGNORECASE),
+    ),
+    (
+        "estudio",
+        re.compile(r"(?<![A-Za-z\u00c0-\u00ff])estudio(?![A-Za-z\u00c0-\u00ff])", re.IGNORECASE),
+    ),
+    (
+        "esto",
+        re.compile(r"(?<![A-Za-z\u00c0-\u00ff])esto(?![A-Za-z\u00c0-\u00ff])", re.IGNORECASE),
+    ),
+    (
+        "hacedmelo",
+        re.compile(
+            r"(?<![A-Za-z\u00c0-\u00ff])hac(?:e|é)dmelo(?![A-Za-z\u00c0-\u00ff])",
+            re.IGNORECASE,
+        ),
+    ),
 )
 
 SPANISH_RESIDUE_WORDS = {
@@ -897,7 +940,10 @@ SORTED_SPANISH_RESIDUE_PHRASES = tuple(
     sorted({normalize_detection_term(phrase) for phrase in SPANISH_RESIDUE_PHRASES} | SPANISH_RESIDUE_PHRASES)
 )
 SORTED_SPANISH_RESIDUE_WORDS = tuple(
-    sorted(({normalize_detection_term(word) for word in SPANISH_RESIDUE_WORDS} | SPANISH_RESIDUE_WORDS) - {"te"})
+    sorted(
+        ({normalize_detection_term(word) for word in SPANISH_RESIDUE_WORDS} | SPANISH_RESIDUE_WORDS)
+        - {"te", "tu"}
+    )
 )
 SPANISH_LITERAL_ONLY_RESIDUES = {"te"}
 SPANISH_RESIDUE_PHRASE_PATTERNS = tuple(
@@ -949,7 +995,7 @@ ENGLISH_RESIDUE_PATTERNS = (
 )
 
 TOKEN_JOINED_TO_WORD_PATTERN = re.compile(
-    r"(\]|\$[A-Za-z0-9_]+\$|#!)(?=[A-Za-z\u00c0-\u00ff])"
+    r"(?:\](?![sS](?=$|[\s,.;:!?]))|\$[A-Za-z0-9_]+\$|#!)(?=[A-Za-z\u00c0-\u00ff])"
 )
 WORD_JOINED_TO_TOKEN_PATTERN = re.compile(
     r"(?<=[A-Za-z\u00c0-\u00ff])(?<!\\n)(\$[A-Za-z0-9_]+\$|#(?:EMP|V|P|N|bold|weak)\b)"
@@ -1163,6 +1209,208 @@ def count_literal_spanish_residue(value: str | None) -> tuple[int, list[str]]:
     return len(found), sorted(set(found))
 
 
+def count_accent_sensitive_spanish_residue(
+    value: str | None,
+) -> tuple[int, list[str]]:
+    if not value:
+        return 0, []
+    visible_value = PROTECTED_TOKEN_PATTERN.sub(" ", value)
+    found = [
+        label
+        for label, pattern in ACCENT_SENSITIVE_SPANISH_RESIDUE_PATTERNS
+        if pattern.search(visible_value)
+    ]
+    return len(found), found
+
+
+def _balanced_call_body(
+    value: str,
+    open_parenthesis: int,
+) -> tuple[str | None, int]:
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for index in range(open_parenthesis, len(value)):
+        character = value[index]
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\":
+            escaped = True
+            continue
+        if quote:
+            if character == quote:
+                quote = None
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            continue
+        if character == "(":
+            depth += 1
+            continue
+        if character == ")":
+            depth -= 1
+            if depth == 0:
+                return value[open_parenthesis + 1 : index], index + 1
+    return None, len(value)
+
+
+def _split_top_level_arguments(value: str) -> list[str]:
+    arguments: list[str] = []
+    start = 0
+    round_depth = 0
+    square_depth = 0
+    quote: str | None = None
+    escaped = False
+    for index, character in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\":
+            escaped = True
+            continue
+        if quote:
+            if character == quote:
+                quote = None
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            continue
+        if character == "(":
+            round_depth += 1
+        elif character == ")":
+            round_depth = max(0, round_depth - 1)
+        elif character == "[":
+            square_depth += 1
+        elif character == "]":
+            square_depth = max(0, square_depth - 1)
+        elif character == "," and round_depth == 0 and square_depth == 0:
+            arguments.append(value[start:index].strip())
+            start = index + 1
+    arguments.append(value[start:].strip())
+    return arguments
+
+
+def _quoted_literal(value: str) -> str | None:
+    stripped = value.strip()
+    if len(stripped) < 2 or stripped[0] not in {"'", '"'}:
+        return None
+    if stripped[-1] != stripped[0]:
+        return None
+    return stripped[1:-1]
+
+
+def redundant_select_cstring_calls(value: str | None) -> list[dict]:
+    if not value:
+        return []
+    repeated: list[dict] = []
+    position = 0
+    marker = "Select_CString"
+    while True:
+        marker_index = value.find(marker, position)
+        if marker_index < 0:
+            break
+        if marker_index > 0 and (
+            value[marker_index - 1].isalnum()
+            or value[marker_index - 1] in {"_", "."}
+        ):
+            position = marker_index + len(marker)
+            continue
+        open_parenthesis = value.find("(", marker_index + len(marker))
+        if open_parenthesis < 0:
+            break
+        if value[marker_index + len(marker) : open_parenthesis].strip():
+            position = marker_index + len(marker)
+            continue
+        body, next_position = _balanced_call_body(value, open_parenthesis)
+        position = max(next_position, marker_index + len(marker))
+        if body is None:
+            continue
+        arguments = _split_top_level_arguments(body)
+        if len(arguments) != 3:
+            continue
+        female_literal = _quoted_literal(arguments[1])
+        male_literal = _quoted_literal(arguments[2])
+        if female_literal is None or male_literal is None:
+            continue
+        if normalize(female_literal) == normalize(male_literal):
+            wrapper_start = marker_index - 1
+            while wrapper_start >= 0 and value[wrapper_start].isspace():
+                wrapper_start -= 1
+            wrapper_end = next_position
+            while wrapper_end < len(value) and value[wrapper_end].isspace():
+                wrapper_end += 1
+            exact_wrapper = (
+                wrapper_start >= 0
+                and value[wrapper_start] == "["
+                and wrapper_end < len(value)
+                and value[wrapper_end] == "]"
+            )
+            repeated.append(
+                {
+                    "start": wrapper_start if exact_wrapper else marker_index,
+                    "end": wrapper_end + 1 if exact_wrapper else next_position,
+                    "call_start": marker_index,
+                    "call_end": next_position,
+                    "condition": arguments[0],
+                    "female_literal": female_literal,
+                    "male_literal": male_literal,
+                    "literal": female_literal,
+                    "exact_literal_match": female_literal == male_literal,
+                    "exact_wrapper": exact_wrapper,
+                    "expression": (
+                        value[wrapper_start : wrapper_end + 1]
+                        if exact_wrapper
+                        else value[marker_index:next_position]
+                    ),
+                }
+            )
+    return repeated
+
+
+def redundant_select_cstring_literals(value: str | None) -> list[str]:
+    return [
+        str(call["literal"])
+        for call in redundant_select_cstring_calls(value)
+    ]
+
+
+def collapse_redundant_select_cstring(
+    value: str | None,
+) -> tuple[str, list[dict]]:
+    text = value or ""
+    repairs = [
+        call
+        for call in redundant_select_cstring_calls(text)
+        if call["exact_wrapper"] and call["exact_literal_match"]
+    ]
+    if not repairs:
+        return text, []
+    parts: list[str] = []
+    position = 0
+    applied: list[dict] = []
+    for call in repairs:
+        start = int(call["start"])
+        end = int(call["end"])
+        if start < position:
+            continue
+        literal = str(call["literal"])
+        parts.append(text[position:start])
+        parts.append(literal)
+        applied.append(
+            {
+                **call,
+                "replacement": literal,
+                "action": "collapse_exact_redundant_select_cstring",
+                "removed_token": str(call["expression"]),
+                "removed_token_start": start,
+            }
+        )
+        position = end
+    parts.append(text[position:])
+    return "".join(parts), applied
+
+
 def validate_text(value: str | None) -> dict:
     issues: list[dict] = []
     text = value or ""
@@ -1174,8 +1422,19 @@ def validate_text(value: str | None) -> dict:
             {
                 "code": "spanish_punctuation",
                 "severity": "high",
-                "message": "Spanish inverted or angular punctuation remains.",
+                "message": "Spanish inverted punctuation remains.",
                 "matches": marks[:10],
+            }
+        )
+
+    angular_quotes = [mark for mark in SPANISH_ANGULAR_QUOTES if mark in text]
+    if angular_quotes:
+        issues.append(
+            {
+                "code": "spanish_angular_quotes",
+                "severity": "medium",
+                "message": "Angular quotation marks should be normalized to pt-BR double quotes.",
+                "matches": angular_quotes[:10],
             }
         )
 
@@ -1248,6 +1507,22 @@ def validate_text(value: str | None) -> dict:
             }
         )
 
+    accent_sensitive_count, accent_sensitive_residues = (
+        count_accent_sensitive_spanish_residue(text)
+    )
+    if accent_sensitive_count:
+        issues.append(
+            {
+                "code": "accent_sensitive_spanish_residue",
+                "severity": "high" if accent_sensitive_count >= 2 else "medium",
+                "message": (
+                    "Unaccented or conjugated Spanish residue remains; "
+                    "accented Portuguese equivalents stay valid."
+                ),
+                "matches": accent_sensitive_residues[:20],
+            }
+        )
+
     english_count, english_residues = count_english_residue(text)
     if english_count:
         issues.append(
@@ -1267,6 +1542,19 @@ def validate_text(value: str | None) -> dict:
                 "severity": "high",
                 "message": "Translatable string literal inside a token still looks Spanish.",
                 "matches": literal_residues[:20],
+            }
+        )
+
+    repeated_select_literals = redundant_select_cstring_literals(text)
+    if repeated_select_literals:
+        issues.append(
+            {
+                "code": "redundant_select_cstring_options",
+                "severity": "medium",
+                "message": (
+                    "Select_CString repeats the same visible literal in both branches."
+                ),
+                "matches": repeated_select_literals[:20],
             }
         )
 
@@ -1303,6 +1591,21 @@ def validate_text(value: str | None) -> dict:
                 "code": "gender_token_uppercase_suffix",
                 "severity": "high",
                 "message": "A gender token is followed by an uppercase suffix that likely starts a new sentence.",
+            }
+        )
+
+    separated_plural_suffixes = sorted(
+        set(GENDER_TOKEN_SEPARATED_PLURAL_SUFFIX_PATTERN.findall(text))
+    )
+    if separated_plural_suffixes:
+        issues.append(
+            {
+                "code": "gender_token_suffix_separated",
+                "severity": "medium",
+                "message": (
+                    "A plural suffix is separated from its gender token by whitespace."
+                ),
+                "matches": separated_plural_suffixes[:20],
             }
         )
 

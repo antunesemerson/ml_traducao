@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "policy_id": "exact_shared_glossary_v1",
+  "enabled": true,
+  "pattern": "exact_shared_glossary_token",
+  "path_prefix": "custom_localization/",
+  "calibrated_safe_probability": 0.96875,
+  "source_score_run_id": 401,
+  "source_snapshot_run_id": 169,
+  "source_shadow_run_id": 171,
+  "source_shadow_rule_version": "manual_low_score_segmented_calibration_shadow_v2",
+  "evidence": {
+    "training_safe_count": 30,
+    "training_risky_count": 0,
+    "blind_control_safe_count": 8,
+    "blind_control_risky_count": 0,
+    "population_match_count": 38,
+    "population_near_miss_count": 4,
+    "population_integrity_issue_count": 0,
+    "boundary_sentinel_changed_count": 0,
+    "limited_evidence": false
+  }
+}

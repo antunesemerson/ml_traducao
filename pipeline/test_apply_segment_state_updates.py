@@ -22,6 +22,11 @@ from quality_spanish_dynamic_literal_authorization import (  # noqa: E402
     PAIRWISE_ELISION_EVIDENCE_TYPE,
     PAIRWISE_ELISION_SOURCE,
 )
+from quality_redundant_select_cstring_authorization import (  # noqa: E402
+    PAIRWISE_ELISION_CONFIRMATION_LABEL as REDUNDANT_SELECT_CONFIRMATION_LABEL,
+    PAIRWISE_ELISION_EVIDENCE_TYPE as REDUNDANT_SELECT_EVIDENCE_TYPE,
+    PAIRWISE_ELISION_SOURCE as REDUNDANT_SELECT_SOURCE,
+)
 
 
 class ApplySegmentStateUpdatesTests(unittest.TestCase):
@@ -75,6 +80,48 @@ class ApplySegmentStateUpdatesTests(unittest.TestCase):
                 row,
                 baseline,
                 "adquiriu ouro",
+            )
+        )
+
+    def test_authorizes_exact_redundant_select_cstring_elision(self) -> None:
+        baseline = (
+            "[actor.GetName] "
+            "[Select_CString(actor.IsLocalPlayer, 'sua', 'sua')] corte"
+        )
+        candidate = "[actor.GetName] sua corte"
+        row = {
+            "pairwise_evidence_id": 1370,
+            "confirmation_source": PAIRWISE_ELISION_CONFIRMATION_SOURCE,
+            "confirmation_label": REDUNDANT_SELECT_CONFIRMATION_LABEL,
+            "pairwise_evidence_type": REDUNDANT_SELECT_EVIDENCE_TYPE,
+            "pairwise_baseline_hash": sha256_text(baseline),
+            "pairwise_candidate_hash": sha256_text(candidate),
+            "pairwise_token_integrity_ok": 1,
+            "pairwise_post_validation_clean": 1,
+            "pairwise_training_eligible": 1,
+            "pairwise_promotion_eligible": 1,
+            "pairwise_source_metadata_json": json.dumps(
+                {
+                    "source": REDUNDANT_SELECT_SOURCE,
+                    "lane": "pairwise_evidence_eligible",
+                    "token_integrity_mode": "intentional_exact_select_elision",
+                    "blockers": [],
+                }
+            ),
+        }
+
+        self.assertTrue(
+            pairwise_intentional_elision_authorized(
+                row,
+                baseline,
+                candidate,
+            )
+        )
+        self.assertFalse(
+            pairwise_intentional_elision_authorized(
+                row,
+                baseline,
+                "[actor.GetName] corte",
             )
         )
 

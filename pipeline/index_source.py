@@ -130,6 +130,37 @@ def upsert_file(conn, package_name: str, relative_path: str, absolute_path: Path
 
 def upsert_source_segment(conn, source: Segment, english: Segment | None, old: Segment | None) -> int:
     now = db.utc_now()
+    exact = conn.execute(
+        """
+        SELECT id
+        FROM source_segments
+        WHERE relative_path = ?
+          AND source_line_number = ?
+          AND source_key = ?
+        """,
+        (source.relative_path, source.line_number, source.key),
+    ).fetchone()
+    if exact is None:
+        # A game update can insert lines without changing a localization key. In
+        # that case the segment is still the same historical entity: move its
+        # line anchor before the regular upsert instead of allocating a new id.
+        # Duplicate keys are deliberately left untouched because their identity
+        # is ambiguous and the exact composite key remains the safer contract.
+        key_matches = conn.execute(
+            """
+            SELECT id
+            FROM source_segments
+            WHERE relative_path = ? AND source_key = ?
+            ORDER BY is_active DESC, last_indexed_at DESC, id DESC
+            LIMIT 2
+            """,
+            (source.relative_path, source.key),
+        ).fetchall()
+        if len(key_matches) == 1:
+            conn.execute(
+                "UPDATE source_segments SET source_line_number = ? WHERE id = ?",
+                (source.line_number, int(key_matches[0]["id"])),
+            )
     conn.execute(
         """
         INSERT INTO source_segments (
@@ -285,10 +316,27 @@ def main() -> None:
     missing_old_keys = 0
     parse_warnings: list[str] = []
     token_count = 0
+    indexed_manifest_paths: dict[str, set[str]] = {
+        "spanish_source": set(),
+        "english_source": set(),
+        "spanish_old": set(),
+        "output_spanish": set(),
+    }
 
     with db.connect(settings) as conn:
         db.ensure_database(conn)
         conn.execute("UPDATE source_segments SET is_active = 0")
+        # Rebuild the manifest atomically with the source index. Keeping rows for
+        # files that were removed made every later preflight look stale forever,
+        # even after a successful reindex.
+        conn.execute(
+            """
+            DELETE FROM files
+            WHERE package_name IN (
+                'spanish_source', 'english_source', 'spanish_old', 'output_spanish'
+            )
+            """
+        )
 
         for file_index, spanish_path in enumerate(spanish_files, start=1):
             relative_path = spanish_path.relative_to(spanish_root).as_posix()
@@ -300,12 +348,14 @@ def main() -> None:
             source_segments, warnings, line_count, digest = parse_file(spanish_path, spanish_root)
             parse_warnings.extend(warnings)
             upsert_file(conn, "spanish_source", relative_path, spanish_path, line_count, digest)
+            indexed_manifest_paths["spanish_source"].add(relative_path)
 
             english_segments: list[Segment] = []
             if english_path.exists():
                 english_segments, warnings, line_count, digest = parse_file(english_path, english_root)
                 parse_warnings.extend(warnings)
                 upsert_file(conn, "english_source", english_relative, english_path, line_count, digest)
+                indexed_manifest_paths["english_source"].add(english_relative)
             else:
                 missing_english_files += 1
 
@@ -314,6 +364,7 @@ def main() -> None:
                 old_segments, warnings, line_count, digest = parse_file(old_path, old_root)
                 parse_warnings.extend(warnings)
                 upsert_file(conn, "spanish_old", relative_path, old_path, line_count, digest)
+                indexed_manifest_paths["spanish_old"].add(relative_path)
             else:
                 missing_old_files += 1
 
@@ -322,6 +373,7 @@ def main() -> None:
                 output_segments, warnings, line_count, digest = parse_file(output_path, output_root)
                 parse_warnings.extend(warnings)
                 upsert_file(conn, "output_spanish", relative_path, output_path, line_count, digest)
+                indexed_manifest_paths["output_spanish"].add(relative_path)
             else:
                 missing_output_files += 1
 
@@ -355,6 +407,33 @@ def main() -> None:
                     f"{inserted_segments} source segments indexed"
                 )
             conn.commit()
+
+        # Keep the file manifest exact even when a package contains an orphan
+        # file with no Spanish counterpart. These rows are relevant to the
+        # change detector although they do not create active source segments.
+        for package_name, package_root in (
+            ("spanish_source", spanish_root),
+            ("english_source", english_root),
+            ("spanish_old", old_root),
+            ("output_spanish", output_root),
+        ):
+            for package_path in sorted(package_root.rglob("*.yml")):
+                if not package_path.is_file():
+                    continue
+                package_relative = package_path.relative_to(package_root).as_posix()
+                if package_relative in indexed_manifest_paths[package_name]:
+                    continue
+                line_count = len(read_text_lines(package_path))
+                upsert_file(
+                    conn,
+                    package_name,
+                    package_relative,
+                    package_path,
+                    line_count,
+                    file_hash(package_path),
+                )
+                indexed_manifest_paths[package_name].add(package_relative)
+        conn.commit()
 
     elapsed = datetime.now() - started_at
     report_lines = [

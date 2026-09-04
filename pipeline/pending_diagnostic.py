@@ -11,7 +11,7 @@ import db
 from apply_safe_output_updates import protected_tokens
 
 
-RULE_VERSION = "pending_diagnostic_v1"
+RULE_VERSION = "pending_diagnostic_v2_ptbr_quotes"
 WORD_PATTERN = re.compile(r"[A-Za-z\u00c0-\u00ff]+", re.UNICODE)
 TOKEN_JOINED_TO_WORD_PATTERN = re.compile(r"(\]|\$[A-Za-z0-9_]+\$|#!)(?=[A-Za-z\u00c0-\u00ff])")
 WORD_JOINED_TO_TOKEN_PATTERN = re.compile(r"(?<=[A-Za-z\u00c0-\u00ff])(\$[A-Za-z0-9_]+\$|#(?:EMP|V|P|N|bold|weak)\b)")
@@ -35,7 +35,8 @@ RESIDUE_PATTERN = re.compile(
     r")\b",
     re.IGNORECASE,
 )
-SPANISH_PUNCTUATION = ("\u00bf", "\u00a1", "\u00ab", "\u00bb")
+SPANISH_PUNCTUATION = ("\u00bf", "\u00a1")
+SPANISH_ANGULAR_QUOTES = ("\u00ab", "\u00bb", "\u00c2\u00ab", "\u00c2\u00bb")
 
 
 def percent(part: int, total: int) -> float:
@@ -64,6 +65,7 @@ def classify_bucket(item: dict[str, Any]) -> str:
         return "inline_literal_residue"
     if codes and codes <= {
         "spanish_punctuation",
+        "spanish_angular_quotes",
         "missing_space_after_token",
         "missing_space_before_token",
         "gender_token_extra_suffix",
@@ -138,6 +140,8 @@ def fast_classify_item(row: dict[str, Any]) -> dict[str, Any]:
         issues.append({"code": "needs_translation", "severity": "high"})
     if any(mark in candidate_text for mark in SPANISH_PUNCTUATION):
         issues.append({"code": "spanish_punctuation", "severity": "high"})
+    if any(mark in candidate_text for mark in SPANISH_ANGULAR_QUOTES):
+        issues.append({"code": "spanish_angular_quotes", "severity": "medium"})
     if MOJIBAKE_PATTERN.search(candidate_text):
         issues.append({"code": "mojibake", "severity": "high"})
     if INLINE_LITERAL_RESIDUE_PATTERN.search(candidate_text):
@@ -169,6 +173,7 @@ def fast_classify_item(row: dict[str, Any]) -> dict[str, Any]:
             issue["code"]
             in {
                 "spanish_punctuation",
+                "spanish_angular_quotes",
                 "missing_space_after_token",
                 "missing_space_before_token",
                 "gender_token_extra_suffix",

@@ -14,7 +14,7 @@ import db
 from apply_safe_output_updates import escape_localization_value, protected_tokens
 
 
-RULE_VERSION = "segment_state_snapshot_v1"
+RULE_VERSION = "segment_state_snapshot_v2_shared_epoch_score"
 RUNTIME_TOKEN_ONLY_EQUAL_OUTPUT_LIFECYCLE_STATE = (
     "closed_auto_confirmed_runtime_token_only_equal_output_lifecycle"
 )
@@ -4938,8 +4938,16 @@ def latest_quality_epoch_score_runs(conn) -> tuple[int, int, int | None] | None:
           AND baseline.model_run_id = candidate.model_run_id
           AND baseline.rule_version = candidate.rule_version
           AND baseline.source_snapshot_id = candidate.source_snapshot_id
-          AND baseline.candidate_text_source = 'old'
-          AND candidate.candidate_text_source = 'output'
+          AND (
+                (
+                  epoch.old_score_run_id = epoch.output_score_run_id
+                  AND candidate.candidate_text_source IN ('old', 'output')
+                )
+                OR (
+                  baseline.candidate_text_source = 'old'
+                  AND candidate.candidate_text_source = 'output'
+                )
+              )
         ORDER BY epoch.updated_at DESC, epoch.id DESC
         LIMIT 1
         """

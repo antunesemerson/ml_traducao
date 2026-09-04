@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "provider_id": "contract_es_helper_repair",
+  "label": "Reparo revisado de helpers ES em contratos",
+  "enabled": true,
+  "priority": 325,
+  "evidence_type": "reviewed_contract_es_helper_repair",
+  "discovery": {
+    "issue_types": []
+  },
+  "shadow_script": "pipeline/quality_contract_es_helper_repair_dry_run.py",
+  "shadow_args": [],
+  "evidence_script": "pipeline/quality_contract_es_helper_pairwise_evidence.py",
+  "evidence_args": []
+}

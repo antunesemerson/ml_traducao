@@ -59,10 +59,16 @@ CONTEXT_SENSITIVE_LITERALS = {
 # Both branches collapse to the same PT-BR verb, so the local-player condition
 # and every protected CK3 token remain unchanged.
 EXTRA_SAFE_LITERAL_TRANSLATIONS = {
+    "abatiste": "abateu",
+    "abatió": "abateu",
     "ayudaste": "ajudou",
     "ayudó": "ajudou",
+    "ayudarás": "ajudará",
+    "ayudará": "ajudará",
     "comenzaste": "começou",
     "comenzó": "começou",
+    "comprenderás": "entenderá",
+    "comprenderá": "entenderá",
     "conservaste": "conservou",
     "conservó": "conservou",
     "conseguiste": "conseguiu",
@@ -71,6 +77,8 @@ EXTRA_SAFE_LITERAL_TRANSLATIONS = {
     "consoló": "consolou",
     "contaste": "contou",
     "contó": "contou",
+    "crees": "acredita",
+    "cree": "acredita",
     "dejaste": "deixou",
     "dejó": "deixou",
     "demostraste": "demonstrou",
@@ -82,6 +90,10 @@ EXTRA_SAFE_LITERAL_TRANSLATIONS = {
     "decidí": "decidiu",
     "encerraste": "trancou",
     "encerró": "trancou",
+    "emergiste": "emergiu",
+    "emergió": "emergiu",
+    "estuviste": "esteve",
+    "estuvo": "esteve",
     "intentaste": "tentou",
     "intentó": "tentou",
     "insultaste": "insultou",
@@ -90,8 +102,12 @@ EXTRA_SAFE_LITERAL_TRANSLATIONS = {
     "mostró": "mostrou",
     "ofreciste": "ofereceu",
     "ofreció": "ofereceu",
+    "pasas": "passa",
+    "pasa": "passa",
     "pasaste": "passou",
     "pasó": "passou",
+    "preparaste": "preparou",
+    "preparó": "preparou",
     "proclamaste": "proclamou",
     "proclamó": "proclamou",
     "quedaste": "ficou",
@@ -100,6 +116,7 @@ EXTRA_SAFE_LITERAL_TRANSLATIONS = {
     "realizó": "realizou",
     "recibiste": "recebeu",
     "recibió": "recebeu",
+    "sabes": "sabe",
     "sigues": "continua",
     "sigue": "continua",
     "tuviste": "teve",
@@ -107,6 +124,10 @@ EXTRA_SAFE_LITERAL_TRANSLATIONS = {
     "vasalla": "vassala",
     "vasallaje": "vassalagem",
     "vasallo": "vassalo",
+    "ves": "vê",
+    "ve": "vê",
+    "vistes": "viu",
+    "viste": "viu",
 }
 
 SAFE_LITERAL_TARGETS = {
@@ -142,10 +163,13 @@ FOLLOWING_FINITE_VERBS = {
     "teve",
     "venceu",
 }
+FOLLOWING_COMPOSITION_WORDS = FOLLOWING_FINITE_VERBS | {"continuando"}
+PORTUGUESE_DETERMINERS = {"a", "as", "o", "os", "um", "uma", "uns", "umas"}
 PRECEDING_INCOMPATIBLE_PREPOSITIONS = {"de", "para", "por", "sem"}
 SAFE_OBJECT_PRONOUN_PREPOSITIONS = {"contra", "de", "para", "por", "sem"}
 SEMANTIC_ELISION_PRECEDING_BLOCKERS = PRECEDING_INCOMPATIBLE_PREPOSITIONS | {"lhe"}
 SEMANTICALLY_REDUNDANT_FOLLOWERS = {
+    "adora": {"ama"},
     "conseguiu": {"matou"},
     "deixou": {"arruinou"},
     "fez": {"deu", "trapaceou"},
@@ -153,16 +177,95 @@ SEMANTICALLY_REDUNDANT_FOLLOWERS = {
     "realizou": {"fez"},
     "teve": {"foi", "tem"},
 }
-VISIBLE_CONTEXT_RESIDUAL_PATTERN = re.compile(r"\benojad[oa]?s?\b", re.IGNORECASE)
+VISIBLE_CONTEXT_RESIDUAL_PATTERN = re.compile(
+    r"\b(?:cercenaste|cercenó|enojad[oa]?s?|olvides|olvide)\b",
+    re.IGNORECASE,
+)
+REVIEWED_CONTINUE_AS_LEADER_PATTERN = re.compile(
+    r"^\s*continuando(?=\s+\[[^\]]+\.Custom\(\s*['\"]ES_ElLa['\"]\s*\)\]\s+líder\b)",
+    re.IGNORECASE,
+)
+REVIEWED_AUXILIARY_PARTICIPLES = {
+    "correspondido",
+    "jurado",
+    "sido",
+    "temido",
+}
+REVIEWED_DATIVE_PRONOUN_FOLLOWERS = {"adornasse", "juraram"}
+REVIEWED_REDUNDANT_AUXILIARY_FOLLOWERS = {"foi"}
+REVIEWED_REDUNDANT_REFLEXIVE_FOLLOWERS = {"ganhou"}
+REVIEWED_REDUNDANT_DATIVE_PATTERNS = (
+    re.compile(
+        r"^\s*\[Select_CString\([^\]]*['\"](?:deu|diste)['\"]\s*,\s*"
+        r"['\"](?:deu|dio)['\"]\s*\)\]"
+        r"\s+.{0,180}?\b(?:a|para)\s+"
+        r"\[Select_CString\([^\]]*['\"](?:ti|você)['\"]",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"^\s*chega\s+naturalmente\s+a\s+"
+        r"\[Select_CString\([^\]]*['\"](?:ti|você)['\"]",
+        re.IGNORECASE,
+    ),
+)
+REVIEWED_SPECIAL_MEAL_TERMINAL_PATTERN = re.compile(
+    r"\bdeu\s+uma\s+refei[cç][aã]o\s+especial\s+a\s*$",
+    re.IGNORECASE,
+)
+REVIEWED_REDUNDANT_OBJECT_PRONOUN_PATTERNS = (
+    re.compile(r"^\s*o\s+chamam\b", re.IGNORECASE),
+    re.compile(
+        r"^\s*favorece\s+a\s+"
+        r"\[Select_CString\([^\]]*['\"]ti['\"]",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*escolheu\s+"
+        r"\[Select_CString\([^\]]*['\"]ti['\"]",
+        re.IGNORECASE,
+    ),
+)
+REVIEWED_REDUNDANT_REFLEXIVE_OBJECT_PATTERN = re.compile(
+    r"^\s*o\s+cabelo\b",
+    re.IGNORECASE,
+)
+REVIEWED_GENDER_ARTICLE_FOLLOWER_PATTERN = re.compile(
+    r"^\s*\[movement_leader(?:\|[^\]]*)?\]",
+    re.IGNORECASE,
+)
+REVIEWED_PERFECT_PARTICIPLE_PATTERN = re.compile(
+    r"^\s*feito\b",
+    re.IGNORECASE,
+)
+REVIEWED_ATHLETIC_PHRASE_FOLLOWER_PATTERN = re.compile(
+    r"^\s*,\s*e\s+é\s+mais\s+comumente\s+encontrado\s+malhando\.",
+    re.IGNORECASE,
+)
+REVIEWED_WORKOUT_PRECEDING_PATTERN = re.compile(
+    r"malhando\.\s*$",
+    re.IGNORECASE,
+)
+REVIEWED_REDUNDANT_WORKOUT_TAIL_PATTERN = re.compile(
+    r"^\s*se\s+encontra\s+fazendo\s+exercício\.\s*$",
+    re.IGNORECASE,
+)
 
 # Production scope: lexical substitutions plus past-tense mappings protected by
 # sentence-composition guards. Other known mappings remain useful for
 # investigation, but cannot enter the automatic promotion lifecycle yet.
 PROMOTION_SAFE_LITERAL_SOURCES = {
+    "abatiste",
+    "abatió",
+    "atlética y musculosa",
+    "atlético y musculoso",
     "ayudaste",
     "ayudó",
+    "ayudarás",
+    "ayudará",
     "conseguiste",
     "consiguió",
+    "comprenderás",
+    "comprenderá",
     "consolaste",
     "consoló",
     "decidiste",
@@ -171,6 +274,9 @@ PROMOTION_SAFE_LITERAL_SOURCES = {
     "dejó",
     "diste",
     "dio",
+    "emergiste",
+    "emergió",
+    "el",
     "el señor",
     "encerraste",
     "encerró",
@@ -179,21 +285,38 @@ PROMOTION_SAFE_LITERAL_SOURCES = {
     "eres",
     "es",
     "estás",
+    "estuviste",
+    "estuvo",
     "ganaste",
     "ganó",
     "ganará",
     "ganarás",
+    "ha",
+    "hace",
+    "haces",
+    "han",
+    "has",
     "hiciste",
     "hizo",
     "intentaste",
     "intentó",
+    "le",
     "ofreciste",
     "ofreció",
+    "pasas",
+    "pasa",
     "pasaste",
     "pasó",
     "proclamaste",
+    "preparaste",
+    "preparó",
     "realizaste",
     "realizó",
+    "se ha",
+    "sería",
+    "serías",
+    "te has",
+    "te",
     "ti",
     "tú",
     "tuviste",
@@ -201,6 +324,32 @@ PROMOTION_SAFE_LITERAL_SOURCES = {
     "vasalla",
     "vasallaje",
     "vasallo",
+    "ves",
+    "ve",
+    "vistes",
+    "viste",
+    # Context-reviewed against the critical low-score cohort. Sentence-level
+    # guards below still block determiner duplication and incompatible verbs.
+    "adoras",
+    "comenzaste",
+    "comenzó",
+    "crees",
+    "cree",
+    "conservaste",
+    "conservó",
+    "demostraste",
+    "demostró",
+    "insultaste",
+    "las primeras",
+    "la",
+    "los primeros",
+    "proclamó",
+    "recibiste",
+    "recibió",
+    "sabes",
+    "se",
+    "sigue",
+    "sigues",
 }
 
 
@@ -235,6 +384,112 @@ def translated_literal(value: str) -> str | None:
     return translated
 
 
+def reviewed_contextual_literal_plan(
+    base_name: str,
+    literals: list[str],
+    following_word: str,
+    following_text: str,
+    preceding_text: str,
+) -> tuple[dict[str, str], str]:
+    if base_name != "Select_CString":
+        return {}, ""
+    normalized_set = {normalize_literal(value) for value in literals}
+    if normalized_set == {"ha", "has"}:
+        if following_word in REVIEWED_AUXILIARY_PARTICIPLES:
+            return {
+                value: "tem" for value in normalized_set
+            }, "translate_contextual_auxiliary"
+        if following_word in REVIEWED_REDUNDANT_AUXILIARY_FOLLOWERS:
+            return {
+                value: "" for value in normalized_set
+            }, "remove_redundant_contextual_auxiliary"
+    if normalized_set == {"hace", "haces"} and following_word == "faz":
+        return {
+            value: "" for value in normalized_set
+        }, "remove_redundant_contextual_present_verb"
+    if normalized_set == {"han", "has"} and following_word == "feito":
+        return {
+            value: "fez" for value in normalized_set
+        }, "compose_contextual_perfect_to_past"
+    if normalized_set == {"sería", "serías"} and following_word == "fosse":
+        return {
+            value: "" for value in normalized_set
+        }, "remove_redundant_contextual_conditional_verb"
+    if (
+        normalized_set == {"atlética y musculosa", "atlético y musculoso"}
+        and REVIEWED_ATHLETIC_PHRASE_FOLLOWER_PATTERN.search(following_text)
+    ):
+        return {
+            "atlética y musculosa": (
+                "atlética e musculosa, e é mais comumente encontrada malhando"
+            ),
+            "atlético y musculoso": (
+                "atlético e musculoso, e é mais comumente encontrado malhando"
+            ),
+        }, "compose_contextual_athletic_sentence"
+    if (
+        normalized_set == {"se ha", "te has"}
+        and following_word in REVIEWED_REDUNDANT_REFLEXIVE_FOLLOWERS
+    ):
+        return {
+            value: "" for value in normalized_set
+        }, "remove_redundant_reflexive_auxiliary"
+    if normalized_set == {"le", "te"}:
+        if following_word in REVIEWED_DATIVE_PRONOUN_FOLLOWERS:
+            return {
+                value: "lhe" for value in normalized_set
+            }, "translate_contextual_dative_pronoun"
+        if any(
+            pattern.search(following_text)
+            for pattern in REVIEWED_REDUNDANT_DATIVE_PATTERNS
+        ):
+            return {
+                value: "" for value in normalized_set
+            }, "remove_redundant_contextual_dative_pronoun"
+    if (
+        normalized_set == {"ti"}
+        and not following_word
+        and REVIEWED_SPECIAL_MEAL_TERMINAL_PATTERN.search(preceding_text)
+    ):
+        return {
+            "ti": "você"
+        }, "translate_contextual_terminal_object_pronoun"
+    if (
+        normalized_set == {"te"}
+        and REVIEWED_WORKOUT_PRECEDING_PATTERN.search(preceding_text)
+        and REVIEWED_REDUNDANT_WORKOUT_TAIL_PATTERN.search(following_text)
+    ):
+        return {
+            "te": ""
+        }, "remove_redundant_contextual_workout_tail"
+    if (
+        normalized_set == {"te"}
+        and any(
+            pattern.search(following_text)
+            for pattern in REVIEWED_REDUNDANT_OBJECT_PRONOUN_PATTERNS
+        )
+    ):
+        return {
+            "te": ""
+        }, "remove_redundant_contextual_object_pronoun"
+    if (
+        normalized_set == {"se", "te"}
+        and REVIEWED_REDUNDANT_REFLEXIVE_OBJECT_PATTERN.search(following_text)
+    ):
+        return {
+            value: "" for value in normalized_set
+        }, "remove_redundant_contextual_object_pronoun"
+    if (
+        normalized_set == {"el", "la"}
+        and REVIEWED_GENDER_ARTICLE_FOLLOWER_PATTERN.search(following_text)
+    ):
+        return {
+            "el": "o",
+            "la": "a",
+        }, "translate_contextual_gender_article"
+    return {}, ""
+
+
 def repair_dynamic_literals(text: str) -> tuple[str, list[dict[str, Any]]]:
     parts: list[str] = []
     repairs: list[dict[str, Any]] = []
@@ -242,12 +497,32 @@ def repair_dynamic_literals(text: str) -> tuple[str, list[dict[str, Any]]]:
     for token_match in iter_expression_spans(text):
         token = token_match.group(0)
         base_name = command_base_name(token)
+        following_raw = text[token_match.end() :]
+        following = following_raw.lstrip()
+        following_words = [
+            normalize_literal(value)
+            for value in re.findall(r"[^\W\d_]+", following, re.UNICODE)[:2]
+        ]
+        following_word = following_words[0] if following_words else ""
+        literal_spans = list(iter_string_literal_spans(token))
+        translatable_literals = [
+            literal_match.value
+            for literal_index, literal_match in enumerate(literal_spans, start=1)
+            if is_literal_translatable(base_name, literal_index, literal_match.value)
+        ]
+        contextual_translations, contextual_action = reviewed_contextual_literal_plan(
+            base_name,
+            translatable_literals,
+            following_word,
+            following_raw,
+            text[: token_match.start()],
+        )
         literal_index = 0
         token_repairs: list[dict[str, Any]] = []
         unresolved_literals: list[str] = []
         literal_parts: list[str] = []
         literal_position = 0
-        for literal_match in iter_string_literal_spans(token):
+        for literal_match in literal_spans:
             literal_index += 1
             literal = literal_match.value
             literal_parts.append(token[literal_position : literal_match.start_index])
@@ -255,10 +530,12 @@ def repair_dynamic_literals(text: str) -> tuple[str, list[dict[str, Any]]]:
             if not is_literal_translatable(base_name, literal_index, literal):
                 literal_parts.append(token[literal_match.start_index : literal_match.end_index])
                 continue
-            translated = translated_literal(literal)
+            normalized_literal = normalize_literal(literal)
+            translated = contextual_translations.get(normalized_literal)
             if translated is None:
-                normalized = normalize_literal(literal)
-                if normalized and normalized not in SAFE_LITERAL_TARGETS:
+                translated = translated_literal(literal)
+            if translated is None:
+                if normalized_literal and normalized_literal not in SAFE_LITERAL_TARGETS:
                     unresolved_literals.append(literal)
                 literal_parts.append(token[literal_match.start_index : literal_match.end_index])
                 continue
@@ -268,28 +545,63 @@ def repair_dynamic_literals(text: str) -> tuple[str, list[dict[str, Any]]]:
                     "literal_index": literal_index,
                     "before": literal,
                     "after": translated,
-                    "action": "translate_literal",
+                    "action": contextual_action or "translate_literal",
                 }
             )
-            literal_parts.append(f"{literal_match.quote}{translated}{literal_match.quote}")
+            if contextual_action.startswith("remove_redundant_"):
+                literal_parts.append(token[literal_match.start_index : literal_match.end_index])
+            else:
+                literal_parts.append(f"{literal_match.quote}{translated}{literal_match.quote}")
         literal_parts.append(token[literal_position:])
         repaired_token = "".join(literal_parts)
         preceding = text[: token_match.start()].rstrip()
         preceding_word_match = re.search(r"([^\W\d_]+)$", preceding, re.UNICODE)
         preceding_word = normalize_literal(preceding_word_match.group(1)) if preceding_word_match else ""
-        following = text[token_match.end() :].lstrip()
-        following_words = [
-            normalize_literal(value)
-            for value in re.findall(r"[^\W\d_]+", following, re.UNICODE)[:2]
-        ]
-        following_word = following_words[0] if following_words else ""
         translated_values = {normalize_literal(item["after"]) for item in token_repairs}
+        prefix_text = text[position : token_match.start()]
         removed_redundant_token = False
-        if token_repairs and not unresolved_literals and len(translated_values) == 1:
+        intentionally_removed_token = False
+        consumed_following_chars = 0
+        if contextual_action == "remove_redundant_contextual_workout_tail" and token_repairs:
+            reviewed_tail = REVIEWED_REDUNDANT_WORKOUT_TAIL_PATTERN.match(
+                following_raw
+            )
+            if reviewed_tail:
+                repaired_token = ""
+                removed_redundant_token = True
+                intentionally_removed_token = True
+                consumed_following_chars = reviewed_tail.end()
+                for item in token_repairs:
+                    item["removed_following_text"] = reviewed_tail.group(0).strip()
+        elif contextual_action == "compose_contextual_athletic_sentence" and token_repairs:
+            reviewed_phrase = REVIEWED_ATHLETIC_PHRASE_FOLLOWER_PATTERN.match(
+                following_raw
+            )
+            if reviewed_phrase:
+                repaired_token = f"{repaired_token}."
+                consumed_following_chars = reviewed_phrase.end()
+                for item in token_repairs:
+                    item["removed_following_text"] = reviewed_phrase.group(0).strip()
+        elif contextual_action.startswith("remove_redundant_") and token_repairs:
+            repaired_token = ""
+            removed_redundant_token = True
+            intentionally_removed_token = True
+        elif contextual_action == "compose_contextual_perfect_to_past" and token_repairs:
+            reviewed_composition = REVIEWED_PERFECT_PARTICIPLE_PATTERN.match(
+                following_raw
+            )
+            if reviewed_composition:
+                repaired_token = "fez"
+                intentionally_removed_token = True
+                consumed_following_chars = reviewed_composition.end()
+                for item in token_repairs:
+                    item["removed_following_text"] = "feito"
+        elif token_repairs and not unresolved_literals and len(translated_values) == 1:
             translated_value = next(iter(translated_values))
             if following_word == translated_value:
                 repaired_token = ""
                 removed_redundant_token = True
+                intentionally_removed_token = True
                 for item in token_repairs:
                     item["action"] = "remove_redundant_dynamic_literal"
             elif (
@@ -298,20 +610,53 @@ def repair_dynamic_literals(text: str) -> tuple[str, list[dict[str, Any]]]:
             ):
                 repaired_token = ""
                 removed_redundant_token = True
+                intentionally_removed_token = True
                 for item in token_repairs:
                     item["action"] = "remove_semantically_redundant_dynamic_literal"
+            elif translated_value == "continua":
+                reviewed_composition = REVIEWED_CONTINUE_AS_LEADER_PATTERN.match(following_raw)
+                if reviewed_composition:
+                    repaired_token = "continua como"
+                    intentionally_removed_token = True
+                    consumed_following_chars = reviewed_composition.end()
+                    for item in token_repairs:
+                        item["action"] = "compose_continue_as_leader"
+                        item["removed_following_text"] = "continuando"
+        translated_leads = {
+            value.split()[0]
+            for value in translated_values
+            if value.split()
+        }
+        if (
+            base_name == "Select_CString"
+            and len(token_repairs) >= 2
+            and not unresolved_literals
+            and preceding_word in PORTUGUESE_DETERMINERS
+            and translated_leads
+            and translated_leads.issubset(PORTUGUESE_DETERMINERS)
+        ):
+            prefix_text = re.sub(
+                rf"\b{re.escape(preceding_word)}\s+$",
+                "",
+                prefix_text,
+                flags=re.IGNORECASE,
+            )
+            for item in token_repairs:
+                if item.get("action") == "translate_literal":
+                    item["action"] = "remove_redundant_preceding_determiner"
+                    item["removed_preceding_text"] = preceding_word
         for item in token_repairs:
             item["unresolved_literals"] = sorted(set(unresolved_literals))
             item["preceding_word"] = preceding_word
             item["following_word"] = following_word
             item["following_words"] = following_words
-            if removed_redundant_token:
+            if intentionally_removed_token:
                 item["removed_token"] = token
                 item["removed_token_start"] = token_match.start()
         repairs.extend(token_repairs)
-        parts.append(text[position : token_match.start()])
+        parts.append(prefix_text)
         parts.append(repaired_token)
-        position = token_match.end()
+        position = token_match.end() + consumed_following_chars
         if (
             removed_redundant_token
             and token_match.start() > 0
@@ -326,8 +671,23 @@ def repair_dynamic_literals(text: str) -> tuple[str, list[dict[str, Any]]]:
 
 def requires_sentence_composition(repair: dict[str, Any]) -> bool:
     if repair.get("action") in {
+        "compose_continue_as_leader",
+        "compose_contextual_athletic_sentence",
+        "compose_contextual_perfect_to_past",
+        "remove_redundant_contextual_auxiliary",
+        "remove_redundant_contextual_conditional_verb",
+        "remove_redundant_contextual_dative_pronoun",
+        "remove_redundant_contextual_object_pronoun",
+        "remove_redundant_contextual_present_verb",
+        "remove_redundant_contextual_workout_tail",
+        "remove_redundant_preceding_determiner",
+        "remove_redundant_reflexive_auxiliary",
         "remove_redundant_dynamic_literal",
         "remove_semantically_redundant_dynamic_literal",
+        "translate_contextual_auxiliary",
+        "translate_contextual_dative_pronoun",
+        "translate_contextual_gender_article",
+        "translate_contextual_terminal_object_pronoun",
     }:
         return False
     preceding_word = normalize_literal(str(repair.get("preceding_word") or ""))
@@ -346,18 +706,32 @@ def requires_sentence_composition(repair: dict[str, Any]) -> bool:
         return True
     if preceding_word in PRECEDING_INCOMPATIBLE_PREPOSITIONS:
         return True
+    translated_words = [
+        normalize_literal(value)
+        for value in re.findall(
+            r"[^\W\d_]+",
+            str(repair.get("after") or ""),
+            re.UNICODE,
+        )
+    ]
+    if (
+        preceding_word in PORTUGUESE_DETERMINERS
+        and translated_words
+        and translated_words[0] in PORTUGUESE_DETERMINERS
+    ):
+        return True
     if (
         preceding_word == "lhe"
         and normalize_literal(str(repair.get("after") or "")) == "fez"
         and following_words[0] in {"matar", "morrer"}
     ):
         return True
-    if following_words[0] in FOLLOWING_FINITE_VERBS:
+    if following_words[0] in FOLLOWING_COMPOSITION_WORDS:
         return True
     return bool(
         following_words[0] == "se"
         and len(following_words) > 1
-        and following_words[1] in FOLLOWING_FINITE_VERBS
+        and following_words[1] in FOLLOWING_COMPOSITION_WORDS
     )
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -10,6 +12,140 @@ from dashboard import backend
 
 
 class ProductionRuntimeStateTest(unittest.TestCase):
+    def test_startup_recovery_closes_orphaned_active_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            status_path = Path(temp_dir) / "production_status.json"
+            status_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "old-run",
+                        "status": "running",
+                        "started_at": "2026-09-01T20:24:20",
+                        "updated_at": "2026-09-01T20:28:22",
+                        "last_event_at": "2026-09-01T20:28:21",
+                        "finished_at": "",
+                        "current_stage": "preflight_sync",
+                        "current_label": "Sincronizar indice",
+                        "stages": [
+                            {"id": "snapshot", "status": "done", "progress_pct": 100},
+                            {"id": "preflight_sync", "status": "running", "progress_pct": 28},
+                            {"id": "production_report", "status": "pending"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(backend, "PRODUCTION_RUN_STATUS_FILE", status_path),
+                patch.object(backend, "_now_iso", return_value="2026-09-03T10:55:00"),
+            ):
+                recovered = backend._recover_orphaned_production_run_on_startup()
+
+            self.assertEqual(recovered["status"], "cancelled")
+            self.assertEqual(recovered["finished_at"], "2026-09-03T10:55:00")
+            self.assertEqual(recovered["last_worker_event_at"], "2026-09-01T20:28:21")
+            self.assertEqual(recovered["stages"][1]["status"], "cancelled")
+            self.assertEqual(recovered["stages"][1]["progress_pct"], 28)
+            self.assertEqual(recovered["stages"][2]["status"], "pending")
+            persisted = json.loads(status_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["status"], "cancelled")
+
+    def test_startup_recovery_preserves_terminal_run(self) -> None:
+        terminal = {"run_id": "done-run", "status": "completed", "finished_at": "2026-09-01T20:30:00"}
+        with (
+            patch.object(backend, "_read_production_run_status", return_value=terminal),
+            patch.object(backend, "_write_production_run_status") as writer,
+        ):
+            recovered = backend._recover_orphaned_production_run_on_startup()
+
+        self.assertIs(recovered, terminal)
+        writer.assert_not_called()
+
+    def test_production_status_write_retries_atomic_replace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            status_path = Path(temp_dir) / "production_status.json"
+            status_path.write_text('{"run_id":"previous"}\n', encoding="utf-8")
+            real_replace = os.replace
+            attempts = 0
+
+            def flaky_replace(source: str | Path, destination: str | Path) -> None:
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise PermissionError("temporary OneDrive lock")
+                real_replace(source, destination)
+
+            status = {"run_id": "current", "status": "running"}
+            with (
+                patch.object(backend, "PRODUCTION_RUN_STATUS_FILE", status_path),
+                patch.object(backend.os, "replace", side_effect=flaky_replace),
+                patch.object(backend.time, "sleep") as sleep_mock,
+            ):
+                written = backend._write_production_run_status(status)
+
+            self.assertTrue(written)
+            self.assertEqual(attempts, 2)
+            sleep_mock.assert_called_once()
+            persisted = json.loads(status_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["run_id"], "current")
+            self.assertEqual(persisted["status"], "running")
+            self.assertTrue(persisted["updated_at"])
+            self.assertEqual(list(Path(temp_dir).glob("*.tmp")), [])
+
+    def test_production_status_write_failure_is_nonfatal_and_preserves_previous_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            status_path = Path(temp_dir) / "production_status.json"
+            previous = '{"run_id":"previous","status":"completed"}\n'
+            status_path.write_text(previous, encoding="utf-8")
+            status = {"run_id": "current", "status": "running"}
+
+            with (
+                patch.object(backend, "PRODUCTION_RUN_STATUS_FILE", status_path),
+                patch.object(backend, "PRODUCTION_STATUS_WRITE_ATTEMPTS", 2),
+                patch.object(backend.os, "replace", side_effect=PermissionError("locked")),
+                patch.object(backend.time, "sleep"),
+            ):
+                written = backend._write_production_run_status(status)
+
+            self.assertFalse(written)
+            self.assertEqual(status_path.read_text(encoding="utf-8"), previous)
+            self.assertIn("locked", status["status_persistence_warning"])
+            self.assertTrue(status["status_persistence_error_at"])
+
+    def test_latest_segmented_shadow_run_id_tracks_dashboard_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "shadow.sqlite"
+            con = sqlite3.connect(db_path)
+            try:
+                con.execute(
+                    """
+                    CREATE TABLE ml_quality_shadow_runs (
+                      id INTEGER PRIMARY KEY,
+                      source_rule_version TEXT
+                    )
+                    """
+                )
+                con.executemany(
+                    """
+                    INSERT INTO ml_quality_shadow_runs (id, source_rule_version)
+                    VALUES (?, ?)
+                    """,
+                    [
+                        (10, "another_rule"),
+                        (11, backend.LOW_SCORE_SEGMENTED_SHADOW_RULE_VERSION),
+                        (12, backend.LOW_SCORE_SEGMENTED_SHADOW_RULE_VERSION),
+                    ],
+                )
+                con.commit()
+            finally:
+                con.close()
+
+            self.assertEqual(
+                backend._latest_low_score_segmented_shadow_run_id(db_path),
+                12,
+            )
+
     def test_snapshot_sources_exclude_temporary_and_derived_artifacts(self) -> None:
         sources = backend._production_snapshot_sources()
 
@@ -65,6 +201,133 @@ class ProductionRuntimeStateTest(unittest.TestCase):
         stages = [{"id": "snapshot", "status": "done", "progress_pct": 100}]
 
         self.assertEqual(backend._production_run_progress(run, stages), 100)
+
+    def test_materialization_is_published_as_completed_production_run(self) -> None:
+        payload = {
+            "version_id": 13,
+            "version_number": 13,
+            "changed_count": 11,
+            "item_count": 288100,
+            "segment_state_run_id": 817,
+            "manifest_path": "docs/package_versions/materialized_v13.json",
+        }
+        with (
+            patch.object(backend, "_now_iso", return_value="2026-09-04T18:34:35"),
+            patch.object(backend, "_production_run_id", return_value="20260904_183435"),
+        ):
+            run = backend._completed_materialization_status(payload)
+
+        self.assertEqual(run["run_id"], "20260904_183435_materialize_v13")
+        self.assertEqual(run["status"], "completed")
+        self.assertEqual(run["run_mode"], "publication")
+        self.assertEqual(run["next_action"], "await_new_applies")
+        self.assertEqual(run["new_segment_state_run_id"], 817)
+        self.assertEqual([stage["status"] for stage in run["stages"]], ["done"] * 4)
+        self.assertIn("fila Pacote limpa", run["message"])
+
+    def test_failed_publication_is_reconciled_by_newer_closed_segment_state(self) -> None:
+        app_state = {
+            "cache": {"generated_at": "2026-09-04T10:42:09"},
+            "release": {
+                "readiness": "ready_for_release",
+                "latest_segment_state_run_id": 808,
+                "pending_count": 0,
+                "needs_apply": 0,
+                "operational_closure": {"is_closed": True, "segment_state_run_id": 808},
+                "post_release": {"diff_review": {"summary": {"package_diff_count": 8}}},
+            },
+        }
+        failed_run = {
+            "run_id": "20260904_095506",
+            "status": "failed",
+            "mode": "publication_apply_confirmed",
+            "failed_stage": "segment_state_after",
+            "new_segment_state_run_id": 807,
+            "output_changed": True,
+            "output_written_count": 5,
+            "publication_closure_validation": {
+                "segment_state_run_id": 807,
+                "blocked_ids": [159168, 160112],
+            },
+            "failure": {
+                "stage": "segment_state_after",
+                "message": "Publication lifecycle closure mismatch: closed 3 / expected 5; blocked ids [159168, 160112].",
+            },
+        }
+
+        display_run, reconciliation = backend._production_run_for_current_state(app_state, failed_run)
+
+        self.assertEqual(display_run["status"], "completed")
+        self.assertTrue(display_run["reconciled"])
+        self.assertEqual(display_run["next_action"], "materialize_version")
+        self.assertEqual(display_run["new_segment_state_run_id"], 808)
+        self.assertEqual([stage["status"] for stage in display_run["stages"]], ["done"] * 4)
+        self.assertEqual(reconciliation["blocked_ids"], [159168, 160112])
+
+    def test_failed_publication_remains_failed_until_state_is_newer_and_closed(self) -> None:
+        failed_run = {
+            "run_id": "failed-run",
+            "status": "failed",
+            "failed_stage": "segment_state_after",
+            "publication_closure_validation": {
+                "segment_state_run_id": 807,
+                "blocked_ids": [159168],
+            },
+            "failure": {"message": "Publication lifecycle closure mismatch"},
+        }
+        app_state = {
+            "release": {
+                "latest_segment_state_run_id": 808,
+                "pending_count": 1,
+                "needs_apply": 0,
+                "operational_closure": {"is_closed": False},
+            }
+        }
+
+        display_run, reconciliation = backend._production_run_for_current_state(app_state, failed_run)
+
+        self.assertIs(display_run, failed_run)
+        self.assertIsNone(reconciliation)
+
+    def test_app_state_preserves_failed_history_while_showing_reconciliation(self) -> None:
+        cached_app_state = {
+            "cache": {},
+            "release": {
+                "readiness": "ready_for_release",
+                "latest_segment_state_run_id": 808,
+                "pending_count": 0,
+                "needs_apply": 0,
+                "operational_closure": {"is_closed": True},
+                "post_release": {"diff_review": {"summary": {"package_diff_count": 3}}},
+            },
+            "production": {},
+        }
+        cache = {
+            "generated_at": "2026-09-04T10:42:09",
+            "source_db_mtime": 10.0,
+            "app_state": cached_app_state,
+        }
+        failed_run = {
+            "run_id": "failed-run",
+            "status": "failed",
+            "failed_stage": "segment_state_after",
+            "publication_closure_validation": {
+                "segment_state_run_id": 807,
+                "blocked_ids": [159168],
+            },
+            "failure": {"message": "Publication lifecycle closure mismatch"},
+        }
+        with (
+            patch.object(backend, "_get_dashboard_cache", return_value=cache),
+            patch.object(backend, "_read_production_run_status", return_value=failed_run),
+            patch.object(backend, "_db_mtime", return_value=10.0),
+        ):
+            payload = backend._app_state_payload(Path("fake.sqlite"))
+
+        self.assertEqual(payload["production"]["last_run"]["status"], "completed")
+        self.assertEqual(payload["production"]["last_failed_run"]["run_id"], "failed-run")
+        self.assertEqual(payload["production"]["run_reconciliation"]["status"], "resolved")
+        self.assertEqual(payload["production"]["progress_pct"], 100)
 
 
 class ProductionStatusSnapshotTest(unittest.TestCase):

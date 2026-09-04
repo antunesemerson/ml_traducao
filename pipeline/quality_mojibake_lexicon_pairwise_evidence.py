@@ -60,6 +60,50 @@ def apply_recorded_replacements(
 ) -> str:
     if not replacements:
         raise RuntimeError("Mojibake evidence has no recorded lexical replacement.")
+
+    positioned = [
+        item
+        for item in replacements
+        if type(item.get("start")) is int and type(item.get("end")) is int
+    ]
+    if positioned:
+        if len(positioned) != len(replacements):
+            raise RuntimeError(
+                "Mojibake evidence mixes positioned and legacy lexical replacements."
+            )
+        spans: list[tuple[int, int, str, str]] = []
+        for item in positioned:
+            start = int(item["start"])
+            end = int(item["end"])
+            original = str(item.get("original") or "")
+            replacement = str(item.get("replacement") or "")
+            if (
+                not original
+                or not replacement
+                or original == replacement
+                or start < 0
+                or end <= start
+                or end > len(baseline)
+                or baseline[start:end] != original
+            ):
+                raise RuntimeError(
+                    "Exact score text no longer matches the positioned replacements "
+                    "recorded by the shadow."
+                )
+            spans.append((start, end, original, replacement))
+
+        ordered = sorted(spans, key=lambda item: (item[0], item[1]))
+        if any(
+            current[0] < previous[1]
+            for previous, current in zip(ordered, ordered[1:])
+        ):
+            raise RuntimeError("Mojibake evidence contains overlapping replacements.")
+
+        candidate = baseline
+        for start, end, _original, replacement in reversed(ordered):
+            candidate = candidate[:start] + replacement + candidate[end:]
+        return candidate
+
     mapping: dict[str, str] = {}
     expected_counts: Counter[str] = Counter()
     for item in replacements:

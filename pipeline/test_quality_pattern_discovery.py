@@ -157,6 +157,20 @@ class QualityPatternDiscoveryTests(unittest.TestCase):
         self.assertEqual(result["output_write_count"], 0)
         self.assertEqual(result["score_write_count"], 0)
 
+    def test_discovery_sample_preserves_full_candidate_text(self) -> None:
+        candidate_text = "Texto longo " + ("completo " * 320)
+        self._add_item(
+            1,
+            score=0.20,
+            issue_type="embedded_gender_token_fragment",
+            candidate_text=candidate_text,
+        )
+        self.conn.commit()
+
+        result = discover_patterns(self.conn, score_run_id=10, provider_coverage={})
+
+        self.assertEqual(result["families"][0]["samples"][0]["candidate_text"], candidate_text)
+
     def test_prior_observation_marks_uncovered_family_as_recurring(self) -> None:
         for segment_id in (1, 2, 3):
             self._add_item(segment_id, score=0.4, issue_type="english_residue")
@@ -239,6 +253,114 @@ class QualityPatternDiscoveryTests(unittest.TestCase):
         self.assertEqual(family["closed_segment_count"], 3)
         self.assertEqual(result["closed_family_count"], 1)
         self.assertEqual(result["actionable_family_count"], 0)
+
+    def test_negative_independent_audit_reopens_a_discovery_blind_spot(self) -> None:
+        self._add_item(
+            1,
+            score=0.95,
+            candidate_text="Texto aparentemente seguro com erro semântico",
+        )
+        self.conn.executescript(
+            """
+            CREATE TABLE output_segments (
+              segment_id INTEGER PRIMARY KEY,
+              portuguese_text TEXT
+            );
+            CREATE TABLE local_learning_candidates (
+              id INTEGER PRIMARY KEY,
+              segment_id INTEGER,
+              origin TEXT,
+              human_label TEXT,
+              local_status TEXT,
+              current_output_text TEXT,
+              reason TEXT,
+              reviewed_at TEXT
+            );
+            INSERT INTO output_segments VALUES (
+              1, 'Texto aparentemente seguro com erro semântico'
+            );
+            INSERT INTO local_learning_candidates VALUES (
+              1, 1, 'manual_low_score_calibration', 'semantic_error', 'reviewed',
+              'Texto aparentemente seguro com erro semântico',
+              'A auditoria confirmou que o sentido está incorreto.',
+              '2026-08-31T00:00:00Z'
+            );
+            """
+        )
+        self.conn.commit()
+
+        result = discover_patterns(self.conn, score_run_id=10, provider_coverage={})
+
+        blind_spot = next(
+            family
+            for family in result["families"]
+            if family["evidence_kind"] == "human_audit_blind_spot"
+        )
+        self.assertEqual(result["audit_blind_spot_count"], 1)
+        self.assertEqual(blind_spot["issue_type"], "semantic_error")
+        self.assertEqual(blind_spot["status"], "new_candidate")
+        self.assertGreaterEqual(blind_spot["confidence"], 0.92)
+
+    def test_current_angular_quote_evidence_overrides_stale_residual_spanish_audit(self) -> None:
+        candidate_text = "«Texto em português com aspas angulares»"
+        self._add_item(
+            1,
+            score=0.10,
+            issue_type="spanish_angular_quotes",
+            severity="medium",
+            candidate_text=candidate_text,
+        )
+        self.conn.executescript(
+            """
+            CREATE TABLE output_segments (
+              segment_id INTEGER PRIMARY KEY,
+              portuguese_text TEXT
+            );
+            CREATE TABLE local_learning_candidates (
+              id INTEGER PRIMARY KEY,
+              segment_id INTEGER,
+              origin TEXT,
+              human_label TEXT,
+              local_status TEXT,
+              current_output_text TEXT,
+              reason TEXT,
+              reviewed_at TEXT
+            );
+            INSERT INTO output_segments VALUES (
+              1, '«Texto em português com aspas angulares»'
+            );
+            INSERT INTO local_learning_candidates VALUES (
+              1, 1, 'manual_low_score_calibration', 'residual_spanish', 'reviewed',
+              '«Texto em português com aspas angulares»', NULL,
+              '2026-09-01T00:00:00Z'
+            );
+            """
+        )
+        self.conn.commit()
+
+        result = discover_patterns(self.conn, score_run_id=10, provider_coverage={})
+
+        matching = [
+            family
+            for family in result["families"]
+            if family["samples"][0]["segment_id"] == 1
+        ]
+        self.assertEqual(len(matching), 2)
+        self.assertEqual(
+            {family["evidence_kind"] for family in matching},
+            {"explicit_issue", "human_audit_blind_spot"},
+        )
+        self.assertEqual(
+            {family["issue_type"] for family in matching},
+            {"spanish_angular_quotes"},
+        )
+        blind_spot = next(
+            family
+            for family in matching
+            if family["evidence_kind"] == "human_audit_blind_spot"
+        )
+        self.assertEqual(blind_spot["status"], "new_candidate")
+        self.assertEqual(result["audit_blind_spot_count"], 1)
 
 
 if __name__ == "__main__":

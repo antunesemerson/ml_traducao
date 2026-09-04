@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "provider_id": "glossary_display_case",
+  "label": "Capitalização visível de Glossary",
+  "enabled": true,
+  "priority": 275,
+  "evidence_type": "glossary_display_case_loss_review",
+  "discovery": {
+    "issue_types": []
+  },
+  "shadow_script": "pipeline/quality_glossary_display_case_shadow.py",
+  "shadow_args": [],
+  "evidence_script": "pipeline/quality_glossary_display_case_evidence.py",
+  "evidence_args": []
+}

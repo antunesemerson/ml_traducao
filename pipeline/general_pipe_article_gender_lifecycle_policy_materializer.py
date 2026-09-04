@@ -105,6 +105,12 @@ def token_counts(value: str | None) -> dict[str, int]:
     return dict(sorted(Counter(protected_tokens(value or "")).items()))
 
 
+def canonical_output_text(value: str | None) -> str:
+    """Compare DB/file-localized text without treating YAML quote escaping as content."""
+
+    return str(value or "").replace("\r\n", "\n").replace('\\"', '"')
+
+
 def evaluate_segment(conn: sqlite3.Connection, segment_id: int, state_run_id: int, ledger_run_id: int) -> dict[str, Any]:
     state = one(
         conn,
@@ -191,7 +197,10 @@ def evaluate_segment(conn: sqlite3.Connection, segment_id: int, state_run_id: in
         "confirmation_source_allowed": soc.get("confirmation_source") in ALLOWED_CONFIRMATION_SOURCES,
         "confirmation_label_allowed": confirmation_label_allowed(soc.get("confirmation_label")),
         "confirmation_locked": int(soc.get("locked") or 0) == 1,
-        "output_equals_confirmation": bool(output_text and output_text == confirmed_text),
+        "output_equals_confirmation": bool(
+            output_text
+            and canonical_output_text(output_text) == canonical_output_text(confirmed_text)
+        ),
         "token_integrity": output_tokens == confirmation_tokens,
         "latest_open_issue_count_zero": len(open_issues) == 0,
         "no_existing_active_policy_item": len(existing_items) == 0,

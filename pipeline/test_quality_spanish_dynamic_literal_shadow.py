@@ -21,6 +21,7 @@ from quality_spanish_dynamic_literal_pairwise_evidence import (  # noqa: E402
 )
 from quality_spanish_dynamic_literal_shadow import (  # noqa: E402
     PROMOTION_SAFE_LITERAL_SOURCES,
+    VISIBLE_CONTEXT_RESIDUAL_PATTERN,
     protected_tokens_after_intentional_elision,
     repair_dynamic_literals,
     requires_sentence_composition,
@@ -29,6 +30,24 @@ from quality_spanish_dynamic_literal_shadow import (  # noqa: E402
 
 
 class SpanishDynamicLiteralShadowTests(unittest.TestCase):
+    def test_visible_unmapped_spanish_context_stays_blocked(self) -> None:
+        candidates = [
+            (
+                "[Select_CString(actor.IsLocalPlayer,'abateu','abateu')] e "
+                "[Select_CString(actor.IsLocalPlayer,'cercenaste','cercenó')] sua lenda"
+            ),
+            (
+                "não deixa que o "
+                "[Select_CString(actor.IsLocalPlayer,'olvides','olvide')]"
+            ),
+        ]
+
+        for candidate in candidates:
+            with self.subTest(candidate=candidate):
+                self.assertIsNotNone(
+                    VISIBLE_CONTEXT_RESIDUAL_PATTERN.search(candidate)
+                )
+
     def test_translates_local_player_copula_pair(self) -> None:
         original = "[Select_CString( actor.IsLocalPlayer, 'eres', 'es' )] responsável"
 
@@ -176,6 +195,561 @@ class SpanishDynamicLiteralShadowTests(unittest.TestCase):
         self.assertIn("hiciste", PROMOTION_SAFE_LITERAL_SOURCES)
         self.assertIn("vasallo", PROMOTION_SAFE_LITERAL_SOURCES)
 
+    def test_context_reviewed_low_score_mappings_enter_automatic_scope(self) -> None:
+        reviewed_sources = {
+            "abatiste",
+            "abatió",
+            "adoras",
+            "atlética y musculosa",
+            "atlético y musculoso",
+            "ayudarás",
+            "ayudará",
+            "comenzaste",
+            "comenzó",
+            "comprenderás",
+            "comprenderá",
+            "conservaste",
+            "conservó",
+            "crees",
+            "cree",
+            "demostraste",
+            "demostró",
+            "el",
+            "emergiste",
+            "emergió",
+            "estuviste",
+            "estuvo",
+            "ha",
+            "hace",
+            "haces",
+            "han",
+            "has",
+            "insultaste",
+            "la",
+            "las primeras",
+            "le",
+            "los primeros",
+            "pasas",
+            "pasa",
+            "preparaste",
+            "preparó",
+            "proclamó",
+            "recibiste",
+            "recibió",
+            "sabes",
+            "se",
+            "se ha",
+            "sería",
+            "serías",
+            "sigue",
+            "sigues",
+            "te has",
+            "te",
+            "ves",
+            "ve",
+            "vistes",
+            "viste",
+        }
+
+        self.assertTrue(reviewed_sources.issubset(PROMOTION_SAFE_LITERAL_SOURCES))
+
+    def test_context_reviewed_person_neutral_verbs_translate_without_composition(
+        self,
+    ) -> None:
+        cases = [
+            (
+                "[Select_CString(actor.IsLocalPlayer,'abatiste','abatió')] e venceu",
+                "[Select_CString(actor.IsLocalPlayer,'abateu','abateu')] e venceu",
+            ),
+            (
+                "[Select_CString(actor.IsLocalPlayer,'ayudarás','ayudará')] a voltar",
+                "[Select_CString(actor.IsLocalPlayer,'ajudará','ajudará')] a voltar",
+            ),
+            (
+                "[Select_CString(actor.IsLocalPlayer,'comprenderás','comprenderá')] de outro modo",
+                "[Select_CString(actor.IsLocalPlayer,'entenderá','entenderá')] de outro modo",
+            ),
+            (
+                "[Select_CString(actor.IsLocalPlayer,'crees','cree')] que funciona",
+                "[Select_CString(actor.IsLocalPlayer,'acredita','acredita')] que funciona",
+            ),
+            (
+                "[Select_CString(actor.IsLocalPlayer,'emergiste','emergió')] para ajudar",
+                "[Select_CString(actor.IsLocalPlayer,'emergiu','emergiu')] para ajudar",
+            ),
+            (
+                "[Select_CString(actor.IsLocalPlayer,'estuviste','estuvo')] lá",
+                "[Select_CString(actor.IsLocalPlayer,'esteve','esteve')] lá",
+            ),
+            (
+                "[Select_CString(actor.IsLocalPlayer,'pasas','pasa')] tanto tempo",
+                "[Select_CString(actor.IsLocalPlayer,'passa','passa')] tanto tempo",
+            ),
+            (
+                "[Select_CString(actor.IsLocalPlayer,'preparaste','preparó')] um bolo",
+                "[Select_CString(actor.IsLocalPlayer,'preparou','preparou')] um bolo",
+            ),
+            (
+                "[Select_CString(actor.IsLocalPlayer,'sabes','sabe')], também riria",
+                "[Select_CString(actor.IsLocalPlayer,'sabe','sabe')], também riria",
+            ),
+            (
+                "[Select_CString(actor.IsLocalPlayer,'ves','ve')] potencial",
+                "[Select_CString(actor.IsLocalPlayer,'vê','vê')] potencial",
+            ),
+            (
+                "[Select_CString(actor.IsLocalPlayer,'vistes','viste')] umas calças",
+                "[Select_CString(actor.IsLocalPlayer,'viu','viu')] umas calças",
+            ),
+        ]
+
+        for original, expected in cases:
+            with self.subTest(original=original):
+                candidate, repairs = repair_dynamic_literals(original)
+
+                self.assertEqual(candidate, expected)
+                self.assertTrue(repairs)
+                self.assertFalse(
+                    any(requires_sentence_composition(item) for item in repairs)
+                )
+                self.assertEqual(
+                    {item["action"] for item in repairs},
+                    {"translate_literal"},
+                )
+
+    def test_translates_reviewed_auxiliary_before_participle(self) -> None:
+        for participle in ("correspondido", "jurado", "sido", "temido"):
+            with self.subTest(participle=participle):
+                original = (
+                    "[actor.GetName] "
+                    "[Select_CString(actor.IsLocalPlayer,'has','ha')] "
+                    f"{participle}"
+                )
+
+                candidate, repairs = repair_dynamic_literals(original)
+
+                self.assertEqual(
+                    candidate,
+                    "[actor.GetName] "
+                    "[Select_CString(actor.IsLocalPlayer,'tem','tem')] "
+                    f"{participle}",
+                )
+                self.assertFalse(
+                    any(requires_sentence_composition(item) for item in repairs)
+                )
+                self.assertEqual(
+                    {item["action"] for item in repairs},
+                    {"translate_contextual_auxiliary"},
+                )
+
+    def test_removes_reviewed_auxiliary_before_existing_portuguese_verb(self) -> None:
+        original = (
+            "[actor.GetName] "
+            "[Select_CString(actor.IsLocalPlayer,'has','ha')] foi aprisionado"
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(candidate, "[actor.GetName] foi aprisionado")
+        self.assertTrue(
+            protected_tokens_after_intentional_elision(original, candidate, repairs)
+        )
+        self.assertFalse(any(requires_sentence_composition(item) for item in repairs))
+        self.assertEqual(
+            {item["action"] for item in repairs},
+            {"remove_redundant_contextual_auxiliary"},
+        )
+
+    def test_removes_reviewed_reflexive_auxiliary_before_ganhou(self) -> None:
+        original = (
+            "como [Select_CString(actor.IsLocalPlayer,'te has','se ha')] "
+            "ganhou este apelido"
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(candidate, "como ganhou este apelido")
+        self.assertTrue(
+            protected_tokens_after_intentional_elision(original, candidate, repairs)
+        )
+        self.assertFalse(any(requires_sentence_composition(item) for item in repairs))
+        self.assertEqual(
+            {item["action"] for item in repairs},
+            {"remove_redundant_reflexive_auxiliary"},
+        )
+
+    def test_does_not_translate_auxiliary_outside_reviewed_context(self) -> None:
+        original = "[Select_CString(actor.IsLocalPlayer,'has','ha')] recursos"
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(candidate, original)
+        self.assertEqual(repairs, [])
+
+    def test_translates_gender_article_before_movement_leader(self) -> None:
+        original = (
+            "[Select_CString(actor.IsFemale,'la','el')] [movement_leader|lE]"
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(
+            candidate,
+            "[Select_CString(actor.IsFemale,'a','o')] [movement_leader|lE]",
+        )
+        self.assertFalse(any(requires_sentence_composition(item) for item in repairs))
+        self.assertEqual(
+            {item["action"] for item in repairs},
+            {"translate_contextual_gender_article"},
+        )
+
+    def test_does_not_translate_gender_article_outside_reviewed_concept(self) -> None:
+        original = "[Select_CString(actor.IsFemale,'la','el')] pessoa"
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(candidate, original)
+        self.assertEqual(repairs, [])
+
+    def test_composes_reviewed_present_and_perfect_verbs(self) -> None:
+        original = (
+            "Quando [Select_CString(actor.IsLocalPlayer,'haces','hace')] "
+            "faz as coisas direito, ninguém sabe se "
+            "[Select_CString(actor.IsLocalPlayer,'has','han')] feito algo."
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(
+            candidate,
+            "Quando faz as coisas direito, ninguém sabe se fez algo.",
+        )
+        self.assertTrue(
+            protected_tokens_after_intentional_elision(original, candidate, repairs)
+        )
+        self.assertFalse(any(requires_sentence_composition(item) for item in repairs))
+        self.assertEqual(
+            {item["action"] for item in repairs},
+            {
+                "compose_contextual_perfect_to_past",
+                "remove_redundant_contextual_present_verb",
+            },
+        )
+
+    def test_does_not_translate_reviewed_verbs_without_exact_followers(self) -> None:
+        cases = [
+            "[Select_CString(actor.IsLocalPlayer,'haces','hace')] corretamente",
+            "[Select_CString(actor.IsLocalPlayer,'has','han')] recursos",
+        ]
+
+        for original in cases:
+            with self.subTest(original=original):
+                candidate, repairs = repair_dynamic_literals(original)
+
+                self.assertEqual(candidate, original)
+                self.assertEqual(repairs, [])
+
+    def test_removes_conditional_verb_before_existing_fosse(self) -> None:
+        original = (
+            "talvez [Select_CString(actor.IsLocalPlayer,'serías','sería')] "
+            "fosse mais feliz"
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(candidate, "talvez fosse mais feliz")
+        self.assertTrue(
+            protected_tokens_after_intentional_elision(original, candidate, repairs)
+        )
+        self.assertFalse(any(requires_sentence_composition(item) for item in repairs))
+        self.assertEqual(
+            {item["action"] for item in repairs},
+            {"remove_redundant_contextual_conditional_verb"},
+        )
+
+    def test_does_not_translate_conditional_verb_without_fosse(self) -> None:
+        original = (
+            "[Select_CString(actor.IsLocalPlayer,'serías','sería')] mais feliz"
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(candidate, original)
+        self.assertEqual(repairs, [])
+
+    def test_translates_athletic_phrase_and_removes_duplicate_workout_tail(
+        self,
+    ) -> None:
+        original = (
+            "[actor.GetName] "
+            "[Select_CString(actor.IsFemale,'atlética y musculosa',"
+            "'atlético y musculoso')], e é mais comumente encontrado malhando."
+            "[Select_CString(actor.IsLocalPlayer,'te',actor.GetHerHim)] "
+            "se encontra fazendo exercício."
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(
+            candidate,
+            "[actor.GetName] "
+            "[Select_CString(actor.IsFemale,"
+            "'atlética e musculosa, e é mais comumente encontrada malhando',"
+            "'atlético e musculoso, e é mais comumente encontrado malhando')].",
+        )
+        self.assertTrue(
+            protected_tokens_after_intentional_elision(original, candidate, repairs)
+        )
+        self.assertFalse(any(requires_sentence_composition(item) for item in repairs))
+        self.assertEqual(
+            {item["action"] for item in repairs},
+            {
+                "compose_contextual_athletic_sentence",
+                "remove_redundant_contextual_workout_tail",
+            },
+        )
+
+    def test_does_not_remove_workout_tail_without_translated_preceding_clause(
+        self,
+    ) -> None:
+        original = (
+            "[actor.GetName]."
+            "[Select_CString(actor.IsLocalPlayer,'te',actor.GetHerHim)] "
+            "se encontra fazendo exercício."
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(candidate, original)
+        self.assertEqual(repairs, [])
+
+    def test_translates_reviewed_dative_pronoun_contexts(self) -> None:
+        for following in ("adornasse a cabeça", "juraram lealdade"):
+            with self.subTest(following=following):
+                original = (
+                    "[Select_CString(actor.IsLocalPlayer,'te','le')] "
+                    f"{following}"
+                )
+
+                candidate, repairs = repair_dynamic_literals(original)
+
+                self.assertEqual(
+                    candidate,
+                    "[Select_CString(actor.IsLocalPlayer,'lhe','lhe')] "
+                    f"{following}",
+                )
+                self.assertFalse(
+                    any(requires_sentence_composition(item) for item in repairs)
+                )
+                self.assertEqual(
+                    {item["action"] for item in repairs},
+                    {"translate_contextual_dative_pronoun"},
+                )
+
+    def test_removes_dative_when_explicit_recipient_follows(self) -> None:
+        cases = [
+            (
+                "[giver.GetName] "
+                "[Select_CString(recipient.IsLocalPlayer,'te','le')] "
+                "[Select_CString(giver.IsLocalPlayer,'diste','dio')] um presente "
+                "para [Select_CString(recipient.IsLocalPlayer,'ti',recipient.GetName)]",
+                "[giver.GetName] "
+                "[Select_CString(giver.IsLocalPlayer,'deu','deu')] um presente "
+                "para [Select_CString(recipient.IsLocalPlayer,'você',recipient.GetName)]",
+            ),
+            (
+                "O triunfo [Select_CString(actor.IsLocalPlayer,'te','le')] "
+                "chega naturalmente a "
+                "[Select_CString(actor.IsLocalPlayer,'ti',actor.GetName)] "
+                "e o mundo concorda",
+                "O triunfo chega naturalmente a "
+                "[Select_CString(actor.IsLocalPlayer,'você',actor.GetName)] "
+                "e o mundo concorda",
+            ),
+        ]
+
+        for original, expected in cases:
+            with self.subTest(original=original):
+                candidate, repairs = repair_dynamic_literals(original)
+
+                self.assertEqual(candidate, expected)
+                self.assertTrue(
+                    protected_tokens_after_intentional_elision(
+                        original,
+                        candidate,
+                        repairs,
+                    )
+                )
+                self.assertFalse(
+                    any(requires_sentence_composition(item) for item in repairs)
+                )
+                self.assertIn(
+                    "remove_redundant_contextual_dative_pronoun",
+                    {item["action"] for item in repairs},
+                )
+
+    def test_does_not_translate_dative_pronoun_outside_reviewed_context(self) -> None:
+        original = "[Select_CString(actor.IsLocalPlayer,'te','le')] observa"
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(candidate, original)
+        self.assertEqual(repairs, [])
+
+    def test_composes_reviewed_special_meal_terminal_recipient(self) -> None:
+        original = (
+            "[target.GetShortUIName|U] "
+            "[Select_CString(character.IsLocalPlayer,'te','le')] "
+            "[Select_CString(target.IsLocalPlayer,'diste','dio')] "
+            "deu uma refeição especial a "
+            "[Select_CString(character.IsLocalPlayer,'ti',character.GetShortUIName)]"
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(
+            candidate,
+            "[target.GetShortUIName|U] deu uma refeição especial a "
+            "[Select_CString(character.IsLocalPlayer,'você',character.GetShortUIName)]",
+        )
+        self.assertTrue(
+            protected_tokens_after_intentional_elision(original, candidate, repairs)
+        )
+        self.assertFalse(any(requires_sentence_composition(item) for item in repairs))
+        self.assertIn(
+            "translate_contextual_terminal_object_pronoun",
+            {item["action"] for item in repairs},
+        )
+
+    def test_keeps_unreviewed_terminal_recipient_under_composition_review(self) -> None:
+        original = (
+            "[target.GetShortUIName|U] enviou uma carta a "
+            "[Select_CString(character.IsLocalPlayer,'ti',character.GetShortUIName)]"
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertIn("[Select_CString", candidate)
+        self.assertTrue(any(requires_sentence_composition(item) for item in repairs))
+        self.assertNotIn(
+            "translate_contextual_terminal_object_pronoun",
+            {item["action"] for item in repairs},
+        )
+
+    def test_removes_reviewed_redundant_object_pronouns(self) -> None:
+        cases = [
+            (
+                "quando "
+                "[Select_CString(actor.IsLocalPlayer,'te',actor.GetHerHim)] "
+                "o chamam assim",
+                "quando o chamam assim",
+            ),
+            (
+                "O poder [Select_CString(actor.IsLocalPlayer,'te','')] "
+                "favorece a "
+                "[Select_CString(actor.IsLocalPlayer,'ti',actor.GetName)] demais",
+                "O poder favorece a "
+                "[Select_CString(actor.IsLocalPlayer,'você',actor.GetName)] demais",
+            ),
+            (
+                "Deus [Select_CString(actor.IsLocalPlayer,' te','')] "
+                "escolheu "
+                "[Select_CString(actor.IsLocalPlayer,'ti',actor.GetName)] para agir",
+                "Deus escolheu "
+                "[Select_CString(actor.IsLocalPlayer,'você',actor.GetName)] para agir",
+            ),
+            (
+                "limpar[Select_CString(actor.IsLocalPlayer,'te','se')] "
+                "o cabelo",
+                "limpar o cabelo",
+            ),
+        ]
+
+        for original, expected in cases:
+            with self.subTest(original=original):
+                candidate, repairs = repair_dynamic_literals(original)
+
+                self.assertEqual(candidate, expected)
+                self.assertTrue(
+                    protected_tokens_after_intentional_elision(
+                        original,
+                        candidate,
+                        repairs,
+                    )
+                )
+                self.assertFalse(
+                    any(requires_sentence_composition(item) for item in repairs)
+                )
+                self.assertIn(
+                    "remove_redundant_contextual_object_pronoun",
+                    {item["action"] for item in repairs},
+                )
+
+    def test_preserves_valid_portuguese_te_outside_reviewed_elisions(self) -> None:
+        original = (
+            "o que [Select_CString(actor.IsLocalPlayer,'te',actor.GetHerHim)] "
+            "torna uma novidade"
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(candidate, original)
+        self.assertEqual(repairs, [])
+
+    def test_blocks_translated_verb_before_gerund_composition(self) -> None:
+        original = (
+            "[actor.GetName] ganhou o debate e "
+            "[Select_CString(actor.IsLocalPlayer,'sigues','sigue')] continuando líder"
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertIn("continua", candidate)
+        self.assertTrue(any(requires_sentence_composition(item) for item in repairs))
+
+    def test_composes_reviewed_continue_as_leader_sentence(self) -> None:
+        original = (
+            "[actor.GetName] ganhou o debate e "
+            "[Select_CString(actor.IsLocalPlayer,'sigues','sigue')] continuando "
+            "[actor.Custom('ES_ElLa')] líder do movimento"
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(
+            candidate,
+            "[actor.GetName] ganhou o debate e continua como "
+            "[actor.Custom('ES_ElLa')] líder do movimento",
+        )
+        self.assertTrue(
+            protected_tokens_after_intentional_elision(original, candidate, repairs)
+        )
+        self.assertFalse(any(requires_sentence_composition(item) for item in repairs))
+        self.assertEqual(
+            {item["action"] for item in repairs},
+            {"compose_continue_as_leader"},
+        )
+
+    def test_removes_redundant_preceding_portuguese_determiner(self) -> None:
+        original = (
+            "somos os "
+            "[Select_CString(And(actor.IsFemale,target.IsFemale),"
+            "'las primeras','los primeros')] a receber"
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(
+            candidate,
+            "somos [Select_CString(And(actor.IsFemale,target.IsFemale),"
+            "'as primeiras','os primeiros')] a receber",
+        )
+        self.assertFalse(any(requires_sentence_composition(item) for item in repairs))
+        self.assertEqual(
+            {item["action"] for item in repairs},
+            {"remove_redundant_preceding_determiner"},
+        )
+
     def test_allows_past_tense_pair_with_nominal_complement(self) -> None:
         original = (
             "[actor.GetShortUIName|U] "
@@ -197,6 +771,43 @@ class SpanishDynamicLiteralShadowTests(unittest.TestCase):
 
         self.assertEqual(candidate, "[actor.GetShortUIName|U] adquiriu experiência")
         self.assertFalse(any(requires_sentence_composition(item) for item in repairs))
+
+    def test_removes_reviewed_adore_synonym_before_love(self) -> None:
+        original = (
+            "[actor.GetShortUIName|U] "
+            "[Select_CString(actor.IsLocalPlayer,'adoras','adora')] "
+            "ama a vida cortesã"
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertEqual(candidate, "[actor.GetShortUIName|U] ama a vida cortesã")
+        self.assertTrue(
+            protected_tokens_after_intentional_elision(original, candidate, repairs)
+        )
+        self.assertFalse(any(requires_sentence_composition(item) for item in repairs))
+        self.assertEqual(
+            {item["action"] for item in repairs},
+            {"remove_semantically_redundant_dynamic_literal"},
+        )
+
+    def test_keeps_reviewed_adore_mapping_before_unrelated_text(self) -> None:
+        original = (
+            "[actor.GetShortUIName|U] "
+            "[Select_CString(actor.IsLocalPlayer,'adoras','adora')] "
+            "a vida cortesã"
+        )
+
+        candidate, repairs = repair_dynamic_literals(original)
+
+        self.assertIn("[Select_CString", candidate)
+        self.assertIn("'adora','adora'", candidate.replace(" ", ""))
+        self.assertFalse(
+            any(
+                item["action"] == "remove_semantically_redundant_dynamic_literal"
+                for item in repairs
+            )
+        )
 
     def test_allows_safe_object_pronoun_after_preposition(self) -> None:
         original = "trapaceou contra [LocalPlayerString('ti',actor.GetName)]"

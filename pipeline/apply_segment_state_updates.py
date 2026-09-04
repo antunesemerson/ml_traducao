@@ -13,10 +13,22 @@ from typing import Any
 import db
 from apply_safe_output_updates import escape_localization_value, replace_quoted_text
 from quality_spanish_dynamic_literal_authorization import (
-    PAIRWISE_ELISION_CONFIRMATION_LABEL,
-    PAIRWISE_ELISION_CONFIRMATION_SOURCE,
-    PAIRWISE_ELISION_EVIDENCE_TYPE,
-    evidence_authorizes_intentional_elision,
+    PAIRWISE_ELISION_CONFIRMATION_LABEL as SPANISH_ELISION_CONFIRMATION_LABEL,
+    PAIRWISE_ELISION_CONFIRMATION_SOURCE as PAIRWISE_ELISION_CONFIRMATION_SOURCE,
+    PAIRWISE_ELISION_EVIDENCE_TYPE as SPANISH_ELISION_EVIDENCE_TYPE,
+    evidence_authorizes_intentional_elision as evidence_authorizes_spanish_elision,
+)
+from quality_redundant_select_cstring_authorization import (
+    PAIRWISE_ELISION_CONFIRMATION_LABEL as REDUNDANT_SELECT_CONFIRMATION_LABEL,
+    PAIRWISE_ELISION_CONFIRMATION_SOURCE as REDUNDANT_SELECT_CONFIRMATION_SOURCE,
+    PAIRWISE_ELISION_EVIDENCE_TYPE as REDUNDANT_SELECT_EVIDENCE_TYPE,
+    evidence_authorizes_redundant_select_elision,
+)
+from quality_contract_es_helper_authorization import (
+    PAIRWISE_ELISION_CONFIRMATION_LABEL as CONTRACT_ES_HELPER_CONFIRMATION_LABEL,
+    PAIRWISE_ELISION_CONFIRMATION_SOURCE as CONTRACT_ES_HELPER_CONFIRMATION_SOURCE,
+    PAIRWISE_ELISION_EVIDENCE_TYPE as CONTRACT_ES_HELPER_EVIDENCE_TYPE,
+    evidence_authorizes_contract_es_helper_token_delta,
 )
 
 
@@ -31,6 +43,11 @@ READY_STATUSES = {
     "ready_token_policy_decision",
     "ready_pairwise_intentional_elision",
 }
+PAIRWISE_ELISION_EVIDENCE_TYPES = (
+    SPANISH_ELISION_EVIDENCE_TYPE,
+    REDUNDANT_SELECT_EVIDENCE_TYPE,
+    CONTRACT_ES_HELPER_EVIDENCE_TYPE,
+)
 
 
 def short(value: str | None, limit: int = 160) -> str:
@@ -181,7 +198,10 @@ def fetch_candidates(
             tpd.confirmed_text_hash AS token_policy_confirmed_text_hash,
             tpd.output_text_hash AS token_policy_output_text_hash,
         """
-    params.append(PAIRWISE_ELISION_EVIDENCE_TYPE)
+    pairwise_evidence_placeholders = ", ".join(
+        "?" for _ in PAIRWISE_ELISION_EVIDENCE_TYPES
+    )
+    params.extend(PAIRWISE_ELISION_EVIDENCE_TYPES)
     params.extend([state_run_id, *review_states])
     path_sql = ""
     if path_like:
@@ -243,7 +263,7 @@ def fetch_candidates(
             SELECT evidence.id
             FROM ml_pairwise_quality_evidence evidence
             WHERE evidence.segment_id = i.segment_id
-              AND evidence.evidence_type = ?
+              AND evidence.evidence_type IN ({pairwise_evidence_placeholders})
               AND evidence.baseline_text = COALESCE(o.portuguese_text, '')
               AND evidence.candidate_text = COALESCE(sc.confirmed_text, '')
               AND evidence.token_integrity_ok = 1
@@ -291,9 +311,32 @@ def pairwise_intentional_elision_authorized(
 ) -> bool:
     if row.get("confirmation_source") != PAIRWISE_ELISION_CONFIRMATION_SOURCE:
         return False
-    if row.get("confirmation_label") != PAIRWISE_ELISION_CONFIRMATION_LABEL:
-        return False
-    return evidence_authorizes_intentional_elision(row, current_text, confirmed_text)
+    confirmation_label = row.get("confirmation_label")
+    if confirmation_label == SPANISH_ELISION_CONFIRMATION_LABEL:
+        return evidence_authorizes_spanish_elision(
+            row,
+            current_text,
+            confirmed_text,
+        )
+    if (
+        confirmation_label == REDUNDANT_SELECT_CONFIRMATION_LABEL
+        and row.get("confirmation_source") == REDUNDANT_SELECT_CONFIRMATION_SOURCE
+    ):
+        return evidence_authorizes_redundant_select_elision(
+            row,
+            current_text,
+            confirmed_text,
+        )
+    if (
+        confirmation_label == CONTRACT_ES_HELPER_CONFIRMATION_LABEL
+        and row.get("confirmation_source") == CONTRACT_ES_HELPER_CONFIRMATION_SOURCE
+    ):
+        return evidence_authorizes_contract_es_helper_token_delta(
+            row,
+            current_text,
+            confirmed_text,
+        )
+    return False
 
 
 def validate_candidate(

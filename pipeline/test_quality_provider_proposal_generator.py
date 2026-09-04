@@ -12,13 +12,46 @@ if str(PIPELINE_DIR) not in sys.path:
     sys.path.insert(0, str(PIPELINE_DIR))
 
 import db  # noqa: E402
+import local_quality_validator  # noqa: E402
 from quality_provider_proposal_generator import (  # noqa: E402
+    _correction_lane,
+    _discovery_review_by_family,
     generate_provider_proposals,
     persist_provider_proposals,
 )
+from quality_pattern_discovery import _refine_human_issue_type  # noqa: E402
+from suggest_translations import remove_spanish_angular_quotes  # noqa: E402
 
 
 class QualityProviderProposalGeneratorTests(unittest.TestCase):
+    def test_angular_quotes_are_routed_to_ptbr_punctuation(self) -> None:
+        issue_type = _refine_human_issue_type(
+            "residual_spanish",
+            "«Texto em português»",
+            "aspas espanholas",
+        )
+        self.assertEqual(issue_type, "spanish_angular_quotes")
+        self.assertEqual(_correction_lane(issue_type, "plain_text")["id"], "ptbr_punctuation")
+        self.assertEqual(
+            remove_spanish_angular_quotes("«Texto» e Â«outroÂ»"),
+            '"Texto" e "outro"',
+        )
+        issue_codes = {
+            issue["code"]
+            for issue in local_quality_validator.validate_text("«Texto em português»")["issues"]
+        }
+        self.assertIn("spanish_angular_quotes", issue_codes)
+        self.assertNotIn("spanish_punctuation", issue_codes)
+
+    def test_real_residual_spanish_stays_in_semantic_lane(self) -> None:
+        issue_type = _refine_human_issue_type(
+            "residual_spanish",
+            "Todavía queda texto español.",
+            "conteúdo espanhol residual",
+        )
+        self.assertEqual(issue_type, "residual_spanish")
+        self.assertEqual(_correction_lane(issue_type, "plain_text")["id"], "spanish_residual")
+
     def setUp(self) -> None:
         self.conn = sqlite3.connect(":memory:")
         self.conn.row_factory = sqlite3.Row
@@ -100,6 +133,27 @@ class QualityProviderProposalGeneratorTests(unittest.TestCase):
             """,
             (now,),
         )
+        for decision_id, family_key in enumerate(("family-a", "family-b"), start=1):
+            self.conn.execute(
+                """
+                INSERT INTO ml_regenerative_review_decisions (
+                    id, queue_type, item_key, segment_id, snapshot_id,
+                    evidence_hash, decision, reason, reviewer,
+                    contract_version, evidence_json, is_active,
+                    created_at, updated_at
+                ) VALUES (?, 'discovery', ?, ?, 7, ?, 'supports_pattern', NULL,
+                          'test', 'test-v1', ?, 1, ?, ?)
+                """,
+                (
+                    decision_id,
+                    f"family:{family_key}:segment:{decision_id}",
+                    decision_id,
+                    f"{'a' if decision_id == 1 else 'b'}" * 64,
+                    json.dumps({"family_key": family_key}),
+                    now,
+                    now,
+                ),
+            )
         self.conn.commit()
 
     def tearDown(self) -> None:
@@ -116,6 +170,10 @@ class QualityProviderProposalGeneratorTests(unittest.TestCase):
         self.assertEqual(proposal["family_count"], 2)
         self.assertEqual(proposal["segment_count"], 7)
         self.assertFalse(proposal["manifest_draft"]["enabled"])
+        self.assertTrue(result["supervised_routing"])
+        self.assertEqual(result["correction_lane_count"], 1)
+        self.assertEqual(proposal["correction_lane"]["id"], "structure_tokens")
+        self.assertEqual(proposal["human_review"]["supports_pattern"], 2)
         self.assertEqual(
             proposal["contract"]["transformation"]["implementation_status"],
             "not_implemented",
@@ -145,6 +203,38 @@ class QualityProviderProposalGeneratorTests(unittest.TestCase):
         ).fetchone()[0]
         self.assertEqual(proposal_count, 1)
         self.assertEqual(case_count, len(result["proposals"][0]["cases"]))
+
+    def test_unreviewed_or_rejected_families_do_not_create_correction_proposals(self) -> None:
+        self.conn.execute("DELETE FROM ml_regenerative_review_decisions")
+        self.conn.execute(
+            """
+            INSERT INTO ml_regenerative_review_decisions (
+                queue_type, item_key, segment_id, snapshot_id, evidence_hash,
+                decision, reviewer, contract_version, evidence_json,
+                is_active, created_at, updated_at
+            ) VALUES ('discovery', 'family:family-a:segment:1', 1, 7, ?,
+                      'contradicts_pattern', 'test', 'test-v1', ?, 1, ?, ?)
+            """,
+            (
+                "c" * 64,
+                json.dumps({"family_key": "family-a"}),
+                "2026-07-20T00:00:00Z",
+                "2026-07-20T00:00:00Z",
+            ),
+        )
+        self.conn.commit()
+
+        result = generate_provider_proposals(self.conn, discovery_run_id=7)
+
+        self.assertEqual(result["actionable_family_count"], 0)
+        self.assertEqual(result["proposal_count"], 0)
+
+    def test_previous_snapshot_votes_feed_the_next_analysis_run(self) -> None:
+        reviews = _discovery_review_by_family(self.conn, discovery_run_id=8)
+
+        self.assertEqual(reviews["family-a"]["supports_pattern"], 1)
+        self.assertEqual(reviews["family-b"]["supports_pattern"], 1)
+        self.assertTrue(reviews["family-a"]["route_to_correction"])
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from collections import Counter
 from datetime import datetime
@@ -9,8 +10,8 @@ from typing import Any
 import db
 
 
-RULE_VERSION = "ml_build_dataset_v3_issue_review_bridge"
-DATASET_VERSION = "supervised_bootstrap_v3"
+RULE_VERSION = "ml_build_dataset_v4_mojibake_review_bridge"
+DATASET_VERSION = "supervised_bootstrap_v4"
 
 
 POSITIVE_LOCAL_LABELS = {
@@ -197,7 +198,11 @@ def fetch_feedback_examples(conn, limit: int | None) -> list[dict[str, Any]]:
     return examples
 
 
-def fetch_local_learning_examples(conn, limit: int | None) -> list[dict[str, Any]]:
+def fetch_local_learning_examples(
+    conn,
+    limit: int | None,
+    excluded_candidate_ids: set[int] | None = None,
+) -> list[dict[str, Any]]:
     labels = sorted(set(POSITIVE_LOCAL_LABELS) | set(NEGATIVE_LOCAL_LABELS))
     placeholders = ",".join("?" for _ in labels)
     rows = conn.execute(
@@ -242,8 +247,11 @@ def fetch_local_learning_examples(conn, limit: int | None) -> list[dict[str, Any
         (*labels, *limited_params(limit)),
     ).fetchall()
 
+    excluded_candidate_ids = excluded_candidate_ids or set()
     examples: list[dict[str, Any]] = []
     for row in rows:
+        if int(row["evidence_id"]) in excluded_candidate_ids:
+            continue
         label_info = POSITIVE_LOCAL_LABELS.get(row["human_label"]) or NEGATIVE_LOCAL_LABELS[row["human_label"]]
         label, action_label, issue_label, trust_level = label_info
         final_text = row["corrected_text"] or row["suggested_text"]
@@ -268,6 +276,99 @@ def fetch_local_learning_examples(conn, limit: int | None) -> list[dict[str, Any
                         "queue_source": row["queue_source"],
                         "focus_group": row["focus_group"],
                         "local_status": row["local_status"],
+                    },
+                ),
+            }
+        )
+    return examples
+
+
+def fetch_mojibake_review_examples(conn, limit: int | None) -> list[dict[str, Any]]:
+    """Bridge reviewed mojibake proposals into the next supervised model dataset.
+
+    A complete acceptance is a positive example for the exact proposal text. A
+    partial review is intentionally a negative example: the focused repair may
+    be right, but the resulting text is not yet safe as a whole. Open/manual
+    decisions are excluded until their outcome is explicit.
+    """
+    rows = conn.execute(
+        f"""
+        WITH token_counts AS (
+            SELECT segment_id, COUNT(*) AS token_count
+            FROM protected_tokens
+            GROUP BY segment_id
+        )
+        SELECT
+            d.id AS evidence_id,
+            d.segment_id,
+            d.decision,
+            d.resolution_scope,
+            d.remaining_signal_count,
+            d.candidate_text,
+            d.candidate_hash,
+            d.patterns_json,
+            d.residual_findings_json,
+            d.reviewer,
+            d.updated_at AS reviewed_at,
+            s.relative_path,
+            s.source_key,
+            s.source_line_number,
+            s.english_text,
+            s.spanish_text,
+            s.old_text,
+            s.has_english,
+            s.has_old,
+            o.portuguese_text AS output_text,
+            coalesce(tc.token_count, 0) AS token_count
+        FROM mojibake_lexicon_review_decisions d
+        JOIN source_segments s ON s.id = d.segment_id
+        LEFT JOIN output_segments o ON o.segment_id = s.id
+        LEFT JOIN token_counts tc ON tc.segment_id = s.id
+        WHERE s.is_active = 1
+          AND d.candidate_text IS NOT NULL
+          AND d.candidate_text <> ''
+          AND (
+            (d.decision IN ('accept_suggestion', 'valid_question_mark')
+             AND d.resolution_scope = 'complete')
+            OR (d.decision = 'manual_review' AND d.resolution_scope = 'partial')
+          )
+        ORDER BY d.updated_at DESC, d.id DESC
+        {limited_clause(limit)}
+        """,
+        limited_params(limit),
+    ).fetchall()
+
+    examples: list[dict[str, Any]] = []
+    for sqlite_row in rows:
+        row = dict(sqlite_row)
+        candidate_text = str(row.get("candidate_text") or "")
+        candidate_hash = str(row.get("candidate_hash") or "")
+        actual_hash = hashlib.sha256(candidate_text.encode("utf-8")).hexdigest()
+        # Never train from a proposal that no longer matches the reviewed text.
+        if not candidate_hash or candidate_hash != actual_hash:
+            continue
+        complete = str(row.get("resolution_scope") or "") == "complete"
+        examples.append(
+            {
+                **row,
+                "candidate_text": candidate_text,
+                "final_text": candidate_text if complete else None,
+                "label": "positive" if complete else "negative",
+                "action_label": "accepted_local" if complete else "needs_human",
+                "issue_label": "mojibake_resolved" if complete else "mojibake_partial",
+                "trust_level": 4 if complete else 5,
+                "evidence_source": "mojibake_review_decision",
+                "confidence_score": None,
+                "locked": 0,
+                "reasons_json": common_reason(
+                    "mojibake_review_decision",
+                    {
+                        "decision": row.get("decision"),
+                        "resolution_scope": row.get("resolution_scope"),
+                        "remaining_signal_count": int(row.get("remaining_signal_count") or 0),
+                        "patterns_json": row.get("patterns_json"),
+                        "residual_findings_json": row.get("residual_findings_json"),
+                        "reviewer": row.get("reviewer"),
                     },
                 ),
             }
@@ -614,26 +715,41 @@ def format_rows(rows) -> list[str]:
     return [f"- {row['key'] or 'none'}: {row['total']}" for row in rows]
 
 
-def main(limit: int | None = None) -> None:
+def main(
+    limit: int | None = None,
+    excluded_local_learning_candidate_ids: set[int] | None = None,
+    source_scope: str = "feedback+local_learning+mojibake_review+locked_human+issue_review",
+) -> int:
     settings = db.load_settings()
     started_at_dt = datetime.now()
     started_at = started_at_dt.isoformat(timespec="seconds")
+    excluded_local_learning_candidate_ids = excluded_local_learning_candidate_ids or set()
     print("[ml_build_dataset] Starting supervised dataset build")
     print(f"[ml_build_dataset] Rule version: {RULE_VERSION}")
     print(f"[ml_build_dataset] Dataset version: {DATASET_VERSION}")
+    print(
+        "[ml_build_dataset] Excluded local-learning controls: "
+        f"{len(excluded_local_learning_candidate_ids)}"
+    )
 
     with db.connect(settings) as conn:
         db.ensure_database(conn)
-        run_id = insert_run(conn, "feedback+local_learning+locked_human+issue_review", limit, started_at)
+        run_id = insert_run(conn, source_scope, limit, started_at)
         print(f"[ml_build_dataset] Run id: {run_id}")
 
         feedback_examples = fetch_feedback_examples(conn, limit)
-        local_examples = fetch_local_learning_examples(conn, limit)
+        local_examples = fetch_local_learning_examples(
+            conn,
+            limit,
+            excluded_candidate_ids=excluded_local_learning_candidate_ids,
+        )
+        mojibake_examples = fetch_mojibake_review_examples(conn, limit)
         confirmation_examples = fetch_locked_confirmation_examples(conn, limit)
         issue_review_examples = fetch_issue_review_examples(conn, limit)
 
         insert_examples(conn, run_id, feedback_examples, started_at)
         insert_examples(conn, run_id, local_examples, started_at)
+        insert_examples(conn, run_id, mojibake_examples, started_at)
         insert_examples(conn, run_id, confirmation_examples, started_at)
         insert_examples(conn, run_id, issue_review_examples, started_at)
 
@@ -655,6 +771,8 @@ def main(limit: int | None = None) -> None:
         f"Rule version: {RULE_VERSION}",
         f"Dataset version: {DATASET_VERSION}",
         f"Run id: {run_id}",
+        f"Source scope: {source_scope}",
+        f"Excluded local-learning controls: {len(excluded_local_learning_candidate_ids)}",
         "",
         "Summary:",
         f"- Total examples: {counts['total']}",
@@ -683,6 +801,7 @@ def main(limit: int | None = None) -> None:
         "- This dataset is intentionally conservative and auditable.",
         "- Locked human confirmations are positive anchors.",
         "- Edited/corrected/rejected rows teach the classifier what human review changed.",
+        "- Complete mojibake approvals are positive anchors; partial repairs remain negative until all residues are resolved.",
         "- Issue review decisions bridge agent queues into supervised evidence.",
         "- Context/delegation issue-review rows are stored as neutral evidence without candidate_text, so they do not train the macro classifier as hard negatives.",
         "- Negative examples are still scarce, so the first classifier must be evaluated with extra caution.",
@@ -699,6 +818,7 @@ def main(limit: int | None = None) -> None:
     print(f"[ml_build_dataset] Strong negatives: {counts['strong_negative']}")
     print(f"[ml_build_dataset] Report: {report_path}")
     print("[ml_build_dataset] Done")
+    return run_id
 
 
 if __name__ == "__main__":
@@ -709,5 +829,24 @@ if __name__ == "__main__":
         default=None,
         help="Optional per-source limit for development runs.",
     )
+    parser.add_argument(
+        "--exclude-local-learning-candidate-ids",
+        default="",
+        help="Comma-separated local_learning_candidates ids reserved for an external holdout.",
+    )
+    parser.add_argument(
+        "--source-scope",
+        default="feedback+local_learning+mojibake_review+locked_human+issue_review",
+        help="Auditable source-scope label stored with the dataset run.",
+    )
     parsed = parser.parse_args()
-    main(limit=parsed.limit)
+    excluded_ids = {
+        int(value.strip())
+        for value in parsed.exclude_local_learning_candidate_ids.split(",")
+        if value.strip()
+    }
+    main(
+        limit=parsed.limit,
+        excluded_local_learning_candidate_ids=excluded_ids,
+        source_scope=parsed.source_scope,
+    )

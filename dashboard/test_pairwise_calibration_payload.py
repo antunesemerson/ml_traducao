@@ -65,6 +65,11 @@ class PairwiseCalibrationPayloadTest(unittest.TestCase):
                 control_blinded INTEGER,
                 pair_hash TEXT
             );
+            CREATE TABLE source_segments (
+                id INTEGER PRIMARY KEY,
+                english_text TEXT,
+                spanish_text TEXT
+            );
             INSERT INTO ml_pairwise_calibration_policy_decisions VALUES
                 (2, 9, 377, 378, 'skip', 0,
                  '["already_calibrated_current_epoch"]', '{}');
@@ -76,6 +81,8 @@ class PairwiseCalibrationPayloadTest(unittest.TestCase):
                  'texto A', 'texto B', 0.7, 0.698, -0.002,
                  'raw_non_improving', 'decided', 'candidate_preferred', NULL,
                  'tester', '2026-07-19T13:50:00Z', 1, 0, 0, 'pair');
+            INSERT INTO source_segments VALUES
+                (42, 'English reference', 'Referencia española');
             """
         )
 
@@ -87,6 +94,8 @@ class PairwiseCalibrationPayloadTest(unittest.TestCase):
         self.assertEqual(payload["decided_count"], 1)
         self.assertEqual(payload["items"][0]["segment_id"], 42)
         self.assertEqual(payload["items"][0]["review_status"], "decided")
+        self.assertEqual(payload["items"][0]["english_text"], "English reference")
+        self.assertEqual(payload["items"][0]["spanish_text"], "Referencia española")
 
 
 if __name__ == "__main__":
